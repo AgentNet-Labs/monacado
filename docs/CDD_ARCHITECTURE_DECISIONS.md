@@ -328,9 +328,99 @@ Recorded explicitly and binding:
 
 ---
 
+## 10. Phase 0B ratifications (Product capsule)
+
+These rulings were left open at the end of §§1–9 and are now binding. They
+refine, and do not replace, the earlier decisions.
+
+### 10.1 Capsule-version IRI
+
+The canonical Product capsule-version IRI is:
+
+```
+https://monacado.com/id/product/{ulid}/capsule/{n}
+```
+
+- The Product **node IRI** remains `https://monacado.com/id/product/{ulid}`.
+- `{n}` is a **positive, monotonically increasing integer** within that Product
+  node.
+- A capsule-version IRI identifies **one immutable semantic version**.
+- A revised capsule receives a **new** capsule-version IRI.
+- **Supersession references the prior capsule-version IRI** (`supersedes`).
+- Published capsule-version IRIs are **never reused or reassigned**.
+- This pattern remains **provisional** until the `monacado.com` identity paths
+  are actually hosted (see §3 — nothing is published until domain control and
+  resolution are confirmed).
+
+The subordinate **`/capsule/{n}` pattern is the preferred default for other
+future entity capsule versions** (storefront, creator, promoter, listing,
+offer, …) unless a later ADR deliberately changes it.
+
+### 10.2 Product-level general availability
+
+`generalAvailabilityState` is a **Monacado ontology property**. Its purpose is
+limited to **broad Product-level lifecycle availability**, not commercial offer
+terms. It may represent states such as: `available`, `unavailable`,
+`pre-release`, `discontinued`.
+
+It must **not** be used for price, currency, inventory quantity, territory,
+discount, sale period, commission, or checkout eligibility. Those belong to
+future Offer, inventory, marketplace-verification, or operational records.
+
+**Why not schema.org `availability`:** schema.org `availability` is normally
+associated with an **Offer** (`ItemAvailability` on `Offer`). Reusing it at the
+Product level would blur the binding Product-versus-Offer boundary (§10.2 relates
+directly to the Product/Offer split in §2 and the Phase 0B scope).
+
+### 10.3 Creator relationship
+
+`creator` is a **Monacado commerce-ontology relationship**. It identifies the
+creator-authoritative Monacado entity responsible for the Product facts and must
+reference a **canonical creator node IRI**
+(`https://monacado.com/id/creator/{ulid}`).
+
+It is **not** mapped to schema.org `creator`, because that term does not
+precisely express Monacado's marketplace authority relationship. A future
+**Creator capsule** will define that node's descriptive and authoritative
+representation.
+
+### 10.4 Content hash
+
+The Product capsule content hash is stored at **`provenance.contentHash`**.
+
+The hash input is the **complete validated public capsule** after deterministic
+canonical JSON serialization, **excluding only `provenance.contentHash`** itself
+(to prevent circularity).
+
+**Included:** `@context`, `@type`, `@id`, capsule version, `subject`, semantic
+Product `data`, `relationships`, provenance other than `contentHash`,
+`lifecycle`, timestamps, supersession/revocation data, public `metadata`.
+
+**Excluded:** transient runtime values not present in the capsule, publication
+envelopes, relational projections, generated JSON Schema, and
+`provenance.contentHash`.
+
+A **meaningful capsule change must produce a new hash**, and generally requires
+a **new capsule version** (§10.1).
+
+### 10.5 Forbidden-field safeguard (temporary)
+
+The substring-based forbidden-field scan
+(`src/contracts/integrity/forbidden-fields.ts`) is a **temporary Phase 0B
+safeguard**. It is acceptable for the current narrow synthetic Product shape and
+must not be expanded during Phase 0B.
+
+Before real, extensible `specifications` or `metadata` are accepted, this scan
+**must be replaced or supplemented** by explicit allowlisted schemas or
+namespace-aware validation, to avoid false positives (legitimate keys containing
+substrings like `price`) and semantic ambiguity.
+
+---
+
 ## Out of scope for this document
 
-No application behavior changed. No dependencies added. No ontology, context,
-Zod schema, Product model, Prisma, database code, React bindings, or AgentNet
-publication code was written. Phase 0B may begin the first Product capsule under
-the rulings above.
+This ADR records decisions only. The Phase 0A.1 sections (§§1–9) introduced no
+code; the §10 ratifications accompany the Phase 0B Product capsule
+implementation but this file itself remains documentation. No Offer,
+persistence, Prisma, React binding, publication worker, or live network code is
+authorized by this document.

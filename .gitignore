@@ -11,6 +11,9 @@ next-env.d.ts
 # Production build
 /build
 
+# Generated (derived) artifacts — regenerate with `npm run contracts:export`
+/generated/
+
 # Testing / coverage
 /coverage
 
