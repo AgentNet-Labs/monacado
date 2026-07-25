@@ -61,7 +61,20 @@ export function looksSemantic(value: string): boolean {
   return SEMANTIC_ID_MARKERS.some((m) => v.includes(m));
 }
 
-// — Synthetic constructors (tests/demo only; a real Registrar issues these) —
+/**
+ * Internal Monacado source-record identifier (`mon:srec:<opaque>`). Opaque and
+ * distinct from the internal Product ID, the ANS Node ID, and the capsule ID.
+ * Rejects ANS Node/capsule IDs and semantic URLs by construction.
+ */
+export const SOURCE_RECORD_ID_RE = new RegExp(`^mon:srec:${OPAQUE_BODY}$`);
+
+/** Internal Monacado Product identifier (`mon:product:<opaque>`). Not an ANS identity. */
+export const INTERNAL_PRODUCT_ID_RE = new RegExp(`^mon:product:${OPAQUE_BODY}$`);
+
+/** Internal creator authority identifier (`mon:creator:<opaque>`). Internal only. */
+export const INTERNAL_CREATOR_ID_RE = new RegExp(`^mon:creator:${OPAQUE_BODY}$`);
+
+// — Synthetic constructors (tests/demo only; a real Registrar issues ANS ids) —
 
 export function makeSyntheticNodeId(opaque: string): string {
   return `an:node:${opaque}`;
@@ -74,4 +87,14 @@ export function makeSyntheticCapsuleId(opaque: string): string {
 /** Internal Monacado application identifier for a Product (NOT an ANS identity). */
 export function makeInternalProductId(opaque: string): string {
   return `mon:product:${opaque}`;
+}
+
+/** Internal Monacado source-record identifier (NOT an ANS identity). */
+export function makeSourceRecordId(opaque: string): string {
+  return `mon:srec:${opaque}`;
+}
+
+/** Internal creator authority identifier (NOT an ANS identity). */
+export function makeInternalCreatorId(opaque: string): string {
+  return `mon:creator:${opaque}`;
 }

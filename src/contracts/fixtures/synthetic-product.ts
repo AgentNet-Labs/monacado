@@ -11,7 +11,7 @@ import {
   makeSyntheticNodeId,
 } from "../capsule/identity";
 import type { PolicyRef } from "../capsule/envelope";
-import type { FinalizeInput, ProductSourceRecord } from "../product/product.factory";
+import type { FinalizeInput, CapsuleSourceInput } from "../product/product.factory";
 
 // Opaque 26-char Crockford bodies (synthetic).
 const NODE_OPAQUE = "01HQ8ZK3M9P7R5T2V4W6XY8N0A";
@@ -44,7 +44,7 @@ export const SYN_NODE_POLICY: PolicyRef = { ref: "an:policy:node:synthetic-0b1",
 export const SYN_CAPSULE_POLICY: PolicyRef = { ref: "an:policy:capsule:synthetic-0b1", version: "1.0.0" };
 
 /** A synthetic authoritative Monacado Product source record (version 1). */
-export function syntheticSourceRecord(): ProductSourceRecord {
+export function syntheticSourceRecord(): CapsuleSourceInput {
   return {
     sourceRecordId: SYN_INTERNAL_PRODUCT_ID,
     sourceRecordVersion: "1",
@@ -67,7 +67,7 @@ export function syntheticSourceRecord(): ProductSourceRecord {
 }
 
 /** A synthetic revised source record (version 2, changed facts). */
-export function syntheticSourceRecordV2(): ProductSourceRecord {
+export function syntheticSourceRecordV2(): CapsuleSourceInput {
   const base = syntheticSourceRecord();
   return {
     ...base,

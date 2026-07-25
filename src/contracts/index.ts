@@ -18,6 +18,7 @@ export * from "./capsule/identity";
 export * from "./product/product.capsule";
 export * from "./product/product.authority";
 export * from "./product/product.factory";
+export * from "./product/product-source-record";
 
 // Integrity
 export * from "./integrity/canonical-json";

@@ -11,12 +11,19 @@ import {
   CAPSULE_GENERATOR_ID,
   ProductPublisherError,
   ProductRevisionError,
+  SourceRecordRevisionError,
+  canonicalJsonString,
   candidateHash,
   finalizeProductCapsule,
   generateProductCandidate,
+  productCapsuleCandidateToSourceProjection,
+  productSourceRecordToCapsuleCandidate,
   publishedContentHash,
   reviseProductSource,
+  reviseProductSourceRecord,
+  validateProductSourceRecord,
   validatePublishedProductCapsule,
+  verifyProductSourceCandidateMapping,
 } from "../src/contracts/index";
 import {
   SYN_CAPSULE_ID_V2,
@@ -27,6 +34,11 @@ import {
   syntheticSourceRecord,
   syntheticSourceRecordV2,
 } from "../src/contracts/fixtures/synthetic-product";
+import {
+  SYN_CAPSULE_GENERATED_AT_V2,
+  SYN_UPDATED_AT_V2,
+  syntheticProductSourceRecord,
+} from "../src/contracts/fixtures/synthetic-source-record";
 
 const line = (label: string, value: string) => console.log(`  ${label.padEnd(30)} ${value}`);
 
@@ -125,5 +137,85 @@ try {
 } catch (e) {
   line("generator as Publisher", e instanceof ProductPublisherError ? "rejected" : "rejected(other)");
 }
+
+// ── Phase 0C — source-record → candidate mapping (offline) ──
+console.log("\nPhase 0C — Product source-record mapping\n");
+
+const srcRecord = syntheticProductSourceRecord();
+console.log("A. Authoritative Product source record");
+line("sourceRecordId", srcRecord.sourceRecordId);
+line("internalProductId (distinct)", srcRecord.internalProductId);
+line("sourceRecordVersion", srcRecord.sourceRecordVersion);
+line("recordStatus (internal)", srcRecord.recordStatus);
+
+console.log("\nB. Strict validation");
+line("source record valid", String(validateProductSourceRecord(srcRecord).ok));
+
+const c0c = productSourceRecordToCapsuleCandidate(srcRecord);
+console.log("\nC. Deterministic mapping → candidate");
+line("candidate version", c0c.metadata.version);
+line("candidate hash", candidateHash(c0c));
+line("no publication metadata", String(Object.keys(c0c.metadata).sort().join(",") === "provenance,version"));
+
+const proj = productCapsuleCandidateToSourceProjection(c0c);
+console.log("\nD. Candidate → source projection");
+line("projection sourceRecordId", proj.sourceRecordId);
+line("facts preserved", String(canonicalJsonString(proj.facts) === canonicalJsonString(srcRecord.facts)));
+
+console.log("\nE. Mapping verification");
+line("verify ok", String(verifyProductSourceCandidateMapping(srcRecord, c0c).ok));
+
+const revised = reviseProductSourceRecord({
+  prior: srcRecord,
+  sourceRecordVersion: "2",
+  updatedAt: SYN_UPDATED_AT_V2,
+  capsuleGeneratedAt: SYN_CAPSULE_GENERATED_AT_V2,
+  facts: { ...srcRecord.facts, name: "Synthetic CLI Toolkit (Pro)", productVersion: 2 },
+});
+const cRev = productSourceRecordToCapsuleCandidate(revised);
+console.log("\nF. Meaningful revision");
+line("same sourceRecordId", String(revised.sourceRecordId === srcRecord.sourceRecordId));
+line("same internalProductId", String(revised.internalProductId === srcRecord.internalProductId));
+line("new sourceRecordVersion", revised.sourceRecordVersion);
+line("new candidate hash", String(candidateHash(cRev) !== candidateHash(c0c)));
+
+const equalTsRevision = reviseProductSourceRecord({
+  prior: srcRecord,
+  sourceRecordVersion: "2",
+  updatedAt: SYN_UPDATED_AT_V2,
+  capsuleGeneratedAt: srcRecord.capsuleGeneratedAt, // explicitly supplied, equal to prior
+  facts: { ...srcRecord.facts, name: "Synthetic CLI Toolkit (Pro)" },
+});
+line("equal explicit capsuleGeneratedAt", `accepted (${equalTsRevision.capsuleGeneratedAt})`);
+
+console.log("\nG. Rejections");
+try {
+  reviseProductSourceRecord({ prior: srcRecord, sourceRecordVersion: "1", updatedAt: SYN_UPDATED_AT_V2, capsuleGeneratedAt: SYN_CAPSULE_GENERATED_AT_V2 });
+  line("reused sourceRecordVersion", "ERROR — not rejected");
+} catch (e) {
+  line("reused sourceRecordVersion", e instanceof SourceRecordRevisionError ? "rejected" : "rejected(other)");
+}
+try {
+  const omitted = { prior: srcRecord, sourceRecordVersion: "2", updatedAt: SYN_UPDATED_AT_V2 } as unknown as Parameters<typeof reviseProductSourceRecord>[0];
+  reviseProductSourceRecord(omitted);
+  line("omitted capsuleGeneratedAt", "ERROR — not rejected");
+} catch (e) {
+  line("omitted capsuleGeneratedAt", e instanceof SourceRecordRevisionError ? "rejected" : "rejected(other)");
+}
+try {
+  reviseProductSourceRecord({ prior: srcRecord, sourceRecordVersion: "2", updatedAt: SYN_UPDATED_AT_V2, capsuleGeneratedAt: SYN_CAPSULE_GENERATED_AT_V2, sourceRecordId: "mon:srec:0CHANGED0000000000000000AA" });
+  line("changed immutable id", "ERROR — not rejected");
+} catch (e) {
+  line("changed immutable id", e instanceof SourceRecordRevisionError ? "rejected" : "rejected(other)");
+}
+const tampered = structuredClone(c0c);
+tampered.data.name = "Tampered";
+line("Product fact tampering", String(!verifyProductSourceCandidateMapping(srcRecord, tampered).ok));
+const provTamper = structuredClone(c0c);
+provTamper.metadata.provenance.sourceRecordVersion = "999";
+line("provenance tampering", String(!verifyProductSourceCandidateMapping(srcRecord, provTamper).ok));
+const priceRec = structuredClone(srcRecord) as unknown as { facts: Record<string, unknown> };
+priceRec.facts.price = 19.95;
+line("price/payment field", String(!validateProductSourceRecord(priceRec).ok));
 
 console.log("\ncontracts:demo — complete.");

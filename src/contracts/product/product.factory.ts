@@ -29,7 +29,7 @@ import {
 } from "./product.capsule";
 
 /** An authoritative Monacado source record (the DB record; system of record). */
-export interface ProductSourceRecord {
+export interface CapsuleSourceInput {
   sourceRecordId: string;
   sourceRecordVersion: string;
   sourceSystem: string;
@@ -41,14 +41,20 @@ export interface ProductSourceRecord {
 }
 
 export interface GenerateCandidateInput {
-  source: ProductSourceRecord;
+  source: CapsuleSourceInput;
   /** Intended semantic version for this capsule. */
   version: SemVer;
   /** Deterministic generation timestamp (no Date.now). */
   generatedAt: string;
+  /** Generator/mapping version stamped into provenance (defaults to GENERATOR_VERSION). */
+  generatorVersion?: string;
 }
 
-function buildProvenance(source: ProductSourceRecord, generatedAt: string): ProvenanceRecord {
+function buildProvenance(
+  source: CapsuleSourceInput,
+  generatedAt: string,
+  generatorVersion: string,
+): ProvenanceRecord {
   return {
     source: `${source.sourceSystem}:${source.sourceRecordType}:${source.sourceRecordId}@${source.sourceRecordVersion}`,
     method: "governed-database-record-projection",
@@ -60,7 +66,7 @@ function buildProvenance(source: ProductSourceRecord, generatedAt: string): Prov
     sourceRecordId: source.sourceRecordId,
     sourceRecordVersion: source.sourceRecordVersion,
     generatedAt,
-    generatorVersion: GENERATOR_VERSION,
+    generatorVersion,
   };
 }
 
@@ -71,7 +77,11 @@ export function generateProductCandidate(input: GenerateCandidateInput): Product
     "@type": PRODUCT_TYPE,
     metadata: {
       version: input.version,
-      provenance: buildProvenance(input.source, input.generatedAt),
+      provenance: buildProvenance(
+        input.source,
+        input.generatedAt,
+        input.generatorVersion ?? GENERATOR_VERSION,
+      ),
     },
     data: input.source.facts,
   };
@@ -135,7 +145,7 @@ export class ProductRevisionError extends Error {
 
 export interface ReviseSourceInput {
   current: PublishedProductCapsule;
-  source: ProductSourceRecord;
+  source: CapsuleSourceInput;
   version: SemVer;
   generatedAt: string;
 }

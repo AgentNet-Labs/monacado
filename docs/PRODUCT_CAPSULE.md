@@ -14,7 +14,10 @@ Source lives under `src/contracts/`.
 The Monacado database is the **authoritative source record** for Monacado-native
 Product facts. A capsule is a semantic representation **generated from one
 identified source-record version**; the Publisher and Registrar roles do not
-replace source authority. Provenance chain:
+replace source authority. The normalized source-record contract and the
+deterministic source-record ↔ candidate mapping are specified in
+[`PRODUCT_SOURCE_RECORD_MAPPING.md`](PRODUCT_SOURCE_RECORD_MAPPING.md)
+(Phase 0C). Provenance chain:
 
 ```
 authoritative Monacado source record
