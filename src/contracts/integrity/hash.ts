@@ -1,15 +1,19 @@
 /**
- * Content hashing (ADR §1; Phase 0B hashing rule).
+ * Content hashing (ADR §10.4 as corrected for ANS; Phase 0B.1 hashing rule).
  *
- * The hash is computed over the COMPLETE validated public capsule, serialized
- * with the deterministic canonical JSON procedure. Included in the hash input:
- * semantic content, identity (@id, subject), version, provenance, lifecycle,
- * and relationships. Excluded: the derived `provenance.contentHash` field
- * itself (hashing it would be circular). Nothing else is stripped — there are
- * no transient runtime-only fields in the capsule schema.
+ * Published-capsule hash: computed over the COMPLETE validated published
+ * capsule, serialized with the deterministic canonical JSON procedure,
+ * excluding ONLY `metadata.contentHash` (excluding it avoids circularity).
+ * Everything else is included — Node binding, Publisher, version, publication
+ * time, provenance, policy references, and supersession/revocation metadata.
  *
- * Result: `sha256:<hex>`. Equivalent capsules that differ only in key insertion
- * order hash identically; any meaningful change changes the hash.
+ * Candidate hash: a separately named, pre-publication integrity value over a
+ * candidate. It is NOT the published-capsule hash and the two must not be
+ * conflated.
+ *
+ * Equivalent objects with different key insertion order hash identically; any
+ * meaningful change changes the hash. A relational projection or publication
+ * envelope is never hashed.
  */
 
 import { createHash } from "node:crypto";
@@ -17,34 +21,44 @@ import { canonicalJsonString } from "./canonical-json";
 
 export const HASH_ALGORITHM = "sha256" as const;
 
-/** Deep clone with the derived contentHash removed, leaving all semantic content. */
-function stripDerived<T>(capsule: T): T {
+function sha256(input: string): string {
+  return `${HASH_ALGORITHM}:${createHash(HASH_ALGORITHM).update(input, "utf8").digest("hex")}`;
+}
+
+/** Deep clone of a published capsule with the derived `metadata.contentHash` removed. */
+function stripPublishedHash<T>(capsule: T): T {
   const clone = structuredClone(capsule) as Record<string, unknown>;
-  const provenance = clone["provenance"];
-  if (provenance && typeof provenance === "object" && !Array.isArray(provenance)) {
-    delete (provenance as Record<string, unknown>)["contentHash"];
+  const metadata = clone["metadata"];
+  if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
+    delete (metadata as Record<string, unknown>)["contentHash"];
   }
   return clone as T;
 }
 
-/** The exact string that is hashed — exposed for tests and debugging. */
-export function hashInput(capsule: unknown): string {
-  return canonicalJsonString(stripDerived(capsule));
+/** The exact string hashed for a published capsule — exposed for tests/debug. */
+export function publishedHashInput(capsule: unknown): string {
+  return canonicalJsonString(stripPublishedHash(capsule));
 }
 
-/** Compute the capsule content hash as `sha256:<hex>`. */
-export function contentHash(capsule: unknown): string {
-  const digest = createHash(HASH_ALGORITHM).update(hashInput(capsule), "utf8").digest("hex");
-  return `${HASH_ALGORITHM}:${digest}`;
+/** Content hash of a published capsule as `sha256:<hex>` (excludes contentHash). */
+export function publishedContentHash(capsule: unknown): string {
+  return sha256(publishedHashInput(capsule));
 }
 
-/** Return a copy of the capsule with `provenance.contentHash` set to its hash. */
-export function withContentHash<T extends { provenance: Record<string, unknown> }>(
-  capsule: T,
-): T {
-  const hash = contentHash(capsule);
+/** Return a copy of the published capsule with `metadata.contentHash` set. */
+export function withPublishedContentHash<
+  T extends { metadata: Record<string, unknown> },
+>(capsule: T): T {
   return {
     ...capsule,
-    provenance: { ...capsule.provenance, contentHash: hash },
+    metadata: { ...capsule.metadata, contentHash: publishedContentHash(capsule) },
   };
+}
+
+/**
+ * Pre-publication candidate hash (distinct from the published-capsule hash).
+ * Covers the whole candidate (data + candidate metadata/provenance).
+ */
+export function candidateHash(candidate: unknown): string {
+  return sha256(canonicalJsonString(candidate));
 }

@@ -1,56 +1,49 @@
 /**
- * Product authority policy (ADR §2; Phase 0B authority rules).
+ * Authority roles (ANS §2; ADR §11).
  *
- * Deliberately small and explicit — NOT a broad claim-key vocabulary. The
- * Product capsule is creator-authoritative, so the only rule that matters here
- * is: who may create or modify creator-authoritative Product facts.
+ * Kept distinct, and never conflated:
+ *   - Factual / source authority — the creator, whose claims the Product data
+ *     asserts. Expressed in provenance/source-record terms and the creator
+ *     relationship; NOT published as a competing `sourceAuthority` field.
+ *   - Publisher — the ANS role that submits the capsule. In this walled-garden
+ *     model the Publisher is Monacado (a fixed platform identity).
+ *   - Capsule generator — the operational component that builds a candidate. It
+ *     holds no authority and MUST NOT be substituted for the Publisher.
  *
- *   - creator  → may create and modify;
- *   - promoter → may NOT alter creator Product facts;
- *   - monacado → operational assertions do not belong in this capsule;
- *   - buyer    → observations do not belong in this capsule.
- *
- * (Monacado and buyer assertions are additionally blocked structurally by the
- * capsule schema and the forbidden-field scan; this policy governs the write
- * operation's actor.)
+ * ANS: generation/registration never confer factual authority; a Publisher "MAY
+ * delegate operational tasks without delegating authority."
  */
 
-import type { AuthorityClass } from "../capsule/envelope";
+/** The sole walled-garden Publisher identity (Monacado). Provisional synthetic value. */
+export const MONACADO_PUBLISHER_ID = "an:publisher:monacado-platform" as const;
 
-export interface Actor {
-  role: AuthorityClass;
-  /** Node IRI of the actor (e.g. a creator node IRI). */
-  id: string;
-}
+/** The capsule generator identity — operational only; never a Publisher. */
+export const CAPSULE_GENERATOR_ID = "an:generator:monacado-contracts" as const;
 
-export interface AuthorityDecision {
-  allowed: boolean;
-  reason?: string;
-}
+/** Current generator version stamped into provenance. */
+export const GENERATOR_VERSION = "0b1.0.0" as const;
 
-/** The authority that owns creator-authoritative Product facts. */
-export const PRODUCT_FACT_AUTHORITY: AuthorityClass = "creator";
-
-/** May this actor create or modify creator-authoritative Product facts? */
-export function canWriteProductFacts(actor: Actor): AuthorityDecision {
-  if (actor.role === PRODUCT_FACT_AUTHORITY) return { allowed: true };
-  return {
-    allowed: false,
-    reason: `Role "${actor.role}" may not alter creator-authoritative Product facts; only "${PRODUCT_FACT_AUTHORITY}" may.`,
-  };
-}
-
-/** Guard form: throws if the actor may not write Product facts. */
-export function assertCanWriteProductFacts(actor: Actor): void {
-  const decision = canWriteProductFacts(actor);
-  if (!decision.allowed) {
-    throw new ProductAuthorityError(decision.reason ?? "Not authorized");
+export class ProductPublisherError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProductPublisherError";
   }
 }
 
-export class ProductAuthorityError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ProductAuthorityError";
+/**
+ * Assert that a proposed `publishedBy` is the Monacado Publisher, not a
+ * generator or other identity. Prevents a generator from substituting for the
+ * Publisher (ANS §2).
+ */
+export function assertMonacadoPublisher(publishedBy: string): void {
+  if (publishedBy === CAPSULE_GENERATOR_ID) {
+    throw new ProductPublisherError(
+      "The capsule generator identity cannot act as the ANS Publisher.",
+    );
+  }
+  if (publishedBy !== MONACADO_PUBLISHER_ID) {
+    throw new ProductPublisherError(
+      `Publisher must be the Monacado Publisher (${MONACADO_PUBLISHER_ID}); got "${publishedBy}".`,
+    );
   }
 }

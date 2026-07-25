@@ -1,32 +1,34 @@
 /**
- * Creator-authoritative Product capsule (Phase 0B).
+ * Creator-authoritative Product capsule — ANS-conformant (Phase 0B.1).
  *
- * The Product capsule is the canonical semantic representation of the enduring
- * product and its creator-authoritative facts (ADR §1, §2). It carries a NARROW
- * field set. Commercial terms (price, currency, discount, commission, validity,
- * territory), other authorities' assertions, and private/payment data are
- * excluded — enforced both by strict object schemas and by a denylist scan.
+ * Top-level members are exactly `@context`, `@type`, `metadata`, `data`
+ * (ANS §3). Product facts live in `data`; identity, node binding, versioning,
+ * publication, provenance, policy linkage, supersession/revocation, and
+ * integrity live in `metadata`. The capsule carries NO lifecycle state.
  *
- * Zod is the executable source of truth; the TypeScript type is inferred.
+ * Two shapes: a pre-publication Candidate (data + source provenance) and a
+ * finalised Published capsule (all mandatory ANS publication metadata).
  */
 
 import { z } from "zod";
-import { baseCapsuleShape } from "../capsule/envelope";
 import {
-  capsuleVersionIriPattern,
-  expectedCapsuleVersionIri,
-  nodeIriPattern,
-} from "../capsule/identity";
+  AnsNodeId,
+  CandidateMetadata,
+  ContextValue,
+  PublishedMetadata,
+} from "../capsule/envelope";
 import { findForbiddenFields } from "../integrity/forbidden-fields";
 
 export const PRODUCT_TYPE = "Product" as const;
 
-/**
- * Enduring, Product-level availability (ADR §10.2). Broad lifecycle availability
- * only — never commercial offer terms, inventory, territory, or checkout
- * eligibility. schema.org `availability` is deliberately not reused: it is
- * Offer-associated and would blur the Product-versus-Offer boundary.
- */
+const ProductType = z.union([
+  z.literal(PRODUCT_TYPE),
+  z.array(z.string().min(1)).refine((arr) => arr.includes(PRODUCT_TYPE), {
+    message: `@type must include "${PRODUCT_TYPE}"`,
+  }),
+]);
+
+/** Enduring, Product-level availability (ADR §10.2) — never offer-level. */
 export const GENERAL_AVAILABILITY_STATES = [
   "available",
   "unavailable",
@@ -36,8 +38,22 @@ export const GENERAL_AVAILABILITY_STATES = [
 export const GeneralAvailabilityState = z.enum(GENERAL_AVAILABILITY_STATES);
 export type GeneralAvailabilityState = z.infer<typeof GeneralAvailabilityState>;
 
-/** Structured, creator-authored product facts. `specifications` is open but scanned. */
+/** Product relationships (domain data): the authoritative creator, optional offer ref. */
+export const ProductRelationships = z.strictObject({
+  creator: AnsNodeId,
+  offer: AnsNodeId.optional(),
+});
+export type ProductRelationships = z.infer<typeof ProductRelationships>;
+
+/**
+ * Product `data` — enduring, creator-authoritative facts only. Commercial terms
+ * (price, currency, discount, commission, payout, territory, offer validity,
+ * payment) are excluded and additionally rejected by the forbidden-field scan.
+ */
 export const ProductData = z.strictObject({
+  name: z.string().min(1),
+  description: z.string().min(1).optional(),
+  image: z.url().optional(),
   productVersion: z.int().min(1),
   promotable: z.boolean(),
   generalAvailabilityState: GeneralAvailabilityState,
@@ -45,117 +61,91 @@ export const ProductData = z.strictObject({
     .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
     .optional(),
   capabilities: z.array(z.string().min(1)).optional(),
+  relationships: ProductRelationships,
 });
 export type ProductData = z.infer<typeof ProductData>;
 
-/**
- * Product relationships: the authoritative creator (required) and an optional
- * REFERENCE to a future Offer node (reference only — no offer data inline).
- */
-export const ProductRelationships = z.strictObject({
-  creator: nodeIri("creator"),
-  offer: nodeIri("offer").optional(),
-});
-export type ProductRelationships = z.infer<typeof ProductRelationships>;
-
-function nodeIri(entity: "creator" | "offer") {
-  return z.string().regex(nodeIriPattern(entity));
+/** Reject foreign-authority / private / payment fields anywhere in the capsule. */
+function forbiddenFieldRefine(capsule: unknown, ctx: z.RefinementCtx): void {
+  for (const finding of findForbiddenFields(capsule)) {
+    ctx.addIssue({
+      code: "custom",
+      path: finding.path.split(/[.[\]]+/).filter(Boolean),
+      message: `Forbidden field "${finding.key}" at ${finding.path} (${finding.reason}); it belongs to another capsule/authority, not the creator Product capsule.`,
+    });
+  }
 }
 
-const productNodeIri = z.string().regex(nodeIriPattern("product"));
-const productCapsuleVersionIri = z.string().regex(capsuleVersionIriPattern("product"));
+// — Candidate (pre-publication) —
 
-/**
- * The Product capsule object shape (no cross-field refinements). Exposed for
- * derived JSON Schema generation, which represents structural constraints only.
- */
-export const ProductCapsuleBase = z.strictObject({
-  ...baseCapsuleShape,
-  "@type": z.union([
-    z.literal(PRODUCT_TYPE),
-    z.array(z.string().min(1)).refine((arr) => arr.includes(PRODUCT_TYPE), {
-      message: `@type must include "${PRODUCT_TYPE}"`,
-    }),
-  ]),
-  "@id": productCapsuleVersionIri,
-  subject: productNodeIri,
+export const ProductCapsuleCandidateBase = z.strictObject({
+  "@context": ContextValue,
+  "@type": ProductType,
+  metadata: CandidateMetadata,
   data: ProductData,
-  relationships: ProductRelationships,
-  provenance: baseCapsuleShape.provenance.extend({
-    authority: z.literal("creator"),
-  }),
 });
 
-/**
- * The Product capsule. The base shape plus cross-field checks: @id/subject
- * agreement, supersession rules, and the forbidden-field scan.
- */
-export const ProductCapsule = ProductCapsuleBase.superRefine((capsule, ctx) => {
-    // @id must be exactly subject + /capsule/{capsuleVersion}
-    const expected = expectedCapsuleVersionIri(capsule.subject, capsule.capsuleVersion);
-    if (capsule["@id"] !== expected) {
+export const ProductCapsuleCandidate = ProductCapsuleCandidateBase.superRefine(
+  forbiddenFieldRefine,
+);
+export type ProductCapsuleCandidate = z.infer<typeof ProductCapsuleCandidate>;
+
+// — Published (finalised, immutable) —
+
+export const PublishedProductCapsuleBase = z.strictObject({
+  "@context": ContextValue,
+  "@type": ProductType,
+  metadata: PublishedMetadata,
+  data: ProductData,
+});
+
+export const PublishedProductCapsule = PublishedProductCapsuleBase.superRefine(
+  (capsule, ctx) => {
+    forbiddenFieldRefine(capsule, ctx);
+    // Supersedes/revokes must reference a prior capsule ID, never self, never a
+    // Node ID (the CapsuleId type already rejects Node IDs structurally).
+    if (capsule.metadata.supersedes === capsule.metadata.capsuleId) {
       ctx.addIssue({
         code: "custom",
-        path: ["@id"],
-        message: `@id must equal ${expected} (subject + /capsule/${capsule.capsuleVersion})`,
+        path: ["metadata", "supersedes"],
+        message: "supersedes must reference a prior capsule ID, not this capsule",
       });
     }
-
-    // Supersession rule (ADR §2): v1 has no predecessor; v>1 must reference it.
-    if (capsule.capsuleVersion === 1) {
-      if (capsule.supersedes !== undefined) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["supersedes"],
-          message: "capsuleVersion 1 must not declare supersedes",
-        });
-      }
-    } else {
-      const expectedPrev = expectedCapsuleVersionIri(
-        capsule.subject,
-        capsule.capsuleVersion - 1,
-      );
-      if (capsule.supersedes === undefined) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["supersedes"],
-          message: `capsuleVersion ${capsule.capsuleVersion} requires supersedes = ${expectedPrev}`,
-        });
-      } else if (capsule.supersedes !== expectedPrev) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["supersedes"],
-          message: `supersedes must reference the immediately prior capsule version ${expectedPrev}`,
-        });
-      }
-    }
-
-    // No foreign-authority or private/payment fields anywhere in the capsule.
-    for (const finding of findForbiddenFields(capsule)) {
+    if (capsule.metadata.revokes === capsule.metadata.capsuleId) {
       ctx.addIssue({
         code: "custom",
-        path: finding.path.split(/[.[\]]+/).filter(Boolean),
-        message: `Forbidden field "${finding.key}" at ${finding.path} (${finding.reason}); it belongs to another capsule/authority, not the creator Product capsule.`,
+        path: ["metadata", "revokes"],
+        message: "revokes must reference another capsule ID, not this capsule",
       });
     }
-  });
+  },
+);
+export type PublishedProductCapsule = z.infer<typeof PublishedProductCapsule>;
 
-export type ProductCapsule = z.infer<typeof ProductCapsule>;
-
-export interface ValidationResult {
+export interface ValidationResult<T> {
   ok: boolean;
-  capsule?: ProductCapsule;
+  capsule?: T;
   errors?: string[];
 }
 
-/** Validate an unknown value as a Product capsule. */
-export function validateProductCapsule(value: unknown): ValidationResult {
-  const result = ProductCapsule.safeParse(value);
+type SafeParse<T> = { success: true; data: T } | { success: false; error: z.ZodError };
+
+function toResult<T>(result: SafeParse<T>): ValidationResult<T> {
   if (result.success) return { ok: true, capsule: result.data };
   return {
     ok: false,
-    errors: result.error.issues.map(
-      (i) => `${i.path.join(".") || "(root)"}: ${i.message}`,
-    ),
+    errors: result.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`),
   };
+}
+
+export function validateProductCandidate(
+  value: unknown,
+): ValidationResult<ProductCapsuleCandidate> {
+  return toResult(ProductCapsuleCandidate.safeParse(value));
+}
+
+export function validatePublishedProductCapsule(
+  value: unknown,
+): ValidationResult<PublishedProductCapsule> {
+  return toResult(PublishedProductCapsule.safeParse(value));
 }

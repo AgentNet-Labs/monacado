@@ -1,193 +1,330 @@
 import { describe, expect, it } from "vitest";
 import {
+  CAPSULE_GENERATOR_ID,
+  MONACADO_PUBLISHER_ID,
+  ProductPublisherError,
+  ProductRevisionError,
+  candidateHash,
   canonicalJsonString,
-  canWriteProductFacts,
-  contentHash,
-  createProductCapsule,
-  generateProductJsonSchema,
-  makeCapsuleVersionIri,
-  makeNodeIri,
-  ProductAuthorityError,
-  reviseProductCapsule,
-  validateProductCapsule,
-  type ProductCapsule,
+  finalizeProductCapsule,
+  generatePublishedProductJsonSchema,
+  generateProductCandidate,
+  publishedContentHash,
+  reviseProductSource,
+  validateProductCandidate,
+  validatePublishedProductCapsule,
+  type ProductCapsuleCandidate,
+  type PublishedProductCapsule,
 } from "../src/contracts/index";
 import {
-  SYN_PROMOTER_ACTOR,
-  SYN_REVISED_AT,
-  syntheticCreateInput,
+  SYN_CAPSULE_ID_V2,
+  SYN_GENERATED_AT_V2,
+  SYN_INTERNAL_PRODUCT_ID,
+  SYN_NODE_ID,
+  SYN_PUBLISHED_AT_V2,
+  SYN_SEMANTIC_NODE_ID,
+  syntheticFinalizeInputs,
+  syntheticSourceRecord,
+  syntheticSourceRecordV2,
 } from "../src/contracts/fixtures/synthetic-product";
 
-/** A fresh valid Product capsule (deep-cloned per test to allow mutation). */
-function validCapsule(): ProductCapsule {
-  return structuredClone(createProductCapsule(syntheticCreateInput()));
+function candidate(): ProductCapsuleCandidate {
+  return generateProductCandidate({
+    source: syntheticSourceRecord(),
+    version: "1.0.0",
+    generatedAt: "2026-01-01T00:00:00.000Z",
+  });
 }
 
-describe("Product capsule — structure", () => {
-  it("1. a valid Product capsule passes", () => {
-    const result = validateProductCapsule(validCapsule());
-    expect(result.ok).toBe(true);
+function published(): PublishedProductCapsule {
+  return finalizeProductCapsule({ candidate: candidate(), ...syntheticFinalizeInputs() });
+}
+
+/** Mutable deep clone (published capsules are frozen). */
+function clone<T>(v: T): T {
+  return structuredClone(v);
+}
+
+describe("candidate and published structure", () => {
+  it("1. valid candidate generation from a synthetic source record", () => {
+    expect(validateProductCandidate(candidate()).ok).toBe(true);
   });
 
-  it("2. missing @context fails", () => {
-    const c = validCapsule() as Record<string, unknown>;
-    delete c["@context"];
-    expect(validateProductCapsule(c).ok).toBe(false);
+  it("2. valid final published Product capsule", () => {
+    expect(validatePublishedProductCapsule(published()).ok).toBe(true);
   });
 
-  it("3. missing @type fails", () => {
-    const c = validCapsule() as Record<string, unknown>;
-    delete c["@type"];
-    expect(validateProductCapsule(c).ok).toBe(false);
+  it("3. published capsule has only @context, @type, metadata, data", () => {
+    expect(Object.keys(published()).sort()).toEqual(["@context", "@type", "data", "metadata"]);
   });
 
-  it("4. missing @id fails", () => {
-    const c = validCapsule() as Record<string, unknown>;
-    delete c["@id"];
-    expect(validateProductCapsule(c).ok).toBe(false);
+  it("4. missing metadata fails", () => {
+    const c = clone(published()) as Record<string, unknown>;
+    delete c["metadata"];
+    expect(validatePublishedProductCapsule(c).ok).toBe(false);
   });
 
-  it("5. an invalid Product node IRI fails", () => {
-    const c = validCapsule();
-    c.subject = "https://monacado.com/id/product/not-a-ulid";
-    expect(validateProductCapsule(c).ok).toBe(false);
+  it("5. missing data fails", () => {
+    const c = clone(published()) as Record<string, unknown>;
+    delete c["data"];
+    expect(validatePublishedProductCapsule(c).ok).toBe(false);
   });
 
-  it("6. an invalid capsule-version IRI fails", () => {
-    const c = validCapsule();
-    c["@id"] = "https://monacado.com/id/product/01J9Z3K7Q0V2M5N8P4R6T1W3XY/v/1";
-    expect(validateProductCapsule(c).ok).toBe(false);
+  it("6. missing capsule ID fails", () => {
+    const c = clone(published());
+    delete (c.metadata as Record<string, unknown>).capsuleId;
+    expect(validatePublishedProductCapsule(c).ok).toBe(false);
   });
 
-  it("7. missing provenance fails", () => {
-    const c = validCapsule() as Record<string, unknown>;
-    delete c["provenance"];
-    expect(validateProductCapsule(c).ok).toBe(false);
+  it("7. missing Node binding fails", () => {
+    const c = clone(published());
+    delete (c.metadata as Record<string, unknown>).bindsToNode;
+    expect(validatePublishedProductCapsule(c).ok).toBe(false);
+  });
+
+  it("8. missing Publisher ID fails", () => {
+    const c = clone(published());
+    delete (c.metadata as Record<string, unknown>).publishedBy;
+    expect(validatePublishedProductCapsule(c).ok).toBe(false);
+  });
+
+  it("9. missing publishedAt fails", () => {
+    const c = clone(published());
+    delete (c.metadata as Record<string, unknown>).publishedAt;
+    expect(validatePublishedProductCapsule(c).ok).toBe(false);
+  });
+
+  it("10. missing Node Policy reference fails", () => {
+    const c = clone(published());
+    delete (c.metadata as Record<string, unknown>).nodePolicy;
+    expect(validatePublishedProductCapsule(c).ok).toBe(false);
+  });
+
+  it("11. missing Capsule Policy reference fails", () => {
+    const c = clone(published());
+    delete (c.metadata as Record<string, unknown>).capsulePolicy;
+    expect(validatePublishedProductCapsule(c).ok).toBe(false);
   });
 });
 
-describe("Product capsule — authority", () => {
-  it("8. a creator Product modification is allowed", () => {
-    const v1 = validCapsule();
-    const { next } = reviseProductCapsule({
-      current: v1,
-      changes: { name: "Renamed by creator" },
-      updatedAt: SYN_REVISED_AT,
-      actor: syntheticCreateInput().actor,
-    });
-    expect(next.name).toBe("Renamed by creator");
-    expect(next.capsuleVersion).toBe(2);
-    expect(canWriteProductFacts(syntheticCreateInput().actor).allowed).toBe(true);
+describe("versioning", () => {
+  it("12. integer capsule version fails", () => {
+    const c = clone(published()) as unknown as { metadata: { version: unknown } };
+    c.metadata.version = 1;
+    expect(validatePublishedProductCapsule(c).ok).toBe(false);
   });
 
-  it("9. a promoter altering creator Product facts is rejected", () => {
-    const v1 = validCapsule();
-    expect(canWriteProductFacts(SYN_PROMOTER_ACTOR).allowed).toBe(false);
+  it("13. invalid semver fails", () => {
+    const c = clone(published());
+    (c.metadata as Record<string, unknown>).version = "1.0";
+    expect(validatePublishedProductCapsule(c).ok).toBe(false);
+  });
+});
+
+describe("lifecycle removal", () => {
+  it("14. a capsule lifecycle field is rejected", () => {
+    const top = clone(published()) as Record<string, unknown>;
+    top.lifecycle = "active";
+    expect(validatePublishedProductCapsule(top).ok).toBe(false);
+
+    const meta = clone(published());
+    (meta.metadata as Record<string, unknown>).lifecycleState = "Active";
+    expect(validatePublishedProductCapsule(meta).ok).toBe(false);
+  });
+});
+
+describe("provenance", () => {
+  it("15. missing provenance source fails", () => {
+    const c = clone(published());
+    delete (c.metadata.provenance as Record<string, unknown>).source;
+    expect(validatePublishedProductCapsule(c).ok).toBe(false);
+  });
+
+  it("16. missing provenance method fails", () => {
+    const c = clone(published());
+    delete (c.metadata.provenance as Record<string, unknown>).method;
+    expect(validatePublishedProductCapsule(c).ok).toBe(false);
+  });
+
+  it("17. missing acquiredAt fails", () => {
+    const c = clone(published());
+    delete (c.metadata.provenance as Record<string, unknown>).acquiredAt;
+    expect(validatePublishedProductCapsule(c).ok).toBe(false);
+  });
+
+  it("18. missing assertionKind fails", () => {
+    const c = clone(published());
+    delete (c.metadata.provenance as Record<string, unknown>).assertionKind;
+    expect(validatePublishedProductCapsule(c).ok).toBe(false);
+  });
+
+  it("19. Product provenance uses Asserted", () => {
+    expect(published().metadata.provenance.assertionKind).toBe("Asserted");
+  });
+});
+
+describe("authority", () => {
+  it("20. generator identity cannot substitute for Publisher identity", () => {
     expect(() =>
-      reviseProductCapsule({
-        current: v1,
-        changes: { name: "Promoter override" },
-        updatedAt: SYN_REVISED_AT,
-        actor: SYN_PROMOTER_ACTOR,
+      finalizeProductCapsule({
+        candidate: candidate(),
+        ...syntheticFinalizeInputs(),
+        publishedBy: CAPSULE_GENERATOR_ID,
       }),
-    ).toThrow(ProductAuthorityError);
+    ).toThrow(ProductPublisherError);
+    expect(published().metadata.publishedBy).toBe(MONACADO_PUBLISHER_ID);
   });
 });
 
-describe("Product capsule — Product/Offer & privacy boundary", () => {
-  it("10. a price inside the Product capsule is rejected", () => {
-    const c = validCapsule();
-    (c.data as Record<string, unknown>).price = 19.95;
-    expect(validateProductCapsule(c).ok).toBe(false);
+describe("identity", () => {
+  it("21. internal Product ID differs from ANS Node ID", () => {
+    const p = published();
+    expect(p.metadata.provenance.sourceRecordId).toBe(SYN_INTERNAL_PRODUCT_ID);
+    expect(p.metadata.bindsToNode).toBe(SYN_NODE_ID);
+    expect(p.metadata.provenance.sourceRecordId).not.toBe(p.metadata.bindsToNode);
   });
 
-  it("11. promoter commission terms inside the Product capsule are rejected", () => {
-    const c = validCapsule();
-    (c.data as Record<string, unknown>).promoterCommissionRate = 0.2;
-    expect(validateProductCapsule(c).ok).toBe(false);
-  });
-
-  it("12. private identity or payment fields are rejected anywhere in the capsule", () => {
-    const nested = validCapsule();
-    (nested.metadata as Record<string, unknown>).stripeAccountId = "acct_synthetic";
-    expect(validateProductCapsule(nested).ok).toBe(false);
-
-    const specLevel = validCapsule();
-    (specLevel.data.specifications as Record<string, unknown>).ssn = "000-00-0000";
-    expect(validateProductCapsule(specLevel).ok).toBe(false);
+  it("22. a semantic Product path is rejected as an ANS Node ID", () => {
+    const c = clone(published());
+    (c.metadata as Record<string, unknown>).bindsToNode = SYN_SEMANTIC_NODE_ID;
+    expect(validatePublishedProductCapsule(c).ok).toBe(false);
   });
 });
 
-describe("Product capsule — deterministic hashing", () => {
-  it("13. equivalent capsules with different key order produce the same hash", () => {
-    const a = validCapsule();
-    // Rebuild the object with reversed key order but identical content.
-    const reversed = Object.fromEntries(
-      Object.entries(a as Record<string, unknown>).reverse(),
-    );
-    expect(canonicalJsonString(reversed)).toBe(canonicalJsonString(a));
-    expect(contentHash(reversed)).toBe(contentHash(a));
+describe("Product facts and Product/Offer boundary", () => {
+  it("23. Product facts remain inside data", () => {
+    const p = published();
+    expect(p.data.name).toBe("Synthetic CLI Toolkit");
+    expect(p.data.promotable).toBe(true);
+    expect(p.data.relationships.creator).toMatch(/^an:node:/);
   });
 
-  it("14. a meaningful Product change produces a different hash", () => {
-    const a = validCapsule();
-    const b = validCapsule();
-    b.name = "A different product name";
-    expect(contentHash(b)).not.toBe(contentHash(a));
-  });
-
-  it("hash ignores only the derived contentHash field", () => {
-    const a = validCapsule();
-    const withoutHash = structuredClone(a) as Record<string, unknown>;
-    delete (withoutHash.provenance as Record<string, unknown>).contentHash;
-    expect(contentHash(withoutHash)).toBe(contentHash(a));
+  it("24. price, currency, commission, and payment data remain rejected", () => {
+    for (const bad of ["price", "currency", "promoterCommissionRate", "paymentMethod"]) {
+      const c = clone(published());
+      (c.data as Record<string, unknown>)[bad] = "x";
+      expect(validatePublishedProductCapsule(c).ok).toBe(false);
+    }
   });
 });
 
-describe("Product capsule — supersession", () => {
-  it("15. supersession requires a prior capsule-version reference", () => {
-    const v1 = validCapsule();
+describe("source-record revision rules", () => {
+  it("25. meaningful revision requires a new source-record version", () => {
+    expect(() =>
+      reviseProductSource({
+        current: published(),
+        source: syntheticSourceRecord(), // same sourceRecordVersion "1"
+        version: "1.1.0",
+        generatedAt: SYN_GENERATED_AT_V2,
+      }),
+    ).toThrow(ProductRevisionError);
+  });
 
-    // A v2 with no supersedes is invalid.
-    const bad = validCapsule();
-    bad.capsuleVersion = 2;
-    bad["@id"] = makeCapsuleVersionIri(bad.subject, 2);
-    expect(validateProductCapsule(bad).ok).toBe(false);
+  it("26. meaningful revision requires a new capsule semver", () => {
+    expect(() =>
+      reviseProductSource({
+        current: published(),
+        source: syntheticSourceRecordV2(),
+        version: "1.0.0", // same as current
+        generatedAt: SYN_GENERATED_AT_V2,
+      }),
+    ).toThrow(ProductRevisionError);
+  });
 
-    // The factory produces a v2 that correctly references v1.
-    const { next, superseded } = reviseProductCapsule({
-      current: v1,
-      changes: { data: { ...v1.data, productVersion: 2 } },
-      updatedAt: SYN_REVISED_AT,
-      actor: syntheticCreateInput().actor,
+  it("27. meaningful revision creates a new capsule ID", () => {
+    const c2 = reviseProductSource({
+      current: published(),
+      source: syntheticSourceRecordV2(),
+      version: "1.1.0",
+      generatedAt: SYN_GENERATED_AT_V2,
     });
-    expect(next.supersedes).toBe(v1["@id"]);
-    expect(next.supersedes).toBe(makeCapsuleVersionIri(v1.subject, 1));
-    expect(superseded.lifecycle).toBe("superseded");
-    expect(validateProductCapsule(next).ok).toBe(true);
+    const v2 = finalizeProductCapsule({
+      candidate: c2,
+      ...syntheticFinalizeInputs(),
+      capsuleId: SYN_CAPSULE_ID_V2,
+      publishedAt: SYN_PUBLISHED_AT_V2,
+      supersedes: published().metadata.capsuleId,
+    });
+    expect(v2.metadata.capsuleId).not.toBe(published().metadata.capsuleId);
   });
 
-  it("a v1 capsule must not declare supersedes", () => {
-    const c = validCapsule();
-    c.supersedes = makeCapsuleVersionIri(c.subject, 0);
-    expect(validateProductCapsule(c).ok).toBe(false);
+  it("28. supersedes references a prior capsule ID", () => {
+    const v1 = published();
+    const c2 = reviseProductSource({
+      current: v1,
+      source: syntheticSourceRecordV2(),
+      version: "1.1.0",
+      generatedAt: SYN_GENERATED_AT_V2,
+    });
+    const v2 = finalizeProductCapsule({
+      candidate: c2,
+      ...syntheticFinalizeInputs(),
+      capsuleId: SYN_CAPSULE_ID_V2,
+      publishedAt: SYN_PUBLISHED_AT_V2,
+      supersedes: v1.metadata.capsuleId,
+    });
+    expect(v2.metadata.supersedes).toBe(v1.metadata.capsuleId);
+    expect(v2.metadata.supersedes).toMatch(/^an:capsule:/);
+  });
+
+  it("29. supersedes cannot reference a Node ID", () => {
+    const c = clone(published());
+    (c.metadata as Record<string, unknown>).supersedes = SYN_NODE_ID; // an:node:...
+    expect(validatePublishedProductCapsule(c).ok).toBe(false);
   });
 });
 
-describe("Product capsule — derived JSON Schema", () => {
-  it("16. JSON Schema export succeeds", () => {
-    const schema = generateProductJsonSchema();
+describe("hashing", () => {
+  it("30. provenance survives validation unchanged", () => {
+    const p = published();
+    const before = JSON.stringify(p.metadata.provenance);
+    const revalidated = validatePublishedProductCapsule(clone(p));
+    expect(revalidated.ok).toBe(true);
+    expect(JSON.stringify(revalidated.capsule?.metadata.provenance)).toBe(before);
+  });
+
+  it("31. equivalent objects hash identically", () => {
+    const p = published();
+    const reversed = Object.fromEntries(Object.entries(p as Record<string, unknown>).reverse());
+    expect(canonicalJsonString(reversed)).toBe(canonicalJsonString(p));
+    expect(publishedContentHash(reversed)).toBe(publishedContentHash(p));
+  });
+
+  it("32. mutation of final publication metadata changes the hash", () => {
+    const p = published();
+    const m = clone(p);
+    (m.metadata as Record<string, unknown>).publishedAt = "2030-01-01T00:00:00.000Z";
+    expect(publishedContentHash(m)).not.toBe(publishedContentHash(p));
+  });
+
+  it("33. mutation of source provenance changes the hash", () => {
+    const p = published();
+    const m = clone(p);
+    (m.metadata.provenance as Record<string, unknown>).sourceRecordId = "mon:product:CHANGED000000000000000000";
+    expect(publishedContentHash(m)).not.toBe(publishedContentHash(p));
+  });
+
+  it("candidate hash is distinct from published content hash", () => {
+    const c = candidate();
+    const p = published();
+    expect(candidateHash(c)).not.toBe(p.metadata.contentHash);
+  });
+});
+
+describe("privacy and schema", () => {
+  it("34. private or payment fields cannot enter through metadata or provenance", () => {
+    const viaMeta = clone(published());
+    (viaMeta.metadata as Record<string, unknown>).stripeAccountId = "acct_synthetic";
+    expect(validatePublishedProductCapsule(viaMeta).ok).toBe(false);
+
+    const viaProvenance = clone(published());
+    (viaProvenance.metadata.provenance as Record<string, unknown>).bankAccount = "000";
+    expect(validatePublishedProductCapsule(viaProvenance).ok).toBe(false);
+  });
+
+  it("35. JSON Schema export succeeds", () => {
+    const schema = generatePublishedProductJsonSchema();
     expect(schema).toBeTypeOf("object");
-    expect(schema).not.toBeNull();
-    expect("properties" in schema || "allOf" in schema || "$ref" in schema).toBe(true);
-  });
-});
-
-describe("identity helpers", () => {
-  it("node and capsule-version IRIs stay distinct", () => {
-    const node = makeNodeIri("product", "01J9Z3K7Q0V2M5N8P4R6T1W3XY");
-    const version = makeCapsuleVersionIri(node, 1);
-    expect(version.startsWith(node)).toBe(true);
-    expect(version).not.toBe(node);
+    expect("properties" in schema || "$ref" in schema || "allOf" in schema).toBe(true);
   });
 });

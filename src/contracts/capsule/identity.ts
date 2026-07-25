@@ -1,51 +1,77 @@
 /**
- * Canonical identity patterns (ADR §3).
+ * Identity forms (ADR §3, §10.1, §11.5; ANS Core v2.0 §4/§6).
  *
- * Four identities are kept strictly distinct and must never substitute for one
+ * Five identities are kept strictly distinct and never substitute for one
  * another:
- *   1. node IRI            — the enduring entity identity
- *   2. capsule-version IRI — one version of one authority's capsule for that node
- *   3. page URL            — human-facing page (may contain slugs; not identity)
- *   4. purchase endpoint   — operational checkout endpoint (not identity)
+ *   1. Monacado internal Product ID — a Monacado application identifier
+ *      (not an ANS identity; may be semantic/internal).
+ *   2. Monacado human-facing Product URL — a page URL (not modeled here).
+ *   3. Registrar-issued opaque ANS Node ID — the ANS node binding.
+ *   4. Capsule ID — identifies one immutable published capsule version.
+ *   5. Source-record ID — the governed DB record the capsule derives from.
  *
- * Only (1) and (2) are modeled here. Node IRIs use opaque ULIDs; no mutable
- * names or slugs appear in canonical identity, and identifiers are never reused.
+ * ANS Node IDs (and, for this phase, synthetic Capsule IDs) MUST be opaque and
+ * non-semantic: they MUST NOT encode entity type, role, name, slug, hierarchy,
+ * or business meaning (ANS §4). They are treated as Registrar-issued; Monacado's
+ * old `https://monacado.com/id/product/{ulid}` pattern is an INTERNAL identity
+ * only and MUST NOT be used as an ANS Node ID.
  *
- * NOTE: `monacado.com` is a DESIGN TARGET. These IRIs are not claimed to be live
- * or resolvable; nothing here should be published until domain control and
- * resolution behavior are confirmed.
+ * The opaque token bodies below use a ULID-style Crockford base32 alphabet
+ * purely as a synthetic, provisional stand-in until real Registrar issuance.
  */
 
-export const ID_BASE = "https://monacado.com/id" as const;
-
-/** ULID: 26 chars, Crockford base32, uppercase, excluding I, L, O, U. */
-export const ULID_PATTERN = "[0-9A-HJKMNP-TV-Z]{26}";
-export const ULID_RE = new RegExp(`^${ULID_PATTERN}$`);
-
-export type EntityType = "product" | "creator" | "promoter" | "storefront" | "listing" | "offer";
-
-/** Node IRI, e.g. https://monacado.com/id/product/01J9Z3K7Q0V2M5N8P4R6T1W3XY */
-export function nodeIriPattern(entityType: EntityType): RegExp {
-  return new RegExp(`^${ID_BASE}/${entityType}/${ULID_PATTERN}$`);
-}
+/** Opaque token body: 26 chars, Crockford base32 (uppercase, no I/L/O/U). */
+export const OPAQUE_BODY = "[0-9A-HJKMNP-TV-Z]{26}";
 
 /**
- * Capsule-version IRI: the node IRI plus a version path segment.
- * e.g. https://monacado.com/id/product/{ULID}/capsule/1
+ * ANS Node ID — opaque, Registrar-issued. Provisional synthetic scheme
+ * `an:node:<opaque>`. The `an:node:` prefix is a namespace, not business
+ * meaning; the identifying body is opaque.
  */
-export function capsuleVersionIriPattern(entityType: EntityType): RegExp {
-  return new RegExp(`^${ID_BASE}/${entityType}/${ULID_PATTERN}/capsule/[1-9][0-9]*$`);
+export const ANS_NODE_ID_RE = new RegExp(`^an:node:${OPAQUE_BODY}$`);
+
+/** Capsule ID — opaque, one per immutable capsule version. Provisional scheme. */
+export const CAPSULE_ID_RE = new RegExp(`^an:capsule:${OPAQUE_BODY}$`);
+
+/** Publisher ID — the walled-garden Publisher (Monacado). Not required opaque. */
+export const PUBLISHER_ID_RE = /^an:publisher:[A-Za-z0-9._:-]{3,}$/;
+
+/**
+ * Tokens that mark an identifier as SEMANTIC and therefore invalid as an ANS
+ * Node ID (defense-in-depth beyond the opaque regex). Rejects values such as
+ * `https://monacado.com/id/product/{ulid}`.
+ */
+export const SEMANTIC_ID_MARKERS: readonly string[] = [
+  "http://",
+  "https://",
+  "/",
+  "product",
+  "storefront",
+  "creator",
+  "promoter",
+  "listing",
+  "offer",
+  "monacado",
+  "platform",
+];
+
+/** True if the value looks semantic and must be rejected as an ANS Node ID. */
+export function looksSemantic(value: string): boolean {
+  const v = value.toLowerCase();
+  return SEMANTIC_ID_MARKERS.some((m) => v.includes(m));
 }
 
-export function makeNodeIri(entityType: EntityType, ulid: string): string {
-  return `${ID_BASE}/${entityType}/${ulid}`;
+// — Synthetic constructors (tests/demo only; a real Registrar issues these) —
+
+export function makeSyntheticNodeId(opaque: string): string {
+  return `an:node:${opaque}`;
 }
 
-export function makeCapsuleVersionIri(nodeIri: string, capsuleVersion: number): string {
-  return `${nodeIri}/capsule/${capsuleVersion}`;
+export function makeSyntheticCapsuleId(opaque: string): string {
+  return `an:capsule:${opaque}`;
 }
 
-/** Expected capsule-version IRI for a given node + version (used in cross-checks). */
-export function expectedCapsuleVersionIri(nodeIri: string, capsuleVersion: number): string {
-  return makeCapsuleVersionIri(nodeIri, capsuleVersion);
+/** Internal Monacado application identifier for a Product (NOT an ANS identity). */
+export function makeInternalProductId(opaque: string): string {
+  return `mon:product:${opaque}`;
 }

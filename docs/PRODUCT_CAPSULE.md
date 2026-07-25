@@ -1,153 +1,170 @@
-# Product Capsule — Semantic Foundation (Phase 0B)
+# Product Capsule — Semantic Foundation (Phase 0B.1, ANS-conformant)
 
-The creator-authoritative **Product capsule** and its supporting layers. This
-implements the Phase 0B scope only; it adds no persistence, UI, publication, or
-network code. It follows [`CDD_ARCHITECTURE_DECISIONS.md`](CDD_ARCHITECTURE_DECISIONS.md).
+The creator-authoritative **Product capsule**, refactored to conform to the
+binding ANS Core v2.0 decisions recorded in
+[`CDD_ARCHITECTURE_DECISIONS.md`](CDD_ARCHITECTURE_DECISIONS.md) (§10, §11) and
+the Phase 0B.1 audit. This is an **offline, database-free** contract phase — no
+persistence, UI, publication worker, Registrar/Publisher service, or network
+code. All `monacado.com` / `agentnet.ai` URLs are **design targets**.
 
-Source lives under `src/contracts/`. Nothing here is hosted or live — all
-`monacado.com` URLs are **design targets**.
+Source lives under `src/contracts/`.
 
-## Product ontology terms
+## Authoritative database source record
 
-Defined in `src/contracts/ontology/commerce.ontology.ts`.
+The Monacado database is the **authoritative source record** for Monacado-native
+Product facts. A capsule is a semantic representation **generated from one
+identified source-record version**; the Publisher and Registrar roles do not
+replace source authority. Provenance chain:
 
-- **Reused from schema.org (never redefined):** `Product`, `name`,
-  `description`, `image`.
-- **Monacado terms** (`https://monacado.com/ns/commerce#`) — only genuine
-  Monacado concepts:
-  - *Envelope/framework:* `capsuleVersion`, `subject`, `data`, `relationships`,
-    `provenance`, `metadata`, `lifecycle`, `createdAt`, `updatedAt`,
-    `supersedes`, `revocation`, `authority`, `createdBy`, `contentHash`.
-  - *Product domain:* `productVersion`, `promotable`,
-    `generalAvailabilityState`, `specifications`, `capabilities`, `creator`,
-    `offer`.
+```
+authoritative Monacado source record
+  → generated candidate  → Publisher submission
+  → Registrar registration → resolver availability
+```
 
-`creator` is a Monacado marketplace role and is deliberately **not**
-`schema:creator`. Commercial terms are intentionally absent (see the boundary
-below).
+## Generated candidate vs. published capsule
 
-## JSON-LD context policy
+Generation is separate from publication (ADR §5, §11):
 
-Defined in `src/contracts/ontology/commerce.context.ts`. The context maps each
-compact capsule term to its schema.org or Monacado IRI. The JSON-LD keywords
-`@context`, `@type`, `@id` are reserved and not remapped.
+- **Candidate** (`ProductCapsuleCandidate`) — generated deterministically from a
+  source record. Contains Product `data` and source `provenance` only. It does
+  **not** fabricate a publication time, a Registrar-issued Node ID, or final
+  publication metadata.
+- **Published capsule** (`PublishedProductCapsule`) — produced only by
+  `finalizeProductCapsule(...)`, which attaches all mandatory ANS publication
+  metadata and computes the content hash. Immutable after finalisation
+  (deep-frozen).
 
-- Semantic meaning lives in the **ontology/context**, not in Zod (ADR §8).
-- The namespace (`…/ns/commerce#`) is **independent of document version**;
-  compatible revisions do not change term identity. A term gets a new IRI only
-  when its meaning changes incompatibly.
-- A capsule's `@context` references the provisional context document
-  (`https://monacado.com/context/commerce/v1`). The context object is bundled
-  locally so validation, tests, and the demo need no network.
-- **These URLs are design targets only — not live, resolvable, immutable, or
-  approved AgentNet standards.**
+## Capsule structure (ANS §3)
 
-## Product capsule anatomy
+Top-level members are **exactly** `@context`, `@type`, `metadata`, `data`.
+Unexpected top-level fields are rejected.
 
-Base envelope (`src/contracts/capsule/envelope.ts`), per CDD Appendix C:
-`@context`, `@type`, `@id`, `capsuleVersion`, `subject`, `name`,
-`description?`, `image?`, `data`, `relationships`, `provenance`, `metadata`,
-`lifecycle`, `createdAt`, `updatedAt`, `supersedes?`, `revocation?`.
+- **`data`** — the Product facts: `name`, `description?`, `image?`,
+  `productVersion`, `promotable`, `generalAvailabilityState`, `specifications?`,
+  `capabilities?`, and `relationships` (`creator`, optional `offer` reference).
+- **`metadata`** (published) — `capsuleId`, `bindsToNode`, `publishedBy`,
+  `publishedAt`, `version`, `provenance`, `nodePolicy`, `capsulePolicy`,
+  `supersedes?`, `revokes?`, `contentHash`.
 
-The Product capsule (`src/contracts/product/product.capsule.ts`) constrains:
+## Internal Product ID vs. Registrar-issued ANS Node ID
 
-- `@type` includes `Product`;
-- `data`: `productVersion`, `promotable`, `generalAvailabilityState`,
-  `specifications?`, `capabilities?`;
-- `relationships`: `creator` (required node IRI) and `offer?` (a **reference**
-  to a future Offer node — no offer data inline);
-- `provenance.authority` is fixed to `creator`.
+Five identities are kept distinct (ADR §3, §11.5):
 
-## Product versus Offer boundary
+| Identity | Form | Role |
+| --- | --- | --- |
+| Internal Product ID | `mon:product:{opaque}` | Monacado application id (not an ANS identity) |
+| Product page URL | (not modeled) | human-facing |
+| **ANS Node ID** | `an:node:{opaque}` | **Registrar-issued, opaque, non-semantic** node binding |
+| Capsule ID | `an:capsule:{opaque}` | one immutable published version |
+| Source-record ID | opaque | the governed DB record |
 
-The Product capsule holds **enduring, creator-authoritative facts**. Time-
-sensitive commercial terms — **price, currency, discount, promoter commission
-rate, validity dates, territory** — belong to a future **Offer** capsule, not
-here. The Product capsule may *reference* a future Offer via `relationships.offer`
-but carries none of its data.
+The ANS Node ID is opaque and **must not** encode entity type, role, name, slug,
+hierarchy, or business meaning. The old `https://monacado.com/id/product/{ulid}`
+pattern is an **internal identity only** and is **rejected** as an ANS Node ID.
+The `an:node:` / `an:capsule:` schemes are **provisional synthetic** stand-ins
+until real Registrar issuance.
 
-Enforcement is twofold: strict object schemas reject unknown keys at each
-defined level, and a denylist scan (`src/contracts/integrity/forbidden-fields.ts`)
-rejects commercial, promoter, Monacado-verification, buyer-review, payment, and
-private-identity keys **anywhere** in the capsule (including open containers like
-`specifications` and `metadata`). The substring-based scan is a **temporary
-Phase 0B safeguard** (ADR §10.5) to be replaced by allowlisted or namespace-aware
-validation before real extensible specs/metadata are accepted.
+## Node lifecycle vs. capsule replacement
 
-`generalAvailabilityState` covers broad Product-level lifecycle availability only
-— `available`, `unavailable`, `pre-release`, `discontinued` — never offer terms,
-inventory, territory, or checkout eligibility (ADR §10.2).
+Capsules carry **no lifecycle state** — a `lifecycle`/`lifecycleState` field is
+rejected. ANS Node lifecycle (Active/Inactive/Retired/Revoked) is
+Registrar-managed and lives on the Node. Capsule change uses **semantic
+versioning** with `supersedes`/`revokes` (references to a prior **capsule ID**,
+never a Node ID). Internal publication-workflow status stays outside the capsule.
 
-## Identity
+## Semver capsule versions
 
-Per ADR §3, four identities stay distinct and never substitute for one another:
+Capsule versions are semver strings (`1.0.0`, `1.0.1`, `1.1.0`) with strict
+validation; integer versions are rejected. Replacement uses a **new semver** and
+a **new immutable capsule ID**. The `an:capsule:{opaque}` format is provisional
+until Registrar integration.
 
-| Identity | Form |
-| --- | --- |
-| Product **node IRI** (enduring entity) | `https://monacado.com/id/product/{ULID}` |
-| Product **capsule-version IRI** | `…/id/product/{ULID}/capsule/{n}` |
-| Human-facing **page URL** | not modeled here (may contain slugs) |
-| **Purchase/checkout endpoint** | not modeled here (operational) |
+## ANS metadata & AN-O terminology
 
-ULIDs are opaque (26-char Crockford base32, uppercase). No slugs in identity;
-identifiers are never reused; the node IRI survives renaming/supersession/
-retirement. `@id` must equal `subject` + `/capsule/{capsuleVersion}`.
+Mandatory published metadata follows ANS §3 and reuses **AgentNet Core Ontology
+(AN-O)** terms for ANS-defined concepts (`capsuleId`, `bindsToNode`,
+`publishedBy`, `publishedAt`, `version`, `provenance`/`hasProvenance`,
+`supersedes`, `revokes`, `hasNodePolicy`, `hasCapsulePolicy`) — Monacado does not
+invent duplicate terms for them. The **Publisher is Monacado**; Publisher
+identity is never conflated with the creator/source authority or the generator.
 
-## Zod's role
+## ANS provenance
 
-Zod is the **single executable source of truth for structure** (ADR §8).
-TypeScript types are **inferred** from Zod — no hand-maintained interfaces. Zod
-does not replace the ontology or context (meaning), and JSON Schema is derived
-from Zod, never authored separately.
+Provenance carries the ANS-required `source`, `method`, `acquiredAt`,
+`assertionKind` (`Asserted` for current Product facts), plus narrow Monacado
+traceability extensions: `sourceClass` (≥ `governed-database-record`),
+`sourceSystem` (Monacado), `sourceRecordType` (`Product`), `sourceRecordId`
+(stable, opaque), `sourceRecordVersion` (explicit, immutable), `generatedAt`,
+`generatorVersion`. There is **no** published `sourceAuthority` field competing
+with ANS Publisher authority; internal authorisation checks are kept separate.
 
-## Authority rules
+## Publisher vs. source authority vs. generator
 
-Small and explicit (`src/contracts/product/product.authority.ts`) — not a broad
-claim-key vocabulary:
+- **Source/factual authority** — the creator (via provenance and the `creator`
+  relationship). Not published as an authority field.
+- **Publisher** — Monacado (`an:publisher:monacado-platform`). Finalisation
+  rejects any other `publishedBy`, including the generator identity.
+- **Generator** — operational only (`generatorVersion` in provenance); holds no
+  authority and cannot substitute for the Publisher.
 
-- **creator** may create and modify creator-authoritative Product facts;
-- **promoter** may not alter them (write attempts throw `ProductAuthorityError`);
-- **Monacado** operational assertions and **buyer** observations do not belong
-  in this capsule (also blocked structurally).
+## Source-record revision rules
+
+A meaningful Product revision requires: a **new source-record version**, a **new
+capsule semver**, a **new capsule ID**, a **new content hash**, and a
+`supersedes` reference to the prior capsule where appropriate. Rejected: reuse of
+the prior source-record version for changed content; reuse of the prior semver;
+`supersedes` pointing to a Node ID.
+
+## Policy linkage
+
+Published metadata requires structural **Node Policy** and **Capsule Policy**
+references (`{ ref, version }`), synthetic and opaque in tests. Policy
+evaluation, inheritance, and Effective Policy calculation are **deferred** (no
+policy services this phase).
 
 ## Deterministic hashing
 
-`src/contracts/integrity/canonical-json.ts` + `hash.ts`.
+Canonical JSON (sort object keys, preserve array order, drop `undefined`,
+finite numbers, no whitespace). The **published** content hash covers the
+complete validated published capsule **excluding only `metadata.contentHash`**,
+and includes Node binding, Publisher, version, publication time, provenance,
+policy references, and supersession/revocation metadata. Equivalent objects hash
+identically; any meaningful change changes the hash. A separate, distinctly named
+**candidate hash** exists for pre-publication use and is never conflated with the
+published hash.
 
-- Hash input: the **complete validated public capsule**, excluding only the
-  derived `provenance.contentHash` (excluding it avoids circularity). Included:
-  semantic content, identity, version, provenance, lifecycle, relationships.
-- Canonicalization: recursively sort object keys (UTF-16 order), preserve array
-  order, omit `undefined`, require finite numbers, then `JSON.stringify` with no
-  whitespace.
-- Result: `sha256:<hex>`. Equivalent capsules with different key order hash
-  identically; any meaningful change changes the hash. A relational projection
-  or publication envelope is **never** hashed.
+## Product vs. Offer boundary
 
-## Generated JSON Schema
+Product `data` holds enduring descriptive facts, specifications, capabilities,
+the creator relationship, promotable state, and general availability. It must not
+contain price, currency, discount, commission, payout, territory-specific
+commercial terms, offer validity, or payment data — those belong to a future
+Offer model, and are rejected by strict schemas plus the forbidden-field scan
+(a temporary Phase 0B safeguard, ADR §10.5).
 
-`npm run contracts:export` writes `generated/jsonschema/product.capsule.schema.json`
-from the Zod schema (`z.toJSONSchema`). It is a **derived** interoperability
-artifact — never hand-edited. `generated/` is **git-ignored** this phase
-(regenerate on demand); cross-field refinements (identity agreement,
-supersession, forbidden-field scan) are Zod-runtime only and not represented in
-JSON Schema.
+## Zod, types, JSON Schema
+
+Zod is the single authored executable schema; TypeScript types are inferred;
+JSON Schema is **generated** (`z.toJSONSchema`) from the base object shapes and
+is a derived artifact — never hand-maintained. Exports are deterministic;
+`generated/` is git-ignored this phase (regenerate with `npm run contracts:export`).
 
 ## Scripts
 
 The `contracts:*` scripts validate **Capsule-Driven artifacts**:
+`contracts:validate` (ontology/context consistency + candidate/published
+validation + schema generation), `contracts:export` (derived JSON Schema),
+`contracts:demo` (offline end-to-end). `validate` runs
+`lint → typecheck → contracts:validate → test → build`.
 
-- `contracts:validate` — ontology/context consistency + synthetic capsule validates + schema generates;
-- `contracts:export` — write the derived JSON Schema;
-- `contracts:demo` — offline end-to-end demonstration (no DB, no network).
+## Deferred (later phases)
 
-`validate` runs `lint → typecheck → contracts:validate → test → build`.
-
-## Deferred work (later phases)
-
-- Offer, Listing, Review, MarketplaceVerification, Promoter, Storefront capsules.
+- Real Registrar integration (opaque Node ID generation, registration, receipts)
+  and Effective Policy evaluation.
 - Relational persistence and deterministic reconstruction from records.
-- React consumption of capsule-shaped data.
-- AgentNet publication (outbox, gating, receipts) — none of it lives here.
-- Hosting the ontology/context/IRIs and confirming domain + resolution before
-  any external publication.
+- Offer, Listing, Review, MarketplaceVerification, Storefront, participant
+  capsules; React consumption; AgentNet publication workers; resolver integration.
+- Retention note: after successful Registrar registration Monacado need not
+  retain the published capsule body permanently, provided source records, hashes,
+  identifiers, receipts, and reconciliation state are retained.

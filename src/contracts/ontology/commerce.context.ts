@@ -1,26 +1,27 @@
 /**
- * Versioned JSON-LD context for the Product capsule (Phase 0B).
+ * Versioned JSON-LD context for the Product capsule (Phase 0B.1, ANS-aligned).
  *
- * The context maps the compact JSON terms used inside a capsule onto their
- * schema.org or Monacado ontology IRIs. Per ADR §4, semantic meaning lives in
- * the ontology/context (this layer), NOT in Zod. schema.org keywords `@context`,
- * `@type`, and `@id` are JSON-LD reserved keywords and are intentionally not
- * remapped.
+ * Maps compact capsule terms to schema.org, AgentNet Core Ontology (AN-O), and
+ * Monacado commerce IRIs. `@context`, `@type` are JSON-LD keywords; `metadata`
+ * and `data` are ANS structural members and are treated structurally (not as
+ * ontology terms). ANS-defined concepts map to `an:`; Monacado extensions to
+ * `mon:`.
  *
- * This object is what would be served at COMMERCE_CONTEXT_DOCUMENT once hosted.
- * It is bundled locally so validation, tests, and the demo require no network.
+ * This object is what would be served at COMMERCE_CONTEXT_DOCUMENT once hosted;
+ * it is bundled locally so validation/tests/demo need no network.
  */
 
 import {
+  AN_O_NS,
   COMMERCE_CONTEXT_DOCUMENT,
   MON_NS,
   SCHEMA_ORG,
 } from "./commerce.ontology";
 
-/** The JSON-LD context document body (the value of a capsule's `@context`). */
 export const COMMERCE_CONTEXT = {
   "@version": 1.1,
   schema: SCHEMA_ORG,
+  an: AN_O_NS,
   mon: MON_NS,
 
   // schema.org reuse
@@ -29,41 +30,48 @@ export const COMMERCE_CONTEXT = {
   description: "schema:description",
   image: { "@id": "schema:image", "@type": "@id" },
 
-  // envelope / framework terms
-  capsuleVersion: "mon:capsuleVersion",
-  subject: { "@id": "mon:subject", "@type": "@id" },
-  data: "mon:data",
-  relationships: "mon:relationships",
-  provenance: "mon:provenance",
-  metadata: "mon:metadata",
-  lifecycle: "mon:lifecycle",
-  createdAt: { "@id": "mon:createdAt", "@type": "schema:DateTime" },
-  updatedAt: { "@id": "mon:updatedAt", "@type": "schema:DateTime" },
-  supersedes: { "@id": "mon:supersedes", "@type": "@id" },
-  revocation: "mon:revocation",
-  authority: "mon:authority",
-  createdBy: { "@id": "mon:createdBy", "@type": "@id" },
-  contentHash: "mon:contentHash",
+  // AN-O (ANS-defined concepts)
+  capsuleId: "an:capsuleId",
+  bindsToNode: { "@id": "an:bindsToNode", "@type": "@id" },
+  publishedBy: { "@id": "an:publishedBy", "@type": "@id" },
+  publishedAt: { "@id": "an:publishedAt", "@type": "schema:DateTime" },
+  version: "an:version",
+  provenance: "an:hasProvenance",
+  source: "an:source",
+  method: "an:method",
+  acquiredAt: { "@id": "an:acquiredAt", "@type": "schema:DateTime" },
+  assertionKind: "an:assertionKind",
+  supersedes: "an:supersedes",
+  revokes: "an:revokes",
+  nodePolicy: "an:hasNodePolicy",
+  capsulePolicy: "an:hasCapsulePolicy",
 
-  // product domain terms
+  // Monacado extensions
+  contentHash: "mon:contentHash",
+  sourceClass: "mon:sourceClass",
+  sourceSystem: "mon:sourceSystem",
+  sourceRecordType: "mon:sourceRecordType",
+  sourceRecordId: "mon:sourceRecordId",
+  sourceRecordVersion: "mon:sourceRecordVersion",
+  generatedAt: { "@id": "mon:generatedAt", "@type": "schema:DateTime" },
+  generatorVersion: "mon:generatorVersion",
   productVersion: "mon:productVersion",
   promotable: "mon:promotable",
   generalAvailabilityState: "mon:generalAvailabilityState",
   specifications: "mon:specifications",
   capabilities: "mon:capabilities",
+  relationships: "mon:relationships",
   creator: { "@id": "mon:creator", "@type": "@id" },
   offer: { "@id": "mon:offer", "@type": "@id" },
 } as const;
 
-/**
- * The value placed in a capsule's `@context`. A capsule references the
- * provisional context document IRI (a design target); consumers resolve it to
- * COMMERCE_CONTEXT above. Kept as a string reference so the capsule stays
- * compact and the context can evolve independently.
- */
+/** Reference IRI a capsule places in `@context` (design target). */
 export const COMMERCE_CONTEXT_REF = COMMERCE_CONTEXT_DOCUMENT;
 
-/** Terms defined by the local context (used for validation/consistency checks). */
+/** AN-O context reference a capsule places alongside the commerce context. */
+export const AN_O_CONTEXT_REF = AN_O_NS;
+
+/** Terms defined by the local context (excludes prefixes and JSON-LD keywords). */
 export const CONTEXT_TERMS: readonly string[] = Object.keys(COMMERCE_CONTEXT).filter(
-  (k) => !k.startsWith("@") && k !== "schema" && k !== "mon",
+  (k) => !k.startsWith("@") && !["schema", "an", "mon"].includes(k),
 );

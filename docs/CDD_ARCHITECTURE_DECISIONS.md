@@ -260,6 +260,14 @@ Recognized ontology properties should be placed **according to the eventual
 ontology and context design** (§4), not by mechanically nesting every field
 under `data`.
 
+> **Superseded by ANS Core v2.0 (Phase 0B.1).** The published capsule uses the
+> ANS top-level structure — exactly `@context`, `@type`, `metadata`, `data`.
+> Identity (`capsuleId`), node binding, publication, versioning, provenance,
+> policy linkage, supersession/revocation, and integrity live in `metadata`;
+> Product facts live in `data`. There is no top-level `@id`, `name`,
+> `description`, `image`, `provenance`, or `relationships`. This §6 list remains
+> only as the historical Appendix-C baseline.
+
 ---
 
 ## 7. React binding
@@ -356,6 +364,16 @@ The subordinate **`/capsule/{n}` pattern is the preferred default for other
 future entity capsule versions** (storefront, creator, promoter, listing,
 offer, …) unless a later ADR deliberately changes it.
 
+> **Superseded by ANS Core v2.0 (Phase 0B.1).** The ANS-facing capsule identity
+> is an **opaque `capsuleId`** (provisional `an:capsule:{opaque}`), not a
+> semantic `/capsule/{n}` IRI, and the node binding is a **Registrar-issued
+> opaque ANS Node ID** (`an:node:{opaque}`), not the semantic
+> `https://monacado.com/id/product/{ulid}` path (which is retained as an
+> **internal** identity only — see §11.5). Capsule **versions are semver
+> strings** (`1.0.0`), not integers; each new version gets a new opaque
+> `capsuleId`, and `supersedes` references the prior **capsule ID**. The
+> `/capsule/{n}` phrasing above is retained only as historical Phase 0B wording.
+
 ### 10.2 Product-level general availability
 
 `generalAvailabilityState` is a **Monacado ontology property**. Its purpose is
@@ -402,6 +420,15 @@ envelopes, relational projections, generated JSON Schema, and
 
 A **meaningful capsule change must produce a new hash**, and generally requires
 a **new capsule version** (§10.1).
+
+> **Superseded by ANS Core v2.0 (Phase 0B.1).** For the published capsule the
+> content hash is stored at **`metadata.contentHash`** and the hash input
+> excludes **only `metadata.contentHash`**. The included set is the ANS
+> structure — `@context`, `@type`, all of `metadata` (node binding, Publisher,
+> `publishedAt`, semver `version`, provenance, policy references,
+> supersedes/revokes) except `contentHash`, and `data`. There is no top-level
+> `@id`/`subject`/`lifecycle` (capsules carry no lifecycle). The principle
+> (meaningful change ⇒ new hash ⇒ new version) is unchanged.
 
 ### 10.5 Forbidden-field safeguard (temporary)
 

@@ -1,92 +1,118 @@
 /**
- * Reusable base capsule envelope (ADR §6; CDD Appendix C baseline).
+ * Capsule envelope building blocks (ANS Core v2.0 §3; ADR §10, §11).
  *
- * Zod is the single executable source of truth for structure (ADR §8).
- * TypeScript types are inferred from these schemas — no hand-maintained
- * interfaces. Semantic meaning lives in the ontology/context, not here.
+ * ANS requires a capsule to have exactly the top-level members `@context`,
+ * `@type`, `metadata`, `data`. Identity, node binding, versioning, publication,
+ * provenance, policy linkage, supersession/revocation, and integrity live in
+ * `metadata`; factual claims live in `data`. Capsules carry NO lifecycle state
+ * (that is a Registrar-managed Node property).
  *
- * This module exports the shared building blocks (context, provenance,
- * lifecycle, revocation) and `baseCapsuleShape`, a field map that entity
- * capsules compose with `z.strictObject({ ...baseCapsuleShape, ...overrides })`.
+ * Zod is the single authored executable schema (ADR §8); types are inferred.
+ * AN-O terminology is used for ANS-defined concepts; Monacado-specific terms are
+ * added only for genuine extensions.
  */
 
 import { z } from "zod";
+import { ANS_NODE_ID_RE, CAPSULE_ID_RE, PUBLISHER_ID_RE, looksSemantic } from "./identity";
 
-/** Capsule lifecycle states (ADR §2 — capsule-level, not marketplace-level). */
-export const LIFECYCLE_STATES = [
-  "draft",
-  "active",
-  "superseded",
-  "revoked",
-  "retired",
-] as const;
-export const LifecycleState = z.enum(LIFECYCLE_STATES);
-export type LifecycleState = z.infer<typeof LifecycleState>;
-
-/** Authority classes (ADR §2). Each capsule is authored by exactly one. */
-export const AUTHORITY_CLASSES = ["creator", "promoter", "monacado", "buyer"] as const;
-export const AuthorityClass = z.enum(AUTHORITY_CLASSES);
-export type AuthorityClass = z.infer<typeof AuthorityClass>;
-
-/**
- * `@context` value: a reference IRI to the context document, an inline context
- * object, or an array combining them.
- */
+/** `@context`: one or more ontology IRIs / inline contexts (ANS §3). */
 export const ContextValue = z.union([
   z.url(),
   z.record(z.string(), z.unknown()),
   z.array(z.union([z.url(), z.record(z.string(), z.unknown())])).min(1),
 ]);
 
-/** `@type`: a single type or a non-empty list of types. */
+/** `@type`: the primary semantic class (optionally multiple). */
 export const TypeValue = z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]);
 
-/**
- * Provenance: authorship + integrity trail. `contentHash` is DERIVED and is
- * excluded from the capsule's own hash input (see ../integrity/hash.ts).
- * Note there is no `verifiedBy` here — verification is Monacado authority and
- * belongs to a future MarketplaceVerification capsule, not a creator capsule.
- */
-export const Provenance = z.strictObject({
-  authority: AuthorityClass,
-  createdBy: z.url(),
-  contentHash: z
-    .string()
-    .regex(/^sha256:[0-9a-f]{64}$/)
-    .optional(),
-});
-export type Provenance = z.infer<typeof Provenance>;
+/** Semantic version string MAJOR.MINOR.PATCH (ANS §3 — semver mandatory). */
+export const SEMVER_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+export const SemVer = z.string().regex(SEMVER_RE, "capsule version must be semver MAJOR.MINOR.PATCH");
+export type SemVer = z.infer<typeof SemVer>;
 
-/** Revocation record, present only when a capsule is revoked. */
-export const Revocation = z.strictObject({
-  revokedAt: z.iso.datetime(),
-  reason: z.string().min(1),
+/** ANS assertion kind (AN-O an:assertionKind). Product facts are Asserted. */
+export const ASSERTION_KINDS = ["Asserted", "Inferred"] as const;
+export const AssertionKind = z.enum(ASSERTION_KINDS);
+export type AssertionKind = z.infer<typeof AssertionKind>;
+
+/** Governed source classes. This phase supports at least a governed DB record. */
+export const SOURCE_CLASSES = ["governed-database-record", "document", "telemetry"] as const;
+export const SourceClass = z.enum(SOURCE_CLASSES);
+export type SourceClass = z.infer<typeof SourceClass>;
+
+/** ANS Node ID — opaque, non-semantic, Registrar-issued (AN-O an:nodeId). */
+export const AnsNodeId = z
+  .string()
+  .regex(ANS_NODE_ID_RE, "ANS Node ID must be opaque (an:node:<opaque>)")
+  .refine((v) => !looksSemantic(v.replace(/^an:node:/, "")), {
+    message: "ANS Node ID must not encode entity type, name, slug, URL, or business meaning",
+  });
+
+/** Capsule ID — opaque, one per immutable capsule version (AN-O an:capsuleId). */
+export const CapsuleId = z.string().regex(CAPSULE_ID_RE, "Capsule ID must be opaque (an:capsule:<opaque>)");
+
+/** Publisher ID — the walled-garden Publisher, Monacado (AN-O an:publishedBy). */
+export const PublisherId = z.string().regex(PUBLISHER_ID_RE, "Publisher ID must be an:publisher:<id>");
+
+/** Content hash (Monacado integrity extension; ANS §9 permits hashes). */
+export const ContentHash = z.string().regex(/^sha256:[0-9a-f]{64}$/);
+
+/** Structural policy reference (ANS §3 — identifier/URI + version or hash). */
+export const PolicyRef = z.strictObject({
+  ref: z.string().min(1),
+  version: z.string().min(1),
 });
-export type Revocation = z.infer<typeof Revocation>;
+export type PolicyRef = z.infer<typeof PolicyRef>;
 
 /**
- * Base capsule field map. Entity capsules override `@type`, `@id`, `subject`,
- * `data`, `relationships`, and `provenance.authority` with entity-specific
- * constraints, then attach cross-field refinements.
+ * Provenance record (ANS §3 Provenance; AN-O ProvenanceRecord) plus narrow
+ * Monacado extensions for exact source-record traceability. There is NO
+ * `sourceAuthority` field — factual authority is expressed via the ANS Publisher
+ * (an:publishedBy), and internal authorisation is kept conceptually separate.
  */
-export const baseCapsuleShape = {
-  "@context": ContextValue,
-  "@type": TypeValue,
-  /** capsule-version IRI (identifies THIS version). */
-  "@id": z.url(),
-  capsuleVersion: z.int().min(1),
-  /** enduring node IRI (identifies the entity). */
-  subject: z.url(),
-  name: z.string().min(1),
-  description: z.string().min(1).optional(),
-  image: z.url().optional(),
-  data: z.record(z.string(), z.unknown()),
-  relationships: z.record(z.string(), z.unknown()),
-  provenance: Provenance,
-  metadata: z.record(z.string(), z.unknown()),
-  lifecycle: LifecycleState,
-  createdAt: z.iso.datetime(),
-  updatedAt: z.iso.datetime(),
-  supersedes: z.url().optional(),
-  revocation: Revocation.optional(),
-} as const;
+export const ProvenanceRecord = z.strictObject({
+  // ANS-required
+  source: z.string().min(1),
+  method: z.string().min(1),
+  acquiredAt: z.iso.datetime(),
+  assertionKind: AssertionKind,
+  // Monacado source-record traceability extensions
+  sourceClass: SourceClass,
+  sourceSystem: z.string().min(1),
+  sourceRecordType: z.string().min(1),
+  sourceRecordId: z.string().min(1),
+  sourceRecordVersion: z.string().min(1),
+  generatedAt: z.iso.datetime(),
+  generatorVersion: z.string().min(1),
+});
+export type ProvenanceRecord = z.infer<typeof ProvenanceRecord>;
+
+/**
+ * Candidate metadata — pre-publication. Carries the intended version and source
+ * provenance only. It deliberately does NOT fabricate a Registrar-issued Node
+ * ID, publication time, Publisher, policy linkage, capsule ID, or content hash.
+ */
+export const CandidateMetadata = z.strictObject({
+  version: SemVer,
+  provenance: ProvenanceRecord,
+});
+export type CandidateMetadata = z.infer<typeof CandidateMetadata>;
+
+/**
+ * Published metadata — all mandatory ANS publication metadata (ANS §3).
+ * `contentHash` is derived and excluded from its own hash input.
+ */
+export const PublishedMetadata = z.strictObject({
+  capsuleId: CapsuleId,
+  bindsToNode: AnsNodeId,
+  publishedBy: PublisherId,
+  publishedAt: z.iso.datetime(),
+  version: SemVer,
+  provenance: ProvenanceRecord,
+  nodePolicy: PolicyRef,
+  capsulePolicy: PolicyRef,
+  supersedes: CapsuleId.optional(),
+  revokes: CapsuleId.optional(),
+  contentHash: ContentHash,
+});
+export type PublishedMetadata = z.infer<typeof PublishedMetadata>;

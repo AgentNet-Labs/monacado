@@ -1,8 +1,9 @@
 /**
- * Monacado Capsule-Driven contracts — Phase 0B public surface.
+ * Monacado Capsule-Driven contracts — Phase 0B.1 public surface (ANS-aligned).
  *
- * Semantic foundation for one creator-authoritative Product capsule. No
- * persistence, UI, publication, or network code lives here.
+ * Offline semantic foundation for one creator-authoritative Product capsule:
+ * candidate generation, ANS-conformant publication, deterministic hashing, and
+ * derived JSON Schema. No persistence, UI, publication worker, or network code.
  */
 
 // Ontology & context (semantic layer)

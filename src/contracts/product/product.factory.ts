@@ -1,123 +1,167 @@
 /**
- * Product capsule factory (Phase 0B).
+ * Product capsule factory (Phase 0B.1) — offline, database-free.
  *
- * Constructs and revises creator-authoritative Product capsules. Generation
- * happens here at authoring/update time (ADR §5) — this module performs NO
- * publication, network, or database work. Callers supply explicit timestamps
- * and ULIDs so construction is deterministic and testable (synthetic data).
+ * Generation (candidate) is separate from publication (finalisation), per ADR
+ * §5 and §11. Generation builds a deterministic candidate from an authoritative
+ * source record. Finalisation attaches all mandatory ANS publication metadata
+ * (Registrar-issued Node ID, Publisher, publishedAt, policy references, capsule
+ * ID) and produces an immutable published capsule. No publication worker,
+ * network, or database work occurs here. Callers pass explicit synthetic ids and
+ * timestamps so construction is deterministic.
  */
 
-import { COMMERCE_CONTEXT_REF } from "../ontology/commerce.context";
-import { makeCapsuleVersionIri, makeNodeIri } from "../capsule/identity";
-import { withContentHash } from "../integrity/hash";
 import {
-  assertCanWriteProductFacts,
-  type Actor,
+  AN_O_CONTEXT_REF,
+  COMMERCE_CONTEXT_REF,
+} from "../ontology/commerce.context";
+import type { PolicyRef, ProvenanceRecord, SemVer, SourceClass } from "../capsule/envelope";
+import { withPublishedContentHash } from "../integrity/hash";
+import {
+  CAPSULE_GENERATOR_ID,
+  GENERATOR_VERSION,
+  assertMonacadoPublisher,
 } from "./product.authority";
 import {
   PRODUCT_TYPE,
-  ProductCapsule,
+  ProductCapsuleCandidate,
+  PublishedProductCapsule,
   type ProductData,
-  type ProductRelationships,
 } from "./product.capsule";
 
-export interface CreateProductInput {
-  productUlid: string;
-  name: string;
-  description?: string;
-  image?: string;
-  data: ProductData;
-  relationships: ProductRelationships;
-  createdAt: string;
-  updatedAt: string;
-  /** The creator authoring the capsule. Must have role "creator". */
-  actor: Actor;
-  metadata?: Record<string, unknown>;
+/** An authoritative Monacado source record (the DB record; system of record). */
+export interface ProductSourceRecord {
+  sourceRecordId: string;
+  sourceRecordVersion: string;
+  sourceSystem: string;
+  sourceRecordType: string;
+  sourceClass: SourceClass;
+  acquiredAt: string;
+  /** The creator-authoritative Product facts held by the record. */
+  facts: ProductData;
 }
 
-/** Create version 1 of a Product capsule (validated, content-hashed). */
-export function createProductCapsule(input: CreateProductInput): ProductCapsule {
-  assertCanWriteProductFacts(input.actor);
+export interface GenerateCandidateInput {
+  source: ProductSourceRecord;
+  /** Intended semantic version for this capsule. */
+  version: SemVer;
+  /** Deterministic generation timestamp (no Date.now). */
+  generatedAt: string;
+}
 
-  const subject = makeNodeIri("product", input.productUlid);
-  const capsuleVersion = 1;
+function buildProvenance(source: ProductSourceRecord, generatedAt: string): ProvenanceRecord {
+  return {
+    source: `${source.sourceSystem}:${source.sourceRecordType}:${source.sourceRecordId}@${source.sourceRecordVersion}`,
+    method: "governed-database-record-projection",
+    acquiredAt: source.acquiredAt,
+    assertionKind: "Asserted",
+    sourceClass: source.sourceClass,
+    sourceSystem: source.sourceSystem,
+    sourceRecordType: source.sourceRecordType,
+    sourceRecordId: source.sourceRecordId,
+    sourceRecordVersion: source.sourceRecordVersion,
+    generatedAt,
+    generatorVersion: GENERATOR_VERSION,
+  };
+}
+
+/** Generate a deterministic pre-publication candidate from a source record. */
+export function generateProductCandidate(input: GenerateCandidateInput): ProductCapsuleCandidate {
+  const candidate = {
+    "@context": [COMMERCE_CONTEXT_REF, AN_O_CONTEXT_REF],
+    "@type": PRODUCT_TYPE,
+    metadata: {
+      version: input.version,
+      provenance: buildProvenance(input.source, input.generatedAt),
+    },
+    data: input.source.facts,
+  };
+  return ProductCapsuleCandidate.parse(candidate);
+}
+
+export interface FinalizeInput {
+  candidate: ProductCapsuleCandidate;
+  capsuleId: string;
+  /** Registrar-issued opaque ANS Node ID. */
+  bindsToNode: string;
+  /** Must be the Monacado Publisher (not the generator). */
+  publishedBy: string;
+  publishedAt: string;
+  nodePolicy: PolicyRef;
+  capsulePolicy: PolicyRef;
+  supersedes?: string;
+  revokes?: string;
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === "object") {
+    Object.values(value as Record<string, unknown>).forEach(deepFreeze);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+/** Finalise a candidate into an immutable, ANS-conformant published capsule. */
+export function finalizeProductCapsule(input: FinalizeInput): PublishedProductCapsule {
+  assertMonacadoPublisher(input.publishedBy);
 
   const draft = {
-    "@context": COMMERCE_CONTEXT_REF,
-    "@type": PRODUCT_TYPE,
-    "@id": makeCapsuleVersionIri(subject, capsuleVersion),
-    capsuleVersion,
-    subject,
-    name: input.name,
-    ...(input.description !== undefined ? { description: input.description } : {}),
-    ...(input.image !== undefined ? { image: input.image } : {}),
-    data: input.data,
-    relationships: input.relationships,
-    provenance: {
-      authority: "creator" as const,
-      createdBy: input.actor.id,
+    "@context": input.candidate["@context"],
+    "@type": input.candidate["@type"],
+    metadata: {
+      capsuleId: input.capsuleId,
+      bindsToNode: input.bindsToNode,
+      publishedBy: input.publishedBy,
+      publishedAt: input.publishedAt,
+      version: input.candidate.metadata.version,
+      provenance: input.candidate.metadata.provenance,
+      nodePolicy: input.nodePolicy,
+      capsulePolicy: input.capsulePolicy,
+      ...(input.supersedes !== undefined ? { supersedes: input.supersedes } : {}),
+      ...(input.revokes !== undefined ? { revokes: input.revokes } : {}),
     },
-    metadata: input.metadata ?? {},
-    lifecycle: "active" as const,
-    createdAt: input.createdAt,
-    updatedAt: input.updatedAt,
+    data: input.candidate.data,
   };
 
-  const hashed = withContentHash(draft);
-  return ProductCapsule.parse(hashed);
+  const hashed = withPublishedContentHash(draft);
+  return deepFreeze(PublishedProductCapsule.parse(hashed));
 }
 
-export interface ReviseProductInput {
-  current: ProductCapsule;
-  /** Partial creator-authored changes to name/description/image/data/relationships. */
-  changes: Partial<
-    Pick<
-      ProductCapsule,
-      "name" | "description" | "image" | "data" | "relationships" | "metadata"
-    >
-  >;
-  updatedAt: string;
-  actor: Actor;
+export class ProductRevisionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProductRevisionError";
+  }
 }
 
-export interface ReviseProductResult {
-  /** The prior capsule, marked superseded. */
-  superseded: ProductCapsule;
-  /** The new active capsule version, referencing its predecessor. */
-  next: ProductCapsule;
+export interface ReviseSourceInput {
+  current: PublishedProductCapsule;
+  source: ProductSourceRecord;
+  version: SemVer;
+  generatedAt: string;
 }
 
 /**
- * Produce the next Product capsule version from creator changes, and return the
- * prior version marked superseded. Rejects unauthorized actors (ADR §2).
+ * Produce a new candidate from a revised source record. Enforces the revision
+ * rules (ADR / Phase 0B.1): a meaningful revision requires a NEW source-record
+ * version and a NEW capsule semver. The caller finalises with a new capsule ID
+ * and `supersedes` = the prior capsule ID.
  */
-export function reviseProductCapsule(input: ReviseProductInput): ReviseProductResult {
-  assertCanWriteProductFacts(input.actor);
-
-  const { current } = input;
-  const nextVersion = current.capsuleVersion + 1;
-
-  const nextDraft = {
-    ...current,
-    ...input.changes,
-    capsuleVersion: nextVersion,
-    "@id": makeCapsuleVersionIri(current.subject, nextVersion),
-    supersedes: current["@id"],
-    lifecycle: "active" as const,
-    updatedAt: input.updatedAt,
-    provenance: {
-      authority: "creator" as const,
-      createdBy: input.actor.id,
-    },
-  };
-  // Remove any stale derived hash before recomputing.
-  delete (nextDraft.provenance as Record<string, unknown>).contentHash;
-
-  const next = ProductCapsule.parse(withContentHash(nextDraft));
-  // Lifecycle is part of the hash input, so re-hash the superseded version.
-  const superseded = ProductCapsule.parse(
-    withContentHash({ ...current, lifecycle: "superseded" as const }),
-  );
-
-  return { superseded, next };
+export function reviseProductSource(input: ReviseSourceInput): ProductCapsuleCandidate {
+  if (input.source.sourceRecordVersion === input.current.metadata.provenance.sourceRecordVersion) {
+    throw new ProductRevisionError(
+      "A meaningful Product revision requires a new source-record version.",
+    );
+  }
+  if (input.version === input.current.metadata.version) {
+    throw new ProductRevisionError(
+      "A meaningful Product revision requires a new capsule semantic version.",
+    );
+  }
+  return generateProductCandidate({
+    source: input.source,
+    version: input.version,
+    generatedAt: input.generatedAt,
+  });
 }
+
+export { CAPSULE_GENERATOR_ID };

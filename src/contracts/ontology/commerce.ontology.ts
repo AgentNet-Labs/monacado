@@ -1,260 +1,95 @@
 /**
- * Monacado commerce ontology — Product-only subset (Phase 0B).
+ * Monacado commerce ontology — Product subset, ANS-aligned (Phase 0B.1).
  *
- * This module is the *semantic* layer: it names the terms a Product capsule
- * uses and records where each term's meaning comes from. Structure and runtime
- * validation live in the Zod layer (see ../capsule and ../product); this file
- * does not validate anything.
+ * Semantic layer: names the terms a Product capsule uses and where each term's
+ * meaning comes from. Structure/validation live in the Zod layer.
  *
- * Per docs/CDD_ARCHITECTURE_DECISIONS.md §4:
- *   - schema.org terms are reused where their meaning fits exactly and are NOT
- *     redefined here;
- *   - Monacado-specific terms use the provisional namespace below;
- *   - the namespace is independent of any document version, so compatible
- *     revisions do not change term identity;
- *   - the document URLs are DESIGN TARGETS ONLY. They are not live, resolvable,
- *     immutable, or approved AgentNet standards.
+ * Per ADR §4 / §10 / §11 and the Phase 0B.1 ANS audit:
+ *   - schema.org terms are reused where meaning fits exactly;
+ *   - ANS-defined concepts use AgentNet Core Ontology (AN-O) IRIs — Monacado
+ *     does NOT invent duplicate terms for them;
+ *   - Monacado-specific terms use the provisional commerce namespace;
+ *   - all document URLs are DESIGN TARGETS ONLY (not live/approved).
  */
 
 export const SCHEMA_ORG = "https://schema.org/" as const;
 
-/** Provisional Monacado commerce namespace (term identity; version-independent). */
+/** Provisional Monacado commerce namespace (version-independent term identity). */
 export const MON_NS = "https://monacado.com/ns/commerce#" as const;
 
-/**
- * Provisional document targets. DESIGN TARGETS ONLY — not hosted, not live,
- * not resolvable, not approved standards. Do not describe these as live.
- */
-export const COMMERCE_ONTOLOGY_DOCUMENT =
-  "https://monacado.com/ontology/commerce/v1" as const;
-export const COMMERCE_CONTEXT_DOCUMENT =
-  "https://monacado.com/context/commerce/v1" as const;
+/** AgentNet Core Ontology (AN-O) namespace (from ANS Core v2.0, Appendix E). */
+export const AN_O_NS = "https://agentnet.ai/ontology/core#" as const;
+
+/** Provisional document targets — DESIGN TARGETS ONLY (not live/resolvable/approved). */
+export const COMMERCE_ONTOLOGY_DOCUMENT = "https://monacado.com/ontology/commerce/v1" as const;
+export const COMMERCE_CONTEXT_DOCUMENT = "https://monacado.com/context/commerce/v1" as const;
 
 export type TermKind = "class" | "property";
-export type TermSource = "schema.org" | "monacado";
+export type TermSource = "schema.org" | "agentnet-core" | "monacado";
 
 export interface OntologyTerm {
-  /** Compact term as it appears in capsule JSON. */
   term: string;
-  /** Fully-qualified IRI the term maps to. */
   iri: string;
   kind: TermKind;
   source: TermSource;
-  /** Concise semantic description. */
   description: string;
 }
 
-/**
- * schema.org terms reused verbatim. These are NOT redefined by Monacado; the
- * context simply maps the compact term onto the schema.org IRI.
- */
+/** schema.org terms reused verbatim (not redefined). */
 export const SCHEMA_ORG_TERMS: readonly OntologyTerm[] = [
-  {
-    term: "Product",
-    iri: `${SCHEMA_ORG}Product`,
-    kind: "class",
-    source: "schema.org",
-    description: "The enduring product entity a Product capsule describes.",
-  },
-  {
-    term: "name",
-    iri: `${SCHEMA_ORG}name`,
-    kind: "property",
-    source: "schema.org",
-    description: "Human-readable product name.",
-  },
-  {
-    term: "description",
-    iri: `${SCHEMA_ORG}description`,
-    kind: "property",
-    source: "schema.org",
-    description: "Human-readable product description.",
-  },
-  {
-    term: "image",
-    iri: `${SCHEMA_ORG}image`,
-    kind: "property",
-    source: "schema.org",
-    description: "Representative product image URL.",
-  },
-] as const;
+  { term: "Product", iri: `${SCHEMA_ORG}Product`, kind: "class", source: "schema.org", description: "The enduring product entity the capsule describes." },
+  { term: "name", iri: `${SCHEMA_ORG}name`, kind: "property", source: "schema.org", description: "Human-readable product name." },
+  { term: "description", iri: `${SCHEMA_ORG}description`, kind: "property", source: "schema.org", description: "Human-readable product description." },
+  { term: "image", iri: `${SCHEMA_ORG}image`, kind: "property", source: "schema.org", description: "Representative product image URL." },
+];
 
-/**
- * Monacado-specific terms — only genuine Monacado concepts not covered by
- * schema.org. Deliberately small: envelope/framework terms plus the narrow set
- * of creator-authoritative Product facts. Commercial terms (price, commission,
- * validity, territory) are intentionally absent; they belong to a future Offer
- * capsule (see docs/PRODUCT_CAPSULE.md, "Product versus Offer boundary").
- */
+/** ANS-defined concepts mapped to AN-O IRIs (reused, not duplicated). */
+export const AGENTNET_CORE_TERMS: readonly OntologyTerm[] = [
+  { term: "capsuleId", iri: `${AN_O_NS}capsuleId`, kind: "property", source: "agentnet-core", description: "Opaque identifier of this immutable capsule version." },
+  { term: "bindsToNode", iri: `${AN_O_NS}bindsToNode`, kind: "property", source: "agentnet-core", description: "Registrar-issued opaque ANS Node ID this capsule binds to." },
+  { term: "publishedBy", iri: `${AN_O_NS}publishedBy`, kind: "property", source: "agentnet-core", description: "ANS Publisher that submitted the capsule (Monacado)." },
+  { term: "publishedAt", iri: `${AN_O_NS}publishedAt`, kind: "property", source: "agentnet-core", description: "Publication timestamp." },
+  { term: "version", iri: `${AN_O_NS}version`, kind: "property", source: "agentnet-core", description: "Semantic capsule version (MAJOR.MINOR.PATCH)." },
+  { term: "provenance", iri: `${AN_O_NS}hasProvenance`, kind: "property", source: "agentnet-core", description: "Provenance record for the capsule's data." },
+  { term: "source", iri: `${AN_O_NS}source`, kind: "property", source: "agentnet-core", description: "The data source (ANS provenance)." },
+  { term: "method", iri: `${AN_O_NS}method`, kind: "property", source: "agentnet-core", description: "Method of acquisition (ANS provenance)." },
+  { term: "acquiredAt", iri: `${AN_O_NS}acquiredAt`, kind: "property", source: "agentnet-core", description: "Time of acquisition (ANS provenance)." },
+  { term: "assertionKind", iri: `${AN_O_NS}assertionKind`, kind: "property", source: "agentnet-core", description: "Asserted or Inferred (ANS provenance)." },
+  { term: "supersedes", iri: `${AN_O_NS}supersedes`, kind: "property", source: "agentnet-core", description: "Prior capsule ID this version supersedes." },
+  { term: "revokes", iri: `${AN_O_NS}revokes`, kind: "property", source: "agentnet-core", description: "Prior capsule ID this capsule revokes." },
+  { term: "nodePolicy", iri: `${AN_O_NS}hasNodePolicy`, kind: "property", source: "agentnet-core", description: "Reference to the governing Node Policy." },
+  { term: "capsulePolicy", iri: `${AN_O_NS}hasCapsulePolicy`, kind: "property", source: "agentnet-core", description: "Reference to the governing Capsule Policy." },
+];
+
+/** Monacado-specific terms: integrity, source-record traceability, and Product facts. */
 export const MONACADO_TERMS: readonly OntologyTerm[] = [
-  // — Capsule envelope / framework terms —
-  {
-    term: "capsuleVersion",
-    iri: `${MON_NS}capsuleVersion`,
-    kind: "property",
-    source: "monacado",
-    description:
-      "Monotonic version of this capsule for its subject node; distinct from productVersion.",
-  },
-  {
-    term: "subject",
-    iri: `${MON_NS}subject`,
-    kind: "property",
-    source: "monacado",
-    description:
-      "The enduring node IRI this capsule describes (distinct from @id, which identifies this capsule version).",
-  },
-  {
-    term: "data",
-    iri: `${MON_NS}data`,
-    kind: "property",
-    source: "monacado",
-    description: "Container for the entity's structured, type-specific facts.",
-  },
-  {
-    term: "relationships",
-    iri: `${MON_NS}relationships`,
-    kind: "property",
-    source: "monacado",
-    description: "Container for typed references to other node identities.",
-  },
-  {
-    term: "provenance",
-    iri: `${MON_NS}provenance`,
-    kind: "property",
-    source: "monacado",
-    description:
-      "Authorship and integrity trail for this capsule (authority, author, content hash).",
-  },
-  {
-    term: "metadata",
-    iri: `${MON_NS}metadata`,
-    kind: "property",
-    source: "monacado",
-    description: "Supplementary, non-authoritative system attributes.",
-  },
-  {
-    term: "lifecycle",
-    iri: `${MON_NS}lifecycle`,
-    kind: "property",
-    source: "monacado",
-    description: "Capsule lifecycle state (draft, active, superseded, revoked, retired).",
-  },
-  {
-    term: "createdAt",
-    iri: `${MON_NS}createdAt`,
-    kind: "property",
-    source: "monacado",
-    description: "ISO 8601 timestamp when this capsule version was created.",
-  },
-  {
-    term: "updatedAt",
-    iri: `${MON_NS}updatedAt`,
-    kind: "property",
-    source: "monacado",
-    description: "ISO 8601 timestamp of the most recent revision to this capsule version.",
-  },
-  {
-    term: "supersedes",
-    iri: `${MON_NS}supersedes`,
-    kind: "property",
-    source: "monacado",
-    description: "Capsule-version IRI of the immediately prior version this one replaces.",
-  },
-  {
-    term: "revocation",
-    iri: `${MON_NS}revocation`,
-    kind: "property",
-    source: "monacado",
-    description: "Revocation record (timestamp and reason) when a capsule is revoked.",
-  },
-  {
-    term: "authority",
-    iri: `${MON_NS}authority`,
-    kind: "property",
-    source: "monacado",
-    description:
-      "The authority class that produced this capsule (creator, promoter, monacado, buyer).",
-  },
-  {
-    term: "createdBy",
-    iri: `${MON_NS}createdBy`,
-    kind: "property",
-    source: "monacado",
-    description: "Node IRI of the author within the declared authority.",
-  },
-  {
-    term: "contentHash",
-    iri: `${MON_NS}contentHash`,
-    kind: "property",
-    source: "monacado",
-    description:
-      "Deterministic content hash of the capsule; derived, excluded from its own hash input.",
-  },
-  // — Product domain terms —
-  {
-    term: "productVersion",
-    iri: `${MON_NS}productVersion`,
-    kind: "property",
-    source: "monacado",
-    description: "Creator-authored semantic version of the product itself.",
-  },
-  {
-    term: "promotable",
-    iri: `${MON_NS}promotable`,
-    kind: "property",
-    source: "monacado",
-    description:
-      "Whether the creator permits this product to be promoted by storefronts. A general fact only; commission terms are NOT part of the Product capsule.",
-  },
-  {
-    term: "generalAvailabilityState",
-    iri: `${MON_NS}generalAvailabilityState`,
-    kind: "property",
-    source: "monacado",
-    description:
-      "Enduring product-level availability (available, unavailable, pre-release, discontinued). Distinct from offer-level availability; schema.org availability is deliberately not reused (it is Offer-associated).",
-  },
-  {
-    term: "specifications",
-    iri: `${MON_NS}specifications`,
-    kind: "property",
-    source: "monacado",
-    description: "Creator-authored structured product specifications (key/value facts).",
-  },
-  {
-    term: "capabilities",
-    iri: `${MON_NS}capabilities`,
-    kind: "property",
-    source: "monacado",
-    description: "Creator-authored list of product capabilities.",
-  },
-  {
-    term: "creator",
-    iri: `${MON_NS}creator`,
-    kind: "property",
-    source: "monacado",
-    description:
-      "Relationship to the authoritative Creator node IRI. A Monacado marketplace role, deliberately not schema:creator.",
-  },
-  {
-    term: "offer",
-    iri: `${MON_NS}offer`,
-    kind: "property",
-    source: "monacado",
-    description:
-      "Optional reference to a future Offer node IRI. A reference only — no offer/commercial data is carried in the Product capsule.",
-  },
-] as const;
+  { term: "contentHash", iri: `${MON_NS}contentHash`, kind: "property", source: "monacado", description: "Deterministic content hash of the published capsule (integrity extension; excluded from its own input)." },
+  { term: "sourceClass", iri: `${MON_NS}sourceClass`, kind: "property", source: "monacado", description: "Class of source artifact (e.g. governed-database-record)." },
+  { term: "sourceSystem", iri: `${MON_NS}sourceSystem`, kind: "property", source: "monacado", description: "System of record that produced the source (Monacado)." },
+  { term: "sourceRecordType", iri: `${MON_NS}sourceRecordType`, kind: "property", source: "monacado", description: "Type of the source record (e.g. Product)." },
+  { term: "sourceRecordId", iri: `${MON_NS}sourceRecordId`, kind: "property", source: "monacado", description: "Stable opaque identifier of the source record." },
+  { term: "sourceRecordVersion", iri: `${MON_NS}sourceRecordVersion`, kind: "property", source: "monacado", description: "Explicit immutable version of the source record." },
+  { term: "generatedAt", iri: `${MON_NS}generatedAt`, kind: "property", source: "monacado", description: "Time the capsule candidate was generated." },
+  { term: "generatorVersion", iri: `${MON_NS}generatorVersion`, kind: "property", source: "monacado", description: "Version of the capsule generator (operational; not authority)." },
+  { term: "productVersion", iri: `${MON_NS}productVersion`, kind: "property", source: "monacado", description: "Creator-authored semantic version of the product itself." },
+  { term: "promotable", iri: `${MON_NS}promotable`, kind: "property", source: "monacado", description: "Whether the creator permits promotion. A general fact; no commission terms." },
+  { term: "generalAvailabilityState", iri: `${MON_NS}generalAvailabilityState`, kind: "property", source: "monacado", description: "Enduring product-level availability; not offer-level (schema.org availability is deliberately not reused)." },
+  { term: "specifications", iri: `${MON_NS}specifications`, kind: "property", source: "monacado", description: "Creator-authored structured product specifications." },
+  { term: "capabilities", iri: `${MON_NS}capabilities`, kind: "property", source: "monacado", description: "Creator-authored list of product capabilities." },
+  { term: "relationships", iri: `${MON_NS}relationships`, kind: "property", source: "monacado", description: "Container for typed domain relationships in Product data." },
+  { term: "creator", iri: `${MON_NS}creator`, kind: "property", source: "monacado", description: "Relationship to the authoritative Creator node (a Monacado marketplace role; not schema:creator)." },
+  { term: "offer", iri: `${MON_NS}offer`, kind: "property", source: "monacado", description: "Optional reference to a future Offer node (reference only; no offer data)." },
+];
 
 export const ALL_TERMS: readonly OntologyTerm[] = [
   ...SCHEMA_ORG_TERMS,
+  ...AGENTNET_CORE_TERMS,
   ...MONACADO_TERMS,
 ];
 
-/** Ontology metadata. `status` makes the provisional nature explicit. */
 export const COMMERCE_ONTOLOGY_META = {
   namespace: MON_NS,
+  agentnetCoreNamespace: AN_O_NS,
   ontologyDocument: COMMERCE_ONTOLOGY_DOCUMENT,
   contextDocument: COMMERCE_CONTEXT_DOCUMENT,
   version: "v1",

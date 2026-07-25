@@ -1,119 +1,129 @@
 /**
- * contracts:demo — end-to-end demonstration of the Product capsule foundation.
+ * contracts:demo — offline, deterministic end-to-end demonstration.
  *
- * Runs with NO database and NO network. Uses fixed synthetic data so output is
- * deterministic across runs. Demonstrates the full Phase 0B chain and prints a
- * concise summary.
+ * No database and no network. Fixed synthetic data → identical output each run.
+ * Shows: source record → candidate → provenance trace → finalisation →
+ * validation → content hash → revised source version → new semver/capsule ID →
+ * supersession → and the required rejections.
  */
 
 import {
-  COMMERCE_CONTEXT,
-  COMMERCE_CONTEXT_REF,
-  COMMERCE_ONTOLOGY_META,
-  ProductAuthorityError,
-  canWriteProductFacts,
-  canonicalJsonString,
-  contentHash,
-  createProductCapsule,
-  generateProductJsonSchema,
-  reviseProductCapsule,
-  validateProductCapsule,
+  CAPSULE_GENERATOR_ID,
+  ProductPublisherError,
+  ProductRevisionError,
+  candidateHash,
+  finalizeProductCapsule,
+  generateProductCandidate,
+  publishedContentHash,
+  reviseProductSource,
+  validatePublishedProductCapsule,
 } from "../src/contracts/index";
 import {
-  SYN_PROMOTER_ACTOR,
-  SYN_REVISED_AT,
-  syntheticCreateInput,
+  SYN_CAPSULE_ID_V2,
+  SYN_GENERATED_AT_V2,
+  SYN_PUBLISHED_AT_V2,
+  SYN_SEMANTIC_NODE_ID,
+  syntheticFinalizeInputs,
+  syntheticSourceRecord,
+  syntheticSourceRecordV2,
 } from "../src/contracts/fixtures/synthetic-product";
 
-const line = (label: string, value: string) => console.log(`  ${label.padEnd(28)} ${value}`);
+const line = (label: string, value: string) => console.log(`  ${label.padEnd(30)} ${value}`);
 
-console.log("Monacado Phase 0B — Product Capsule demo (offline, deterministic)\n");
+console.log("Monacado Phase 0B.1 — ANS-conformant Product capsule demo (offline)\n");
 
-// 1. Create a synthetic creator-authoritative Product capsule.
-const v1 = createProductCapsule(syntheticCreateInput());
-console.log("1. Product capsule created");
-line("subject (node IRI)", v1.subject);
-line("@id (capsule-version IRI)", v1["@id"]);
-line("capsuleVersion", String(v1.capsuleVersion));
-line("lifecycle", v1.lifecycle);
+// 1. Synthetic authoritative Monacado Product source record.
+const source = syntheticSourceRecord();
+console.log("1. Authoritative source record");
+line("sourceRecordId", source.sourceRecordId);
+line("sourceRecordVersion", source.sourceRecordVersion);
+line("sourceClass", source.sourceClass);
 
-// 2. Zod validation.
-const validation = validateProductCapsule(v1);
-console.log(`\n2. Zod validation: ${validation.ok ? "PASS" : "FAIL"}`);
-
-// 3. Ontology / context use.
-console.log("\n3. Ontology & JSON-LD context");
-line("ontology status", COMMERCE_ONTOLOGY_META.status);
-line("@context reference", COMMERCE_CONTEXT_REF);
-line("Product ->", String((COMMERCE_CONTEXT as Record<string, unknown>).Product));
-line("promotable ->", String((COMMERCE_CONTEXT as Record<string, unknown>).promotable));
-
-// 4. Authority validation.
-const creatorDecision = canWriteProductFacts(syntheticCreateInput().actor);
-const promoterDecision = canWriteProductFacts(SYN_PROMOTER_ACTOR);
-console.log("\n4. Authority");
-line("creator may write facts", String(creatorDecision.allowed));
-line("promoter may write facts", String(promoterDecision.allowed));
-
-// 5. Deterministic serialization — reordered keys, identical canonical string.
-const reordered = Object.fromEntries(
-  Object.entries(v1 as Record<string, unknown>).reverse(),
-);
-const s1 = canonicalJsonString(v1);
-const s2 = canonicalJsonString(reordered);
-console.log("\n5. Deterministic serialization");
-line("canonical bytes", String(Buffer.byteLength(s1, "utf8")));
-line("key-order independent", String(s1 === s2));
-
-// 6. Content hashing.
-console.log("\n6. Content hash");
-line("v1 hash", contentHash(v1));
-
-// 7. JSON Schema export (derived).
-const schema = generateProductJsonSchema();
-console.log("\n7. Derived JSON Schema");
-line("top-level type", String((schema as Record<string, unknown>).type ?? "(composed)"));
-line("has properties", String("properties" in schema));
-
-// 8. Changed Product version + 9. supersession.
-const { superseded, next } = reviseProductCapsule({
-  current: v1,
-  changes: {
-    name: "Synthetic CLI Toolkit (Pro)",
-    data: { ...v1.data, productVersion: 2, capabilities: ["scaffold", "validate", "export", "publish"] },
-  },
-  updatedAt: SYN_REVISED_AT,
-  actor: syntheticCreateInput().actor,
+// 2. Candidate generation.
+const candidate = generateProductCandidate({
+  source,
+  version: "1.0.0",
+  generatedAt: source.acquiredAt,
 });
-console.log("\n8. Changed Product version");
-line("next capsuleVersion", String(next.capsuleVersion));
-line("next hash", contentHash(next));
-line("hash changed", String(contentHash(next) !== contentHash(v1)));
-console.log("\n9. Supersession");
-line("next.supersedes", String(next.supersedes));
-line("prior @id", v1["@id"]);
-line("prior lifecycle now", superseded.lifecycle);
+console.log("\n2. Product capsule candidate");
+line("@type", String(candidate["@type"]));
+line("version", candidate.metadata.version);
+line("candidateHash", candidateHash(candidate));
 
-// 10. Rejected promoter modification.
-console.log("\n10. Unauthorized promoter modification");
+// 3. Source provenance trace.
+console.log("\n3. Source provenance trace");
+line("source", candidate.metadata.provenance.source);
+line("method", candidate.metadata.provenance.method);
+line("assertionKind", candidate.metadata.provenance.assertionKind);
+
+// 4. Finalisation with synthetic publication metadata.
+const v1 = finalizeProductCapsule({ candidate, ...syntheticFinalizeInputs() });
+console.log("\n4. Finalised published capsule");
+line("capsuleId", v1.metadata.capsuleId);
+line("bindsToNode (opaque)", v1.metadata.bindsToNode);
+line("publishedBy", v1.metadata.publishedBy);
+line("publishedAt", v1.metadata.publishedAt);
+line("nodePolicy.ref", v1.metadata.nodePolicy.ref);
+line("capsulePolicy.ref", v1.metadata.capsulePolicy.ref);
+
+// 5. Validation.
+console.log("\n5. Validation");
+line("published valid", String(validatePublishedProductCapsule(v1).ok));
+line("top-level members", Object.keys(v1).sort().join(", "));
+
+// 6. Deterministic final content hash.
+console.log("\n6. Content hash");
+line("v1 contentHash", v1.metadata.contentHash);
+line("recompute matches", String(publishedContentHash(v1) === v1.metadata.contentHash));
+
+// 7-9. Revised source version → new candidate → new semver/capsule ID → supersession.
+const candidateV2 = reviseProductSource({
+  current: v1,
+  source: syntheticSourceRecordV2(),
+  version: "1.1.0",
+  generatedAt: SYN_GENERATED_AT_V2,
+});
+const v2 = finalizeProductCapsule({
+  candidate: candidateV2,
+  ...syntheticFinalizeInputs(),
+  capsuleId: SYN_CAPSULE_ID_V2,
+  publishedAt: SYN_PUBLISHED_AT_V2,
+  supersedes: v1.metadata.capsuleId,
+});
+console.log("\n7-9. Revision, new version, supersession");
+line("new sourceRecordVersion", v2.metadata.provenance.sourceRecordVersion);
+line("new version", v2.metadata.version);
+line("new capsuleId", v2.metadata.capsuleId);
+line("supersedes (prior capsuleId)", String(v2.metadata.supersedes));
+line("hash changed", String(v2.metadata.contentHash !== v1.metadata.contentHash));
+
+// 10. Rejections.
+console.log("\n10. Rejections");
+
 try {
-  reviseProductCapsule({
-    current: v1,
-    changes: { name: "Hijacked name" },
-    updatedAt: SYN_REVISED_AT,
-    actor: SYN_PROMOTER_ACTOR,
-  });
-  line("result", "ERROR — should have been rejected");
-  process.exit(1);
-} catch (err) {
-  line("rejected", String(err instanceof ProductAuthorityError));
+  reviseProductSource({ current: v1, source: syntheticSourceRecord(), version: "1.2.0", generatedAt: SYN_GENERATED_AT_V2 });
+  line("reused source version", "ERROR — not rejected");
+} catch (e) {
+  line("reused source version", e instanceof ProductRevisionError ? "rejected" : "rejected(other)");
 }
 
-// 11. Rejected price / commission field inside Product.
-console.log("\n11. Rejected commercial fields inside Product");
-const withPrice = { ...v1, data: { ...v1.data, price: 19.95 } };
-const withCommission = { ...v1, data: { ...v1.data, promoterCommissionRate: 0.2 } };
-line("price rejected", String(!validateProductCapsule(withPrice).ok));
-line("commission rejected", String(!validateProductCapsule(withCommission).ok));
+const intVersion = structuredClone(v1) as unknown as { metadata: { version: unknown } };
+intVersion.metadata.version = 1;
+line("integer version", String(!validatePublishedProductCapsule(intVersion).ok));
+
+const withLifecycle = structuredClone(v1) as unknown as { metadata: Record<string, unknown> };
+withLifecycle.metadata.lifecycle = "active";
+line("capsule lifecycle field", String(!validatePublishedProductCapsule(withLifecycle).ok));
+
+const semanticNode = structuredClone(v1) as unknown as { metadata: { bindsToNode: string } };
+semanticNode.metadata.bindsToNode = SYN_SEMANTIC_NODE_ID;
+line("semantic Node ID", String(!validatePublishedProductCapsule(semanticNode).ok));
+
+try {
+  finalizeProductCapsule({ candidate, ...syntheticFinalizeInputs(), publishedBy: CAPSULE_GENERATOR_ID });
+  line("generator as Publisher", "ERROR — not rejected");
+} catch (e) {
+  line("generator as Publisher", e instanceof ProductPublisherError ? "rejected" : "rejected(other)");
+}
 
 console.log("\ncontracts:demo — complete.");
