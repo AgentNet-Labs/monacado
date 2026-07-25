@@ -417,10 +417,300 @@ substrings like `price`) and semantic ambiguity.
 
 ---
 
+## 11. Monacado Walled-Garden AgentNet Operating Model
+
+Binding (Phase 0B.2). Grounded in the Phase 0B.1 ANS Core v2.0 audit. ANS terms
+(Publisher, Registrar, Node, Capsule, Authority, Provenance, Policy, Resolver)
+are used with their ANS meanings and are not reinterpreted or weakened here.
+
+### 11.0 Core decision and walled-garden definition
+
+Within the Monacado marketplace domain, **Monacado operates as a controlled,
+domain-specific "walled-garden" AgentNet implementation** in which **Monacado
+acts as both the AgentNet Publisher and the AgentNet Registrar**, and is the
+**administrative and trust boundary** for its AgentNet domain.
+
+"**Walled garden**" refers to **governance, admission, authority, and operational
+control** — not to non-conformance or semantic isolation. The garden is
+**controlled, not semantically isolated**: the implementation **remains
+ANS Core v2.0 conformant** and capable of later federation, resolver
+interoperability, cross-domain discovery, migration to broader AgentNet
+infrastructure, and external conformance testing (see §11.12). No Monacado-only
+formats that would prevent those outcomes may be created.
+
+Publisher and Registrar are **separate logical roles** operated by one legal
+organisation. They **must not be collapsed into a single undifferentiated
+application privilege**. A Publisher action must not implicitly perform a
+Registrar action without passing the Registrar's validation and policy gate; a
+Registrar action must not alter capsule content or factual claims.
+
+Monacado controls, for its domain: participant admission; Node eligibility; Node
+issuance; capsule validation; publication approval; registration; supersession;
+revocation; Node retirement; policy enforcement; and audit and reconciliation.
+Monacado may publish its own **platform-authoritative** assertions and may
+publish **participant-authoritative** assertions **only under stored
+authorisation** (§11.6). Acting as Publisher or Registrar **does not make
+Monacado the factual authority** for creator-, seller-, promoter-, or
+buyer-originated claims.
+
+Five distinct concepts are kept separate throughout:
+
+- **Factual authority** — the entity whose claims a capsule asserts.
+- **Source authority** — the governed record/system that is the evidentiary
+  origin of those facts.
+- **Publisher** — the ANS role that submits and controls capsules (Monacado).
+- **Capsule generator** — the operational component that builds a capsule from a
+  source record (a delegated task; holds no authority).
+- **Verifier** — the party asserting verification (Monacado, for marketplace
+  verification, via its own Monacado-authoritative capsules).
+
+Generation or registration **never** confers factual authority (ANS §2
+Publisher/Authority; Publisher "MAY delegate operational tasks without
+delegating authority").
+
+### 11.1 Publisher role
+
+Monacado, acting as Publisher:
+
+- publishes capsules through **controlled Monacado-held credentials**;
+- may publish on behalf of authorised creators, sellers, promoters, storefront
+  operators, and other participants — **only** after verifying a stored grant of
+  publishing authority (see §11.6);
+- **preserves source provenance and the participant's authority**; does **not**
+  become the factual authority merely by generating or submitting the capsule;
+- may publish **Monacado-authoritative** capsules for marketplace status,
+  verification, policy, and platform assertions;
+- controls publication, supersession, revocation, and withdrawal workflows;
+- retains publication audit records and receipts.
+
+For **creator-authored Product facts, the creator remains the factual/source
+authority** and Monacado is the operational Publisher.
+
+### 11.2 Registrar role
+
+Monacado, acting as Registrar:
+
+- issues **opaque, stable, non-semantic** AgentNet Node IDs (ANS §4/§6);
+- **prevents publishers or users from selecting Node IDs** (no operator
+  influence, direct or indirect);
+- binds capsules to Nodes and records the binding;
+- manages Node lifecycle (Active, Inactive, Retired, Revoked);
+- enforces registration rules and **rejects non-conforming identifiers and
+  registrations**;
+- records issuance, registration, replacement, revocation, and retirement
+  events, and **preserves Node and capsule history**;
+- operates the authoritative Node registry for the Monacado domain and
+  exposes/supplies the records downstream resolver infrastructure requires.
+
+A Node ID **must not encode** entity type, role, product category, participant
+name, storefront name, slug, platform hierarchy, or any business meaning. (This
+supersedes, for the ANS-facing Node ID, the semantic `…/id/product/{ulid}`
+pattern of §3/§10.1 — see §11.5.)
+
+### 11.3 Separation of duties
+
+Even with one operator, the following are logically distinct and must be
+distinguishable in any future implementation:
+
+| Publisher side | Registrar side |
+| --- | --- |
+| Publisher credential | Registrar credential |
+| Publisher authorisation scope | Registrar authorisation scope |
+| Publisher audit event | Registrar audit event |
+| Publication approval | Node issuance approval |
+| Capsule validation | Registration validation |
+
+- A Publisher action **must pass the Registrar's validation and policy gate**
+  before any Node binding is treated as registered.
+- A Registrar action **must not** modify capsule content, provenance, or factual
+  claims (ANS §6: Registrars "SHALL NOT exercise authority over Capsule
+  content").
+
+### 11.4 Platform Node
+
+Monacado has its own **Registrar-issued, opaque Platform Node** representing the
+Monacado marketplace, platform identity, policy, Monacado-issued marketplace
+verification, and its publication/registration relationships.
+
+The words "platform"/"monacado" **must not** appear in the opaque Node ID. The
+semantic meaning that the Node *represents Monacado* lives in **capsules bound to
+that Node**, never in the identifier (ANS §4: Node IDs non-semantic; all meaning
+expressed through Capsules).
+
+### 11.5 Participant and entity Nodes
+
+Preferred direction — each an **independent Node** related to the Platform Node
+through capsules and graph relationships (not by identifier nesting):
+
+- Monacado Platform — independent Node.
+- Participant identity — independent Node where public AgentNet identity is
+  warranted.
+- Storefront — independent Node.
+- Product — independent Node.
+- Creator/seller organisation — independent Node where distinct.
+- Promoter — the participant's Node with a promoter role, unless a separate legal
+  or commercial identity warrants another Node.
+- Guest buyer — **no Node**.
+- Ordinary private buyer account — **no public Node by default**.
+- Public buyer identity — only with explicit purpose, consent, and policy
+  approval.
+
+**"Sub-node" is not an architectural primitive.** Nodes are peers; relationships
+are expressed in capsules.
+
+A single **participant Node may hold multiple marketplace roles** — creator,
+seller, promoter, storefront operator. **Do not issue separate Nodes solely
+because one participant holds multiple roles.** Roles are expressed as capsule
+claims and relationships on the participant's one Node; a separate Node is
+warranted only when a distinct legal or commercial identity genuinely exists.
+
+This is the ANS-facing reconciliation of §3/§10.1: the Monacado
+`https://monacado.com/id/{type}/{ulid}` IRI is retained only as an **internal**
+canonical identity; the **ANS Node binding uses the separate Registrar-issued
+opaque Node ID**. The two identifier layers are distinct and must not be
+conflated.
+
+### 11.6 Publisher authority for participants
+
+Monacado may publish for a participant **only when the source database holds a
+valid authorisation record** establishing: participant identity; authority
+scope; entity or claims covered; publication permission; effective date;
+revocation state; applicable policy. The Publisher role **must check this
+authorisation before publication**. **Users receive neither Publisher nor
+Registrar credentials.**
+
+### 11.7 Publication and registration flow (future — not implemented now)
+
+1. A governed Monacado source record becomes eligible for AgentNet
+   representation.
+2. **Stored publication authorisation is checked** (§11.6).
+3. The Monacado Registrar issues or resolves the appropriate opaque Node ID.
+4. The Node ID is stored in the Monacado database.
+5. Monacado generates an ANS-conformant capsule from the source record, bound to
+   that Registrar-issued Node ID.
+6. The Monacado Publisher submits the capsule.
+7. The Registrar validates: identifier; Node binding; policy linkage;
+   provenance; capsule structure; versioning; authorisation.
+8. The Registrar records the Node–Capsule binding and stores a result/receipt.
+9. Resolver-facing infrastructure exposes the registered state according to
+   policy.
+
+### 11.8 Source-of-record and provenance
+
+The **Monacado database remains the authoritative source record** for
+Monacado-native marketplace facts. Provenance chain:
+
+```
+authoritative Monacado source record
+  → generated capsule
+  → Publisher submission
+  → Registrar registration
+  → Resolver availability
+```
+
+Each capsule must preserve provenance back to: source system; source-record
+type; source-record identifier; source-record version; acquisition method;
+acquisition timestamp; asserted-or-inferred status (ANS §3 Provenance;
+`an:source`/`an:method`/`an:acquiredAt`/`an:assertionKind`, plus Monacado
+extensions per the 0B.1 audit). **Registrar issuance and Publisher submission do
+not replace source authority.**
+
+### 11.9 Node lifecycle versus capsule replacement
+
+- Node lifecycle is controlled by the **Registrar**.
+- **Capsules do not carry Node lifecycle state** (ANS §4 — corrects the current
+  capsule `lifecycle` field flagged in the 0B.1 audit).
+- Capsule changes use **semantic versioning** with supersession/revocation.
+- Node revocation/retirement **does not rewrite prior capsules**.
+- Node and capsule histories must remain auditable.
+
+### 11.10 Buyers and privacy
+
+- **Guest buyers receive no AgentNet Node.**
+- **Ordinary buyer accounts remain private Monacado database records by
+  default** — no public Node.
+- A **public Buyer Node requires explicit purpose, consent, and policy
+  approval**.
+- **Private purchase, payment, shipping, and account data are never published.**
+- **Review authorship should use a privacy-preserving pattern** unless a public
+  identity is explicitly justified and approved.
+
+### 11.11 Resolver model
+
+Monacado may initially use a **private resolver**, a domain-specific managed
+resolver, or another Monacado-controlled resolution surface. The **resolver is a
+discovery and retrieval layer, not the source of authority**, and remains
+**distinct** from the authoritative Monacado database, the Publisher, the
+Registrar, and the source records. **Resolver availability does not confer
+factual authority** (ANS §5 — Resolvers MUST NOT modify capsules and MUST
+preserve provenance/authority; resolution does not imply endorsement).
+
+### 11.12 Federation (optional, policy-controlled)
+
+Federation is **optional and policy-controlled**. Possible future modes: fully
+private Monacado resolution; selective publication to broader AgentNet
+infrastructure; managed federation with approved resolvers; public discovery of
+selected Nodes/Capsules; private resolution for restricted entities. **No
+federation behaviour is implemented in this phase.**
+
+To keep every mode reachable, Monacado-controlled Nodes and Capsules **must
+retain**: ANS-compatible opaque Node IDs; ANS metadata; ANS provenance; semantic
+capsule versioning; Node Policy and Capsule Policy linkage; authority
+separation; immutable publication history; and supersession/revocation
+semantics.
+
+### 11.13 Policy (future — not implemented now)
+
+The walled-garden model requires future policy layers for: Platform Node Policy;
+entity Node Policy; Capsule Policy; participant publication authorisation;
+Registrar issuance policy; publication eligibility; privacy; restricted
+categories; revocation and retirement; federation eligibility; and resolver
+visibility. **Effective Policy evaluation is required before publication and
+registration** (ANS §3 policy linkage/inheritance). No policy evaluation is
+implemented in this phase.
+
+### 11.14 Registrar accreditation
+
+Binding. ANS Core v2.0 §6 requires a Registrar to be **accredited**, with
+**publicly verifiable** accreditation status. This resolves that open item.
+
+1. **Common founder ownership of AgentNet and Monacado does not, by itself,
+   constitute the publicly verifiable Registrar accreditation ANS requires.**
+   Accreditation is never inferred from shared ownership or operator identity.
+2. **AgentNet's authorised standards or governance authority will formally
+   accredit** the Monacado Registrar operation.
+3. The **accredited subject** is either **Monacado as the legal/operating
+   organisation**, or **a specifically identified Monacado Registrar service**
+   operated by that organisation.
+4. Accreditation must exist as a **durable governance artifact**, not an inferred
+   consequence of founder identity.
+5. The accreditation record must eventually identify at least: accreditation
+   identifier; accredited organisation or service; accrediting authority; ANS
+   version / conformance scope; permitted Registrar domain / operating scope;
+   effective date; status; expiration or review date (if applicable);
+   restrictions or conditions; revocation or suspension state; and a
+   verification / publication location.
+6. **Steve Rouse may approve or execute the accreditation in his authorised
+   AgentNet capacity, but the accreditation belongs to the organisations and
+   operating roles, not to him personally.**
+7. **Monacado must not claim accredited Registrar status in production until the
+   accreditation record has actually been issued and made verifiable** through
+   the selected AgentNet governance mechanism.
+8. Future Monacado Registrar configuration must **reference the accreditation
+   identifier and status** rather than infer accreditation from ownership or
+   operator identity.
+9. The precise accreditation document, registry, signature mechanism, and public
+   verification endpoint remain **deferred to AgentNet governance work**.
+
+---
+
 ## Out of scope for this document
 
 This ADR records decisions only. The Phase 0A.1 sections (§§1–9) introduced no
 code; the §10 ratifications accompany the Phase 0B Product capsule
-implementation but this file itself remains documentation. No Offer,
-persistence, Prisma, React binding, publication worker, or live network code is
-authorized by this document.
+implementation; §11 (Phase 0B.2) is an architecture decision only. No Offer,
+persistence, Prisma, Registrar service, publication worker, credentials, policy
+evaluation, or live network code is authorized by this document. Several §11 and
+0B.1 rulings (semantic versioning, removal of capsule lifecycle, ANS `metadata`
+block, Registrar-issued node binding, provenance fields) describe **future
+corrections** to the Phase 0B implementation and are not applied here.
