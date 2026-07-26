@@ -1,0 +1,101 @@
+// Monacado — Product source-record persistence (Phase 0D).
+//
+// The database is the authoritative store for the enduring Product identity and
+// its IMMUTABLE source-record version history. Capsule candidates are NOT stored
+// here — they are deterministic derivations regenerated from a persisted version
+// via the Phase 0C mapper. No published-capsule JSON, Node IDs, capsule IDs, or
+// publication metadata are persisted in these tables (those belong to future
+// Node/publication/reconciliation models).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+/// Stable Monacado Product identity (one row per enduring product).
+model Product {
+  /// Opaque internal Product identifier (mon:product:<opaque>). Immutable.
+  internalProductId String @id @db.VarChar(191)
+
+  /// Opaque source-record identifier (mon:srec:<opaque>), constant across all
+  /// versions of this product; distinct from internalProductId.
+  sourceRecordId String @unique @db.VarChar(191)
+
+  /// Pointer to the current immutable version's sourceRecordVersion.
+  currentSourceRecordVersion String @db.VarChar(64)
+
+  /// Internal Monacado record status (authoring state — NOT ANS lifecycle).
+  recordStatus String @db.VarChar(32)
+
+  /// DB row creation time for the stable identity (operational; not a domain field).
+  productRowCreatedAt DateTime @default(now()) @db.DateTime(3)
+
+  versions ProductSourceRecordVersionRow[]
+
+  @@index([sourceRecordId])
+}
+
+/// Immutable authoritative Product source-record version. Never updated in place.
+model ProductSourceRecordVersionRow {
+  /// Surrogate ordering/PK; deterministic creation order for version listing.
+  seq BigInt @id @default(autoincrement())
+
+  // — Identity —
+  internalProductId   String @db.VarChar(191)
+  sourceRecordId      String @db.VarChar(191)
+  sourceRecordVersion String @db.VarChar(64)
+
+  // — Source-system identity —
+  sourceSystem     String @db.VarChar(64)
+  sourceRecordType String @db.VarChar(64)
+  sourceClass      String @db.VarChar(64)
+
+  // — Internal creator authority (opaque governed references; deferred FK to a
+  //   future participant model) —
+  authorityCreatorId          String  @db.VarChar(191)
+  authorityScope              String  @db.VarChar(64)
+  authorityAuthorizationState String  @db.VarChar(32)
+  authorityAuthorizationRef   String? @db.VarChar(191)
+
+  // — Product facts (normalized scalars) —
+  factName                     String  @db.VarChar(512)
+  factDescription              String? @db.Text
+  factImage                    String? @db.VarChar(1024)
+  factProductVersion           Int
+  factPromotable               Boolean
+  factGeneralAvailabilityState String  @db.VarChar(32)
+  /// Validated JSON: Record<string, string|number|boolean>. Validated by the
+  /// ProductData Zod contract before write and after read.
+  factSpecifications           Json?
+  /// Validated JSON: string[]. Validated by the ProductData Zod contract.
+  factCapabilities             Json?
+  /// facts.relationships.creator (opaque ANS node reference an:node:<opaque>).
+  factCreatorRef               String  @db.VarChar(191)
+  /// facts.relationships.offer (optional opaque ANS node reference).
+  factOfferRef                 String? @db.VarChar(191)
+
+  // — Mapping controls (NOT Product facts, NOT publication metadata) —
+  capsuleSemver      String   @db.VarChar(64)
+  mappingVersion     String   @db.VarChar(64)
+  capsuleGeneratedAt DateTime @db.DateTime(3)
+
+  // — Source timestamps (domain) —
+  acquiredAt      DateTime @db.DateTime(3)
+  sourceCreatedAt DateTime @db.DateTime(3)
+  sourceUpdatedAt DateTime @db.DateTime(3)
+
+  // — Internal record status (per-version snapshot) —
+  recordStatus String @db.VarChar(32)
+
+  // — DB row control (operational; not a domain field) —
+  rowCreatedAt DateTime @default(now()) @db.DateTime(3)
+
+  product Product @relation(fields: [internalProductId], references: [internalProductId])
+
+  @@unique([sourceRecordId, sourceRecordVersion])
+  @@index([internalProductId, seq])
+}

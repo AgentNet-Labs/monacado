@@ -13,9 +13,15 @@
     "contracts:validate": "tsx scripts/contracts-validate.ts",
     "contracts:export": "tsx scripts/contracts-export.ts",
     "contracts:demo": "tsx scripts/contracts-demo.ts",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate deploy",
+    "db:check": "tsx scripts/db-check.ts",
+    "db:test": "RUN_DB_TESTS=1 vitest run test/product-persistence.integration.test.ts",
+    "postinstall": "prisma generate",
     "validate": "npm run lint && npm run typecheck && npm run contracts:validate && npm run test && npm run build"
   },
   "dependencies": {
+    "@prisma/client": "^6.19.3",
     "next": "^15.5.21",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -25,8 +31,10 @@
     "@types/node": "^20.19.43",
     "@types/react": "^18.3.31",
     "@types/react-dom": "^18.3.7",
+    "dotenv": "^17.4.2",
     "eslint": "^8.57.1",
     "eslint-config-next": "^15.5.21",
+    "prisma": "^6.19.3",
     "tsx": "^4.23.1",
     "typescript": "^5.9.3",
     "vitest": "^2.1.9"

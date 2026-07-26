@@ -9,10 +9,15 @@ authoritative Product source record
   → validated source-record reconstruction (projection)
 ```
 
-This is a **contract-only, database-free** phase. No Prisma, SQL, MySQL, Aiven,
-migrations, repositories, adapters, transactions, network calls, publication
-workers, or Registrar integration. Source lives in
+This is a **contract-only, database-free** phase (Phase 0C). No Prisma, SQL,
+MySQL, Aiven, migrations, repositories, adapters, transactions, network calls,
+publication workers, or Registrar integration. Source lives in
 `src/contracts/product/product-source-record.ts`.
+
+> The **database persistence layer** built on this contract (Phase 0D) is
+> documented in [`PRODUCT_PERSISTENCE.md`](PRODUCT_PERSISTENCE.md): the stable
+> Product identity, immutable source-record version history, Prisma schema,
+> repository, and deterministic candidate regeneration from persisted versions.
 
 ## Product source record is authoritative; the candidate is derived
 
