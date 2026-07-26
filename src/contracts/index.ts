@@ -19,6 +19,7 @@ export * from "./product/product.capsule";
 export * from "./product/product.authority";
 export * from "./product/product.factory";
 export * from "./product/product-source-record";
+export * from "./product/product-node";
 
 // Integrity
 export * from "./integrity/canonical-json";

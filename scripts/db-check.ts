@@ -11,6 +11,10 @@
 import "dotenv/config";
 import { getPrisma, disconnectPrisma } from "../src/server/db/client";
 import { ProductRepository } from "../src/server/product/product-repository";
+import {
+  MONACADO_REGISTRAR_ID,
+  ProductNodeRepository,
+} from "../src/server/product/product-node-repository";
 import { candidateHash, productSourceRecordToCapsuleCandidate } from "../src/contracts/index";
 import type { ProductSourceRecord } from "../src/contracts/index";
 
@@ -21,6 +25,7 @@ const CHECK_INTERNAL = `mon:product:${pad26("DBCHECKPRODUCT")}`;
 const CHECK_SREC = `mon:srec:${pad26("DBCHECKSREC")}`;
 const CHECK_CREATOR = `mon:creator:${pad26("DBCHECKCREATOR")}`;
 const CHECK_NODE = `an:node:${pad26("DBCHECKNODE")}`;
+const CHECK_NODE_ANS = `an:node:${pad26("DBCHECKANSNODE")}`;
 
 function syntheticCheckRecord(): ProductSourceRecord {
   return {
@@ -89,10 +94,24 @@ async function main(): Promise<void> {
     "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()",
   );
   const names = new Set(tables.map((t) => t.TABLE_NAME));
-  for (const t of ["Product", "ProductSourceRecordVersionRow"]) {
+  for (const t of ["Product", "ProductSourceRecordVersionRow", "ProductNode"]) {
     if (!names.has(t)) fail(`missing table ${t}`);
   }
   ok("expected tables present");
+
+  // ProductNode uniqueness constraints + FK.
+  const nodeIdx = await db.$queryRawUnsafe<Array<{ INDEX_NAME: string; NON_UNIQUE: number }>>(
+    "SELECT DISTINCT INDEX_NAME, NON_UNIQUE FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ProductNode'",
+  );
+  const uniqNode = (col: string) =>
+    nodeIdx.some((i) => i.INDEX_NAME.includes(col) && Number(i.NON_UNIQUE) === 0);
+  if (!uniqNode("nodeId")) fail("missing unique ProductNode.nodeId index");
+  if (!uniqNode("internalProductId")) fail("missing unique ProductNode.internalProductId index");
+  const nodeFk = await db.$queryRawUnsafe<Array<{ c: number }>>(
+    "SELECT COUNT(*) c FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ProductNode' AND REFERENCED_TABLE_NAME = 'Product'",
+  );
+  if (Number(nodeFk[0]?.c ?? 0) === 0) fail("missing ProductNode -> Product foreign key");
+  ok("ProductNode unique(nodeId), unique(internalProductId), FK present");
 
   // 4. Expected indexes / uniqueness constraints.
   const idx = await db.$queryRawUnsafe<Array<{ INDEX_NAME: string; NON_UNIQUE: number }>>(
@@ -118,6 +137,31 @@ async function main(): Promise<void> {
     const fromMem = productSourceRecordToCapsuleCandidate(record);
     if (candidateHash(fromDb) !== candidateHash(fromMem)) fail("deterministic candidate hash mismatch");
     ok("deterministic candidate generation from persisted version");
+
+    // Product Node: synthetic issuance, retrieval, one lifecycle transition.
+    const nodeRepo = new ProductNodeRepository(db);
+    await nodeRepo.issueProductNode({
+      nodeId: CHECK_NODE_ANS,
+      internalProductId: CHECK_INTERNAL,
+      nodeKind: "product",
+      nodePolicyRef: "an:policy:node:dbcheck",
+      nodePolicyVersion: "1.0.0",
+      registrarId: MONACADO_REGISTRAR_ID,
+      issuedAt: "2026-01-02T00:00:00.000Z",
+    });
+    const byNode = await nodeRepo.getProductNode(CHECK_NODE_ANS);
+    const byProduct = await nodeRepo.getProductNodeByInternalProductId(CHECK_INTERNAL);
+    if (byNode.nodeId !== byProduct.nodeId) fail("node retrieval mismatch");
+    if (byNode.lifecycleState !== "Active") fail("issued node not Active");
+    ok("Product Node issuance + retrieval by nodeId and productId");
+
+    const transitioned = await nodeRepo.transitionProductNodeLifecycle({
+      nodeId: CHECK_NODE_ANS,
+      toState: "Inactive",
+      lifecycleChangedAt: "2026-01-03T00:00:00.000Z",
+    });
+    if (transitioned.lifecycleState !== "Inactive") fail("lifecycle transition did not apply");
+    ok("Product Node lifecycle transition (Active -> Inactive)");
   } finally {
     await cleanup(db);
   }
@@ -126,6 +170,8 @@ async function main(): Promise<void> {
 }
 
 async function cleanup(db: ReturnType<typeof getPrisma>): Promise<void> {
+  // Delete Node first (FK RESTRICT), then versions, then the Product.
+  await db.productNode.deleteMany({ where: { internalProductId: CHECK_INTERNAL } });
   await db.productSourceRecordVersionRow.deleteMany({ where: { internalProductId: CHECK_INTERNAL } });
   await db.product.deleteMany({ where: { internalProductId: CHECK_INTERNAL } });
 }

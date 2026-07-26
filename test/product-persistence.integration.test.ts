@@ -74,6 +74,8 @@ const repo = RUN ? new ProductRepository(db) : (undefined as unknown as ProductR
 
 describe.skipIf(!RUN)("Product persistence (integration, disposable DB)", () => {
   beforeEach(async () => {
+    // FK-safe order: Nodes reference Products (RESTRICT), so remove any first.
+    await db.productNode.deleteMany({});
     await db.productSourceRecordVersionRow.deleteMany({});
     await db.product.deleteMany({});
   });

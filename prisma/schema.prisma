@@ -35,8 +35,52 @@ model Product {
   productRowCreatedAt DateTime @default(now()) @db.DateTime(3)
 
   versions ProductSourceRecordVersionRow[]
+  node     ProductNode?
 
   @@index([sourceRecordId])
+}
+
+/// Durable AgentNet Node associated with a Monacado Product (Phase 0E.1).
+///
+/// The Node is the enduring AgentNet identity anchor; ANS lifecycle lives HERE,
+/// never on Product source records or capsules. Populated by Monacado's OFFLINE
+/// Registrar-domain operations — no publication records, receipts, or network
+/// calls in this phase.
+model ProductNode {
+  /// Internal surrogate row id.
+  id BigInt @id @default(autoincrement())
+
+  /// Opaque Registrar-issued Node ID (an:node:<opaque>); unique and immutable.
+  nodeId String @unique @db.VarChar(191)
+
+  /// The stable Product this Node anchors (one Node per Product).
+  internalProductId String @unique @db.VarChar(191)
+
+  /// Internal Node classification (NOT encoded into nodeId).
+  nodeKind String @db.VarChar(64)
+
+  /// ANS lifecycle state: Active | Inactive | Retired | Revoked.
+  lifecycleState      String  @db.VarChar(16)
+  lifecycleChangedAt  DateTime @db.DateTime(3)
+  lifecycleReasonCode String? @db.VarChar(64)
+
+  /// Node Policy linkage (reference + version).
+  nodePolicyRef     String @db.VarChar(191)
+  nodePolicyVersion String @db.VarChar(64)
+
+  /// Registrar identity + optional accreditation reference (accreditation
+  /// verification itself is deferred).
+  registrarId               String  @db.VarChar(191)
+  registrarAccreditationRef String? @db.VarChar(191)
+
+  issuedAt  DateTime @db.DateTime(3)
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  // RESTRICT: deleting a Product must not cascade-delete Node history.
+  product Product @relation(fields: [internalProductId], references: [internalProductId], onDelete: Restrict)
+
+  @@index([internalProductId])
 }
 
 /// Immutable authoritative Product source-record version. Never updated in place.

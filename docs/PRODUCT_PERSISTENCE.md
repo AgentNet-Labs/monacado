@@ -178,10 +178,17 @@ in order. Rollback for this additive migration is dropping the two tables; no
 production data exists to preserve. **Production migrations are not applied in
 this phase.**
 
+## Related: Product Node
+
+The durable AgentNet **Product Node** (opaque Registrar-issued identity + ANS
+lifecycle) is a separate model documented in
+[`PRODUCT_NODE_PERSISTENCE.md`](PRODUCT_NODE_PERSISTENCE.md) (Phase 0E.1). ANS
+lifecycle lives on the Node, never on these source-record tables.
+
 ## Future models & known deferrals
 
 - Participant/account/organisation model + FK from `authorityCreatorId`.
-- Node registry, Publisher/Registrar services, resolver.
+- Publisher/Registrar services (live), resolver.
 - Publication outbox and publication-receipt/reconciliation models (which will
   own `bindsToNode`, `capsuleId`, `publishedAt`, policy refs, receipts).
 - Offer, Listing, Review, Storefront persistence.
