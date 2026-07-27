@@ -4,7 +4,11 @@
  * Stable codes; internal `cause` preserved for diagnostics only. Nothing here
  * includes DATABASE_URL, credentials, hosts with credentials, or raw Prisma
  * connection details. Reuses DatabaseError from ./errors for DB failures.
+ *
+ * The internal cause is retained but NON-ENUMERABLE (see ./error-cause).
  */
+
+import { attachInternalCause } from "./error-cause";
 
 export type ProductNodeErrorCode =
   | "PRODUCT_NOT_FOUND"
@@ -16,12 +20,13 @@ export type ProductNodeErrorCode =
 
 export class ProductNodeError extends Error {
   readonly code: ProductNodeErrorCode;
-  readonly internalCause?: unknown;
+  /** Retained for diagnostics; NON-ENUMERABLE (see ./error-cause). */
+  declare readonly internalCause?: unknown;
   constructor(code: ProductNodeErrorCode, message: string, internalCause?: unknown) {
     super(message);
     this.name = "ProductNodeError";
     this.code = code;
-    this.internalCause = internalCause;
+    attachInternalCause(this, internalCause);
   }
 }
 

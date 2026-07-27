@@ -56,9 +56,24 @@ export function withPublishedContentHash<
 }
 
 /**
+ * Hash of ANY value under the deterministic canonical JSON procedure, as
+ * `sha256:<hex>`. This is the single shared primitive the named hashes below are
+ * expressed in terms of — callers needing a canonical hash (e.g. an outbox
+ * payload hash) reuse this rather than re-implementing canonicalize-then-digest.
+ *
+ * It is deliberately unnamed with respect to capsule semantics: a canonical hash
+ * of a payload is NOT the published-capsule content hash and the two must not be
+ * conflated. `publishedContentHash` excludes `metadata.contentHash`; a payload
+ * hash covers the payload exactly as stored, including that field.
+ */
+export function canonicalHash(value: unknown): string {
+  return sha256(canonicalJsonString(value));
+}
+
+/**
  * Pre-publication candidate hash (distinct from the published-capsule hash).
  * Covers the whole candidate (data + candidate metadata/provenance).
  */
 export function candidateHash(candidate: unknown): string {
-  return sha256(canonicalJsonString(candidate));
+  return canonicalHash(candidate);
 }

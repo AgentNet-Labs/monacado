@@ -74,6 +74,19 @@ export const INTERNAL_PRODUCT_ID_RE = new RegExp(`^mon:product:${OPAQUE_BODY}$`)
 /** Internal creator authority identifier (`mon:creator:<opaque>`). Internal only. */
 export const INTERNAL_CREATOR_ID_RE = new RegExp(`^mon:creator:${OPAQUE_BODY}$`);
 
+/**
+ * Internal Monacado publication-record identifier (`mon:pub:<opaque>`). Names one
+ * durable Monacado publication record; it is NOT an ANS identity and must never
+ * substitute for a Node ID or a capsule ID.
+ */
+export const PUBLICATION_ID_RE = new RegExp(`^mon:pub:${OPAQUE_BODY}$`);
+
+/**
+ * Internal Monacado publication-outbox item identifier (`mon:obx:<opaque>`).
+ * Operational work identity only — not an ANS identity.
+ */
+export const OUTBOX_ID_RE = new RegExp(`^mon:obx:${OPAQUE_BODY}$`);
+
 // — Synthetic constructors (tests/demo only; a real Registrar issues ANS ids) —
 
 export function makeSyntheticNodeId(opaque: string): string {
@@ -97,4 +110,39 @@ export function makeSourceRecordId(opaque: string): string {
 /** Internal creator authority identifier (NOT an ANS identity). */
 export function makeInternalCreatorId(opaque: string): string {
   return `mon:creator:${opaque}`;
+}
+
+/** Internal Monacado publication-record identifier (NOT an ANS identity). */
+export function makePublicationId(opaque: string): string {
+  return `mon:pub:${opaque}`;
+}
+
+/** Internal Monacado publication-outbox identifier (NOT an ANS identity). */
+export function makeOutboxId(opaque: string): string {
+  return `mon:obx:${opaque}`;
+}
+
+/**
+ * Crockford base32 alphabet backing `OPAQUE_BODY` (excludes I, L, O, U).
+ * Used to render a deterministic opaque body from a hash digest.
+ */
+export const CROCKFORD_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ" as const;
+
+/**
+ * Render a deterministic 26-char Crockford body from a hex digest (the low 130
+ * bits). Deterministic and opaque: the same digest always yields the same body,
+ * and the body encodes no entity type, name, or business meaning.
+ */
+export function opaqueBodyFromHex(hex: string): string {
+  if (!/^[0-9a-f]+$/i.test(hex)) {
+    throw new Error("opaqueBodyFromHex requires a hex digest");
+  }
+  let n = BigInt(`0x${hex}`);
+  const base = 32n;
+  let out = "";
+  for (let i = 0; i < 26; i += 1) {
+    out = CROCKFORD_ALPHABET[Number(n % base)] + out;
+    n /= base;
+  }
+  return out;
 }

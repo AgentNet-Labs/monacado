@@ -112,11 +112,19 @@ values the domain uses.
 ## Persisted vs. derived; excluded publication fields
 
 **Derived (never stored):** capsule `@context`/`@type`/`metadata`/`data`, provenance
-structure, candidate hash. **Excluded from these tables** (belong to future
-Node/publication/reconciliation models): `bindsToNode`, `capsuleId`,
-`publishedBy`, `publishedAt`, Node/Capsule Policy references, published capsule
-hash, Registrar registration id, publication receipt, publication status,
-resolver state, and the published capsule JSON body.
+structure, candidate hash. **Excluded from these tables:** `bindsToNode`,
+`capsuleId`, `publishedBy`, `publishedAt`, Node/Capsule Policy references,
+published capsule hash, Registrar registration id, publication receipt,
+publication status, resolver state, and the published capsule JSON body.
+
+Those belong to the Node and publication models, not to the source record.
+`bindsToNode` lives on `ProductNode` (Phase 0E.1). `capsuleId`, `publishedBy`,
+`publishedAt`, policy references, the candidate hash, and the published-capsule
+hash live on `ProductPublication`, and the published capsule JSON body lives
+**only** in the `PublicationOutbox` payload (Phase 0E.2 —
+[`PRODUCT_PUBLICATION_PREPARATION.md`](PRODUCT_PUBLICATION_PREPARATION.md)).
+Registrar registration ids, receipts, resolver state, and reconciliation remain
+deferred.
 
 ## Prisma-to-domain mapping
 
@@ -189,7 +197,8 @@ lifecycle lives on the Node, never on these source-record tables.
 
 - Participant/account/organisation model + FK from `authorityCreatorId`.
 - Publisher/Registrar services (live), resolver.
-- Publication outbox and publication-receipt/reconciliation models (which will
-  own `bindsToNode`, `capsuleId`, `publishedAt`, policy refs, receipts).
+- Outbox claiming/retries, publication receipts, and reconciliation. (The
+  publication record and the PENDING REGISTER outbox item — owning `capsuleId`,
+  `publishedAt`, policy refs, and the capsule payload — arrived in Phase 0E.2.)
 - Offer, Listing, Review, Storefront persistence.
 - Production Aiven connection, staging/production migrations, Vercel wiring.

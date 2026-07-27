@@ -6,7 +6,12 @@
  * diagnostics only. NOTHING here includes DATABASE_URL, credentials, hosts with
  * credentials, or raw Prisma connection details — construct messages from safe
  * text only.
+ *
+ * The internal cause is retained but NON-ENUMERABLE (see ./error-cause), so it
+ * cannot escape through `JSON.stringify`, object spread, or `Object.keys`.
  */
+
+import { attachInternalCause } from "./error-cause";
 
 export type ProductRepositoryErrorCode =
   | "VALIDATION_FAILED"
@@ -20,14 +25,19 @@ export type ProductRepositoryErrorCode =
 
 export class ProductRepositoryError extends Error {
   readonly code: ProductRepositoryErrorCode;
-  /** Optional internal cause (never serialized to clients). */
-  readonly internalCause?: unknown;
+  /**
+   * Optional internal cause, retained for diagnostics but defined
+   * NON-ENUMERABLE by `attachInternalCause` — invisible to `JSON.stringify`,
+   * object spread, and `Object.keys`. Declared (not initialised) here so the
+   * class field never re-creates it as an enumerable property.
+   */
+  declare readonly internalCause?: unknown;
 
   constructor(code: ProductRepositoryErrorCode, message: string, internalCause?: unknown) {
     super(message);
     this.name = "ProductRepositoryError";
     this.code = code;
-    this.internalCause = internalCause;
+    attachInternalCause(this, internalCause);
   }
 }
 

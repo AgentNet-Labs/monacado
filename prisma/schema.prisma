@@ -1,11 +1,22 @@
-// Monacado — Product source-record persistence (Phase 0D).
+// Monacado — Product persistence (Phases 0D, 0E.1, 0E.2).
 //
 // The database is the authoritative store for the enduring Product identity and
-// its IMMUTABLE source-record version history. Capsule candidates are NOT stored
-// here — they are deterministic derivations regenerated from a persisted version
-// via the Phase 0C mapper. No published-capsule JSON, Node IDs, capsule IDs, or
-// publication metadata are persisted in these tables (those belong to future
-// Node/publication/reconciliation models).
+// its IMMUTABLE source-record version history. Capsule CANDIDATES are never
+// stored — they are deterministic derivations regenerated from a persisted
+// version via the Phase 0C mapper.
+//
+// Concerns are kept on separate tables and never merged:
+//   Product / ProductSourceRecordVersionRow — identity + immutable Product facts;
+//     no Node IDs, capsule IDs, or publication metadata (Phase 0D).
+//   ProductNode                              — the AgentNet Node and the ONLY
+//     home of ANS lifecycle state (Phase 0E.1).
+//   ProductPublication                       — publication identity, lineage,
+//     and integrity; no Product facts, no capsule body (Phase 0E.2).
+//   PublicationOutbox                        — durable PENDING REGISTER work and
+//     the ONLY place a published-capsule JSON body is persisted (Phase 0E.2).
+//
+// No registration receipts, retries, claims, reconciliation, or Resolver state
+// exist yet — those belong to later phases.
 
 generator client {
   provider = "prisma-client-js"
@@ -34,8 +45,9 @@ model Product {
   /// DB row creation time for the stable identity (operational; not a domain field).
   productRowCreatedAt DateTime @default(now()) @db.DateTime(3)
 
-  versions ProductSourceRecordVersionRow[]
-  node     ProductNode?
+  versions     ProductSourceRecordVersionRow[]
+  node         ProductNode?
+  publications ProductPublication[]
 
   @@index([sourceRecordId])
 }
@@ -60,9 +72,9 @@ model ProductNode {
   nodeKind String @db.VarChar(64)
 
   /// ANS lifecycle state: Active | Inactive | Retired | Revoked.
-  lifecycleState      String  @db.VarChar(16)
+  lifecycleState      String   @db.VarChar(16)
   lifecycleChangedAt  DateTime @db.DateTime(3)
-  lifecycleReasonCode String? @db.VarChar(64)
+  lifecycleReasonCode String?  @db.VarChar(64)
 
   /// Node Policy linkage (reference + version).
   nodePolicyRef     String @db.VarChar(191)
@@ -78,7 +90,8 @@ model ProductNode {
   updatedAt DateTime @updatedAt @db.DateTime(3)
 
   // RESTRICT: deleting a Product must not cascade-delete Node history.
-  product Product @relation(fields: [internalProductId], references: [internalProductId], onDelete: Restrict)
+  product      Product              @relation(fields: [internalProductId], references: [internalProductId], onDelete: Restrict)
+  publications ProductPublication[]
 
   @@index([internalProductId])
 }
@@ -140,6 +153,130 @@ model ProductSourceRecordVersionRow {
 
   product Product @relation(fields: [internalProductId], references: [internalProductId])
 
+  publications ProductPublication[]
+
   @@unique([sourceRecordId, sourceRecordVersion])
   @@index([internalProductId, seq])
+}
+
+/// Immutable record that ONE exact Product source-record version was prepared for
+/// AgentNet registration as ONE identified capsule, bound to ONE Product Node
+/// (Phase 0E.2).
+///
+/// Holds identity, lineage, and integrity ONLY. No Product facts are duplicated
+/// here (they live on the immutable source-record version); no capsule JSON body
+/// is stored here (it exists only as the outbox payload); no Node lifecycle is
+/// stored here (lifecycle lives on ProductNode — ADR §11.9); and no submission,
+/// registration, receipt, retry, reconciliation, or Resolver state exists yet.
+model ProductPublication {
+  /// Internal surrogate row id.
+  id BigInt @id @default(autoincrement())
+
+  /// Opaque publication identifier (mon:pub:<opaque>); unique and immutable.
+  publicationId String @unique @db.VarChar(191)
+
+  /// The stable Product identity (identity, not a Product fact).
+  internalProductId String @db.VarChar(191)
+
+  // — Exact immutable source-record lineage (composite FK) —
+  sourceRecordId      String @db.VarChar(191)
+  sourceRecordVersion String @db.VarChar(64)
+
+  /// The Product Node this capsule binds to (FK to ProductNode.nodeId).
+  nodeId String @db.VarChar(191)
+
+  /// Opaque capsule identifier; unique and immutable (one capsule, one publication).
+  capsuleId     String @unique @db.VarChar(191)
+  capsuleSemver String @db.VarChar(64)
+
+  // — ANS publication metadata —
+  publishedBy String   @db.VarChar(191)
+  publishedAt DateTime @db.DateTime(3)
+
+  // — Structural policy linkage (effective policy evaluation deferred) —
+  nodePolicyRef        String @db.VarChar(191)
+  nodePolicyVersion    String @db.VarChar(64)
+  capsulePolicyRef     String @db.VarChar(191)
+  capsulePolicyVersion String @db.VarChar(64)
+
+  // — Integrity (immutable once written) —
+  /// Hash of the regenerated pre-publication candidate.
+  candidateHash        String @db.VarChar(80)
+  /// The published capsule's own content hash (excludes metadata.contentHash).
+  publishedContentHash String @db.VarChar(80)
+
+  // — Mapping controls carried from the source-record version (NOT Product facts) —
+  mappingVersion     String   @db.VarChar(64)
+  capsuleGeneratedAt DateTime @db.DateTime(3)
+
+  /// Optional prior-capsule references. Mutually exclusive; never a Node ID.
+  supersedesCapsuleId String? @db.VarChar(191)
+  revokesCapsuleId    String? @db.VarChar(191)
+
+  /// PREPARED | QUEUED | CANCELLED (bounded by the Zod PublicationStatus enum).
+  publicationStatus String @db.VarChar(16)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  // RESTRICT everywhere: publication history must never be cascade-deleted, and
+  // the referenced source version / Node / Product cannot be removed beneath it.
+  product       Product                       @relation(fields: [internalProductId], references: [internalProductId], onDelete: Restrict)
+  node          ProductNode                   @relation(fields: [nodeId], references: [nodeId], onDelete: Restrict)
+  sourceVersion ProductSourceRecordVersionRow @relation(fields: [sourceRecordId, sourceRecordVersion], references: [sourceRecordId, sourceRecordVersion], onDelete: Restrict)
+
+  outbox PublicationOutbox?
+
+  /// One publication per (Node, exact source-record version) — prevents two
+  /// conflicting capsule identities being published for the same source version.
+  @@unique([nodeId, sourceRecordId, sourceRecordVersion])
+  @@index([internalProductId])
+  @@index([sourceRecordId, sourceRecordVersion])
+}
+
+/// Durable publication work item (Phase 0E.2). Exactly one REGISTER item per
+/// prepared publication, created in the SAME transaction as the publication.
+///
+/// This phase persists only PENDING work. There are deliberately NO claim, lock,
+/// lease, retry, error, dead-letter, receipt, reconciliation, completion, or
+/// payload-disposal fields — those belong to later phases.
+model PublicationOutbox {
+  /// Internal surrogate row id.
+  id BigInt @id @default(autoincrement())
+
+  /// Opaque outbox identifier (mon:obx:<opaque>); unique. Derived deterministically
+  /// from the idempotency key.
+  outboxId String @unique @db.VarChar(191)
+
+  /// One-to-one with the publication (one REGISTER item per publication).
+  publicationId String @unique @db.VarChar(191)
+
+  /// Deterministic sha256 over the stable preparation identity; unique.
+  idempotencyKey String @unique @db.VarChar(191)
+
+  /// REGISTER only in this phase (bounded by the Zod OutboxOperationType enum).
+  operationType String @db.VarChar(32)
+
+  /// The validated FINAL published Product capsule. Strict-schema JSON, validated
+  /// on read; never an arbitrary bag and never carries secrets or credentials.
+  payload Json
+
+  /// Canonical hash of the payload exactly as stored.
+  payloadHash String @db.VarChar(80)
+
+  /// PENDING | CANCELLED (bounded by the Zod OutboxStatus enum).
+  outboxStatus String @db.VarChar(16)
+
+  /// Always 0 in this phase — no attempt processing exists yet.
+  attemptCount Int @default(0)
+
+  /// Earliest time this item may be considered for work.
+  availableAt DateTime @db.DateTime(3)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  publication ProductPublication @relation(fields: [publicationId], references: [publicationId], onDelete: Restrict)
+
+  @@index([outboxStatus, availableAt])
 }

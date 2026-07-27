@@ -108,12 +108,20 @@ synthetic issuance, retrieval by both keys, and one lifecycle transition (cleane
 up, no destructive reset). `db:test` runs the DB-backed integration suites
 serially against the disposable database (`RUN_DB_TESTS=1 --no-file-parallelism`).
 
+## Relationship to publication (Phase 0E.2)
+
+Publication preparation references the Node and **requires lifecycle `Active`**;
+`Inactive`, `Retired`, and `Revoked` Nodes are rejected. Node lifecycle state is
+never copied onto a publication record or into a capsule. See
+[`PRODUCT_PUBLICATION_PREPARATION.md`](PRODUCT_PUBLICATION_PREPARATION.md).
+
 ## Deferred
 
-Accreditation verification; publication records, outbox, retries/claims,
-Registrar receipts, reconciliation; capsule payload persistence; live Publisher/
-Registrar/Resolver calls; AgentNet credentials; production DB wiring; auth;
-Stripe; UI; Storefront/Listing/Offer/Review. A lifecycle-event audit table was
+Accreditation verification; outbox claiming/retries, Registrar receipts,
+reconciliation; live Publisher/Registrar/Resolver calls; AgentNet credentials;
+production DB wiring; auth; Stripe; UI; Storefront/Listing/Offer/Review.
+(Publication records, the outbox, and capsule payload persistence arrived in
+Phase 0E.2.) A lifecycle-event audit table was
 **not** added this phase (the current Node row carries `lifecycleState` +
 `lifecycleChangedAt` + `lifecycleReasonCode`; a full event history can be added
 later if a richer audit trail is required).
