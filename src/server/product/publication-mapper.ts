@@ -87,6 +87,13 @@ export function outboxRowToDomain(row: OutboxRow): ProductPublicationOutboxDomai
     outboxStatus: row.outboxStatus,
     attemptCount: row.attemptCount,
     availableAt: iso(row.availableAt),
+    // Claim ownership and outcome fields are absent (not null) when unset, so
+    // the strict contract's `.optional()` shape round-trips exactly.
+    ...(row.lockedAt !== null ? { lockedAt: iso(row.lockedAt) } : {}),
+    ...(row.lockToken !== null ? { lockToken: row.lockToken } : {}),
+    ...(row.completedAt !== null ? { completedAt: iso(row.completedAt) } : {}),
+    ...(row.lastErrorCode !== null ? { lastErrorCode: row.lastErrorCode } : {}),
+    ...(row.lastErrorSummary !== null ? { lastErrorSummary: row.lastErrorSummary } : {}),
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),
   };
@@ -154,5 +161,12 @@ export function domainToOutboxCreateInput(
     outboxStatus: outbox.outboxStatus,
     attemptCount: outbox.attemptCount,
     availableAt: new Date(outbox.availableAt),
+    // A newly prepared item is unclaimed and unresolved. Claim/outcome fields
+    // are written only by the Phase 0E.3 processing transitions.
+    lockedAt: outbox.lockedAt !== undefined ? new Date(outbox.lockedAt) : null,
+    lockToken: outbox.lockToken ?? null,
+    completedAt: outbox.completedAt !== undefined ? new Date(outbox.completedAt) : null,
+    lastErrorCode: outbox.lastErrorCode ?? null,
+    lastErrorSummary: outbox.lastErrorSummary ?? null,
   };
 }

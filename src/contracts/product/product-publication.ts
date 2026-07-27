@@ -25,11 +25,13 @@ import {
   SemVer,
 } from "../capsule/envelope";
 import {
+  LOCK_TOKEN_RE,
   OUTBOX_ID_RE,
   PUBLICATION_ID_RE,
   makeOutboxId,
   opaqueBodyFromHex,
 } from "../capsule/identity";
+import { SafeErrorCode, SafeErrorSummary } from "./safe-error-metadata";
 import { canonicalHash } from "../integrity/hash";
 import { InternalProductId, SourceRecordId } from "./product-source-record";
 import { PublishedProductCapsule } from "./product.capsule";
@@ -70,13 +72,36 @@ export const OutboxOperationType = z.enum(OUTBOX_OPERATION_TYPES);
 export type OutboxOperationType = z.infer<typeof OutboxOperationType>;
 
 /**
- * Outbox state. PENDING (durable, unclaimed work) or CANCELLED (withdrawn).
- * There is no CLAIMED / IN_PROGRESS / FAILED / DEAD_LETTER / COMPLETED state in
- * this phase — claiming, retries, and completion are deferred.
+ * Outbox state (Phase 0E.3 — worker-facing processing states).
+ *
+ *   PENDING     — durable, unclaimed work, eligible once `availableAt` is due.
+ *   PROCESSING  — claimed by exactly one worker, identified by `lockToken`.
+ *   RETRYABLE   — a claimed attempt failed recoverably; eligible again at the
+ *                 newly scheduled `availableAt`.
+ *   COMPLETED   — the attempt succeeded. Terminal.
+ *   DEAD_LETTER — the attempt failed unrecoverably. Terminal.
+ *   CANCELLED   — withdrawn before processing. Terminal.
+ *
+ * Registration, receipt, reconciliation, and Resolver states are NOT part of
+ * this enum and must not be added before their phase. "COMPLETED" means the
+ * outbox attempt finished — it asserts nothing about Registrar registration.
  */
-export const OUTBOX_STATUSES = ["PENDING", "CANCELLED"] as const;
+export const OUTBOX_STATUSES = [
+  "PENDING",
+  "PROCESSING",
+  "RETRYABLE",
+  "COMPLETED",
+  "DEAD_LETTER",
+  "CANCELLED",
+] as const;
 export const OutboxStatus = z.enum(OUTBOX_STATUSES);
 export type OutboxStatus = z.infer<typeof OutboxStatus>;
+
+/** Opaque proof that one worker owns one claim. Not an ANS identity, not a credential. */
+export const LockToken = z
+  .string()
+  .regex(LOCK_TOKEN_RE, "lockToken must be opaque (mon:lock:<opaque>)");
+export type LockToken = z.infer<typeof LockToken>;
 
 /** Deterministic idempotency key: `sha256:<hex>` over the preparation identity. */
 export const IdempotencyKey = z
@@ -203,8 +228,22 @@ export const ProductPublicationOutbox = z.strictObject({
   /** Canonical hash of the payload exactly as stored. */
   payloadHash: ContentHash,
   outboxStatus: OutboxStatus,
+  /** Claims made against this item. Incremented by each successful claim. */
   attemptCount: z.int().min(0),
+  /** Earliest time this item may be claimed. Rescheduled on each retry. */
   availableAt: z.iso.datetime(),
+
+  // — Claim ownership (present only while PROCESSING) —
+  lockedAt: z.iso.datetime().optional(),
+  lockToken: LockToken.optional(),
+
+  // — Outcome (Phase 0E.3) —
+  /** Set when the attempt COMPLETED. Never set for RETRYABLE or DEAD_LETTER. */
+  completedAt: z.iso.datetime().optional(),
+  /** Bounded, sanitised failure metadata from the last failed attempt. */
+  lastErrorCode: SafeErrorCode.optional(),
+  lastErrorSummary: SafeErrorSummary.optional(),
+
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 });

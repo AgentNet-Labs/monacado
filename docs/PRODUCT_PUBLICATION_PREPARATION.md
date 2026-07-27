@@ -105,6 +105,13 @@ One bounded enum for this phase:
 Submission, registration, receipt, retry, reconciliation, and Resolver states are
 deliberately **absent** and must not be added before their phase.
 
+> **Phase 0E.3 note.** Worker-facing claiming, retry, completion, dead-lettering,
+> and cancellation of the outbox item are documented separately in
+> [`PRODUCT_PUBLICATION_OUTBOX_PROCESSING.md`](PRODUCT_PUBLICATION_OUTBOX_PROCESSING.md).
+> The outbox state vocabulary and the claim/outcome columns described below were
+> extended by that phase; publication status is unchanged and stays `QUEUED`
+> throughout processing.
+
 ## REGISTER-only outbox scope
 
 `PublicationOutbox` holds exactly **one `REGISTER` item per publication**

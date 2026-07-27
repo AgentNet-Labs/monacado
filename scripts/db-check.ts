@@ -16,6 +16,8 @@ import {
   ProductNodeRepository,
 } from "../src/server/product/product-node-repository";
 import { ProductPublicationService } from "../src/server/product/product-publication-service";
+import { PublicationOutboxRepository } from "../src/server/product/publication-outbox-repository";
+import { UnsafeErrorMetadataError } from "../src/server/product/outbox-errors";
 import {
   MONACADO_PUBLISHER_ID,
   canonicalHash,
@@ -97,6 +99,7 @@ async function main(): Promise<void> {
     "init_product_source_records",
     "add_product_node",
     "add_product_publication_and_outbox",
+    "add_outbox_claiming_and_retry_state",
   ]) {
     if (!migrations.some((m) => m.migration_name.includes(expected))) {
       fail(`expected migration not applied: ${expected}`);
@@ -327,6 +330,103 @@ async function main(): Promise<void> {
     const obxCount = await db.publicationOutbox.count({ where: { publicationId: CHECK_PUBLICATION } });
     if (pubCount !== 1 || obxCount !== 1) fail("idempotent repeat created duplicate rows");
     ok("idempotent repeat returns the existing publication and outbox item");
+
+    // — Outbox processing (Phase 0E.3): claim → retry → re-claim → complete —
+    const outboxRepo = new PublicationOutboxRepository(db);
+    const OBX_T1 = "2026-01-03T00:00:00.000Z";
+    const OBX_T2 = "2026-01-04T00:00:00.000Z";
+    const OBX_T3 = "2026-01-05T00:00:00.000Z";
+
+    // New columns exist and are unset on a freshly prepared item.
+    const obxCols = await db.$queryRawUnsafe<Array<{ COLUMN_NAME: string; IS_NULLABLE: string }>>(
+      "SELECT COLUMN_NAME, IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'PublicationOutbox'",
+    );
+    const obxColNames = obxCols.map((c) => c.COLUMN_NAME);
+    for (const col of ["lockedAt", "lockToken", "completedAt", "lastErrorCode", "lastErrorSummary"]) {
+      if (!obxColNames.includes(col)) fail(`missing PublicationOutbox.${col} column`);
+      if (obxCols.find((c) => c.COLUMN_NAME === col)?.IS_NULLABLE !== "YES") {
+        fail(`PublicationOutbox.${col} must be nullable`);
+      }
+    }
+    for (const forbidden of ["receipt", "registrat", "reconcil", "resolver", "lease"]) {
+      if (obxColNames.some((c) => c.toLowerCase().includes(forbidden))) {
+        fail(`PublicationOutbox must not carry a "${forbidden}" column in this phase`);
+      }
+    }
+    ok("outbox claim/outcome columns present and nullable; no receipt/reconciliation columns");
+
+    // Claim the prepared item.
+    const claimed = await outboxRepo.claimNextPublicationOutbox({ now: OBX_T1 });
+    if (claimed.outbox.outboxStatus !== "PROCESSING") fail("claimed item is not PROCESSING");
+    if (claimed.outbox.attemptCount !== 1) fail("attemptCount did not increment to 1");
+    if (claimed.outbox.lockToken !== claimed.lockToken) fail("lockToken not recorded on the row");
+    if (claimed.outbox.lockedAt !== OBX_T1) fail("lockedAt not recorded");
+    ok("outbox claim (PENDING -> PROCESSING, attemptCount 1, lock held)");
+
+    // Retry: reschedules, clears the lock, stores bounded safe metadata.
+    const retried = await outboxRepo.markPublicationOutboxRetryable({
+      outboxId: claimed.outbox.outboxId,
+      lockToken: claimed.lockToken,
+      availableAt: OBX_T2,
+      errorCode: "SUBMISSION_TIMEOUT",
+      errorSummary: "Attempt timed out awaiting acknowledgement.",
+    });
+    if (retried.outboxStatus !== "RETRYABLE") fail("retry did not transition to RETRYABLE");
+    if (retried.lockToken !== undefined || retried.lockedAt !== undefined) {
+      fail("retry did not clear the lock fields");
+    }
+    if (retried.availableAt !== OBX_T2) fail("retry did not reschedule availableAt");
+    if (retried.lastErrorCode !== "SUBMISSION_TIMEOUT") fail("retry did not store the error code");
+    if (retried.payloadHash !== canonicalHash(retried.payload)) {
+      fail("retry altered the payload or payloadHash");
+    }
+    ok("outbox retry (PROCESSING -> RETRYABLE, lock cleared, payload preserved)");
+
+    // Not claimable before the new availableAt; claimable at it.
+    let tooEarly = false;
+    try {
+      await outboxRepo.claimNextPublicationOutbox({ now: OBX_T1 });
+    } catch {
+      tooEarly = true;
+    }
+    if (!tooEarly) fail("a retryable item was claimable before its availableAt");
+    const reclaimed = await outboxRepo.claimNextPublicationOutbox({ now: OBX_T2 });
+    if (reclaimed.outbox.attemptCount !== 2) fail("re-claim did not increment attemptCount to 2");
+    ok("outbox re-claim only after availableAt (attemptCount 2)");
+
+    // Unsafe error metadata is refused, and nothing is persisted.
+    let refused = false;
+    try {
+      await outboxRepo.markPublicationOutboxRetryable({
+        outboxId: reclaimed.outbox.outboxId,
+        lockToken: reclaimed.lockToken,
+        availableAt: OBX_T3,
+        errorCode: "SUBMISSION_FAILED",
+        errorSummary: "connect failed for mysql://user:pw@host:3306/db",
+      });
+    } catch (e) {
+      refused = e instanceof UnsafeErrorMetadataError;
+    }
+    if (!refused) fail("unsafe error metadata was not refused");
+    ok("unsafe error metadata refused (connection string)");
+
+    // Completion.
+    const completed = await outboxRepo.markPublicationOutboxCompleted({
+      outboxId: reclaimed.outbox.outboxId,
+      lockToken: reclaimed.lockToken,
+      completedAt: OBX_T3,
+    });
+    if (completed.outboxStatus !== "COMPLETED") fail("completion did not transition to COMPLETED");
+    if (completed.completedAt !== OBX_T3) fail("completedAt not recorded");
+    if (completed.lockToken !== undefined) fail("completion did not clear the lock");
+    if (completed.payloadHash !== canonicalHash(completed.payload)) {
+      fail("completion altered the payload");
+    }
+    const stillQueued = await pubService.getProductPublication(CHECK_PUBLICATION);
+    if (stillQueued.publicationStatus !== "QUEUED") {
+      fail("outbox processing changed the publication status");
+    }
+    ok("outbox completion (PROCESSING -> COMPLETED, payload retained, publication still QUEUED)");
 
     const transitioned = await nodeRepo.transitionProductNodeLifecycle({
       nodeId: CHECK_NODE_ANS,

@@ -264,19 +264,43 @@ model PublicationOutbox {
   /// Canonical hash of the payload exactly as stored.
   payloadHash String @db.VarChar(80)
 
-  /// PENDING | CANCELLED (bounded by the Zod OutboxStatus enum).
+  /// PENDING | PROCESSING | RETRYABLE | COMPLETED | DEAD_LETTER | CANCELLED
+  /// (bounded by the Zod OutboxStatus enum).
   outboxStatus String @db.VarChar(16)
 
-  /// Always 0 in this phase — no attempt processing exists yet.
+  /// Claims made against this item; incremented by each successful claim.
   attemptCount Int @default(0)
 
-  /// Earliest time this item may be considered for work.
+  /// Earliest time this item may be claimed; rescheduled on each retry.
   availableAt DateTime @db.DateTime(3)
+
+  // — Claim ownership (Phase 0E.3). Both NULL unless the item is PROCESSING. —
+  /// When the current claim was taken.
+  lockedAt DateTime? @db.DateTime(3)
+
+  /// Opaque proof of claim ownership (mon:lock:<opaque>); unique while held.
+  /// NULL when unclaimed — MySQL permits many NULLs under a unique index.
+  lockToken String? @unique @db.VarChar(191)
+
+  // — Outcome (Phase 0E.3). No receipt, registration, or reconciliation state. —
+  /// Set only when the attempt COMPLETED.
+  completedAt DateTime? @db.DateTime(3)
+
+  /// Bounded, sanitised failure metadata from the last failed attempt. Rejects
+  /// credentials, connection strings, integrity hashes, and capsule content at
+  /// the contract boundary — see contracts/product/safe-error-metadata.
+  lastErrorCode    String? @db.VarChar(64)
+  lastErrorSummary String? @db.VarChar(256)
 
   createdAt DateTime @default(now()) @db.DateTime(3)
   updatedAt DateTime @updatedAt @db.DateTime(3)
 
   publication ProductPublication @relation(fields: [publicationId], references: [publicationId], onDelete: Restrict)
 
+  /// Supports the claim query: filter by status, order by availableAt then
+  /// creation order. InnoDB appends the primary key (`id`) to every secondary
+  /// index, so the deterministic (availableAt, id) tiebreak is served by this
+  /// index without a redundant explicit column — and the index is unchanged from
+  /// Phase 0E.2, keeping this migration additive (new columns only).
   @@index([outboxStatus, availableAt])
 }

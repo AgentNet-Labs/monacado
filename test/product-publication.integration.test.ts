@@ -133,16 +133,22 @@ async function columnsOf(table: string): Promise<string[]> {
   return rows.map((r) => r.COLUMN_NAME);
 }
 
+/** Remove every row in FK-safe order: outbox → publication → node → versions → product. */
+async function wipe(): Promise<void> {
+  await db.publicationOutbox.deleteMany({});
+  await db.productPublication.deleteMany({});
+  await db.productNode.deleteMany({});
+  await db.productSourceRecordVersionRow.deleteMany({});
+  await db.product.deleteMany({});
+}
+
 describe.skipIf(!RUN)("Product publication preparation + outbox (integration)", () => {
-  beforeEach(async () => {
-    // FK-safe order: outbox → publication → node → versions → product.
-    await db.publicationOutbox.deleteMany({});
-    await db.productPublication.deleteMany({});
-    await db.productNode.deleteMany({});
-    await db.productSourceRecordVersionRow.deleteMany({});
-    await db.product.deleteMany({});
-  });
+  beforeEach(wipe);
   afterAll(async () => {
+    // Leave the database empty: suites that run after this one clean up in an
+    // order that predates ProductPublication, so leftover publication rows would
+    // block their Node/Product deletes on the RESTRICT foreign keys.
+    await wipe();
     await disconnectPrisma();
   });
 
@@ -509,21 +515,24 @@ describe.skipIf(!RUN)("Product publication preparation + outbox (integration)", 
     expect(result.outbox.availableAt).toBe("2026-02-01T00:00:00.000Z");
   });
 
-  it("34. no claim / retry / receipt / reconciliation fields exist", async () => {
+  it("34. no receipt / registration / reconciliation fields exist", async () => {
+    // Phase 0E.3 moved the boundary: claim ownership (lockToken/lockedAt),
+    // outcome (completedAt), and bounded failure metadata (lastError*) are now
+    // legitimate outbox columns — see PRODUCT_PUBLICATION_OUTBOX_PROCESSING.md.
+    // What remains forbidden is everything still deferred beyond this phase.
     const cols = (await columnsOf("PublicationOutbox")).map((c) => c.toLowerCase());
     expect(cols).toContain("payloadhash");
     for (const forbidden of [
-      "claim",
-      "lock",
+      "claimedby",
       "lease",
-      "retry",
-      "error",
+      "expires",
+      "retrycount",
       "deadletter",
       "receipt",
       "reconcil",
       "registered",
+      "registration",
       "submitted",
-      "completed",
       "resolver",
       "nextattempt",
       "lastattempt",

@@ -21,6 +21,8 @@ export * from "./product/product.factory";
 export * from "./product/product-source-record";
 export * from "./product/product-node";
 export * from "./product/product-publication";
+export * from "./product/safe-error-metadata";
+export * from "./product/product-publication-outbox";
 
 // Integrity
 export * from "./integrity/canonical-json";

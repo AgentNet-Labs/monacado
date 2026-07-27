@@ -87,6 +87,13 @@ export const PUBLICATION_ID_RE = new RegExp(`^mon:pub:${OPAQUE_BODY}$`);
  */
 export const OUTBOX_ID_RE = new RegExp(`^mon:obx:${OPAQUE_BODY}$`);
 
+/**
+ * Outbox claim lock token (`mon:lock:<opaque>`). Proves ownership of one claim
+ * by one worker. Operational only — not an ANS identity, not a credential, and
+ * never derived from Product, Node, capsule, or publication identity.
+ */
+export const LOCK_TOKEN_RE = new RegExp(`^mon:lock:${OPAQUE_BODY}$`);
+
 // — Synthetic constructors (tests/demo only; a real Registrar issues ANS ids) —
 
 export function makeSyntheticNodeId(opaque: string): string {
@@ -120,6 +127,11 @@ export function makePublicationId(opaque: string): string {
 /** Internal Monacado publication-outbox identifier (NOT an ANS identity). */
 export function makeOutboxId(opaque: string): string {
   return `mon:obx:${opaque}`;
+}
+
+/** Outbox claim lock token (NOT an ANS identity, NOT a credential). */
+export function makeLockToken(opaque: string): string {
+  return `mon:lock:${opaque}`;
 }
 
 /**
