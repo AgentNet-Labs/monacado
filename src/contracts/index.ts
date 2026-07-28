@@ -26,6 +26,9 @@ export * from "./product/product-publication-outbox";
 export * from "./product/product-submission-attempt";
 export * from "./product/product-registrar-receipt";
 export * from "./product/product-publication-remediation";
+export * from "./product/registrar-transport";
+export * from "./product/registrar-endpoint-safety";
+export * from "./product/registrar-request-builder";
 
 // Integrity
 export * from "./integrity/canonical-json";

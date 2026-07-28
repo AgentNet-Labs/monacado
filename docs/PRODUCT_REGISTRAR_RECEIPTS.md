@@ -4,9 +4,12 @@ Recording what the Registrar said, checking whether it actually refers to the
 publication we prepared, and disposing of the transient capsule body once it
 demonstrably does.
 
-Still **fully offline**: receipts arrive as validated input from a caller. There
-is no live Registrar call, no Publisher submission, no Resolver lookup, no worker
-loop, and no scheduled polling. Builds on
+Receipts arrive as **validated input from a caller** — they are never created
+from a transport response. Phase 0E.6.1 added an outbound REGISTER adapter, and
+it deliberately returns a Registrar's immediate answer rather than persisting it:
+turning that answer into a receipt requires the full reconciliation below. See
+[`PRODUCT_REGISTRAR_TRANSPORT.md`](PRODUCT_REGISTRAR_TRANSPORT.md). There is
+still no Resolver lookup, worker loop, or scheduled polling. Builds on
 [`PRODUCT_PUBLICATION_PREPARATION.md`](PRODUCT_PUBLICATION_PREPARATION.md) and
 [`PRODUCT_PUBLICATION_OUTBOX_PROCESSING.md`](PRODUCT_PUBLICATION_OUTBOX_PROCESSING.md).
 

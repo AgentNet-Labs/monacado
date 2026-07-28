@@ -196,7 +196,10 @@ object spread, or `Object.keys`.
   **Lock stealing from a LIVE claim remains deliberately absent**, as do lease
   renewal/heartbeat and any automatic sweep.
 - **Worker loop and scheduled polling** — callers claim one item per call.
-- **Network submission, Publisher submission, Registrar processing.**
+- **Network submission** arrived in Phase 0E.6.1 as an explicit, caller-driven
+  transport adapter with no retries and no scheduler — see
+  [`PRODUCT_REGISTRAR_TRANSPORT.md`](PRODUCT_REGISTRAR_TRANSPORT.md). Worker
+  orchestration around it remains deferred.
 - Registrar receipts, registration state, reconciliation, and payload disposal
   arrived in Phase 0E.4 — see
   [`PRODUCT_REGISTRAR_RECEIPTS.md`](PRODUCT_REGISTRAR_RECEIPTS.md). Remediation

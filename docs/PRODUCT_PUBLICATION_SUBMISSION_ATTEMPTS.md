@@ -162,9 +162,13 @@ capsule payload and no receipt body is stored on an attempt. All relations use
 
 This phase deliberately stops at the boundary. `prepare` says *this is what we
 are about to send, and here it is*; `dispatch` says *a transport adapter
-confirmed it left*. Everything between them — the actual HTTP call, credentials,
-endpoints, retries at the wire level — is a later phase's concern, and none of it
-exists here.
+confirmed it left*.
+
+> **Phase 0E.6.1 note.** That adapter now exists — an outbound HTTP transport
+> that sends one prepared attempt and classifies the outcome, marking the attempt
+> `DISPATCHED` only when the request may have been transmitted. See
+> [`PRODUCT_REGISTRAR_TRANSPORT.md`](PRODUCT_REGISTRAR_TRANSPORT.md). Production
+> endpoints, credentials, and worker orchestration remain deferred.
 
 ## Error model
 
