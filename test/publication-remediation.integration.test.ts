@@ -17,9 +17,11 @@ import {
 } from "../src/server/product/product-node-repository";
 import { ProductPublicationService } from "../src/server/product/product-publication-service";
 import { PublicationOutboxRepository } from "../src/server/product/publication-outbox-repository";
+import { PublicationSubmissionAttemptService } from "../src/server/product/submission-attempt-service";
 import { RegistrarReceiptService } from "../src/server/product/registrar-receipt-service";
 import { PublicationRemediationService } from "../src/server/product/publication-remediation-service";
 import { ReceiptConflictError } from "../src/server/product/receipt-errors";
+import { AttemptAlreadyHasReceiptError } from "../src/server/product/submission-attempt-errors";
 import { ValidationError } from "../src/server/product/errors";
 import {
   InvalidRemediationActionError,
@@ -91,6 +93,9 @@ const receipts = RUN
 const remediation = RUN
   ? new PublicationRemediationService(db)
   : (undefined as unknown as PublicationRemediationService);
+const attempts = RUN
+  ? new PublicationSubmissionAttemptService(db)
+  : (undefined as unknown as PublicationSubmissionAttemptService);
 
 interface Prepared {
   publicationId: string;
@@ -99,6 +104,8 @@ interface Prepared {
   capsuleId: string;
   publishedContentHash: string;
   payloadHash: string;
+  /** The dispatched attempt the next receipt must name (Phase 0E.5.3). */
+  submissionAttemptId: string;
 }
 
 let idSeq = 0;
@@ -131,8 +138,18 @@ async function prepareAndClaim(): Promise<Prepared> {
     capsulePolicy: { ref: "an:policy:capsule:synthetic-0e52", version: "1.0.0" },
     availableAt: "2026-03-01T00:00:00.000Z",
   });
-  await outbox.claimNextPublicationOutbox({ now: CLAIM_AT, leaseDurationSeconds: LEASE_SECONDS });
+  const claimed = await outbox.claimNextPublicationOutbox({
+    now: CLAIM_AT,
+    leaseDurationSeconds: LEASE_SECONDS,
+  });
+  const submissionAttemptId = await dispatchAttempt(
+    result.publication.publicationId,
+    result.outbox.outboxId,
+    claimed.lockToken,
+    CLAIM_AT,
+  );
   return {
+    submissionAttemptId,
     publicationId: result.publication.publicationId,
     outboxId: result.outbox.outboxId,
     nodeId: node.nodeId,
@@ -142,11 +159,36 @@ async function prepareAndClaim(): Promise<Prepared> {
   };
 }
 
+/** Prepare and dispatch one attempt, returning its id (Phase 0E.5.3). */
+async function dispatchAttempt(
+  publicationId: string,
+  outboxId: string,
+  lockToken: string,
+  at: string,
+): Promise<string> {
+  idSeq += 1;
+  const submissionAttemptId = `mon:attempt:${pad26(`MATT${idSeq}`)}`;
+  await attempts.preparePublicationSubmissionAttempt({
+    publicationId,
+    outboxId,
+    lockToken,
+    submissionAttemptId,
+    preparedAt: at,
+  });
+  await attempts.markPublicationSubmissionAttemptDispatched({
+    submissionAttemptId,
+    lockToken,
+    dispatchedAt: at,
+  });
+  return submissionAttemptId;
+}
+
 function receiptFor(p: Prepared, overrides: Record<string, unknown> = {}) {
   idSeq += 1;
   return {
     receiptId: `mon:rcpt:${pad26(`MRCPT${idSeq}`)}`,
     publicationId: p.publicationId,
+    submissionAttemptId: p.submissionAttemptId,
     registrarRegistrationId: `rem-reg-${idSeq}`,
     registrarId: MONACADO_REGISTRAR_ID,
     nodeId: p.nodeId,
@@ -203,6 +245,7 @@ const closeDecision = (p: Prepared, overrides: Record<string, unknown> = {}) =>
 async function wipe(): Promise<void> {
   await db.publicationRemediation.deleteMany({});
   await db.registrarReceipt.deleteMany({});
+  await db.publicationSubmissionAttempt.deleteMany({});
   await db.publicationOutbox.deleteMany({});
   await db.productPublication.deleteMany({});
   await db.productNode.deleteMany({});
@@ -351,15 +394,21 @@ describe.skipIf(!RUN)("Publication remediation (integration)", () => {
     const p = await rejected();
     await remediation.remediateProductPublication(decision(p));
 
-    // A worker re-claims the re-authorised item.
+    // A worker re-claims the re-authorised item and prepares a NEW attempt.
     const claimed = await outbox.claimNextPublicationOutbox({
       now: RETRY_AT,
       leaseDurationSeconds: LEASE_SECONDS,
     });
     expect(claimed.outbox.outboxId).toBe(p.outboxId);
+    const retryAttemptId = await dispatchAttempt(p.publicationId, p.outboxId, claimed.lockToken, RETRY_AT);
+    expect(retryAttemptId).not.toBe(p.submissionAttemptId);
 
     const result = await receipts.recordRegistrarReceipt(
-      receiptFor(p, { registeredAt: RETRY_AT, receivedAt: RETRY_AT }),
+      receiptFor(p, {
+        submissionAttemptId: retryAttemptId,
+        registeredAt: RETRY_AT,
+        receivedAt: RETRY_AT,
+      }),
     );
 
     expect(result.registrationState).toBe("ACCEPTED");
@@ -384,9 +433,22 @@ describe.skipIf(!RUN)("Publication remediation (integration)", () => {
     const p = await mismatched();
     await remediation.remediateProductPublication(decision(p));
     // The mismatch left the item PROCESSING; RETRY returned it to RETRYABLE.
-    await outbox.claimNextPublicationOutbox({ now: RETRY_AT, leaseDurationSeconds: LEASE_SECONDS });
+    const reclaimed = await outbox.claimNextPublicationOutbox({
+      now: RETRY_AT,
+      leaseDurationSeconds: LEASE_SECONDS,
+    });
+    const retryAttemptId = await dispatchAttempt(
+      p.publicationId,
+      p.outboxId,
+      reclaimed.lockToken,
+      RETRY_AT,
+    );
     const result = await receipts.recordRegistrarReceipt(
-      receiptFor(p, { registeredAt: RETRY_AT, receivedAt: RETRY_AT }),
+      receiptFor(p, {
+        submissionAttemptId: retryAttemptId,
+        registeredAt: RETRY_AT,
+        receivedAt: RETRY_AT,
+      }),
     );
     expect(result.publication.remediationState).toBe("RESOLVED");
     expect(result.reconciliationState).toBe("MATCHED");
@@ -455,9 +517,22 @@ describe.skipIf(!RUN)("Publication remediation (integration)", () => {
     const p = await rejected();
     await remediation.remediateProductPublication(closeDecision(p));
 
+    // Phase 0E.5.3 enforces this a layer earlier and more completely: a receipt
+    // must name a DISPATCHED attempt, and a CLOSED publication can prepare none.
+    await expect(
+      attempts.preparePublicationSubmissionAttempt({
+        publicationId: p.publicationId,
+        outboxId: p.outboxId,
+        lockToken: `mon:lock:${pad26("ANYTOKEN")}`,
+        submissionAttemptId: `mon:attempt:${pad26("MCLOSED")}`,
+        preparedAt: RETRY_AT,
+      }),
+    ).rejects.toBeInstanceOf(PublicationClosedError);
+
+    // Nor can the already-answered original attempt be reused.
     await expect(
       receipts.recordRegistrarReceipt(receiptFor(p, { registeredAt: RETRY_AT, receivedAt: RETRY_AT })),
-    ).rejects.toBeInstanceOf(ReceiptConflictError);
+    ).rejects.toBeInstanceOf(AttemptAlreadyHasReceiptError);
 
     const pub = await pubs.getProductPublication(p.publicationId);
     expect(pub.remediationState).toBe("CLOSED");

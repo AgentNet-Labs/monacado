@@ -30,6 +30,7 @@ import {
   ReconciliationState,
 } from "./product-publication";
 import { SafeErrorCode, SafeErrorSummary } from "./safe-error-metadata";
+import { SubmissionAttemptId } from "./product-submission-attempt";
 
 /** Opaque internal identifier for one recorded receipt. */
 export const ReceiptId = z
@@ -72,6 +73,12 @@ export type ReceiptDetails = z.infer<typeof ReceiptDetails>;
 const ReceiptCoreFields = {
   receiptId: ReceiptId,
   publicationId: PublicationId,
+  /**
+   * The exact outbound attempt this receipt answers (Phase 0E.5.3). Required for
+   * every receipt recorded through the service; only historical rows predating
+   * that phase may lack one.
+   */
+  submissionAttemptId: SubmissionAttemptId,
   /**
    * Optional because a REJECTED receipt may carry no registration identifier —
    * nothing was registered. Required for ACCEPTED (refined below).
@@ -118,6 +125,11 @@ export const RegistrarReceipt = z
   .strictObject({
     id: z.string().min(1),
     ...ReceiptCoreFields,
+    /**
+     * Historical receipts recorded before Phase 0E.5.3 carry no attempt binding.
+     * They stay READABLE, but the service can never create another like them.
+     */
+    submissionAttemptId: SubmissionAttemptId.optional(),
     createdAt: z.iso.datetime(),
   })
   .superRefine(requireRegistrationIdForAccepted);
@@ -203,6 +215,7 @@ export function reconcileReceiptFields(
  */
 export const RECEIPT_IDENTITY_FIELDS = [
   "publicationId",
+  "submissionAttemptId",
   "registrarRegistrationId",
   "registrarId",
   "nodeId",

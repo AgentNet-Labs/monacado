@@ -71,6 +71,19 @@ export function canonicalHash(value: unknown): string {
 }
 
 /**
+ * One-way binding hash of an opaque operational token, as `sha256:<hex>`.
+ *
+ * Used to bind a submission attempt to the worker claim that produced it WITHOUT
+ * persisting the raw lock token: a stored token would be a reusable credential,
+ * whereas a hash proves ownership on presentation and is useless if the row
+ * leaks. The token is hashed as raw UTF-8, not as canonical JSON, because it is
+ * a flat string rather than a document.
+ */
+export function tokenBindingHash(token: string): string {
+  return sha256(token);
+}
+
+/**
  * Pre-publication candidate hash (distinct from the published-capsule hash).
  * Covers the whole candidate (data + candidate metadata/provenance).
  */

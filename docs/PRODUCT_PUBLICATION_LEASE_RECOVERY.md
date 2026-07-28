@@ -75,6 +75,7 @@ Ordered by `leaseExpiresAt`, then `id` — the longest-abandoned first.
 | `lockToken`, `lockedAt`, `leaseExpiresAt` | cleared |
 | `availableAt` | set explicitly — defaults to `now`, i.e. immediately eligible |
 | `lastErrorCode` / `lastErrorSummary` | `LEASE_EXPIRED` + a bounded safe summary |
+| unresolved submission attempts | **ABANDONED** in the same transaction (Phase 0E.5.3) |
 | `attemptCount` | **preserved** — recovery is not a new attempt |
 | `payload`, `payloadHash` | **preserved untouched** |
 

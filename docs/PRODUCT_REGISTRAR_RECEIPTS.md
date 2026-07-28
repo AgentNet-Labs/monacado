@@ -19,6 +19,7 @@ written once and never updated — there is no `updatedAt` and no update operati
 | --- | --- |
 | `receiptId` | Opaque internal identity (`mon:rcpt:…`), unique |
 | `publicationId` | The publication this receipt claims to describe (FK, RESTRICT) |
+| `submissionAttemptId` | The exact outbound attempt this receipt answers (Phase 0E.5.3) — required for every new receipt, unique, nullable only for historical rows |
 | `outboxId` | The attempt that produced it, when known (FK, RESTRICT) |
 | `registrarRegistrationId` | The Registrar's **own** identifier; unique where present |
 | `registrarId`, `nodeId`, `capsuleId`, `registeredContentHash` | What the receipt **reports** — compared against expectation, never copied over it |
@@ -63,6 +64,13 @@ publication at `NOT_SUBMITTED`/`NOT_REQUIRED`, which is covered by a test.
 **`publicationStatus` is not touched.** No `REGISTERED` status was added: a
 publication's preparation state is not a registration outcome, and registration
 already has its own field.
+
+> **Phase 0E.5.3 note.** Every receipt recorded through the service must now name
+> the exact **submission attempt** it answers, and that attempt must be
+> `DISPATCHED`. Reconciliation is measured against the attempt's *immutable*
+> expectation rather than the publication's, which is the same comparison against
+> a source that provably cannot have drifted. See
+> [`PRODUCT_PUBLICATION_SUBMISSION_ATTEMPTS.md`](PRODUCT_PUBLICATION_SUBMISSION_ATTEMPTS.md).
 
 ## Identity and hash matching
 

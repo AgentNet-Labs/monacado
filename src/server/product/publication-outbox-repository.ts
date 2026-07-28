@@ -271,24 +271,47 @@ export class PublicationOutboxRepository {
     let skipped = 0;
 
     for (const candidate of candidates) {
-      const won = await this.guardedUpdate(
-        {
-          id: candidate.id,
-          outboxStatus: "PROCESSING",
-          leaseExpiresAt: { lte: nowDate },
-          lockToken: candidate.lockToken,
-        },
-        {
-          outboxStatus: "RETRYABLE",
-          lockToken: null,
-          lockedAt: null,
-          leaseExpiresAt: null,
-          availableAt: availableAtDate,
-          // attemptCount, payload, and payloadHash are deliberately untouched.
-          lastErrorCode: LEASE_EXPIRED_ERROR_CODE,
-          lastErrorSummary: LEASE_EXPIRED_ERROR_SUMMARY,
-        },
-      );
+      let won = 0;
+      try {
+        // The recovery and the abandonment of that claim's unresolved submission
+        // attempts commit together: a recovered claim must never leave an attempt
+        // that a late receipt could still answer (Phase 0E.5.3).
+        won = await this.db.$transaction(async (tx) => {
+          const res = await tx.publicationOutbox.updateMany({
+            where: {
+              id: candidate.id,
+              outboxStatus: "PROCESSING",
+              leaseExpiresAt: { lte: nowDate },
+              lockToken: candidate.lockToken,
+            },
+            data: {
+              outboxStatus: "RETRYABLE",
+              lockToken: null,
+              lockedAt: null,
+              leaseExpiresAt: null,
+              availableAt: availableAtDate,
+              // attemptCount, payload, and payloadHash are deliberately untouched.
+              lastErrorCode: LEASE_EXPIRED_ERROR_CODE,
+              lastErrorSummary: LEASE_EXPIRED_ERROR_SUMMARY,
+            },
+          });
+          if (res.count === 1) {
+            await tx.publicationSubmissionAttempt.updateMany({
+              where: {
+                outboxId: candidate.outboxId,
+                attemptStatus: { in: ["PREPARED", "DISPATCHED"] },
+              },
+              data: { attemptStatus: "ABANDONED", abandonedAt: nowDate },
+            });
+          }
+          return res.count;
+        });
+      } catch (e) {
+        throw new DatabaseError(
+          "Stale-claim recovery failed",
+          e instanceof Error ? e.message : undefined,
+        );
+      }
       if (won !== 1) {
         // Another concurrent sweep took it first. Not an error.
         skipped += 1;

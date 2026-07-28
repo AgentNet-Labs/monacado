@@ -121,6 +121,11 @@ token.
 successful claim** — so it counts attempts actually started, not failures
 recorded. It is never reset.
 
+> **Phase 0E.5.3 note.** Each claim may prepare exactly one durable **submission
+> attempt**, recorded at that `attemptCount`. The attempt — not the lock token —
+> is what a Registrar receipt must name. See
+> [`PRODUCT_PUBLICATION_SUBMISSION_ATTEMPTS.md`](PRODUCT_PUBLICATION_SUBMISSION_ATTEMPTS.md).
+
 ## Retry scheduling
 
 Retry requires an **explicitly supplied** `availableAt`. No backoff is computed

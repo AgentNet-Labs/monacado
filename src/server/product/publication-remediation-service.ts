@@ -346,6 +346,17 @@ export class PublicationRemediationService {
           data: changes.outboxData,
         });
 
+        // A governed decision administratively replaces the claim, so any
+        // unresolved submission attempt can no longer be validly answered
+        // (Phase 0E.5.3). Abandoned in the same transaction — never deleted.
+        await tx.publicationSubmissionAttempt.updateMany({
+          where: {
+            outboxId: outboxRow.outboxId,
+            attemptStatus: { in: ["PREPARED", "DISPATCHED"] },
+          },
+          data: { attemptStatus: "ABANDONED", abandonedAt: new Date(req.decidedAt) },
+        });
+
         const publication = await tx.productPublication.findUniqueOrThrow({
           where: { publicationId: req.publicationId },
         });

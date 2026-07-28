@@ -216,9 +216,12 @@ surface and are; nothing else is.
 
 - **Reopening a CLOSED publication.** Deliberately absent — closing is terminal
   in this phase.
-- **Receipt-to-attempt binding.** A receipt still is not tied to the specific
-  claim (lock token) that produced it, so a receipt arriving after a retry is
-  matched by identity and hash alone.
+- **Receipt-to-attempt binding** arrived in Phase 0E.5.3: an authorised retry now
+  produces a **new submission attempt**, and a receipt must name the exact attempt
+  it answers — so a receipt for the pre-retry attempt can no longer resolve the
+  retry. The decision also abandons the replaced claim's unresolved attempts in
+  the same transaction. See
+  [`PRODUCT_PUBLICATION_SUBMISSION_ATTEMPTS.md`](PRODUCT_PUBLICATION_SUBMISSION_ATTEMPTS.md).
 - **Automatic remediation** — nothing decides anything by itself; there is no
   policy engine, no auto-retry after N failures, and no escalation.
 - **Live Registrar/Publisher/Resolver integration**, background workers,

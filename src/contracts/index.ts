@@ -23,6 +23,7 @@ export * from "./product/product-node";
 export * from "./product/product-publication";
 export * from "./product/safe-error-metadata";
 export * from "./product/product-publication-outbox";
+export * from "./product/product-submission-attempt";
 export * from "./product/product-registrar-receipt";
 export * from "./product/product-publication-remediation";
 

@@ -21,6 +21,7 @@ import { UnsafeErrorMetadataError } from "../src/server/product/outbox-errors";
 import { LEASE_EXPIRED_ERROR_CODE } from "../src/contracts/index";
 import { RegistrarReceiptService } from "../src/server/product/registrar-receipt-service";
 import { PublicationRemediationService } from "../src/server/product/publication-remediation-service";
+import { PublicationSubmissionAttemptService } from "../src/server/product/submission-attempt-service";
 import {
   MONACADO_PUBLISHER_ID,
   canonicalHash,
@@ -51,6 +52,15 @@ const CHECK_CAPSULE4 = `an:capsule:${pad26("DBCHECKCAPSULE4")}`;
 const CHECK_PUBLICATION5 = `mon:pub:${pad26("DBCHECKPUB5")}`;
 const CHECK_CAPSULE5 = `an:capsule:${pad26("DBCHECKCAPSULE5")}`;
 const CHECK_ACTOR = `mon:actor:${pad26("DBCHECKACTOR")}`;
+const CHECK_PUBLICATION6 = `mon:pub:${pad26("DBCHECKPUB6")}`;
+const CHECK_CAPSULE6 = `an:capsule:${pad26("DBCHECKCAPSULE6")}`;
+const CHECK_PUBLICATION7 = `mon:pub:${pad26("DBCHECKPUB7")}`;
+const CHECK_CAPSULE7 = `an:capsule:${pad26("DBCHECKCAPSULE7")}`;
+const CHECK_PUBLICATION8 = `mon:pub:${pad26("DBCHECKPUB8")}`;
+const CHECK_CAPSULE8 = `an:capsule:${pad26("DBCHECKCAPSULE8")}`;
+const CHECK_PUBLICATION9 = `mon:pub:${pad26("DBCHECKPUB9")}`;
+const CHECK_CAPSULE9 = `an:capsule:${pad26("DBCHECKCAPSULE9")}`;
+let attemptSeq = 0;
 
 function syntheticCheckRecord(): ProductSourceRecord {
   return {
@@ -82,6 +92,32 @@ function syntheticCheckRecord(): ProductSourceRecord {
     acquiredAt: "2026-01-01T00:00:00.000Z",
     capsuleGeneratedAt: "2026-01-01T06:30:00.000Z",
   };
+}
+
+let attemptService: PublicationSubmissionAttemptService;
+
+/** Prepare and dispatch one submission attempt, returning its id (Phase 0E.5.3). */
+async function dispatchAttempt(
+  publicationId: string,
+  outboxId: string,
+  lockToken: string,
+  at: string,
+): Promise<string> {
+  attemptSeq += 1;
+  const submissionAttemptId = `mon:attempt:${pad26(`DBCHECKATT${String(attemptSeq).padStart(3, "0")}`)}`;
+  await attemptService.preparePublicationSubmissionAttempt({
+    publicationId,
+    outboxId,
+    lockToken,
+    submissionAttemptId,
+    preparedAt: at,
+  });
+  await attemptService.markPublicationSubmissionAttemptDispatched({
+    submissionAttemptId,
+    lockToken,
+    dispatchedAt: at,
+  });
+  return submissionAttemptId;
 }
 
 let checks = 0;
@@ -117,6 +153,7 @@ async function main(): Promise<void> {
     "add_registrar_receipts_and_reconciliation",
     "add_outbox_lease_expiry",
     "add_publication_remediation",
+    "add_publication_submission_attempts",
   ]) {
     if (!migrations.some((m) => m.migration_name.includes(expected))) {
       fail(`expected migration not applied: ${expected}`);
@@ -137,6 +174,7 @@ async function main(): Promise<void> {
     "PublicationOutbox",
     "RegistrarReceipt",
     "PublicationRemediation",
+    "PublicationSubmissionAttempt",
   ]) {
     if (!names.has(t)) fail(`missing table ${t}`);
   }
@@ -510,9 +548,17 @@ async function main(): Promise<void> {
 
     // Record a MATCHING accepted receipt.
     const receiptService = new RegistrarReceiptService(db);
+    attemptService = new PublicationSubmissionAttemptService(db);
+    const attempt2 = await dispatchAttempt(
+      CHECK_PUBLICATION2,
+      claimed2.outbox.outboxId,
+      claimed2.lockToken,
+      "2026-01-06T13:00:00.000Z",
+    );
     const reconciled = await receiptService.recordRegistrarReceipt({
       receiptId: CHECK_RECEIPT,
       publicationId: CHECK_PUBLICATION2,
+      submissionAttemptId: attempt2,
       registrarRegistrationId: "dbcheck-registration-0e4",
       registrarId: MONACADO_REGISTRAR_ID,
       nodeId: CHECK_NODE_ANS,
@@ -767,15 +813,26 @@ async function main(): Promise<void> {
         capsulePolicy: { ref: "an:policy:capsule:dbcheck", version: "1.0.0" },
         availableAt: REM_T0,
       });
-      await outboxRepo.claimNextPublicationOutbox({ now: REM_T0, leaseDurationSeconds: 600 });
-      return prep;
+      const claim = await outboxRepo.claimNextPublicationOutbox({
+        now: REM_T0,
+        leaseDurationSeconds: 600,
+      });
+      const attemptId = await dispatchAttempt(
+        publicationId,
+        prep.outbox.outboxId,
+        claim.lockToken,
+        REM_T0,
+      );
+      return { prep, attemptId, lockToken: claim.lockToken };
     };
 
     // 2. A matching rejection produces remediation REQUIRED.
-    const prep4 = await prepareAndClaim("4", CHECK_PUBLICATION4, CHECK_CAPSULE4, "3");
+    const seeded4 = await prepareAndClaim("4", CHECK_PUBLICATION4, CHECK_CAPSULE4, "3");
+    const prep4 = seeded4.prep;
     const rejectedResult = await receiptService.recordRegistrarReceipt({
       receiptId: `mon:rcpt:${pad26("DBCHECKRCPT4")}`,
       publicationId: CHECK_PUBLICATION4,
+      submissionAttemptId: seeded4.attemptId,
       registrarId: MONACADO_REGISTRAR_ID,
       nodeId: CHECK_NODE_ANS,
       capsuleId: CHECK_CAPSULE4,
@@ -791,10 +848,12 @@ async function main(): Promise<void> {
     ok("matching rejection -> remediation REQUIRED");
 
     // 3. A mismatch also produces remediation REQUIRED.
-    const prep5 = await prepareAndClaim("5", CHECK_PUBLICATION5, CHECK_CAPSULE5, "4");
+    const seeded5 = await prepareAndClaim("5", CHECK_PUBLICATION5, CHECK_CAPSULE5, "4");
+    const prep5 = seeded5.prep;
     const mismatchResult = await receiptService.recordRegistrarReceipt({
       receiptId: `mon:rcpt:${pad26("DBCHECKRCPT5")}`,
       publicationId: CHECK_PUBLICATION5,
+      submissionAttemptId: seeded5.attemptId,
       registrarRegistrationId: "dbcheck-registration-mismatch",
       registrarId: MONACADO_REGISTRAR_ID,
       nodeId: CHECK_NODE_ANS,
@@ -861,10 +920,21 @@ async function main(): Promise<void> {
     ok("prior Registrar receipts survive remediation unchanged");
 
     // 11-13. A later matching acceptance succeeds, resolves, and disposes the payload.
-    await outboxRepo.claimNextPublicationOutbox({ now: REM_RETRY_AT, leaseDurationSeconds: 600 });
+    const reclaim4 = await outboxRepo.claimNextPublicationOutbox({
+      now: REM_RETRY_AT,
+      leaseDurationSeconds: 600,
+    });
+    const retryAttempt4 = await dispatchAttempt(
+      CHECK_PUBLICATION4,
+      prep4.outbox.outboxId,
+      reclaim4.lockToken,
+      REM_RETRY_AT,
+    );
+    if (retryAttempt4 === seeded4.attemptId) fail("a retry reused the original submission attempt");
     const resolved = await receiptService.recordRegistrarReceipt({
       receiptId: `mon:rcpt:${pad26("DBCHECKRCPT4B")}`,
       publicationId: CHECK_PUBLICATION4,
+      submissionAttemptId: retryAttempt4,
       registrarRegistrationId: "dbcheck-registration-retry",
       registrarId: MONACADO_REGISTRAR_ID,
       nodeId: CHECK_NODE_ANS,
@@ -930,6 +1000,7 @@ async function main(): Promise<void> {
       await receiptService.recordRegistrarReceipt({
         receiptId: `mon:rcpt:${pad26("DBCHECKRCPT5B")}`,
         publicationId: CHECK_PUBLICATION5,
+        submissionAttemptId: seeded5.attemptId,
         registrarRegistrationId: "dbcheck-registration-closed",
         registrarId: MONACADO_REGISTRAR_ID,
         nodeId: CHECK_NODE_ANS,
@@ -947,6 +1018,221 @@ async function main(): Promise<void> {
     const stillClosed = await pubService.getProductPublication(CHECK_PUBLICATION5);
     if (stillClosed.remediationState !== "CLOSED") fail("the CLOSED state did not hold");
     ok("a CLOSED publication can be neither retried nor accepted");
+
+
+    // — Submission attempts and receipt binding (Phase 0E.5.3) —
+    // 1. Table, uniqueness, and foreign keys.
+    const attUnique = await uniqueIndexNames("PublicationSubmissionAttempt");
+    if (!attUnique.some((i) => i.includes("submissionAttemptId"))) {
+      fail("missing unique PublicationSubmissionAttempt.submissionAttemptId index");
+    }
+    if (!attUnique.some((i) => i.includes("attemptNumber"))) {
+      fail("missing unique (outboxId, attemptNumber) index — one attempt per claim");
+    }
+    if (
+      !hasFk("PublicationSubmissionAttempt", "ProductPublication") ||
+      !hasFk("PublicationSubmissionAttempt", "PublicationOutbox")
+    ) {
+      fail("missing PublicationSubmissionAttempt foreign keys");
+    }
+    if (!hasFk("RegistrarReceipt", "PublicationSubmissionAttempt")) {
+      fail("missing RegistrarReceipt -> PublicationSubmissionAttempt foreign key");
+    }
+    const rcptAttUnique = await uniqueIndexNames("RegistrarReceipt");
+    if (!rcptAttUnique.some((i) => i.includes("submissionAttemptId"))) {
+      fail("missing unique RegistrarReceipt.submissionAttemptId index");
+    }
+    ok("submission-attempt table, unique attempt id, one-attempt-per-claim, and FKs present");
+
+    // Prepare a sixth publication and claim it for the attempt walkthrough.
+    const seeded6 = await prepareAndClaim("6", CHECK_PUBLICATION6, CHECK_CAPSULE6, "5");
+    const prep6 = seeded6.prep;
+    const attemptRow = await db.publicationSubmissionAttempt.findUnique({
+      where: { submissionAttemptId: seeded6.attemptId },
+    });
+    if (!attemptRow) fail("the prepared attempt was not persisted");
+
+    // 2. The attempt binds to the current outbox attemptNumber.
+    const claimedOutbox6 = await outboxRepo.getPublicationOutboxById(prep6.outbox.outboxId);
+    if (attemptRow!.attemptNumber !== claimedOutbox6.attemptCount) {
+      fail("the attempt did not bind to the current outbox attemptCount");
+    }
+    if (attemptRow!.operation !== "REGISTER") fail("attempt operation is not REGISTER");
+    if (attemptRow!.expectedContentHash !== prep6.publication.publishedContentHash) {
+      fail("the attempt did not capture the expected content hash");
+    }
+
+    // 3-4. The raw lock token is NOT persisted; a one-way hash is.
+    const attemptRowText = JSON.stringify(attemptRow, (_k, v) =>
+      typeof v === "bigint" ? v.toString() : v,
+    );
+    if (attemptRowText.includes(seeded6.lockToken)) {
+      fail("the raw lock token was persisted on the submission attempt");
+    }
+    if (!/^sha256:[0-9a-f]{64}$/.test(attemptRow!.claimTokenHash)) {
+      fail("claimTokenHash is not a sha256 binding");
+    }
+    if (attemptRow!.attemptStatus !== "DISPATCHED") fail("the attempt was not dispatched");
+    if (attemptRow!.dispatchedAt === null) fail("dispatchedAt was not recorded");
+    ok("attempt binds to attemptCount; raw lock token absent; claimTokenHash persisted; dispatched");
+
+    // 6. A wrong token cannot dispatch.
+    const seeded7 = await prepareAndClaim("7", CHECK_PUBLICATION7, CHECK_CAPSULE7, "6");
+    let wrongTokenRefused = false;
+    try {
+      await attemptService.markPublicationSubmissionAttemptDispatched({
+        submissionAttemptId: seeded7.attemptId,
+        lockToken: `mon:lock:${pad26("WRONGTOKEN")}`,
+        dispatchedAt: REM_T0,
+      });
+    } catch {
+      wrongTokenRefused = true;
+    }
+    if (!wrongTokenRefused) fail("a wrong lock token was able to dispatch an attempt");
+    ok("a wrong lock token cannot dispatch a submission attempt");
+
+    // 7-8. A receipt binds to the dispatched attempt and marks it answered.
+    const boundReceipt = await receiptService.recordRegistrarReceipt({
+      receiptId: `mon:rcpt:${pad26("DBCHECKRCPT6")}`,
+      publicationId: CHECK_PUBLICATION6,
+      submissionAttemptId: seeded6.attemptId,
+      registrarRegistrationId: "dbcheck-registration-attempt6",
+      registrarId: MONACADO_REGISTRAR_ID,
+      nodeId: CHECK_NODE_ANS,
+      capsuleId: CHECK_CAPSULE6,
+      registeredContentHash: prep6.publication.publishedContentHash,
+      receiptStatus: "ACCEPTED",
+      registeredAt: REM_T0,
+      receivedAt: REM_T0,
+      receiptDetails: { registrarStatusCode: "REGISTERED" },
+    });
+    if (boundReceipt.receipt.submissionAttemptId !== seeded6.attemptId) {
+      fail("the receipt did not bind to its submission attempt");
+    }
+    const answered = await attemptService.getPublicationSubmissionAttempt(seeded6.attemptId);
+    if (answered.attemptStatus !== "RECEIPT_RECORDED") {
+      fail("the answered attempt did not become RECEIPT_RECORDED");
+    }
+    ok("receipt binds to the dispatched attempt and marks it RECEIPT_RECORDED");
+
+    // 9-10. A receipt for a PREPARED or ABANDONED attempt is refused.
+    const seeded8 = await prepareAndClaim("8", CHECK_PUBLICATION8, CHECK_CAPSULE8, "7");
+    const outbox8 = await outboxRepo.getPublicationOutboxById(seeded8.prep.outbox.outboxId);
+    void outbox8;
+    // Abandon seeded8's dispatched attempt, then try to answer it.
+    await attemptService.markPublicationSubmissionAttemptAbandoned({
+      submissionAttemptId: seeded8.attemptId,
+      abandonedAt: REM_T0,
+    });
+    let abandonedRefused = false;
+    try {
+      await receiptService.recordRegistrarReceipt({
+        receiptId: `mon:rcpt:${pad26("DBCHECKRCPT8")}`,
+        publicationId: CHECK_PUBLICATION8,
+        submissionAttemptId: seeded8.attemptId,
+        registrarRegistrationId: "dbcheck-registration-abandoned",
+        registrarId: MONACADO_REGISTRAR_ID,
+        nodeId: CHECK_NODE_ANS,
+        capsuleId: CHECK_CAPSULE8,
+        registeredContentHash: seeded8.prep.publication.publishedContentHash,
+        receiptStatus: "ACCEPTED",
+        registeredAt: REM_T0,
+        receivedAt: REM_T0,
+        receiptDetails: { registrarStatusCode: "REGISTERED" },
+      });
+    } catch {
+      abandonedRefused = true;
+    }
+    if (!abandonedRefused) fail("a receipt was accepted for an ABANDONED attempt");
+    ok("a receipt for an ABANDONED attempt is refused");
+
+    // 11-16. Expired-claim recovery abandons unresolved attempts; a re-claim
+    //        creates a higher attemptNumber and a distinct attempt; an
+    //        old-attempt receipt cannot resolve the new one.
+    //
+    // `claimNextPublicationOutbox` takes the next ELIGIBLE item globally, so the
+    // earlier walkthrough items are first driven to a terminal state. Otherwise
+    // the sweep and re-claim below would pick one of them instead of #9.
+    for (const settle of [seeded7, seeded8]) {
+      await outboxRepo.markPublicationOutboxDeadLetter({
+        outboxId: settle.prep.outbox.outboxId,
+        lockToken: settle.lockToken,
+        errorCode: "DBCHECK_SETTLED",
+        errorSummary: "Settled by db:check so the recovery walkthrough is deterministic.",
+      });
+    }
+
+    const seeded9 = await prepareAndClaim("9", CHECK_PUBLICATION9, CHECK_CAPSULE9, "8");
+    const REC_NOW = "2026-01-20T00:00:00.000Z";
+    const swept9 = await outboxRepo.recoverExpiredPublicationOutboxClaims({ now: REC_NOW, limit: 10 });
+    if (swept9.recoveredCount < 1) fail("the expired claim was not recovered");
+    const abandoned9 = await attemptService.getPublicationSubmissionAttempt(seeded9.attemptId);
+    if (abandoned9.attemptStatus !== "ABANDONED") {
+      fail("recovery did not abandon the unresolved submission attempt");
+    }
+    if (abandoned9.abandonedAt === undefined) fail("abandonedAt was not recorded by recovery");
+
+    const reclaim9 = await outboxRepo.claimNextPublicationOutbox({
+      now: REC_NOW,
+      leaseDurationSeconds: 600,
+    });
+    if (reclaim9.outbox.attemptCount <= abandoned9.attemptNumber) {
+      fail("the re-claim did not increment attemptNumber");
+    }
+    const attempt9b = await dispatchAttempt(
+      CHECK_PUBLICATION9,
+      seeded9.prep.outbox.outboxId,
+      reclaim9.lockToken,
+      REC_NOW,
+    );
+    if (attempt9b === seeded9.attemptId) fail("the re-claim reused the original attempt id");
+
+    // A receipt naming the OLD abandoned attempt cannot resolve the new one.
+    let staleAttemptRefused = false;
+    try {
+      await receiptService.recordRegistrarReceipt({
+        receiptId: `mon:rcpt:${pad26("DBCHECKRCPT9OLD")}`,
+        publicationId: CHECK_PUBLICATION9,
+        submissionAttemptId: seeded9.attemptId,
+        registrarRegistrationId: "dbcheck-registration-stale",
+        registrarId: MONACADO_REGISTRAR_ID,
+        nodeId: CHECK_NODE_ANS,
+        capsuleId: CHECK_CAPSULE9,
+        registeredContentHash: seeded9.prep.publication.publishedContentHash,
+        receiptStatus: "ACCEPTED",
+        registeredAt: REC_NOW,
+        receivedAt: REC_NOW,
+        receiptDetails: { registrarStatusCode: "REGISTERED" },
+      });
+    } catch {
+      staleAttemptRefused = true;
+    }
+    if (!staleAttemptRefused) fail("a receipt for the old attempt resolved the newer retry");
+
+    // 15. A matching receipt on the NEW attempt resolves normally.
+    const resolved9 = await receiptService.recordRegistrarReceipt({
+      receiptId: `mon:rcpt:${pad26("DBCHECKRCPT9NEW")}`,
+      publicationId: CHECK_PUBLICATION9,
+      submissionAttemptId: attempt9b,
+      registrarRegistrationId: "dbcheck-registration-new",
+      registrarId: MONACADO_REGISTRAR_ID,
+      nodeId: CHECK_NODE_ANS,
+      capsuleId: CHECK_CAPSULE9,
+      registeredContentHash: seeded9.prep.publication.publishedContentHash,
+      receiptStatus: "ACCEPTED",
+      registeredAt: REC_NOW,
+      receivedAt: REC_NOW,
+      receiptDetails: { registrarStatusCode: "REGISTERED" },
+    });
+    if (resolved9.registrationState !== "ACCEPTED" || resolved9.reconciliationState !== "MATCHED") {
+      fail("the receipt on the new attempt did not resolve the publication");
+    }
+
+    // 16. Earlier attempts and receipts remain retained.
+    const history9 = await attemptService.listPublicationSubmissionAttempts(CHECK_PUBLICATION9);
+    if (history9.length !== 2) fail("earlier submission attempts were not retained");
+    if (history9[0]?.attemptStatus !== "ABANDONED") fail("the earlier attempt was mutated");
+    ok("recovery abandons attempts; re-claim raises attemptNumber; old-attempt receipt refused; new one resolves");
 
     const transitioned = await nodeRepo.transitionProductNodeLifecycle({
       nodeId: CHECK_NODE_ANS,
@@ -968,15 +1254,22 @@ async function cleanup(db: ReturnType<typeof getPrisma>): Promise<void> {
   await db.publicationRemediation.deleteMany({
     where: {
       publicationId: {
-        in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5],
+        in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9],
       },
     },
   });
   await db.registrarReceipt.deleteMany({
-    where: { publicationId: { in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5] } },
+    where: { publicationId: { in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9] } },
+  });
+  await db.publicationSubmissionAttempt.deleteMany({
+    where: {
+      publicationId: {
+        in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9],
+      },
+    },
   });
   await db.publicationOutbox.deleteMany({
-    where: { publicationId: { in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5] } },
+    where: { publicationId: { in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9] } },
   });
   await db.productPublication.deleteMany({ where: { internalProductId: CHECK_INTERNAL } });
   await db.productNode.deleteMany({ where: { internalProductId: CHECK_INTERNAL } });

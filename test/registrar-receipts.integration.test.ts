@@ -23,14 +23,18 @@ import {
 } from "../src/server/product/product-node-repository";
 import { ProductPublicationService } from "../src/server/product/product-publication-service";
 import { PublicationOutboxRepository } from "../src/server/product/publication-outbox-repository";
+import { PublicationSubmissionAttemptService } from "../src/server/product/submission-attempt-service";
 import { RegistrarReceiptService } from "../src/server/product/registrar-receipt-service";
 import { PersistedOutboxContractViolationError } from "../src/server/product/publication-errors";
 import {
-  InvalidReceiptStateError,
   PersistedReceiptContractViolationError,
   ReceiptConflictError,
   ReceiptPublicationNotFoundError,
 } from "../src/server/product/receipt-errors";
+import {
+  AttemptAlreadyHasReceiptError,
+  ClaimNoLongerOwnedError,
+} from "../src/server/product/submission-attempt-errors";
 
 const RUN = process.env.RUN_DB_TESTS === "1";
 const pad26 = (s: string): string =>
@@ -87,6 +91,9 @@ const outbox = RUN
 const receipts = RUN
   ? new RegistrarReceiptService(db)
   : (undefined as unknown as RegistrarReceiptService);
+const attempts = RUN
+  ? new PublicationSubmissionAttemptService(db)
+  : (undefined as unknown as PublicationSubmissionAttemptService);
 
 interface Prepared {
   record: ProductSourceRecord;
@@ -99,6 +106,9 @@ interface Prepared {
   nodePolicy: { ref: string; version: string };
   capsulePolicy: { ref: string; version: string };
   publishedAt: string;
+  /** The dispatched attempt every new receipt must name (Phase 0E.5.3). */
+  submissionAttemptId: string;
+  lockToken: string;
 }
 
 let idSeq = 0;
@@ -134,10 +144,29 @@ async function prepareAndClaim(): Promise<Prepared> {
     capsulePolicy,
     availableAt: "2026-03-01T00:00:00.000Z",
   });
-    // Claims establish a lease (Phase 0E.5.1); a long one keeps these tests
+  // Claims establish a lease (Phase 0E.5.1); a long one keeps these tests
   // about receipts rather than expiry.
-  await outbox.claimNextPublicationOutbox({ now: CLAIM_AT, leaseDurationSeconds: 3600 });
+  const claimed = await outbox.claimNextPublicationOutbox({
+    now: CLAIM_AT,
+    leaseDurationSeconds: 3600,
+  });
+  // Every receipt must answer a DISPATCHED attempt (Phase 0E.5.3).
+  const submissionAttemptId = `mon:attempt:${pad26(`RATT${idSeq}`)}`;
+  await attempts.preparePublicationSubmissionAttempt({
+    publicationId: result.publication.publicationId,
+    outboxId: result.outbox.outboxId,
+    lockToken: claimed.lockToken,
+    submissionAttemptId,
+    preparedAt: CLAIM_AT,
+  });
+  await attempts.markPublicationSubmissionAttemptDispatched({
+    submissionAttemptId,
+    lockToken: claimed.lockToken,
+    dispatchedAt: CLAIM_AT,
+  });
   return {
+    submissionAttemptId,
+    lockToken: claimed.lockToken,
     record,
     nodeId: node.nodeId,
     publicationId: result.publication.publicationId,
@@ -157,6 +186,7 @@ function matchingReceipt(p: Prepared, overrides: Record<string, unknown> = {}) {
   return {
     receiptId: `mon:rcpt:${pad26(`RCPT${idSeq}`)}`,
     publicationId: p.publicationId,
+    submissionAttemptId: p.submissionAttemptId,
     registrarRegistrationId: `reg-${idSeq}-synthetic`,
     registrarId: MONACADO_REGISTRAR_ID,
     nodeId: p.nodeId,
@@ -172,6 +202,7 @@ function matchingReceipt(p: Prepared, overrides: Record<string, unknown> = {}) {
 
 async function wipe(): Promise<void> {
   await db.registrarReceipt.deleteMany({});
+  await db.publicationSubmissionAttempt.deleteMany({});
   await db.publicationOutbox.deleteMany({});
   await db.productPublication.deleteMany({});
   await db.productNode.deleteMany({});
@@ -440,31 +471,36 @@ describe.skipIf(!RUN)("Registrar receipts and reconciliation (integration)", () 
   it("23. a second incompatible accepted receipt fails", async () => {
     const p = await prepareAndClaim();
     await receipts.recordRegistrarReceipt(matchingReceipt(p));
-    // A different accepted receipt for the same publication.
+    // Phase 0E.5.3 refuses this one layer earlier and more strictly: the attempt
+    // has already been answered, so a second receipt naming it is rejected
+    // before any publication-level comparison. One attempt, one receipt.
     await expect(receipts.recordRegistrarReceipt(matchingReceipt(p))).rejects.toBeInstanceOf(
-      ReceiptConflictError,
+      AttemptAlreadyHasReceiptError,
     );
     expect(await db.registrarReceipt.count()).toBe(1);
   });
 
   it("23b. an acceptance cannot overwrite a recorded rejection or mismatch", async () => {
-    // After a rejection.
+    // Phase 0E.5.3 note: once an attempt is answered it cannot be answered
+    // again, so a second receipt on the SAME attempt is refused there first.
+    // The publication-level guard remains as defence in depth and is exercised
+    // where a genuine new attempt exists — see the remediation suite, which
+    // retries, re-claims, and prepares a fresh attempt.
     const a = await prepareAndClaim();
     await receipts.recordRegistrarReceipt(
       matchingReceipt(a, { receiptStatus: "REJECTED", registrarRegistrationId: undefined }),
     );
     await expect(receipts.recordRegistrarReceipt(matchingReceipt(a))).rejects.toBeInstanceOf(
-      ReceiptConflictError,
+      AttemptAlreadyHasReceiptError,
     );
     expect((await pubs.getProductPublication(a.publicationId)).registrationState).toBe("REJECTED");
 
-    // After a mismatch.
     const b = await prepareAndClaim();
     await receipts.recordRegistrarReceipt(
       matchingReceipt(b, { capsuleId: `an:capsule:${pad26("OTHERCAP2")}` }),
     );
     await expect(receipts.recordRegistrarReceipt(matchingReceipt(b))).rejects.toBeInstanceOf(
-      ReceiptConflictError,
+      AttemptAlreadyHasReceiptError,
     );
     const pub = await pubs.getProductPublication(b.publicationId);
     expect(pub.reconciliationState).toBe("MISMATCH");
@@ -598,8 +634,10 @@ describe.skipIf(!RUN)("Registrar receipts and reconciliation (integration)", () 
     ).rejects.toBeInstanceOf(ReceiptPublicationNotFoundError);
   });
 
-  it("32. an accepted receipt for an unclaimed item is an invalid receipt state", async () => {
-    // Prepare WITHOUT claiming: the outbox item is still PENDING.
+  it("32. an unclaimed item cannot even prepare a submission attempt", async () => {
+    // Phase 0E.5.3 moved this invariant one layer earlier: a receipt must name a
+    // DISPATCHED attempt, and an attempt can only be prepared against a live
+    // claim. So an unclaimed item is refused before any receipt can exist.
     const record = syntheticRecord();
     await repo.createInitialProductSourceRecord({ record });
     const node = await nodes.issueProductNode({
@@ -628,22 +666,17 @@ describe.skipIf(!RUN)("Registrar receipts and reconciliation (integration)", () 
     });
 
     await expect(
-      receipts.recordRegistrarReceipt({
-        receiptId: `mon:rcpt:${pad26(`RUNC${idSeq}`)}`,
+      attempts.preparePublicationSubmissionAttempt({
         publicationId: prep.publication.publicationId,
-        registrarRegistrationId: `reg-unclaimed-${idSeq}`,
-        registrarId: MONACADO_REGISTRAR_ID,
-        nodeId: node.nodeId,
-        capsuleId: prep.publication.capsuleId,
-        registeredContentHash: prep.publication.publishedContentHash,
-        receiptStatus: "ACCEPTED",
-        registeredAt: REGISTERED_AT,
-        receivedAt: RECEIVED_AT,
-        receiptDetails: { registrarStatusCode: "REGISTERED" },
+        outboxId: prep.outbox.outboxId,
+        lockToken: `mon:lock:${pad26("NOCLAIM")}`,
+        submissionAttemptId: `mon:attempt:${pad26(`RUNC${idSeq}`)}`,
+        preparedAt: CLAIM_AT,
       }),
-    ).rejects.toBeInstanceOf(InvalidReceiptStateError);
+    ).rejects.toBeInstanceOf(ClaimNoLongerOwnedError);
 
-    // Nothing changed.
+    // Nothing was created, and the publication is untouched.
+    expect(await db.publicationSubmissionAttempt.count()).toBe(0);
     expect(await db.registrarReceipt.count()).toBe(0);
     const still = await pubs.getProductPublication(prep.publication.publicationId);
     expect(still.registrationState).toBe("NOT_SUBMITTED");

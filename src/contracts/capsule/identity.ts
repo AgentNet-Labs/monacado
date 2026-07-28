@@ -95,6 +95,13 @@ export const OUTBOX_ID_RE = new RegExp(`^mon:obx:${OPAQUE_BODY}$`);
 export const RECEIPT_ID_RE = new RegExp(`^mon:rcpt:${OPAQUE_BODY}$`);
 
 /**
+ * Publication submission-attempt identifier (`mon:attempt:<opaque>`). Names ONE
+ * outbound registration attempt. Distinct from the worker's lock token: a lock
+ * proves who may work on an item right now, an attempt identifies what was sent.
+ */
+export const SUBMISSION_ATTEMPT_ID_RE = new RegExp(`^mon:attempt:${OPAQUE_BODY}$`);
+
+/**
  * Publication remediation identifier (`mon:rem:<opaque>`). Names one immutable
  * governed decision about a failed registration. Internal Monacado identity.
  */
@@ -152,6 +159,11 @@ export function makeOutboxId(opaque: string): string {
 /** Registrar receipt identifier (NOT an ANS identity). */
 export function makeReceiptId(opaque: string): string {
   return `mon:rcpt:${opaque}`;
+}
+
+/** Publication submission-attempt identifier (NOT an ANS identity). */
+export function makeSubmissionAttemptId(opaque: string): string {
+  return `mon:attempt:${opaque}`;
 }
 
 /** Publication remediation identifier (NOT an ANS identity). */

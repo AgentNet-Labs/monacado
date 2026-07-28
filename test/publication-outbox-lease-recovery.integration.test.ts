@@ -23,6 +23,7 @@ import {
 import { ProductPublicationService } from "../src/server/product/product-publication-service";
 import { PublicationOutboxRepository } from "../src/server/product/publication-outbox-repository";
 import { RegistrarReceiptService } from "../src/server/product/registrar-receipt-service";
+import { PublicationSubmissionAttemptService } from "../src/server/product/submission-attempt-service";
 import { PersistedOutboxContractViolationError } from "../src/server/product/publication-errors";
 import {
   InvalidLeaseDurationError,
@@ -90,6 +91,9 @@ const outbox = RUN
 const receipts = RUN
   ? new RegistrarReceiptService(db)
   : (undefined as unknown as RegistrarReceiptService);
+const attempts = RUN
+  ? new PublicationSubmissionAttemptService(db)
+  : (undefined as unknown as PublicationSubmissionAttemptService);
 
 interface Seeded {
   outboxId: string;
@@ -152,6 +156,7 @@ const sweep = (now: string, limit = 100, availableAt?: string) =>
 
 async function wipe(): Promise<void> {
   await db.registrarReceipt.deleteMany({});
+  await db.publicationSubmissionAttempt.deleteMany({});
   await db.publicationOutbox.deleteMany({});
   await db.productPublication.deleteMany({});
   await db.productNode.deleteMany({});
@@ -406,9 +411,25 @@ describe.skipIf(!RUN)("Outbox lease expiry and stale-claim recovery (integration
     const s = await seed();
     const claimed = await claim();
 
+    // A receipt must answer a DISPATCHED submission attempt (Phase 0E.5.3).
+    const submissionAttemptId = `mon:attempt:${pad26("LATT1")}`;
+    await attempts.preparePublicationSubmissionAttempt({
+      publicationId: s.publicationId,
+      outboxId: s.outboxId,
+      lockToken: claimed.lockToken,
+      submissionAttemptId,
+      preparedAt: CLAIM_AT,
+    });
+    await attempts.markPublicationSubmissionAttemptDispatched({
+      submissionAttemptId,
+      lockToken: claimed.lockToken,
+      dispatchedAt: CLAIM_AT,
+    });
+
     const result = await receipts.recordRegistrarReceipt({
       receiptId: `mon:rcpt:${pad26("LRCPT1")}`,
       publicationId: s.publicationId,
+      submissionAttemptId,
       registrarRegistrationId: "lease-recovery-reg-1",
       registrarId: MONACADO_REGISTRAR_ID,
       nodeId: s.nodeId,

@@ -22,7 +22,6 @@ import {
   RECEIPT_IDENTITY_FIELDS,
   ReconciliationResult,
   RegistrarReceiptInput,
-  reconcileReceiptFields,
   type ReconciledField,
   type ReconciliationResult as ReconciliationResultDomain,
   type RegistrarReceiptInput as ReceiptInput,
@@ -32,6 +31,9 @@ import type {
   RegistrationState,
   RemediationState,
 } from "../../contracts/product/product-publication";
+import {
+  reconcileReceiptAgainstAttempt,
+} from "../../contracts/product/product-submission-attempt";
 import { getPrisma } from "../db/client";
 import { outboxRowToDomain, publicationRowToDomain } from "./publication-mapper";
 import { domainToReceiptCreateInput, receiptRowToDomain } from "./receipt-mapper";
@@ -43,6 +45,13 @@ import {
   ReceiptPublicationNotFoundError,
   ReconciliationFailureError,
 } from "./receipt-errors";
+import {
+  AttemptAbandonedError,
+  AttemptAlreadyHasReceiptError,
+  AttemptNotDispatchedError,
+  ReceiptAttemptMismatchError,
+  SubmissionAttemptNotFoundError,
+} from "./submission-attempt-errors";
 
 type Db = ReturnType<typeof getPrisma>;
 
@@ -145,6 +154,12 @@ export class RegistrarReceiptService {
       throw new InvalidReceiptStateError("Publication has no outbox item to reconcile");
     }
 
+    // — Phase 0E.5.3: the receipt must name the exact attempt it answers —
+    const attemptRow = await this.db.publicationSubmissionAttempt.findUnique({
+      where: { submissionAttemptId: req.submissionAttemptId },
+    });
+    if (!attemptRow) throw new SubmissionAttemptNotFoundError();
+
     // — 5. Idempotent replay of an identical receipt —
     const existing = await this.db.registrarReceipt.findUnique({
       where: { receiptId: req.receiptId },
@@ -160,6 +175,23 @@ export class RegistrarReceiptService {
       return this.result(publicationRow, outboxRow, existing, true, []);
     }
 
+    // The attempt must belong to this publication and work item, must actually
+    // have been sent, and must not have been abandoned or already answered.
+    if (
+      attemptRow.publicationId !== req.publicationId ||
+      attemptRow.outboxId !== outboxRow.outboxId
+    ) {
+      throw new ReceiptAttemptMismatchError(
+        "The named submission attempt belongs to a different publication or work item",
+        ["publicationId", "outboxId"],
+      );
+    }
+    if (attemptRow.attemptStatus === "ABANDONED") throw new AttemptAbandonedError();
+    if (attemptRow.attemptStatus === "RECEIPT_RECORDED") throw new AttemptAlreadyHasReceiptError();
+    if (attemptRow.attemptStatus !== "DISPATCHED") {
+      throw new AttemptNotDispatchedError(attemptRow.attemptStatus);
+    }
+
     // — 6. A different receipt already carrying this registration identifier —
     if (req.registrarRegistrationId !== undefined) {
       const byRegistration = await this.db.registrarReceipt.findUnique({
@@ -173,17 +205,14 @@ export class RegistrarReceiptService {
       }
     }
 
-    // — 4. Reconcile against the EXPECTED publication (never rewritten) —
-    const expectedRegistrarId = await this.expectedRegistrarId(publicationRow.nodeId);
-    const mismatchedFields = reconcileReceiptFields(
-      {
-        ...(expectedRegistrarId !== undefined ? { registrarId: expectedRegistrarId } : {}),
-        nodeId: publicationRow.nodeId,
-        capsuleId: publicationRow.capsuleId,
-        publishedContentHash: publicationRow.publishedContentHash,
-      },
-      req,
-    );
+    // — 4. Reconcile against the attempt's IMMUTABLE expectation —
+    //
+    // The attempt captured what was actually sent, at send time, and can never
+    // have drifted; the publication is the same values but mutable in principle.
+    // A disagreement is still a MISMATCH to be RECORDED as evidence, never a
+    // hard failure — that is what keeps the Phase 0E.4 mismatch and Phase 0E.5.2
+    // remediation flows reachable.
+    const mismatchedFields = reconcileReceiptAgainstAttempt(attemptRow, req) as ReconciledField[];
     const matched = mismatchedFields.length === 0;
     const outcome = decideOutcome(req.receiptStatus, matched);
 
@@ -250,6 +279,17 @@ export class RegistrarReceiptService {
           });
         }
 
+        // The attempt is answered — atomically, with the receipt and state.
+        const answered = await tx.publicationSubmissionAttempt.updateMany({
+          where: { submissionAttemptId: req.submissionAttemptId, attemptStatus: "DISPATCHED" },
+          data: { attemptStatus: "RECEIPT_RECORDED" },
+        });
+        if (answered.count !== 1) {
+          throw new AttemptAlreadyHasReceiptError(
+            "The submission attempt changed concurrently and could not be answered",
+          );
+        }
+
         return { publication: updatedPublication, outbox: updatedOutbox, receipt: createdReceipt };
       });
 
@@ -312,6 +352,7 @@ export class RegistrarReceiptService {
   private receiptConflicts(row: { [k: string]: unknown }, req: ReceiptInput): string[] {
     const rowView: Record<string, unknown> = {
       publicationId: row.publicationId,
+      submissionAttemptId: (row.submissionAttemptId as string | null) ?? undefined,
       registrarRegistrationId: (row.registrarRegistrationId as string | null) ?? undefined,
       registrarId: row.registrarId,
       nodeId: row.nodeId,
@@ -322,6 +363,7 @@ export class RegistrarReceiptService {
     };
     const reqView: Record<string, unknown> = {
       publicationId: req.publicationId,
+      submissionAttemptId: req.submissionAttemptId,
       registrarRegistrationId: req.registrarRegistrationId,
       registrarId: req.registrarId,
       nodeId: req.nodeId,

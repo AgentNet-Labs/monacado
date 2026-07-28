@@ -27,6 +27,7 @@ export function receiptRowToDomain(row: ReceiptRow): RegistrarReceiptDomain {
     id: row.id.toString(),
     receiptId: row.receiptId,
     publicationId: row.publicationId,
+    ...(row.submissionAttemptId !== null ? { submissionAttemptId: row.submissionAttemptId } : {}),
     ...(row.registrarRegistrationId !== null
       ? { registrarRegistrationId: row.registrarRegistrationId }
       : {}),
@@ -74,6 +75,7 @@ export function domainToReceiptCreateInput(
   return {
     receiptId: receipt.receiptId,
     publicationId: receipt.publicationId,
+    submissionAttemptId: receipt.submissionAttemptId,
     outboxId: outboxId ?? null,
     registrarRegistrationId: receipt.registrarRegistrationId ?? null,
     registrarId: receipt.registrarId,

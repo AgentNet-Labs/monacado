@@ -247,9 +247,10 @@ model ProductPublication {
   node          ProductNode                   @relation(fields: [nodeId], references: [nodeId], onDelete: Restrict)
   sourceVersion ProductSourceRecordVersionRow @relation(fields: [sourceRecordId, sourceRecordVersion], references: [sourceRecordId, sourceRecordVersion], onDelete: Restrict)
 
-  outbox       PublicationOutbox?
-  receipts     RegistrarReceipt[]
-  remediations PublicationRemediation[]
+  outbox             PublicationOutbox?
+  receipts           RegistrarReceipt[]
+  remediations       PublicationRemediation[]
+  submissionAttempts PublicationSubmissionAttempt[]
 
   /// One publication per (Node, exact source-record version) — prevents two
   /// conflicting capsule identities being published for the same source version.
@@ -333,9 +334,10 @@ model PublicationOutbox {
   createdAt DateTime @default(now()) @db.DateTime(3)
   updatedAt DateTime @updatedAt @db.DateTime(3)
 
-  publication  ProductPublication       @relation(fields: [publicationId], references: [publicationId], onDelete: Restrict)
-  receipts     RegistrarReceipt[]
-  remediations PublicationRemediation[]
+  publication        ProductPublication             @relation(fields: [publicationId], references: [publicationId], onDelete: Restrict)
+  receipts           RegistrarReceipt[]
+  remediations       PublicationRemediation[]
+  submissionAttempts PublicationSubmissionAttempt[]
 
   /// Supports the claim query: filter by status, order by availableAt then
   /// creation order. InnoDB appends the primary key (`id`) to every secondary
@@ -388,6 +390,14 @@ model RegistrarReceipt {
   /// never the capsule body. See contracts/product/product-registrar-receipt.
   receiptDetails Json
 
+  /// The exact outbound attempt this receipt answers (Phase 0E.5.3).
+  ///
+  /// NULLABLE only so the migration is safe for receipt rows recorded before
+  /// this phase existed. The SERVICE requires it for every new receipt; a
+  /// historical NULL remains readable but can never be created again. Unique, so
+  /// one attempt can carry at most one authoritative receipt.
+  submissionAttemptId String? @unique @db.VarChar(191)
+
   /// Set to publicationId for an ACCEPTED receipt and NULL otherwise, so the
   /// unique index enforces AT MOST ONE ACCEPTED RECEIPT PER PUBLICATION while
   /// permitting many rejected/mismatched receipts (MySQL has no partial indexes).
@@ -396,8 +406,9 @@ model RegistrarReceipt {
   createdAt DateTime @default(now()) @db.DateTime(3)
 
   // RESTRICT: receipt history must never be cascade-deleted.
-  publication ProductPublication @relation(fields: [publicationId], references: [publicationId], onDelete: Restrict)
-  outbox      PublicationOutbox? @relation(fields: [outboxId], references: [outboxId], onDelete: Restrict)
+  publication       ProductPublication            @relation(fields: [publicationId], references: [publicationId], onDelete: Restrict)
+  outbox            PublicationOutbox?            @relation(fields: [outboxId], references: [outboxId], onDelete: Restrict)
+  submissionAttempt PublicationSubmissionAttempt? @relation(fields: [submissionAttemptId], references: [submissionAttemptId], onDelete: Restrict)
 
   @@index([publicationId])
   @@index([outboxId])
@@ -455,4 +466,65 @@ model PublicationRemediation {
 
   @@index([publicationId])
   @@index([outboxId])
+}
+
+/// Immutable identity for ONE outbound Product registration attempt (Phase 0E.5.3).
+///
+/// A worker's `lockToken` says WHO may work on an item right now; a submission
+/// attempt says WHAT was sent. Without it, a Registrar receipt could only be
+/// matched by publication identity and hashes, so a late receipt answering an
+/// abandoned attempt was indistinguishable from one answering the current retry.
+///
+/// The raw lock token is NEVER persisted — only a one-way `claimTokenHash`, so a
+/// leaked row yields no reusable credential. No capsule payload and no receipt
+/// body are stored here. Identity, hashes, attempt number, and timestamps are
+/// immutable; the only writes after creation are the narrow guarded lifecycle
+/// transitions (PREPARED → DISPATCHED → RECEIPT_RECORDED, or → ABANDONED).
+model PublicationSubmissionAttempt {
+  /// Internal surrogate row id.
+  id BigInt @id @default(autoincrement())
+
+  /// Opaque attempt identifier (mon:attempt:<opaque>); unique and immutable.
+  submissionAttemptId String @unique @db.VarChar(191)
+
+  /// The publication and the work item this attempt belongs to.
+  publicationId String @db.VarChar(191)
+  outboxId      String @db.VarChar(191)
+
+  /// The outbox `attemptCount` this attempt was prepared against.
+  attemptNumber Int
+
+  /// REGISTER only in this phase.
+  operation String @db.VarChar(32)
+
+  // — Immutable expectation, captured at preparation. A receipt must reconcile
+  //   against THESE values, not against whatever the publication says later. —
+  nodeId              String @db.VarChar(191)
+  capsuleId           String @db.VarChar(191)
+  registrarId         String @db.VarChar(191)
+  expectedContentHash String @db.VarChar(80)
+  payloadHash         String @db.VarChar(80)
+
+  /// One-way SHA-256 binding to the claim that prepared this attempt. The raw
+  /// lock token is never stored.
+  claimTokenHash String @db.VarChar(80)
+
+  /// PREPARED | DISPATCHED | RECEIPT_RECORDED | ABANDONED.
+  attemptStatus String @db.VarChar(24)
+
+  preparedAt   DateTime  @db.DateTime(3)
+  dispatchedAt DateTime? @db.DateTime(3)
+  abandonedAt  DateTime? @db.DateTime(3)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+
+  // RESTRICT: attempt history must never be cascade-deleted.
+  publication ProductPublication @relation(fields: [publicationId], references: [publicationId], onDelete: Restrict)
+  outbox      PublicationOutbox  @relation(fields: [outboxId], references: [outboxId], onDelete: Restrict)
+  receipt     RegistrarReceipt?
+
+  /// One attempt per claim: an outbox item may attempt each attemptCount once.
+  @@unique([outboxId, attemptNumber])
+  @@index([publicationId])
+  @@index([attemptStatus])
 }
