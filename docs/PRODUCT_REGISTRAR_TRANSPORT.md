@@ -63,7 +63,9 @@ evidence a later ingestion step may turn into one.
 
 The adapter asks an injected `RegistrarCredentialProvider` for outbound material
 and nothing else. That keeps secret sourcing a composition-root decision and
-makes it trivial to prove in tests that nothing real is used.
+makes it trivial to prove in tests that nothing real is used. The concrete
+environment-backed provider is supplied by **Phase 0E.6.2**; the adapter itself
+still reads no environment variable.
 
 - No credential is persisted, logged, or returned in any result or error.
 - `Content-Type` is set by the adapter and cannot be overridden.
@@ -95,10 +97,11 @@ Redirects are **disabled** (`redirect: "manual"`); a 3xx is reported as terminal
 rather than followed. Endpoint issues name the failing **rule**, never the URL —
 an endpoint can carry a host or path that should not be echoed into logs.
 
-> **Production endpoint allow-listing is still required before deployment.** This
-> module proves an endpoint is *shaped* safely; it cannot know which hosts are
-> legitimate Registrars. That list belongs to deployment configuration and is
-> deliberately absent from this phase.
+> **Endpoint allow-listing lives in deployment configuration.** This module proves
+> an endpoint is *shaped* safely; it cannot know which hosts are legitimate
+> Registrars. That exact-origin allow-list is supplied by **Phase 0E.6.2** — see
+> [`PRODUCT_REGISTRAR_RUNTIME_CONFIGURATION.md`](PRODUCT_REGISTRAR_RUNTIME_CONFIGURATION.md).
+> Real endpoint values remain absent from this repository.
 
 ## Timeouts and response bounds
 
@@ -210,7 +213,7 @@ stable.
 
 ## Deferred
 
-- **Production endpoint allow-listing** and real Registrar endpoint values.
+- **Real Registrar endpoint values** (allow-listing itself landed in Phase 0E.6.2).
 - **Production credentials** and their storage, rotation, and scoping.
 - **Worker orchestration** — a process that claims, prepares, sends, and resolves;
   scheduling; polling; automatic retry with backoff.
