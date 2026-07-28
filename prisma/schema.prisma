@@ -231,6 +231,13 @@ model ProductPublication {
   /// actually refers to THIS publication.
   reconciliationState String @default("NOT_REQUIRED") @db.VarChar(16)
 
+  /// NOT_REQUIRED | REQUIRED | RETRY_AUTHORIZED | CLOSED | RESOLVED (Phase 0E.5.2).
+  /// Whether a human decision is needed about a failed or misidentified
+  /// registration, and what was decided. Deliberately separate from
+  /// publicationStatus, registrationState, reconciliationState, outboxStatus,
+  /// and Node lifecycle.
+  remediationState String @default("NOT_REQUIRED") @db.VarChar(24)
+
   createdAt DateTime @default(now()) @db.DateTime(3)
   updatedAt DateTime @updatedAt @db.DateTime(3)
 
@@ -240,8 +247,9 @@ model ProductPublication {
   node          ProductNode                   @relation(fields: [nodeId], references: [nodeId], onDelete: Restrict)
   sourceVersion ProductSourceRecordVersionRow @relation(fields: [sourceRecordId, sourceRecordVersion], references: [sourceRecordId, sourceRecordVersion], onDelete: Restrict)
 
-  outbox   PublicationOutbox?
-  receipts RegistrarReceipt[]
+  outbox       PublicationOutbox?
+  receipts     RegistrarReceipt[]
+  remediations PublicationRemediation[]
 
   /// One publication per (Node, exact source-record version) — prevents two
   /// conflicting capsule identities being published for the same source version.
@@ -325,8 +333,9 @@ model PublicationOutbox {
   createdAt DateTime @default(now()) @db.DateTime(3)
   updatedAt DateTime @updatedAt @db.DateTime(3)
 
-  publication ProductPublication @relation(fields: [publicationId], references: [publicationId], onDelete: Restrict)
-  receipts    RegistrarReceipt[]
+  publication  ProductPublication       @relation(fields: [publicationId], references: [publicationId], onDelete: Restrict)
+  receipts     RegistrarReceipt[]
+  remediations PublicationRemediation[]
 
   /// Supports the claim query: filter by status, order by availableAt then
   /// creation order. InnoDB appends the primary key (`id`) to every secondary
@@ -387,6 +396,60 @@ model RegistrarReceipt {
   createdAt DateTime @default(now()) @db.DateTime(3)
 
   // RESTRICT: receipt history must never be cascade-deleted.
+  publication ProductPublication @relation(fields: [publicationId], references: [publicationId], onDelete: Restrict)
+  outbox      PublicationOutbox? @relation(fields: [outboxId], references: [outboxId], onDelete: Restrict)
+
+  @@index([publicationId])
+  @@index([outboxId])
+}
+
+/// Immutable record of ONE governed human decision about a publication whose
+/// registration failed or could not be reconciled (Phase 0E.5.2).
+///
+/// Written once and never updated: there is no `updatedAt` and no service
+/// mutates a remediation. It records WHO decided WHAT, WHY, and WHEN, plus the
+/// state the publication was in beforehand — an audit trail, not a workflow
+/// engine. Registrar receipts are never overwritten or deleted by remediation,
+/// and no receipt or capsule body is copied into this row.
+model PublicationRemediation {
+  /// Internal surrogate row id.
+  id BigInt @id @default(autoincrement())
+
+  /// Opaque internal remediation identifier (mon:rem:<opaque>); unique.
+  remediationId String @unique @db.VarChar(191)
+
+  /// The publication this decision is about.
+  publicationId String @db.VarChar(191)
+
+  /// The work item at the time of the decision, when there was one.
+  outboxId String? @db.VarChar(191)
+
+  /// RETRY | CLOSE (bounded by the Zod RemediationAction enum).
+  remediationAction String @db.VarChar(16)
+
+  // — The state the decision was made against (audit; never rewritten) —
+  priorRegistrationState   String @db.VarChar(16)
+  priorReconciliationState String @db.VarChar(16)
+  priorOutboxStatus        String @db.VarChar(16)
+  priorRemediationState    String @db.VarChar(24)
+
+  /// Bounded, sanitised justification. Same safe-metadata rules as outbox error
+  /// fields: credentials, connection strings, hashes, and capsule content are
+  /// refused at the contract boundary.
+  reasonCode    String  @db.VarChar(64)
+  reasonSummary String? @db.VarChar(256)
+
+  /// Opaque actor identifier (mon:actor:<opaque>) — never an email address,
+  /// display name, or other private profile data.
+  decidedBy String   @db.VarChar(191)
+  decidedAt DateTime @db.DateTime(3)
+
+  /// For RETRY: when the re-authorised work item becomes eligible again.
+  retryAvailableAt DateTime? @db.DateTime(3)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+
+  // RESTRICT: remediation history must never be cascade-deleted.
   publication ProductPublication @relation(fields: [publicationId], references: [publicationId], onDelete: Restrict)
   outbox      PublicationOutbox? @relation(fields: [outboxId], references: [outboxId], onDelete: Restrict)
 

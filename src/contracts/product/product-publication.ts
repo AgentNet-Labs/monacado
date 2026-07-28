@@ -101,6 +101,34 @@ export const RECONCILIATION_STATES = ["NOT_REQUIRED", "PENDING", "MATCHED", "MIS
 export const ReconciliationState = z.enum(RECONCILIATION_STATES);
 export type ReconciliationState = z.infer<typeof ReconciliationState>;
 
+/**
+ * Remediation state (Phase 0E.5.2) — whether a GOVERNED HUMAN DECISION is needed
+ * about a failed or misidentified registration, and what was decided.
+ *
+ *   NOT_REQUIRED     — nothing to decide. The initial state, and where a clean
+ *                      publication stays.
+ *   REQUIRED         — a matching rejection, or any mismatched receipt, means a
+ *                      person must decide what happens next.
+ *   RETRY_AUTHORIZED — someone authorised another registration attempt.
+ *   CLOSED           — someone decided this publication will not be registered.
+ *                      Terminal without an explicit future reopening phase.
+ *   RESOLVED         — a matching acceptance settled it, with or without a
+ *                      preceding remediation decision.
+ *
+ * Deliberately separate from `publicationStatus` (preparation),
+ * `registrationState` (what the Registrar said), `reconciliationState` (whether
+ * that verdict was about us), `outboxStatus` (work), and Node lifecycle.
+ */
+export const REMEDIATION_STATES = [
+  "NOT_REQUIRED",
+  "REQUIRED",
+  "RETRY_AUTHORIZED",
+  "CLOSED",
+  "RESOLVED",
+] as const;
+export const RemediationState = z.enum(REMEDIATION_STATES);
+export type RemediationState = z.infer<typeof RemediationState>;
+
 /** Outbox operation type. REGISTER only in this phase. */
 export const OUTBOX_OPERATION_TYPES = ["REGISTER"] as const;
 export const OutboxOperationType = z.enum(OUTBOX_OPERATION_TYPES);
@@ -195,7 +223,7 @@ export function hasSupersedesRevokesConflict(input: {
  * capsule exists only as the outbox payload. It holds **no Node lifecycle**:
  * lifecycle lives on the Node (ADR §11.9).
  */
-export const ProductPublication = z.strictObject({
+const ProductPublicationShape = z.strictObject({
   id: z.string().min(1),
   publicationId: PublicationId,
   internalProductId: InternalProductId,
@@ -226,8 +254,34 @@ export const ProductPublication = z.strictObject({
   registrationState: RegistrationState,
   /** Whether a recorded receipt actually refers to THIS publication. */
   reconciliationState: ReconciliationState,
+  /** Whether a governed human decision is needed, and what was decided. */
+  remediationState: RemediationState,
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
+});
+
+/**
+ * `REQUIRED` means "a person must decide" — which is only meaningful when there
+ * IS adverse evidence to decide about: a recorded rejection, or a receipt that
+ * failed to reconcile. A publication cannot require remediation for nothing.
+ */
+export function publicationRemediationEvidenceIssue(record: {
+  registrationState: string;
+  reconciliationState: string;
+  remediationState: string;
+}): string | undefined {
+  if (record.remediationState !== "REQUIRED") return undefined;
+  const hasEvidence =
+    record.registrationState === "REJECTED" || record.reconciliationState === "MISMATCH";
+  return hasEvidence
+    ? undefined
+    : "remediationState REQUIRED needs rejection or mismatch evidence";
+}
+
+const ProductPublicationBase = ProductPublicationShape;
+export const ProductPublication = ProductPublicationBase.superRefine((record, ctx) => {
+  const issue = publicationRemediationEvidenceIssue(record);
+  if (issue) ctx.addIssue({ code: "custom", path: ["remediationState"], message: issue });
 });
 export type ProductPublication = z.infer<typeof ProductPublication>;
 
@@ -237,7 +291,7 @@ export type ProductPublication = z.infer<typeof ProductPublication>;
  * adapter turns into a Prisma create input — a validated domain object, never a
  * loose record.
  */
-export const ProductPublicationWrite = ProductPublication.omit({
+export const ProductPublicationWrite = ProductPublicationShape.omit({
   id: true,
   createdAt: true,
   updatedAt: true,

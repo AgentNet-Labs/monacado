@@ -30,6 +30,7 @@ import {
 import type {
   ReconciliationState,
   RegistrationState,
+  RemediationState,
 } from "../../contracts/product/product-publication";
 import { getPrisma } from "../db/client";
 import { outboxRowToDomain, publicationRowToDomain } from "./publication-mapper";
@@ -65,6 +66,8 @@ function decideOutcome(
 ): {
   registrationState: RegistrationState;
   reconciliationState: ReconciliationState;
+  /** Whether a governed human decision is now needed, or has been settled. */
+  remediationState: RemediationState;
   /** Target outbox status, or undefined to leave the outbox untouched. */
   outboxTarget?: "COMPLETED" | "DEAD_LETTER";
   disposePayload: boolean;
@@ -73,6 +76,8 @@ function decideOutcome(
     return {
       registrationState: "ACCEPTED",
       reconciliationState: "MATCHED",
+      // Settled — nothing left for anyone to decide.
+      remediationState: "RESOLVED",
       outboxTarget: "COMPLETED",
       disposePayload: true,
     };
@@ -83,6 +88,8 @@ function decideOutcome(
     return {
       registrationState: "PENDING",
       reconciliationState: "MISMATCH",
+      // A person must decide what to do about a receipt that names something else.
+      remediationState: "REQUIRED",
       disposePayload: false,
     };
   }
@@ -92,6 +99,8 @@ function decideOutcome(
     return {
       registrationState: "REJECTED",
       reconciliationState: "MATCHED",
+      // A definitive refusal needs a decision: retry, or close.
+      remediationState: "REQUIRED",
       outboxTarget: "DEAD_LETTER",
       disposePayload: false,
     };
@@ -104,6 +113,7 @@ function decideOutcome(
   return {
     registrationState: "PENDING",
     reconciliationState: "MISMATCH",
+    remediationState: "REQUIRED",
     disposePayload: false,
   };
 }
@@ -193,7 +203,9 @@ export class RegistrarReceiptService {
     try {
       const { publication, outbox, receipt } = await this.db.$transaction(async (tx) => {
         const createdReceipt = await tx.registrarReceipt.create({
-          data: domainToReceiptCreateInput(req, outboxRow.outboxId),
+          // Only an acceptance that RECONCILED claims the "one accepted receipt
+          // per publication" slot — see domainToReceiptCreateInput.
+          data: domainToReceiptCreateInput(req, outboxRow.outboxId, matched),
         });
 
         const updatedPublication = await tx.productPublication.update({
@@ -201,6 +213,7 @@ export class RegistrarReceiptService {
           data: {
             registrationState: outcome.registrationState,
             reconciliationState: outcome.reconciliationState,
+            remediationState: outcome.remediationState,
             // publicationStatus is deliberately untouched: preparation state is
             // not a registration outcome. No REGISTERED status is introduced.
           },
@@ -331,6 +344,22 @@ export class RegistrarReceiptService {
     matched: boolean,
   ): void {
     if (receiptStatus !== "ACCEPTED" || !matched) return;
+
+    // A governed CLOSE decision is final in this phase. A later acceptance is
+    // still recorded as evidence by the caller if they choose, but it must never
+    // quietly undo the decision — reopening is an explicit future phase.
+    if (publication.remediationState === "CLOSED") {
+      throw new ReceiptConflictError(
+        "This publication was closed by a governed remediation decision and cannot be accepted",
+        ["remediationState"],
+      );
+    }
+
+    // A RETRY authorisation is exactly the explicit remediation flow the two
+    // guards below were waiting for: it clears the prior verdict back to PENDING
+    // and permits a fresh attempt to be accepted.
+    if (publication.remediationState === "RETRY_AUTHORIZED") return;
+
     if (publication.registrationState === "REJECTED") {
       throw new ReceiptConflictError(
         "An accepted receipt cannot overwrite a recorded rejection without an explicit remediation flow",

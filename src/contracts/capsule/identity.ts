@@ -95,6 +95,19 @@ export const OUTBOX_ID_RE = new RegExp(`^mon:obx:${OPAQUE_BODY}$`);
 export const RECEIPT_ID_RE = new RegExp(`^mon:rcpt:${OPAQUE_BODY}$`);
 
 /**
+ * Publication remediation identifier (`mon:rem:<opaque>`). Names one immutable
+ * governed decision about a failed registration. Internal Monacado identity.
+ */
+export const REMEDIATION_ID_RE = new RegExp(`^mon:rem:${OPAQUE_BODY}$`);
+
+/**
+ * Opaque actor identifier (`mon:actor:<opaque>`) for whoever made a governed
+ * decision. Deliberately opaque: an email address, display name, or other
+ * private profile datum must never be persisted as the deciding actor.
+ */
+export const ACTOR_ID_RE = new RegExp(`^mon:actor:${OPAQUE_BODY}$`);
+
+/**
  * Outbox claim lock token (`mon:lock:<opaque>`). Proves ownership of one claim
  * by one worker. Operational only — not an ANS identity, not a credential, and
  * never derived from Product, Node, capsule, or publication identity.
@@ -139,6 +152,16 @@ export function makeOutboxId(opaque: string): string {
 /** Registrar receipt identifier (NOT an ANS identity). */
 export function makeReceiptId(opaque: string): string {
   return `mon:rcpt:${opaque}`;
+}
+
+/** Publication remediation identifier (NOT an ANS identity). */
+export function makeRemediationId(opaque: string): string {
+  return `mon:rem:${opaque}`;
+}
+
+/** Opaque deciding-actor identifier (NOT an ANS identity, NOT a profile). */
+export function makeActorId(opaque: string): string {
+  return `mon:actor:${opaque}`;
 }
 
 /** Outbox claim lock token (NOT an ANS identity, NOT a credential). */

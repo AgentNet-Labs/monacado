@@ -24,6 +24,7 @@ export * from "./product/product-publication";
 export * from "./product/safe-error-metadata";
 export * from "./product/product-publication-outbox";
 export * from "./product/product-registrar-receipt";
+export * from "./product/product-publication-remediation";
 
 // Integrity
 export * from "./integrity/canonical-json";

@@ -339,6 +339,8 @@ export class ProductPublicationService {
       // nothing to reconcile. Only recording a receipt (Phase 0E.4) changes these.
       registrationState: "NOT_SUBMITTED",
       reconciliationState: "NOT_REQUIRED",
+      // Nothing has gone wrong, so there is nothing for a person to decide.
+      remediationState: "NOT_REQUIRED",
     } satisfies ProductPublicationWrite);
 
     const outboxWrite = ProductPublicationOutboxWrite.parse({

@@ -20,6 +20,7 @@ import { PublicationOutboxRepository } from "../src/server/product/publication-o
 import { UnsafeErrorMetadataError } from "../src/server/product/outbox-errors";
 import { LEASE_EXPIRED_ERROR_CODE } from "../src/contracts/index";
 import { RegistrarReceiptService } from "../src/server/product/registrar-receipt-service";
+import { PublicationRemediationService } from "../src/server/product/publication-remediation-service";
 import {
   MONACADO_PUBLISHER_ID,
   canonicalHash,
@@ -45,6 +46,11 @@ const CHECK_CAPSULE2 = `an:capsule:${pad26("DBCHECKCAPSULE2")}`;
 const CHECK_RECEIPT = `mon:rcpt:${pad26("DBCHECKRECEIPT")}`;
 const CHECK_PUBLICATION3 = `mon:pub:${pad26("DBCHECKPUB3")}`;
 const CHECK_CAPSULE3 = `an:capsule:${pad26("DBCHECKCAPSULE3")}`;
+const CHECK_PUBLICATION4 = `mon:pub:${pad26("DBCHECKPUB4")}`;
+const CHECK_CAPSULE4 = `an:capsule:${pad26("DBCHECKCAPSULE4")}`;
+const CHECK_PUBLICATION5 = `mon:pub:${pad26("DBCHECKPUB5")}`;
+const CHECK_CAPSULE5 = `an:capsule:${pad26("DBCHECKCAPSULE5")}`;
+const CHECK_ACTOR = `mon:actor:${pad26("DBCHECKACTOR")}`;
 
 function syntheticCheckRecord(): ProductSourceRecord {
   return {
@@ -110,6 +116,7 @@ async function main(): Promise<void> {
     "add_outbox_claiming_and_retry_state",
     "add_registrar_receipts_and_reconciliation",
     "add_outbox_lease_expiry",
+    "add_publication_remediation",
   ]) {
     if (!migrations.some((m) => m.migration_name.includes(expected))) {
       fail(`expected migration not applied: ${expected}`);
@@ -129,6 +136,7 @@ async function main(): Promise<void> {
     "ProductPublication",
     "PublicationOutbox",
     "RegistrarReceipt",
+    "PublicationRemediation",
   ]) {
     if (!names.has(t)) fail(`missing table ${t}`);
   }
@@ -708,6 +716,238 @@ async function main(): Promise<void> {
     }
     ok("receipt-completed item has no lease and is never recovered");
 
+
+    // — Publication remediation (Phase 0E.5.2) —
+    const remediationService = new PublicationRemediationService(db);
+    const REM_T0 = "2026-01-08T00:00:00.000Z";
+    const REM_DECIDED = "2026-01-09T00:00:00.000Z";
+    const REM_RETRY_AT = "2026-01-10T00:00:00.000Z";
+
+    // 1. Remediation table and publication state column exist.
+    const remCols = await db.$queryRawUnsafe<Array<{ COLUMN_NAME: string }>>(
+      "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ProductPublication'",
+    );
+    if (!remCols.some((c) => c.COLUMN_NAME === "remediationState")) {
+      fail("missing ProductPublication.remediationState column");
+    }
+    const remUnique = await uniqueIndexNames("PublicationRemediation");
+    if (!remUnique.some((i) => i.includes("remediationId"))) {
+      fail("missing unique PublicationRemediation.remediationId index");
+    }
+    if (!hasFk("PublicationRemediation", "ProductPublication")) {
+      fail("missing PublicationRemediation -> ProductPublication foreign key");
+    }
+    ok("remediation table, unique remediationId, FK, and publication state column present");
+
+    /** Prepare + claim a further publication on a new immutable source version. */
+    const prepareAndClaim = async (
+      version: string,
+      publicationId: string,
+      capsuleId: string,
+      priorVersion: string,
+    ) => {
+      await repo.createProductSourceRecordRevision({
+        internalProductId: CHECK_INTERNAL,
+        expectedCurrentSourceRecordVersion: priorVersion,
+        sourceRecordVersion: version,
+        updatedAt: REM_T0,
+        capsuleGeneratedAt: REM_T0,
+      });
+      const prep = await pubService.prepareProductPublication({
+        publicationId,
+        internalProductId: CHECK_INTERNAL,
+        sourceRecordId: CHECK_SREC,
+        sourceRecordVersion: version,
+        nodeId: CHECK_NODE_ANS,
+        capsuleId,
+        capsuleSemver: "1.0.0",
+        publishedBy: MONACADO_PUBLISHER_ID,
+        publishedAt: REM_T0,
+        nodePolicy: { ref: "an:policy:node:dbcheck", version: "1.0.0" },
+        capsulePolicy: { ref: "an:policy:capsule:dbcheck", version: "1.0.0" },
+        availableAt: REM_T0,
+      });
+      await outboxRepo.claimNextPublicationOutbox({ now: REM_T0, leaseDurationSeconds: 600 });
+      return prep;
+    };
+
+    // 2. A matching rejection produces remediation REQUIRED.
+    const prep4 = await prepareAndClaim("4", CHECK_PUBLICATION4, CHECK_CAPSULE4, "3");
+    const rejectedResult = await receiptService.recordRegistrarReceipt({
+      receiptId: `mon:rcpt:${pad26("DBCHECKRCPT4")}`,
+      publicationId: CHECK_PUBLICATION4,
+      registrarId: MONACADO_REGISTRAR_ID,
+      nodeId: CHECK_NODE_ANS,
+      capsuleId: CHECK_CAPSULE4,
+      registeredContentHash: prep4.publication.publishedContentHash,
+      receiptStatus: "REJECTED",
+      registeredAt: REM_T0,
+      receivedAt: REM_T0,
+      receiptDetails: { rejectionCode: "POLICY_REFUSED", rejectionReason: "Refused for db:check." },
+    });
+    if (rejectedResult.publication.remediationState !== "REQUIRED") {
+      fail("a matching rejection did not require remediation");
+    }
+    ok("matching rejection -> remediation REQUIRED");
+
+    // 3. A mismatch also produces remediation REQUIRED.
+    const prep5 = await prepareAndClaim("5", CHECK_PUBLICATION5, CHECK_CAPSULE5, "4");
+    const mismatchResult = await receiptService.recordRegistrarReceipt({
+      receiptId: `mon:rcpt:${pad26("DBCHECKRCPT5")}`,
+      publicationId: CHECK_PUBLICATION5,
+      registrarRegistrationId: "dbcheck-registration-mismatch",
+      registrarId: MONACADO_REGISTRAR_ID,
+      nodeId: CHECK_NODE_ANS,
+      capsuleId: CHECK_CAPSULE4, // names a DIFFERENT capsule
+      registeredContentHash: prep5.publication.publishedContentHash,
+      receiptStatus: "ACCEPTED",
+      registeredAt: REM_T0,
+      receivedAt: REM_T0,
+      receiptDetails: { registrarStatusCode: "REGISTERED" },
+    });
+    if (mismatchResult.reconciliationState !== "MISMATCH") fail("expected a reconciliation MISMATCH");
+    if (mismatchResult.publication.remediationState !== "REQUIRED") {
+      fail("a mismatch did not require remediation");
+    }
+    ok("mismatched receipt -> reconciliation MISMATCH and remediation REQUIRED");
+
+    // 4-9. RETRY records immutable evidence and re-authorises the work.
+    const beforeRetry = await outboxRepo.getPublicationOutboxById(prep4.outbox.outboxId);
+    const remRetried = await remediationService.remediateProductPublication({
+      publicationId: CHECK_PUBLICATION4,
+      remediationId: `mon:rem:${pad26("DBCHECKREM4")}`,
+      action: "RETRY",
+      reasonCode: "TRANSIENT_REGISTRAR_FAULT",
+      reasonSummary: "Authorised one further attempt for db:check.",
+      decidedBy: CHECK_ACTOR,
+      decidedAt: REM_DECIDED,
+      retryAvailableAt: REM_RETRY_AT,
+    });
+    if (remRetried.remediation.remediationAction !== "RETRY") fail("RETRY not recorded");
+    if (remRetried.remediation.priorRegistrationState !== "REJECTED") {
+      fail("RETRY did not capture the prior registration state");
+    }
+    if (remRetried.remediation.decidedBy !== CHECK_ACTOR) fail("RETRY did not record the actor");
+    if (
+      remRetried.publication.remediationState !== "RETRY_AUTHORIZED" ||
+      remRetried.publication.registrationState !== "PENDING" ||
+      remRetried.publication.reconciliationState !== "PENDING"
+    ) {
+      fail("RETRY did not produce RETRY_AUTHORIZED / PENDING / PENDING");
+    }
+    if (remRetried.outbox.outboxStatus !== "RETRYABLE") fail("RETRY did not make the outbox RETRYABLE");
+    if (remRetried.outbox.availableAt !== REM_RETRY_AT) fail("RETRY did not apply retryAvailableAt");
+    if (
+      remRetried.outbox.lockToken !== undefined ||
+      remRetried.outbox.lockedAt !== undefined ||
+      remRetried.outbox.leaseExpiresAt !== undefined ||
+      remRetried.outbox.completedAt !== undefined
+    ) {
+      fail("RETRY did not clear claim ownership fields");
+    }
+    if (remRetried.outbox.payload === undefined) fail("RETRY did not retain the payload");
+    if (remRetried.outbox.payloadHash !== beforeRetry.payloadHash) fail("RETRY changed payloadHash");
+    if (remRetried.outbox.attemptCount !== beforeRetry.attemptCount) {
+      fail("RETRY did not preserve attemptCount");
+    }
+    await remediationService.assertRemediationConsistency(CHECK_PUBLICATION4);
+    ok("RETRY: immutable record, RETRY_AUTHORIZED/PENDING/PENDING, RETRYABLE, ownership cleared, payload retained");
+
+    // 10. Prior receipts remain.
+    const keptReceipts = await receiptService.listRegistrarReceipts(CHECK_PUBLICATION4);
+    if (keptReceipts.length !== 1 || keptReceipts[0]?.receiptStatus !== "REJECTED") {
+      fail("the prior rejected receipt did not survive remediation");
+    }
+    ok("prior Registrar receipts survive remediation unchanged");
+
+    // 11-13. A later matching acceptance succeeds, resolves, and disposes the payload.
+    await outboxRepo.claimNextPublicationOutbox({ now: REM_RETRY_AT, leaseDurationSeconds: 600 });
+    const resolved = await receiptService.recordRegistrarReceipt({
+      receiptId: `mon:rcpt:${pad26("DBCHECKRCPT4B")}`,
+      publicationId: CHECK_PUBLICATION4,
+      registrarRegistrationId: "dbcheck-registration-retry",
+      registrarId: MONACADO_REGISTRAR_ID,
+      nodeId: CHECK_NODE_ANS,
+      capsuleId: CHECK_CAPSULE4,
+      registeredContentHash: prep4.publication.publishedContentHash,
+      receiptStatus: "ACCEPTED",
+      registeredAt: REM_RETRY_AT,
+      receivedAt: REM_RETRY_AT,
+      receiptDetails: { registrarStatusCode: "REGISTERED" },
+    });
+    if (resolved.registrationState !== "ACCEPTED" || resolved.reconciliationState !== "MATCHED") {
+      fail("the acceptance after RETRY did not reconcile");
+    }
+    if (resolved.publication.remediationState !== "RESOLVED") fail("remediation did not become RESOLVED");
+    if (!resolved.payloadDisposed || resolved.outbox.payload !== undefined) {
+      fail("the payload was not disposed after the matching acceptance");
+    }
+    if ((await receiptService.listRegistrarReceipts(CHECK_PUBLICATION4)).length !== 2) {
+      fail("both receipts should be retained after resolution");
+    }
+    await remediationService.assertRemediationConsistency(CHECK_PUBLICATION4);
+    ok("acceptance after RETRY -> ACCEPTED/MATCHED/RESOLVED with payload disposed");
+
+    // 14-15. CLOSE records immutable evidence and dead-letters the work.
+    const closed = await remediationService.remediateProductPublication({
+      publicationId: CHECK_PUBLICATION5,
+      remediationId: `mon:rem:${pad26("DBCHECKREM5")}`,
+      action: "CLOSE",
+      reasonCode: "WITHDRAWN",
+      reasonSummary: "Closed for db:check.",
+      decidedBy: CHECK_ACTOR,
+      decidedAt: REM_DECIDED,
+    });
+    if (closed.remediation.remediationAction !== "CLOSE") fail("CLOSE not recorded");
+    if (closed.publication.remediationState !== "CLOSED") fail("CLOSE did not set CLOSED");
+    if (closed.outbox.outboxStatus !== "DEAD_LETTER") fail("CLOSE did not dead-letter the outbox");
+    if (closed.outbox.payload === undefined) fail("CLOSE must retain the payload");
+    if (closed.outbox.leaseExpiresAt !== undefined || closed.outbox.lockToken !== undefined) {
+      fail("CLOSE did not release claim ownership");
+    }
+    await remediationService.assertRemediationConsistency(CHECK_PUBLICATION5);
+    ok("CLOSE: immutable record, CLOSED, DEAD_LETTER, payload retained");
+
+    // 16. A CLOSED publication can be neither retried nor accepted.
+    let retryRefused = false;
+    try {
+      await remediationService.remediateProductPublication({
+        publicationId: CHECK_PUBLICATION5,
+        remediationId: `mon:rem:${pad26("DBCHECKREM5B")}`,
+        action: "RETRY",
+        reasonCode: "TRANSIENT_REGISTRAR_FAULT",
+        decidedBy: CHECK_ACTOR,
+        decidedAt: REM_DECIDED,
+        retryAvailableAt: REM_RETRY_AT,
+      });
+    } catch {
+      retryRefused = true;
+    }
+    if (!retryRefused) fail("a CLOSED publication was retried");
+
+    let acceptRefused = false;
+    try {
+      await receiptService.recordRegistrarReceipt({
+        receiptId: `mon:rcpt:${pad26("DBCHECKRCPT5B")}`,
+        publicationId: CHECK_PUBLICATION5,
+        registrarRegistrationId: "dbcheck-registration-closed",
+        registrarId: MONACADO_REGISTRAR_ID,
+        nodeId: CHECK_NODE_ANS,
+        capsuleId: CHECK_CAPSULE5,
+        registeredContentHash: prep5.publication.publishedContentHash,
+        receiptStatus: "ACCEPTED",
+        registeredAt: REM_RETRY_AT,
+        receivedAt: REM_RETRY_AT,
+        receiptDetails: { registrarStatusCode: "REGISTERED" },
+      });
+    } catch {
+      acceptRefused = true;
+    }
+    if (!acceptRefused) fail("a CLOSED publication was resolved by a later acceptance");
+    const stillClosed = await pubService.getProductPublication(CHECK_PUBLICATION5);
+    if (stillClosed.remediationState !== "CLOSED") fail("the CLOSED state did not hold");
+    ok("a CLOSED publication can be neither retried nor accepted");
+
     const transitioned = await nodeRepo.transitionProductNodeLifecycle({
       nodeId: CHECK_NODE_ANS,
       toState: "Inactive",
@@ -725,11 +965,18 @@ async function main(): Promise<void> {
 async function cleanup(db: ReturnType<typeof getPrisma>): Promise<void> {
   // FK-safe order (all publication FKs are RESTRICT): outbox → publication →
   // Node → source versions → Product.
+  await db.publicationRemediation.deleteMany({
+    where: {
+      publicationId: {
+        in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5],
+      },
+    },
+  });
   await db.registrarReceipt.deleteMany({
-    where: { publicationId: { in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3] } },
+    where: { publicationId: { in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5] } },
   });
   await db.publicationOutbox.deleteMany({
-    where: { publicationId: { in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3] } },
+    where: { publicationId: { in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5] } },
   });
   await db.productPublication.deleteMany({ where: { internalProductId: CHECK_INTERNAL } });
   await db.productNode.deleteMany({ where: { internalProductId: CHECK_INTERNAL } });

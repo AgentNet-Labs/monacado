@@ -146,13 +146,21 @@ and asserts no receipt row, no state change, and a retained payload.
   reporting conflicting field names only).
 - The same `registrarRegistrationId` on a different receipt fails — enforced by a
   unique index on a nullable column.
-- **One accepted receipt per publication**, enforced in the database by
-  `acceptedForPublicationId`: a persistence-only column set to `publicationId`
-  for an accepted receipt and `NULL` otherwise, so the unique index bites exactly
-  once per publication while permitting many rejected or mismatched receipts.
-  (MySQL has no partial indexes; this is the standard equivalent.)
-- An acceptance **cannot overwrite** a recorded rejection or mismatch. Remediation
-  is an explicit future flow, not a side effect of a later receipt arriving.
+- **One accepted-and-matched receipt per publication**, enforced in the database
+  by `acceptedForPublicationId`: a persistence-only column set to `publicationId`
+  for an accepted receipt **that also reconciled**, and `NULL` otherwise, so the
+  unique index bites exactly once per publication while permitting many rejected
+  or mismatched receipts. (MySQL has no partial indexes; this is the standard
+  equivalent.) The reconciliation condition was added in Phase 0E.5.2: a
+  mismatched acceptance claiming the slot would have permanently blocked the
+  genuine acceptance a retry exists to obtain.
+- An acceptance **cannot overwrite** a recorded rejection or mismatch by itself.
+  Phase 0E.5.2 supplies the explicit door: a governed `RETRY` decision clears the
+  verdict back to `PENDING`, after which a matching acceptance may resolve the
+  publication. A `CLOSED` publication can never be accepted. See
+  [`PRODUCT_PUBLICATION_REMEDIATION.md`](PRODUCT_PUBLICATION_REMEDIATION.md).
+- Recording a receipt also sets `remediationState`: a matching acceptance
+  `RESOLVED`, and a matching rejection or any mismatch `REQUIRED`.
 
 ## Payload disposal
 
@@ -212,9 +220,10 @@ strict comparison.
 
 - **Live Registrar and Publisher integration** — submission, polling, callbacks,
   credentials, endpoints.
-- **Remediation of mismatches and rejected receipts** — there is deliberately no
-  way to clear a `MISMATCH`, overturn a `REJECTED`, or re-submit a dead-lettered
-  item. That needs an explicit, auditable flow of its own.
+- **Remediation** arrived in Phase 0E.5.2 — an explicit, auditable `RETRY`/`CLOSE`
+  decision for mismatched and rejected publications. See
+  [`PRODUCT_PUBLICATION_REMEDIATION.md`](PRODUCT_PUBLICATION_REMEDIATION.md).
+  **Reopening a CLOSED publication remains deferred.**
 - Resolver integration; worker loop; scheduled retries; lease expiry and lock
   stealing; accreditation verification; supersession and revocation workflows;
   production DB wiring; authentication; Stripe; UI; Storefront, Listing, Offer,

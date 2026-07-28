@@ -52,6 +52,12 @@ can never yank work out from under a worker mid-attempt.
 throughout claiming, retrying, completion, and dead-lettering. Outbox state
 tracks the *work*; publication state tracks the *preparation*.
 
+> **Phase 0E.5.2 note.** A governed remediation decision may also move the work
+> item: `RETRY` returns it to `RETRYABLE` with its payload intact, and `CLOSE`
+> dead-letters it. Remediation is an administrative decision rather than a worker
+> transition, so it has its own authority over the item — see
+> [`PRODUCT_PUBLICATION_REMEDIATION.md`](PRODUCT_PUBLICATION_REMEDIATION.md).
+
 ## Claim ordering
 
 Eligibility is `status ∈ {PENDING, RETRYABLE}` **and** `availableAt <= now`,

@@ -61,6 +61,7 @@ export function publicationRowToDomain(row: PublicationRow): ProductPublicationD
     publicationStatus: row.publicationStatus,
     registrationState: row.registrationState,
     reconciliationState: row.reconciliationState,
+    remediationState: row.remediationState,
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),
   };
@@ -168,6 +169,7 @@ export function domainToPublicationCreateInput(
     publicationStatus: publication.publicationStatus,
     registrationState: publication.registrationState,
     reconciliationState: publication.reconciliationState,
+    remediationState: publication.remediationState,
   };
 }
 

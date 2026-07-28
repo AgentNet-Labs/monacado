@@ -56,13 +56,20 @@ export function receiptRowToDomain(row: ReceiptRow): RegistrarReceiptDomain {
  * Build the Prisma create input for a receipt.
  *
  * `acceptedForPublicationId` is a persistence-only column: it mirrors
- * `publicationId` for an ACCEPTED receipt and is NULL otherwise, so the unique
- * index enforces at most one accepted receipt per publication. It is deliberately
- * absent from the domain contract — it carries no meaning a caller should see.
+ * `publicationId` for an accepted receipt that ALSO RECONCILED, and is NULL
+ * otherwise, so the unique index enforces at most one *matching* accepted
+ * receipt per publication. It is deliberately absent from the domain contract —
+ * it carries no meaning a caller should see.
+ *
+ * The `reconciled` flag matters: an ACCEPTED receipt that failed reconciliation
+ * is evidence about something ELSE, not a registration of this publication. If
+ * it claimed the slot it would permanently block the genuine acceptance that a
+ * Phase 0E.5.2 retry is meant to obtain.
  */
 export function domainToReceiptCreateInput(
   receipt: RegistrarReceiptWrite,
   outboxId: string | undefined,
+  reconciled: boolean,
 ): Prisma.RegistrarReceiptUncheckedCreateInput {
   return {
     receiptId: receipt.receiptId,
@@ -78,6 +85,6 @@ export function domainToReceiptCreateInput(
     receivedAt: new Date(receipt.receivedAt),
     receiptDetails: receipt.receiptDetails as unknown as Prisma.InputJsonValue,
     acceptedForPublicationId:
-      receipt.receiptStatus === "ACCEPTED" ? receipt.publicationId : null,
+      receipt.receiptStatus === "ACCEPTED" && reconciled ? receipt.publicationId : null,
   };
 }
