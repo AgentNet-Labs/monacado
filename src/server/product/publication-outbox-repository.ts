@@ -25,10 +25,16 @@ import {
   ClaimOutboxInput,
   CompleteOutboxInput,
   DeadLetterOutboxInput,
+  LEASE_EXPIRED_ERROR_CODE,
+  LEASE_EXPIRED_ERROR_SUMMARY,
   PublicationOutboxClaim,
+  RecoverExpiredClaimsInput,
   RetryOutboxInput,
+  StaleClaimRecoveryResult,
   isAllowedOutboxTransition,
+  resolveLeaseExpiry,
   type PublicationOutboxClaim as Claim,
+  type StaleClaimRecoveryResult as RecoveryResult,
 } from "../../contracts/product/product-publication-outbox";
 import type {
   OutboxStatus,
@@ -39,11 +45,14 @@ import { getPrisma } from "../db/client";
 import { outboxRowToDomain } from "./publication-mapper";
 import { DatabaseError, ValidationError } from "./errors";
 import {
+  InvalidLeaseDurationError,
+  InvalidLeaseExpiryError,
   InvalidOutboxTransitionError,
   NoEligibleOutboxItemError,
   OutboxClaimConflictError,
   OutboxLockTokenMismatchError,
   OutboxNotFoundError,
+  StaleClaimError,
   UnsafeErrorMetadataError,
 } from "./outbox-errors";
 
@@ -84,10 +93,17 @@ export class PublicationOutboxRepository {
    */
   async claimNextPublicationOutbox(input: unknown): Promise<Claim> {
     const parsed = ClaimOutboxInput.safeParse(input);
-    if (!parsed.success) {
-      throw new ValidationError("Invalid claim input", zodIssues(parsed.error));
-    }
+    if (!parsed.success) throw this.claimInputError(parsed.error);
     const now = new Date(parsed.data.now);
+
+    // The lease is computed HERE, from explicitly supplied inputs — the
+    // repository never reads a clock.
+    const leaseExpiresAt = new Date(resolveLeaseExpiry(parsed.data));
+    if (leaseExpiresAt.getTime() <= now.getTime()) {
+      throw new InvalidLeaseExpiryError("The claim lease must expire after it is taken", [
+        "leaseExpiresAt: must be strictly later than lockedAt",
+      ]);
+    }
 
     // Deterministic selection of the next candidate.
     const candidate = await this.db.publicationOutbox.findFirst({
@@ -118,6 +134,7 @@ export class PublicationOutboxRepository {
           outboxStatus: "PROCESSING",
           lockToken,
           lockedAt: now,
+          leaseExpiresAt,
           attemptCount: { increment: 1 },
         },
       });
@@ -146,6 +163,7 @@ export class PublicationOutboxRepository {
       outboxStatus: "RETRYABLE",
       lockToken: null,
       lockedAt: null,
+      leaseExpiresAt: null,
       availableAt: new Date(req.availableAt),
       lastErrorCode: req.errorCode,
       lastErrorSummary: req.errorSummary,
@@ -162,6 +180,7 @@ export class PublicationOutboxRepository {
       outboxStatus: "COMPLETED",
       lockToken: null,
       lockedAt: null,
+      leaseExpiresAt: null,
       completedAt: new Date(req.completedAt),
     });
   }
@@ -176,6 +195,7 @@ export class PublicationOutboxRepository {
       outboxStatus: "DEAD_LETTER",
       lockToken: null,
       lockedAt: null,
+      leaseExpiresAt: null,
       lastErrorCode: req.errorCode,
       lastErrorSummary: req.errorSummary,
     });
@@ -195,9 +215,96 @@ export class PublicationOutboxRepository {
 
     const updated = await this.guardedUpdate(
       { outboxId, outboxStatus: { in: CLAIMABLE } },
-      { outboxStatus: "CANCELLED" },
+      // Defensive: a claimable item holds no lease, but never leave one behind.
+      { outboxStatus: "CANCELLED", lockToken: null, lockedAt: null, leaseExpiresAt: null },
     );
     return this.readBack(updated, outboxId);
+  }
+
+  /**
+   * Recover stale claims: PROCESSING items whose lease has expired, returned to
+   * RETRYABLE so a crashed or abandoned worker cannot strand them forever.
+   *
+   * This is a CALLER-DRIVEN sweep of at most `limit` rows. There is deliberately
+   * no loop-until-empty, no background scheduler, and no polling — the caller
+   * decides when and how often to sweep.
+   *
+   * Each row is taken with a guarded update that re-asserts PROCESSING, an
+   * expired lease, AND the exact lockToken observed during selection. Two
+   * concurrent sweeps therefore cannot both recover the same row: the loser
+   * matches zero rows and counts it as skipped rather than failing the sweep.
+   *
+   * A live (unexpired) claim is never touched — this is lease EXPIRY, not lock
+   * stealing. Terminal items are excluded by the PROCESSING filter, which also
+   * excludes anything a Registrar receipt already completed.
+   */
+  async recoverExpiredPublicationOutboxClaims(input: unknown): Promise<RecoveryResult> {
+    const parsed = RecoverExpiredClaimsInput.safeParse(input);
+    if (!parsed.success) {
+      throw new ValidationError("Invalid stale-claim recovery input", zodIssues(parsed.error));
+    }
+    const { now, limit } = parsed.data;
+    const nowDate = new Date(now);
+    // Documented default: a recovered item becomes eligible immediately at `now`.
+    const availableAt = parsed.data.availableAt ?? now;
+    const availableAtDate = new Date(availableAt);
+
+    const candidates = await this.db.publicationOutbox.findMany({
+      where: {
+        outboxStatus: "PROCESSING",
+        leaseExpiresAt: { lte: nowDate },
+        // Defence in depth: an accepted, reconciled publication must never have
+        // its work item resurrected. Such an item is already COMPLETED, so the
+        // status filter alone suffices — this makes the guarantee explicit.
+        NOT: {
+          publication: {
+            is: { registrationState: "ACCEPTED", reconciliationState: "MATCHED" },
+          },
+        },
+      },
+      orderBy: [{ leaseExpiresAt: "asc" }, { id: "asc" }],
+      take: limit,
+      select: { id: true, outboxId: true, lockToken: true },
+    });
+
+    const recovered: OutboxDomain[] = [];
+    let skipped = 0;
+
+    for (const candidate of candidates) {
+      const won = await this.guardedUpdate(
+        {
+          id: candidate.id,
+          outboxStatus: "PROCESSING",
+          leaseExpiresAt: { lte: nowDate },
+          lockToken: candidate.lockToken,
+        },
+        {
+          outboxStatus: "RETRYABLE",
+          lockToken: null,
+          lockedAt: null,
+          leaseExpiresAt: null,
+          availableAt: availableAtDate,
+          // attemptCount, payload, and payloadHash are deliberately untouched.
+          lastErrorCode: LEASE_EXPIRED_ERROR_CODE,
+          lastErrorSummary: LEASE_EXPIRED_ERROR_SUMMARY,
+        },
+      );
+      if (won !== 1) {
+        // Another concurrent sweep took it first. Not an error.
+        skipped += 1;
+        continue;
+      }
+      recovered.push(outboxRowToDomain(await this.requireRow(candidate.outboxId)));
+    }
+
+    return StaleClaimRecoveryResult.parse({
+      now,
+      availableAt,
+      examined: candidates.length,
+      recoveredCount: recovered.length,
+      skippedCount: skipped,
+      recovered,
+    } satisfies RecoveryResult);
   }
 
   /** Read one outbox item as a validated domain object. */
@@ -235,6 +342,13 @@ export class PublicationOutboxRepository {
     data: Prisma.PublicationOutboxUncheckedUpdateManyInput,
   ): Promise<OutboxDomain> {
     const current = await this.requireRow(outboxId);
+    // A claimable item holds NO claim at all, so a caller presenting a token for
+    // it is necessarily working from a claim that expired and was recovered.
+    // Reported distinctly (but still as an invalid transition) so the caller can
+    // tell "your lease lapsed" from "that transition never made sense".
+    if (CLAIMABLE.includes(current.outboxStatus as OutboxStatus)) {
+      throw new StaleClaimError(current.outboxStatus, to);
+    }
     this.assertTransition(current.outboxStatus, to);
     if (current.lockToken !== lockToken) throw new OutboxLockTokenMismatchError();
 
@@ -272,6 +386,21 @@ export class PublicationOutboxRepository {
    * Issue text names the offending field and the rule CLASS only — never the
    * offending value.
    */
+  /**
+   * Map a rejected claim input, separating the two lease failure modes from any
+   * other malformed field so a caller learns which one it got wrong.
+   */
+  private claimInputError(error: { issues: Array<{ path: PropertyKey[]; message: string }> }): Error {
+    const issues = zodIssues(error);
+    if (issues.some((i) => i.startsWith("leaseDurationSeconds"))) {
+      return new InvalidLeaseDurationError("Invalid claim lease duration", issues);
+    }
+    if (issues.some((i) => i.startsWith("leaseExpiresAt"))) {
+      return new InvalidLeaseExpiryError("Invalid claim lease expiry", issues);
+    }
+    return new ValidationError("Invalid claim input", issues);
+  }
+
   private inputError(
     message: string,
     error: { issues: Array<{ path: PropertyKey[]; message: string }> },

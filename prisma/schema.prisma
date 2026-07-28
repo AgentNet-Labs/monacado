@@ -303,6 +303,15 @@ model PublicationOutbox {
   /// NULL when unclaimed — MySQL permits many NULLs under a unique index.
   lockToken String? @unique @db.VarChar(191)
 
+  /// When the current claim's lease expires (Phase 0E.5.1). Computed explicitly
+  /// at claim time from a supplied `now` plus a bounded lease duration — never
+  /// from a clock read inside the repository.
+  ///
+  /// Present if and only if the item is PROCESSING: every path leaving PROCESSING
+  /// clears it. Once `leaseExpiresAt <= now`, the claim is stale and may be
+  /// recovered back to RETRYABLE so a crashed worker cannot strand the item.
+  leaseExpiresAt DateTime? @db.DateTime(3)
+
   // — Outcome (Phase 0E.3). No receipt, registration, or reconciliation state. —
   /// Set only when the attempt COMPLETED.
   completedAt DateTime? @db.DateTime(3)
@@ -325,6 +334,8 @@ model PublicationOutbox {
   /// index without a redundant explicit column — and the index is unchanged from
   /// Phase 0E.2, keeping this migration additive (new columns only).
   @@index([outboxStatus, availableAt])
+  /// Supports the stale-claim sweep: find PROCESSING items whose lease has expired.
+  @@index([outboxStatus, leaseExpiresAt])
 }
 
 /// Immutable record of what the Registrar said about one publication (Phase 0E.4).

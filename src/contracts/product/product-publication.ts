@@ -285,6 +285,11 @@ const ProductPublicationOutboxBase = z.strictObject({
   // — Claim ownership (present only while PROCESSING) —
   lockedAt: z.iso.datetime().optional(),
   lockToken: LockToken.optional(),
+  /**
+   * When the current claim's lease expires. Present if and only if PROCESSING —
+   * see `outboxLeasePresenceIssue`. Once due, the claim is stale and recoverable.
+   */
+  leaseExpiresAt: z.iso.datetime().optional(),
 
   // — Outcome (Phase 0E.3) —
   /** Set when the attempt COMPLETED. Never set for RETRYABLE or DEAD_LETTER. */
@@ -311,9 +316,34 @@ export function outboxPayloadPresenceIssue(record: {
   return `payload may be absent only in COMPLETED; found absent in ${record.outboxStatus}`;
 }
 
+/**
+ * Lease-presence rule (Phase 0E.5.1): `leaseExpiresAt` is present **if and only
+ * if** the item is `PROCESSING`.
+ *
+ * A PROCESSING item without a lease could never be recovered — exactly the
+ * permanently-stuck claim this phase exists to prevent. A lease outside
+ * PROCESSING means a path left PROCESSING without clearing ownership.
+ */
+export function outboxLeasePresenceIssue(record: {
+  outboxStatus: string;
+  leaseExpiresAt?: string;
+}): string | undefined {
+  const processing = record.outboxStatus === "PROCESSING";
+  if (processing && record.leaseExpiresAt === undefined) {
+    return "a PROCESSING item must carry leaseExpiresAt";
+  }
+  if (!processing && record.leaseExpiresAt !== undefined) {
+    return `leaseExpiresAt must be cleared when leaving PROCESSING; found in ${record.outboxStatus}`;
+  }
+  return undefined;
+}
+
 export const ProductPublicationOutbox = ProductPublicationOutboxBase.superRefine((record, ctx) => {
-  const issue = outboxPayloadPresenceIssue(record);
-  if (issue) ctx.addIssue({ code: "custom", path: ["payload"], message: issue });
+  const payloadIssue = outboxPayloadPresenceIssue(record);
+  if (payloadIssue) ctx.addIssue({ code: "custom", path: ["payload"], message: payloadIssue });
+
+  const leaseIssue = outboxLeasePresenceIssue(record);
+  if (leaseIssue) ctx.addIssue({ code: "custom", path: ["leaseExpiresAt"], message: leaseIssue });
 });
 export type ProductPublicationOutbox = z.infer<typeof ProductPublicationOutbox>;
 

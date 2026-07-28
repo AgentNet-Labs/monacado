@@ -18,6 +18,7 @@ import {
 import { ProductPublicationService } from "../src/server/product/product-publication-service";
 import { PublicationOutboxRepository } from "../src/server/product/publication-outbox-repository";
 import { UnsafeErrorMetadataError } from "../src/server/product/outbox-errors";
+import { LEASE_EXPIRED_ERROR_CODE } from "../src/contracts/index";
 import { RegistrarReceiptService } from "../src/server/product/registrar-receipt-service";
 import {
   MONACADO_PUBLISHER_ID,
@@ -42,6 +43,8 @@ const CHECK_CAPSULE = `an:capsule:${pad26("DBCHECKCAPSULE")}`;
 const CHECK_PUBLICATION2 = `mon:pub:${pad26("DBCHECKPUB2")}`;
 const CHECK_CAPSULE2 = `an:capsule:${pad26("DBCHECKCAPSULE2")}`;
 const CHECK_RECEIPT = `mon:rcpt:${pad26("DBCHECKRECEIPT")}`;
+const CHECK_PUBLICATION3 = `mon:pub:${pad26("DBCHECKPUB3")}`;
+const CHECK_CAPSULE3 = `an:capsule:${pad26("DBCHECKCAPSULE3")}`;
 
 function syntheticCheckRecord(): ProductSourceRecord {
   return {
@@ -106,6 +109,7 @@ async function main(): Promise<void> {
     "add_product_publication_and_outbox",
     "add_outbox_claiming_and_retry_state",
     "add_registrar_receipts_and_reconciliation",
+    "add_outbox_lease_expiry",
   ]) {
     if (!migrations.some((m) => m.migration_name.includes(expected))) {
       fail(`expected migration not applied: ${expected}`);
@@ -357,7 +361,9 @@ async function main(): Promise<void> {
         fail(`PublicationOutbox.${col} must be nullable`);
       }
     }
-    for (const forbidden of ["receipt", "registrat", "reconcil", "resolver", "lease"]) {
+    // "lease" is legitimate from Phase 0E.5.1 (leaseExpiresAt); receipts,
+    // registration, reconciliation, and Resolver state still have no place here.
+    for (const forbidden of ["receipt", "registrat", "reconcil", "resolver"]) {
       if (obxColNames.some((c) => c.toLowerCase().includes(forbidden))) {
         fail(`PublicationOutbox must not carry a "${forbidden}" column in this phase`);
       }
@@ -365,7 +371,7 @@ async function main(): Promise<void> {
     ok("outbox claim/outcome columns present and nullable; no receipt/reconciliation columns");
 
     // Claim the prepared item.
-    const claimed = await outboxRepo.claimNextPublicationOutbox({ now: OBX_T1 });
+    const claimed = await outboxRepo.claimNextPublicationOutbox({ now: OBX_T1, leaseDurationSeconds: 3600 });
     if (claimed.outbox.outboxStatus !== "PROCESSING") fail("claimed item is not PROCESSING");
     if (claimed.outbox.attemptCount !== 1) fail("attemptCount did not increment to 1");
     if (claimed.outbox.lockToken !== claimed.lockToken) fail("lockToken not recorded on the row");
@@ -394,12 +400,12 @@ async function main(): Promise<void> {
     // Not claimable before the new availableAt; claimable at it.
     let tooEarly = false;
     try {
-      await outboxRepo.claimNextPublicationOutbox({ now: OBX_T1 });
+      await outboxRepo.claimNextPublicationOutbox({ now: OBX_T1, leaseDurationSeconds: 3600 });
     } catch {
       tooEarly = true;
     }
     if (!tooEarly) fail("a retryable item was claimable before its availableAt");
-    const reclaimed = await outboxRepo.claimNextPublicationOutbox({ now: OBX_T2 });
+    const reclaimed = await outboxRepo.claimNextPublicationOutbox({ now: OBX_T2, leaseDurationSeconds: 3600 });
     if (reclaimed.outbox.attemptCount !== 2) fail("re-claim did not increment attemptCount to 2");
     ok("outbox re-claim only after availableAt (attemptCount 2)");
 
@@ -489,7 +495,7 @@ async function main(): Promise<void> {
     if (prepared2.publication.reconciliationState !== "NOT_REQUIRED") {
       fail("a prepared publication must begin NOT_REQUIRED");
     }
-    const claimed2 = await outboxRepo.claimNextPublicationOutbox({ now: "2026-01-06T13:00:00.000Z" });
+    const claimed2 = await outboxRepo.claimNextPublicationOutbox({ now: "2026-01-06T13:00:00.000Z", leaseDurationSeconds: 3600 });
     const payloadBefore = claimed2.outbox.payload;
     if (payloadBefore === undefined) fail("payload must be present before reconciliation");
     ok("second publication prepared (NOT_SUBMITTED / NOT_REQUIRED) and claimed");
@@ -565,6 +571,143 @@ async function main(): Promise<void> {
     }
     ok("published capsule regenerates deterministically after payload disposal");
 
+
+    // — Lease expiry and stale-claim recovery (Phase 0E.5.1) —
+    const LEASE_T0 = "2026-01-07T00:00:00.000Z";
+    const LEASE_EXPIRY_AT = "2026-01-07T00:10:00.000Z";
+    const BEFORE_LEASE_EXPIRY = "2026-01-07T00:05:00.000Z";
+    const AFTER_LEASE_EXPIRY = "2026-01-07T01:00:00.000Z";
+
+    // 1. leaseExpiresAt column exists and is nullable.
+    const leaseCol = await db.$queryRawUnsafe<Array<{ IS_NULLABLE: string }>>(
+      "SELECT IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'PublicationOutbox' AND COLUMN_NAME = 'leaseExpiresAt'",
+    );
+    if (leaseCol.length === 0) fail("missing PublicationOutbox.leaseExpiresAt column");
+    if (leaseCol[0]?.IS_NULLABLE !== "YES") fail("PublicationOutbox.leaseExpiresAt must be nullable");
+    const leaseIdx = await db.$queryRawUnsafe<Array<{ INDEX_NAME: string }>>(
+      "SELECT DISTINCT INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'PublicationOutbox' AND COLUMN_NAME = 'leaseExpiresAt'",
+    );
+    if (leaseIdx.length === 0) fail("missing index covering PublicationOutbox.leaseExpiresAt");
+    ok("leaseExpiresAt column exists, is nullable, and is indexed for stale lookup");
+
+    // Prepare a THIRD publication so the earlier flows stay intact.
+    await repo.createProductSourceRecordRevision({
+      internalProductId: CHECK_INTERNAL,
+      expectedCurrentSourceRecordVersion: "2",
+      sourceRecordVersion: "3",
+      updatedAt: "2026-01-07T00:00:00.000Z",
+      capsuleGeneratedAt: "2026-01-07T00:00:00.000Z",
+    });
+    const prepared3 = await pubService.prepareProductPublication({
+      publicationId: CHECK_PUBLICATION3,
+      internalProductId: CHECK_INTERNAL,
+      sourceRecordId: CHECK_SREC,
+      sourceRecordVersion: "3",
+      nodeId: CHECK_NODE_ANS,
+      capsuleId: CHECK_CAPSULE3,
+      capsuleSemver: "1.0.0",
+      publishedBy: MONACADO_PUBLISHER_ID,
+      publishedAt: "2026-01-07T00:00:00.000Z",
+      nodePolicy: { ref: "an:policy:node:dbcheck", version: "1.0.0" },
+      capsulePolicy: { ref: "an:policy:capsule:dbcheck", version: "1.0.0" },
+      availableAt: LEASE_T0,
+    });
+
+    // 2. A claim sets lockedAt, lockToken, and leaseExpiresAt.
+    const leaseClaim = await outboxRepo.claimNextPublicationOutbox({
+      now: LEASE_T0,
+      leaseDurationSeconds: 600,
+    });
+    if (leaseClaim.outbox.outboxId !== prepared3.outbox.outboxId) fail("claimed the wrong item");
+    if (leaseClaim.outbox.lockedAt !== LEASE_T0) fail("claim did not record lockedAt");
+    if (leaseClaim.outbox.lockToken === undefined) fail("claim did not record lockToken");
+    if (leaseClaim.outbox.leaseExpiresAt !== LEASE_EXPIRY_AT) fail("claim did not record leaseExpiresAt");
+    const claimedPayload = leaseClaim.outbox.payload;
+    if (claimedPayload === undefined) fail("claimed item has no payload");
+    ok("claim sets lockedAt, lockToken, and leaseExpiresAt");
+
+    // 3. A non-expired claim is not recovered.
+    const early = await outboxRepo.recoverExpiredPublicationOutboxClaims({
+      now: BEFORE_LEASE_EXPIRY,
+      limit: 10,
+    });
+    if (early.recoveredCount !== 0 || early.examined !== 0) {
+      fail("a live (non-expired) claim was recovered");
+    }
+    ok("a non-expired claim is not recovered");
+
+    // 4-7. An expired claim becomes RETRYABLE with ownership cleared and
+    //      attemptCount, payload, and payloadHash preserved.
+    const swept = await outboxRepo.recoverExpiredPublicationOutboxClaims({
+      now: AFTER_LEASE_EXPIRY,
+      limit: 10,
+    });
+    if (swept.recoveredCount !== 1) fail("an expired claim was not recovered");
+    const recovered = swept.recovered[0]!;
+    if (recovered.outboxStatus !== "RETRYABLE") fail("recovery did not set RETRYABLE");
+    if (
+      recovered.lockToken !== undefined ||
+      recovered.lockedAt !== undefined ||
+      recovered.leaseExpiresAt !== undefined
+    ) {
+      fail("recovery did not clear all claim ownership fields");
+    }
+    if (recovered.attemptCount !== leaseClaim.outbox.attemptCount) {
+      fail("recovery did not preserve attemptCount");
+    }
+    if (recovered.payload === undefined) fail("recovery did not preserve the payload");
+    if (recovered.payloadHash !== prepared3.outbox.payloadHash) fail("recovery changed payloadHash");
+    if (recovered.payloadHash !== canonicalHash(recovered.payload)) {
+      fail("recovered payload no longer matches its hash");
+    }
+    if (recovered.lastErrorCode !== LEASE_EXPIRED_ERROR_CODE) {
+      fail("recovery did not record LEASE_EXPIRED metadata");
+    }
+    ok("expired claim -> RETRYABLE; ownership cleared; attempts, payload, and hash preserved");
+
+    // 8. The recovered item can be claimed again.
+    const leaseReclaimed = await outboxRepo.claimNextPublicationOutbox({
+      now: AFTER_LEASE_EXPIRY,
+      leaseDurationSeconds: 600,
+    });
+    if (leaseReclaimed.outbox.outboxId !== prepared3.outbox.outboxId) {
+      fail("recovered item was not reclaimable");
+    }
+    if (leaseReclaimed.outbox.attemptCount !== leaseClaim.outbox.attemptCount + 1) {
+      fail("re-claim did not increment attemptCount");
+    }
+    ok("a recovered item can be claimed again (attemptCount advances)");
+
+    // 9. The stale original token can no longer resolve the item.
+    let staleRefused = false;
+    try {
+      await outboxRepo.markPublicationOutboxCompleted({
+        outboxId: prepared3.outbox.outboxId,
+        lockToken: leaseClaim.lockToken,
+        completedAt: AFTER_LEASE_EXPIRY,
+      });
+    } catch {
+      staleRefused = true;
+    }
+    if (!staleRefused) fail("a stale lock token was still able to resolve the item");
+    ok("the stale original lock token can no longer resolve the item");
+
+    // 10. A receipt-completed item is never recoverable.
+    const completedLease = await db.publicationOutbox.findUnique({
+      where: { publicationId: CHECK_PUBLICATION2 },
+    });
+    if (completedLease?.leaseExpiresAt !== null) {
+      fail("receipt-driven completion did not clear leaseExpiresAt");
+    }
+    const sweepAgain = await outboxRepo.recoverExpiredPublicationOutboxClaims({
+      now: "2030-01-01T00:00:00.000Z",
+      limit: 10,
+    });
+    if (sweepAgain.recovered.some((r) => r.publicationId === CHECK_PUBLICATION2)) {
+      fail("a receipt-completed item was recovered");
+    }
+    ok("receipt-completed item has no lease and is never recovered");
+
     const transitioned = await nodeRepo.transitionProductNodeLifecycle({
       nodeId: CHECK_NODE_ANS,
       toState: "Inactive",
@@ -583,10 +726,10 @@ async function cleanup(db: ReturnType<typeof getPrisma>): Promise<void> {
   // FK-safe order (all publication FKs are RESTRICT): outbox → publication →
   // Node → source versions → Product.
   await db.registrarReceipt.deleteMany({
-    where: { publicationId: { in: [CHECK_PUBLICATION, CHECK_PUBLICATION2] } },
+    where: { publicationId: { in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3] } },
   });
   await db.publicationOutbox.deleteMany({
-    where: { publicationId: { in: [CHECK_PUBLICATION, CHECK_PUBLICATION2] } },
+    where: { publicationId: { in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3] } },
   });
   await db.productPublication.deleteMany({ where: { internalProductId: CHECK_INTERNAL } });
   await db.productNode.deleteMany({ where: { internalProductId: CHECK_INTERNAL } });

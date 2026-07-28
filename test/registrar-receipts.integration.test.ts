@@ -134,7 +134,9 @@ async function prepareAndClaim(): Promise<Prepared> {
     capsulePolicy,
     availableAt: "2026-03-01T00:00:00.000Z",
   });
-  await outbox.claimNextPublicationOutbox({ now: CLAIM_AT });
+    // Claims establish a lease (Phase 0E.5.1); a long one keeps these tests
+  // about receipts rather than expiry.
+  await outbox.claimNextPublicationOutbox({ now: CLAIM_AT, leaseDurationSeconds: 3600 });
   return {
     record,
     nodeId: node.nodeId,
@@ -509,8 +511,10 @@ describe.skipIf(!RUN)("Registrar receipts and reconciliation (integration)", () 
     );
 
     // The same absence in COMPLETED is legitimate (disposed after reconciliation).
+    // Leaving PROCESSING also releases the claim lease, so mimic a real
+    // transition rather than leaving a lease behind (Phase 0E.5.1).
     await db.$executeRawUnsafe(
-      "UPDATE PublicationOutbox SET outboxStatus = 'COMPLETED' WHERE outboxId = ?",
+      "UPDATE PublicationOutbox SET outboxStatus = 'COMPLETED', lockToken = NULL, lockedAt = NULL, leaseExpiresAt = NULL WHERE outboxId = ?",
       p.outboxId,
     );
     const ok = await outbox.getPublicationOutboxById(p.outboxId);

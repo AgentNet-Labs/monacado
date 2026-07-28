@@ -15,6 +15,7 @@
  */
 
 import { attachInternalCause } from "./error-cause";
+import { PersistedOutboxContractViolationError } from "./publication-errors";
 
 export type PublicationOutboxErrorCode =
   | "NO_ELIGIBLE_OUTBOX_ITEM"
@@ -22,7 +23,11 @@ export type PublicationOutboxErrorCode =
   | "OUTBOX_LOCK_TOKEN_MISMATCH"
   | "INVALID_OUTBOX_TRANSITION"
   | "OUTBOX_NOT_FOUND"
-  | "UNSAFE_ERROR_METADATA";
+  | "UNSAFE_ERROR_METADATA"
+  | "INVALID_LEASE_DURATION"
+  | "INVALID_LEASE_EXPIRY"
+  | "STALE_CLAIM"
+  | "RECOVERY_CONFLICT";
 
 export class PublicationOutboxError extends Error {
   readonly code: PublicationOutboxErrorCode;
@@ -73,9 +78,15 @@ export class OutboxLockTokenMismatchError extends PublicationOutboxError {
 export class InvalidOutboxTransitionError extends PublicationOutboxError {
   readonly fromStatus: string;
   readonly toStatus: string;
-  constructor(fromStatus: string, toStatus: string, message?: string) {
+  constructor(
+    fromStatus: string,
+    toStatus: string,
+    message?: string,
+    /** Lets a subclass carry a more specific code while staying an instanceof. */
+    code: PublicationOutboxErrorCode = "INVALID_OUTBOX_TRANSITION",
+  ) {
     super(
-      "INVALID_OUTBOX_TRANSITION",
+      code,
       message ?? `Outbox transition ${fromStatus} -> ${toStatus} is not permitted`,
     );
     this.name = "InvalidOutboxTransitionError";
@@ -101,5 +112,72 @@ export class UnsafeErrorMetadataError extends PublicationOutboxError {
     super("UNSAFE_ERROR_METADATA", message);
     this.name = "UnsafeErrorMetadataError";
     this.issues = issues;
+  }
+}
+
+// — Lease expiry and stale-claim recovery (Phase 0E.5.1) —
+
+/** The requested lease duration is missing, non-positive, or beyond the bound. */
+export class InvalidLeaseDurationError extends PublicationOutboxError {
+  readonly issues: string[];
+  constructor(message: string, issues: string[]) {
+    super("INVALID_LEASE_DURATION", message);
+    this.name = "InvalidLeaseDurationError";
+    this.issues = issues;
+  }
+}
+
+/** The supplied lease expiry is not strictly later than the supplied `now`. */
+export class InvalidLeaseExpiryError extends PublicationOutboxError {
+  readonly issues: string[];
+  constructor(message: string, issues: string[]) {
+    super("INVALID_LEASE_EXPIRY", message);
+    this.name = "InvalidLeaseExpiryError";
+    this.issues = issues;
+  }
+}
+
+/**
+ * The caller presented a lock token for an item that currently holds NO claim —
+ * its lease expired and it was recovered, so the token is stale.
+ *
+ * Deliberately a SUBCLASS of `InvalidOutboxTransitionError`: resolving a claim
+ * you no longer hold IS an invalid transition, and existing callers that catch
+ * the general case keep working while new callers can distinguish "your claim
+ * went stale" from "that transition never made sense". The token is never echoed.
+ */
+export class StaleClaimError extends InvalidOutboxTransitionError {
+  constructor(fromStatus: string, toStatus: string) {
+    super(
+      fromStatus,
+      toStatus,
+      `The claim on this outbox item is no longer held (item is ${fromStatus}); it expired or was recovered`,
+      "STALE_CLAIM",
+    );
+    this.name = "StaleClaimError";
+  }
+}
+
+/**
+ * A recovery sweep lost a race for a row to another concurrent sweep. Surfaced
+ * only where a caller asked to recover one specific item; a batch sweep counts
+ * it as skipped rather than failing the whole sweep.
+ */
+export class RecoveryConflictError extends PublicationOutboxError {
+  constructor(message = "The outbox item was recovered or changed by another caller", cause?: unknown) {
+    super("RECOVERY_CONFLICT", message, cause);
+    this.name = "RecoveryConflictError";
+  }
+}
+
+/**
+ * Persisted lease state violates its contract — a PROCESSING item without a
+ * lease, or a lease left behind outside PROCESSING. A subclass of the general
+ * persisted-outbox violation so existing handlers keep working.
+ */
+export class PersistedLeaseContractViolationError extends PersistedOutboxContractViolationError {
+  constructor(message: string, issues: string[]) {
+    super(message, issues);
+    this.name = "PersistedLeaseContractViolationError";
   }
 }

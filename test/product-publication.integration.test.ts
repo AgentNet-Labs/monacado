@@ -532,12 +532,13 @@ describe.skipIf(!RUN)("Product publication preparation + outbox (integration)", 
     // outcome (completedAt), and bounded failure metadata (lastError*) are now
     // legitimate outbox columns — see PRODUCT_PUBLICATION_OUTBOX_PROCESSING.md.
     // What remains forbidden is everything still deferred beyond this phase.
+    // Phase 0E.5.1 moved the boundary once more: `leaseExpiresAt` is now a
+    // legitimate claim-ownership column (see PRODUCT_PUBLICATION_LEASE_RECOVERY.md).
     const cols = (await columnsOf("PublicationOutbox")).map((c) => c.toLowerCase());
     expect(cols).toContain("payloadhash");
+    expect(cols).toContain("leaseexpiresat");
     for (const forbidden of [
       "claimedby",
-      "lease",
-      "expires",
       "retrycount",
       "deadletter",
       "receipt",

@@ -1,14 +1,16 @@
 /**
- * Publication-outbox processing contracts (Phase 0E.3).
+ * Publication-outbox processing contracts (Phases 0E.3, 0E.5.1).
  *
  * Worker-facing state transitions and concurrency control for prepared Product
- * publications. This phase is OFFLINE: it decides WHICH item a worker may work
- * on and records WHAT happened, but performs no submission itself.
+ * publications. This is OFFLINE: it decides WHICH item a worker may work on and
+ * records WHAT happened, but performs no submission itself.
  *
- * There is deliberately no worker loop, no scheduled polling, no lease expiry or
- * lock stealing, no network call, no Registrar receipt, no registration state,
- * no reconciliation, and no payload disposal. `COMPLETED` means one outbox
- * attempt finished — it asserts nothing about Registrar registration.
+ * Phase 0E.5.1 added a bounded **claim lease** and an explicit stale-claim sweep,
+ * so a crashed worker cannot strand an item in PROCESSING forever. That sweep is
+ * caller-driven: there is still deliberately no worker loop, no scheduled
+ * polling, no background recovery, no lock stealing from a LIVE claim, no network
+ * call, and no Resolver concept. `COMPLETED` means one outbox attempt finished —
+ * it asserts nothing about Registrar registration.
  *
  * Zod is the single authored source of truth; types are inferred. No passthrough,
  * `any`, or arbitrary metadata bags.
@@ -73,15 +75,111 @@ export function isTerminalOutboxStatus(status: OutboxStatusT): boolean {
 // — Claim —
 
 /**
+ * Bounds on a claim lease (Phase 0E.5.1). The lower bound rejects a
+ * zero/negative lease that would be stale the instant it is taken; the upper
+ * bound rejects an effectively-infinite lease, which would reintroduce the
+ * permanently-stuck claim this phase exists to prevent.
+ */
+export const MIN_LEASE_DURATION_SECONDS = 1;
+export const MAX_LEASE_DURATION_SECONDS = 86_400; // 24 hours
+
+export const LeaseDurationSeconds = z
+  .int()
+  .min(MIN_LEASE_DURATION_SECONDS, "leaseDurationSeconds must be at least 1 second")
+  .max(
+    MAX_LEASE_DURATION_SECONDS,
+    `leaseDurationSeconds must be at most ${MAX_LEASE_DURATION_SECONDS} seconds`,
+  );
+export type LeaseDurationSeconds = z.infer<typeof LeaseDurationSeconds>;
+
+/**
  * Input to claim the next eligible item. `now` is supplied explicitly at the
  * service boundary — no clock is read inside the repository, matching the
  * discipline used throughout the Product phases.
+ *
+ * A claim MUST establish a lease, given either as a bounded duration or as an
+ * explicit expiry instant. Exactly one of the two is required: supplying both
+ * would leave it ambiguous which one governs.
  */
-export const ClaimOutboxInput = z.strictObject({
-  /** Items are eligible when `availableAt <= now`. Also recorded as `lockedAt`. */
-  now: z.iso.datetime(),
-});
+export const ClaimOutboxInput = z
+  .strictObject({
+    /** Items are eligible when `availableAt <= now`. Also recorded as `lockedAt`. */
+    now: z.iso.datetime(),
+    /** Lease length from `now`. Mutually exclusive with `leaseExpiresAt`. */
+    leaseDurationSeconds: LeaseDurationSeconds.optional(),
+    /** Explicit lease expiry. Must be strictly later than `now`. */
+    leaseExpiresAt: z.iso.datetime().optional(),
+  })
+  .superRefine((input, ctx) => {
+    const hasDuration = input.leaseDurationSeconds !== undefined;
+    const hasExpiry = input.leaseExpiresAt !== undefined;
+    if (hasDuration === hasExpiry) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["leaseDurationSeconds"],
+        message: "supply exactly one of leaseDurationSeconds or leaseExpiresAt",
+      });
+      return;
+    }
+    if (hasExpiry && Date.parse(input.leaseExpiresAt!) <= Date.parse(input.now)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["leaseExpiresAt"],
+        message: "leaseExpiresAt must be strictly later than now",
+      });
+    }
+  });
 export type ClaimOutboxInput = z.infer<typeof ClaimOutboxInput>;
+
+/** Resolve a claim input to its explicit lease expiry instant. */
+export function resolveLeaseExpiry(input: {
+  now: string;
+  leaseDurationSeconds?: number;
+  leaseExpiresAt?: string;
+}): string {
+  if (input.leaseExpiresAt !== undefined) return new Date(input.leaseExpiresAt).toISOString();
+  return new Date(Date.parse(input.now) + input.leaseDurationSeconds! * 1000).toISOString();
+}
+
+// — Stale-claim recovery —
+
+/** Bounded batch size for one recovery sweep. There is no loop-until-empty. */
+export const MIN_RECOVERY_LIMIT = 1;
+export const MAX_RECOVERY_LIMIT = 1_000;
+
+/** The bounded, safe error code recorded on a recovered item. */
+export const LEASE_EXPIRED_ERROR_CODE = "LEASE_EXPIRED" as const;
+export const LEASE_EXPIRED_ERROR_SUMMARY =
+  "The claim lease expired before the attempt was resolved; the item was returned for retry." as const;
+
+/**
+ * Input to one stale-claim sweep. `now` decides which leases have expired, and
+ * `availableAt` decides when recovered items become claimable again — defaulting
+ * to `now`, i.e. immediately eligible. Both are explicit; no clock is read.
+ */
+export const RecoverExpiredClaimsInput = z.strictObject({
+  now: z.iso.datetime(),
+  /** Maximum rows to recover in this sweep. */
+  limit: z.int().min(MIN_RECOVERY_LIMIT).max(MAX_RECOVERY_LIMIT),
+  /** When recovered items become eligible again. Defaults to `now`. */
+  availableAt: z.iso.datetime().optional(),
+});
+export type RecoverExpiredClaimsInput = z.infer<typeof RecoverExpiredClaimsInput>;
+
+/**
+ * The outcome of one sweep. `examined` counts eligible candidates seen;
+ * `recovered` are the rows this caller actually won. A candidate another
+ * concurrent sweep recovered first is counted in `skipped`, not an error.
+ */
+export const StaleClaimRecoveryResult = z.strictObject({
+  now: z.iso.datetime(),
+  availableAt: z.iso.datetime(),
+  examined: z.int().min(0),
+  recoveredCount: z.int().min(0),
+  skippedCount: z.int().min(0),
+  recovered: z.array(ProductPublicationOutbox),
+});
+export type StaleClaimRecoveryResult = z.infer<typeof StaleClaimRecoveryResult>;
 
 /**
  * The result of a successful claim: the validated PROCESSING record plus the

@@ -125,6 +125,12 @@ An **accepted** receipt requires its outbox item to be `PROCESSING` — the stat
 claim leaves it in. An acceptance for an unclaimed item is an
 `InvalidReceiptStateError`.
 
+Receipt-driven completion and dead-lettering also **release the claim lease**
+(`leaseExpiresAt`, Phase 0E.5.1), so a receipt-completed item can never be picked
+up by the stale-claim sweep and its disposed payload can never be resurrected
+into retryable work — see
+[`PRODUCT_PUBLICATION_LEASE_RECOVERY.md`](PRODUCT_PUBLICATION_LEASE_RECOVERY.md).
+
 ## Atomic transaction
 
 Recording the receipt and applying the publication and outbox state changes

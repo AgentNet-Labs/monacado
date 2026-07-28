@@ -214,6 +214,10 @@ export class RegistrarReceiptService {
               outboxStatus: outcome.outboxTarget,
               lockToken: null,
               lockedAt: null,
+              // Leaving PROCESSING always releases the claim lease, so a
+              // receipt-completed item can never be picked up by the
+              // stale-claim sweep (Phase 0E.5.1).
+              leaseExpiresAt: null,
               ...(outcome.outboxTarget === "COMPLETED"
                 ? { completedAt: new Date(req.receivedAt) }
                 : {}),

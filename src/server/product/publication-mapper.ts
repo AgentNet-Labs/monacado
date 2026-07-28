@@ -28,6 +28,7 @@ import {
   PersistedOutboxContractViolationError,
   PersistedPublicationContractViolationError,
 } from "./publication-errors";
+import { PersistedLeaseContractViolationError } from "./outbox-errors";
 
 const iso = (d: Date): string => d.toISOString();
 
@@ -96,6 +97,7 @@ export function outboxRowToDomain(row: OutboxRow): ProductPublicationOutboxDomai
     // the strict contract's `.optional()` shape round-trips exactly.
     ...(row.lockedAt !== null ? { lockedAt: iso(row.lockedAt) } : {}),
     ...(row.lockToken !== null ? { lockToken: row.lockToken } : {}),
+    ...(row.leaseExpiresAt !== null ? { leaseExpiresAt: iso(row.leaseExpiresAt) } : {}),
     ...(row.completedAt !== null ? { completedAt: iso(row.completedAt) } : {}),
     ...(row.lastErrorCode !== null ? { lastErrorCode: row.lastErrorCode } : {}),
     ...(row.lastErrorSummary !== null ? { lastErrorSummary: row.lastErrorSummary } : {}),
@@ -106,9 +108,19 @@ export function outboxRowToDomain(row: OutboxRow): ProductPublicationOutboxDomai
   const parsed = ProductPublicationOutbox.safeParse(candidate);
   if (!parsed.success) {
     // Field paths and messages only — never the payload contents.
+    const found = issues(parsed.error);
+    // A lease violation gets the more precise type (still an instanceof the
+    // general one), so callers can distinguish "claim ownership is inconsistent"
+    // from any other malformed row.
+    if (found.every((i) => i.startsWith("leaseExpiresAt"))) {
+      throw new PersistedLeaseContractViolationError(
+        "Persisted publication outbox lease state is inconsistent with its status",
+        found,
+      );
+    }
     throw new PersistedOutboxContractViolationError(
       "Persisted publication outbox record violates the ProductPublicationOutbox contract",
-      issues(parsed.error),
+      found,
     );
   }
 
@@ -180,6 +192,7 @@ export function domainToOutboxCreateInput(
     // are written only by the Phase 0E.3 processing transitions.
     lockedAt: outbox.lockedAt !== undefined ? new Date(outbox.lockedAt) : null,
     lockToken: outbox.lockToken ?? null,
+    leaseExpiresAt: outbox.leaseExpiresAt !== undefined ? new Date(outbox.leaseExpiresAt) : null,
     completedAt: outbox.completedAt !== undefined ? new Date(outbox.completedAt) : null,
     lastErrorCode: outbox.lastErrorCode ?? null,
     lastErrorSummary: outbox.lastErrorSummary ?? null,

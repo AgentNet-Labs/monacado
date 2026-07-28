@@ -5,9 +5,14 @@ publications. This phase decides **which** item a worker may work on and records
 **what happened** — it performs no submission itself.
 
 Still **fully offline**: no network call, no Publisher submission, no Registrar
-processing, no receipt, no reconciliation, no payload disposal, no worker loop,
-and no scheduled polling. Builds on
+processing, no worker loop, and no scheduled polling. Builds on
 [`PRODUCT_PUBLICATION_PREPARATION.md`](PRODUCT_PUBLICATION_PREPARATION.md).
+
+> **Phase 0E.5.1 note.** A claim now carries a bounded **lease**, and an expired
+> claim can be recovered back to `RETRYABLE` — see
+> [`PRODUCT_PUBLICATION_LEASE_RECOVERY.md`](PRODUCT_PUBLICATION_LEASE_RECOVERY.md).
+> Claiming therefore requires a lease duration or expiry, and every path out of
+> `PROCESSING` clears `leaseExpiresAt`.
 
 ## Outbox states
 
@@ -69,7 +74,8 @@ Claiming is a **guarded update** (compare-and-set), not read-then-write:
 1. Select the next candidate id deterministically.
 2. Issue a single `UPDATE … WHERE id = ? AND status IN (PENDING, RETRYABLE) AND
    availableAt <= now AND lockToken IS NULL`, setting `PROCESSING`, a fresh
-   `lockToken`, `lockedAt`, and `attemptCount = attemptCount + 1`.
+   `lockToken`, `lockedAt`, `leaseExpiresAt` (Phase 0E.5.1), and
+   `attemptCount = attemptCount + 1`.
 3. If the update matched **zero** rows, another worker won the race — the caller
    gets `OutboxClaimConflictError` rather than a silently stolen item.
 
@@ -98,8 +104,10 @@ Checks are ordered deliberately:
 4. a guarded update re-asserts `(outboxId, lockToken, PROCESSING)` atomically.
 
 A **stale worker cannot** retry, complete, or dead-letter another worker's claim.
-Once an item is retried and re-claimed, the old token is refused. Error messages
-never echo either token.
+Once an item is retried, recovered, or re-claimed, the old token is refused — a
+token presented against an item holding no claim raises `StaleClaimError`
+(itself an `InvalidOutboxTransitionError`). Error messages never echo either
+token.
 
 ## Attempt counting
 
@@ -171,10 +179,11 @@ object spread, or `Object.keys`.
 
 ## Deferred
 
-- **Lease expiry and lock stealing.** A claim held by a crashed worker stays held
-  in this phase. There is no lease duration, no reclaim-after-timeout, and no
-  forced unlock. This is the most significant known limitation and should be the
-  first thing addressed when a real worker is introduced.
+- **Lease expiry** arrived in Phase 0E.5.1 — a claim held by a crashed worker no
+  longer stays held forever. See
+  [`PRODUCT_PUBLICATION_LEASE_RECOVERY.md`](PRODUCT_PUBLICATION_LEASE_RECOVERY.md).
+  **Lock stealing from a LIVE claim remains deliberately absent**, as do lease
+  renewal/heartbeat and any automatic sweep.
 - **Worker loop and scheduled polling** — callers claim one item per call.
 - **Network submission, Publisher submission, Registrar processing.**
 - Registrar receipts, registration state, reconciliation, and payload disposal

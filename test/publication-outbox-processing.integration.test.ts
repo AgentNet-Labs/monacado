@@ -131,8 +131,13 @@ async function seedOutboxItem(
   };
 }
 
-/** Claim the single due item. */
-const claim = (now = T1) => outbox.claimNextPublicationOutbox({ now });
+/**
+ * Claim the single due item. Every claim must establish a lease (Phase 0E.5.1);
+ * a long default keeps these tests about transitions rather than expiry.
+ */
+const LEASE_SECONDS = 3600;
+const claim = (now = T1) =>
+  outbox.claimNextPublicationOutbox({ now, leaseDurationSeconds: LEASE_SECONDS });
 
 const SAFE_ERROR = { errorCode: "SUBMISSION_TIMEOUT", errorSummary: "Attempt timed out awaiting acknowledgement." };
 
@@ -171,7 +176,7 @@ describe.skipIf(!RUN)("Publication outbox claiming and retry state (integration)
       availableAt: T2,
       ...SAFE_ERROR,
     });
-    const second = await outbox.claimNextPublicationOutbox({ now: T2 });
+    const second = await outbox.claimNextPublicationOutbox({ now: T2, leaseDurationSeconds: LEASE_SECONDS });
     expect(second.outbox.outboxId).toBe(outboxId);
     expect(second.outbox.outboxStatus).toBe("PROCESSING");
   });
@@ -185,7 +190,9 @@ describe.skipIf(!RUN)("Publication outbox claiming and retry state (integration)
       availableAt: FUTURE,
       ...SAFE_ERROR,
     });
-    await expect(outbox.claimNextPublicationOutbox({ now: T2 })).rejects.toBeInstanceOf(
+    await expect(
+      outbox.claimNextPublicationOutbox({ now: T2, leaseDurationSeconds: LEASE_SECONDS }),
+    ).rejects.toBeInstanceOf(
       NoEligibleOutboxItemError,
     );
   });
@@ -231,7 +238,7 @@ describe.skipIf(!RUN)("Publication outbox claiming and retry state (integration)
       availableAt: T2,
       ...SAFE_ERROR,
     });
-    const reclaimed = await outbox.claimNextPublicationOutbox({ now: T2 });
+    const reclaimed = await outbox.claimNextPublicationOutbox({ now: T2, leaseDurationSeconds: LEASE_SECONDS });
     expect(reclaimed.outbox.attemptCount).toBe(2);
   });
 
@@ -310,7 +317,7 @@ describe.skipIf(!RUN)("Publication outbox claiming and retry state (integration)
       availableAt: T2,
       ...SAFE_ERROR,
     });
-    const second = await outbox.claimNextPublicationOutbox({ now: T2 });
+    const second = await outbox.claimNextPublicationOutbox({ now: T2, leaseDurationSeconds: LEASE_SECONDS });
     expect(second.outbox.outboxId).toBe(outboxId);
     expect(second.lockToken).not.toBe(first.lockToken);
   });
@@ -570,7 +577,7 @@ describe.skipIf(!RUN)("Publication outbox claiming and retry state (integration)
       availableAt: T2,
       ...SAFE_ERROR,
     });
-    const fresh = await outbox.claimNextPublicationOutbox({ now: T2 });
+    const fresh = await outbox.claimNextPublicationOutbox({ now: T2, leaseDurationSeconds: LEASE_SECONDS });
     expect(fresh.lockToken).not.toBe(stale.lockToken);
 
     // The stale worker's token no longer owns the claim.
@@ -597,7 +604,10 @@ describe.skipIf(!RUN)("Publication outbox claiming and retry state (integration)
     );
     const cols = rows.map((r) => r.COLUMN_NAME.toLowerCase());
     expect(cols).toContain("locktoken");
-    for (const forbidden of ["receipt", "registrat", "reconcil", "resolver", "lease", "expires"]) {
+    // Phase 0E.5.1 added leaseExpiresAt as a legitimate claim-ownership column;
+    // receipts, registration, reconciliation, and Resolver state still have none.
+    expect(cols).toContain("leaseexpiresat");
+    for (const forbidden of ["receipt", "registrat", "reconcil", "resolver"]) {
       expect(cols.some((c) => c.includes(forbidden))).toBe(false);
     }
   });
