@@ -13,7 +13,8 @@
  * shared canonical primitive from the integrity module.
  */
 
-import type { Prisma, ProductPublication as PublicationRow, PublicationOutbox as OutboxRow } from "@prisma/client";
+import { Prisma } from "@prisma/client";
+import type { ProductPublication as PublicationRow, PublicationOutbox as OutboxRow } from "@prisma/client";
 import {
   ProductPublication,
   ProductPublicationOutbox,
@@ -57,6 +58,8 @@ export function publicationRowToDomain(row: PublicationRow): ProductPublicationD
     ...(row.supersedesCapsuleId !== null ? { supersedesCapsuleId: row.supersedesCapsuleId } : {}),
     ...(row.revokesCapsuleId !== null ? { revokesCapsuleId: row.revokesCapsuleId } : {}),
     publicationStatus: row.publicationStatus,
+    registrationState: row.registrationState,
+    reconciliationState: row.reconciliationState,
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),
   };
@@ -82,7 +85,9 @@ export function outboxRowToDomain(row: OutboxRow): ProductPublicationOutboxDomai
     publicationId: row.publicationId,
     idempotencyKey: row.idempotencyKey,
     operationType: row.operationType,
-    payload: row.payload,
+    // Absent (not null) once disposed of after successful reconciliation; the
+    // contract permits absence ONLY in COMPLETED and enforces that itself.
+    ...(row.payload !== null ? { payload: row.payload } : {}),
     payloadHash: row.payloadHash,
     outboxStatus: row.outboxStatus,
     attemptCount: row.attemptCount,
@@ -107,13 +112,18 @@ export function outboxRowToDomain(row: OutboxRow): ProductPublicationOutboxDomai
     );
   }
 
-  // Integrity: the stored hash must match the canonical payload exactly.
-  const recomputed = outboxPayloadHash(parsed.data.payload);
-  if (recomputed !== parsed.data.payloadHash) {
-    throw new PersistedOutboxContractViolationError(
-      "Persisted outbox payloadHash does not match the canonical payload",
-      ["payloadHash: stored hash does not match the canonical payload"],
-    );
+  // Integrity: while the payload is retained, the stored hash must match it
+  // exactly. Once the payload has been disposed of (Phase 0E.4) there is nothing
+  // to hash — payloadHash is retained precisely so the disposed body stays
+  // verifiable against a capsule regenerated from the source record.
+  if (parsed.data.payload !== undefined) {
+    const recomputed = outboxPayloadHash(parsed.data.payload);
+    if (recomputed !== parsed.data.payloadHash) {
+      throw new PersistedOutboxContractViolationError(
+        "Persisted outbox payloadHash does not match the canonical payload",
+        ["payloadHash: stored hash does not match the canonical payload"],
+      );
+    }
   }
 
   return parsed.data;
@@ -144,6 +154,8 @@ export function domainToPublicationCreateInput(
     supersedesCapsuleId: publication.supersedesCapsuleId ?? null,
     revokesCapsuleId: publication.revokesCapsuleId ?? null,
     publicationStatus: publication.publicationStatus,
+    registrationState: publication.registrationState,
+    reconciliationState: publication.reconciliationState,
   };
 }
 
@@ -156,7 +168,10 @@ export function domainToOutboxCreateInput(
     publicationId: outbox.publicationId,
     idempotencyKey: outbox.idempotencyKey,
     operationType: outbox.operationType,
-    payload: outbox.payload as unknown as Prisma.InputJsonValue,
+    payload:
+      outbox.payload === undefined
+        ? Prisma.DbNull
+        : (outbox.payload as unknown as Prisma.InputJsonValue),
     payloadHash: outbox.payloadHash,
     outboxStatus: outbox.outboxStatus,
     attemptCount: outbox.attemptCount,

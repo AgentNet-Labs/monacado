@@ -105,12 +105,15 @@ One bounded enum for this phase:
 Submission, registration, receipt, retry, reconciliation, and Resolver states are
 deliberately **absent** and must not be added before their phase.
 
-> **Phase 0E.3 note.** Worker-facing claiming, retry, completion, dead-lettering,
-> and cancellation of the outbox item are documented separately in
-> [`PRODUCT_PUBLICATION_OUTBOX_PROCESSING.md`](PRODUCT_PUBLICATION_OUTBOX_PROCESSING.md).
-> The outbox state vocabulary and the claim/outcome columns described below were
-> extended by that phase; publication status is unchanged and stays `QUEUED`
-> throughout processing.
+> **Later-phase notes.** Worker-facing claiming, retry, completion,
+> dead-lettering, and cancellation of the outbox item are documented in
+> [`PRODUCT_PUBLICATION_OUTBOX_PROCESSING.md`](PRODUCT_PUBLICATION_OUTBOX_PROCESSING.md)
+> (Phase 0E.3). Registrar receipts, reconciliation, and disposal of the capsule
+> payload are documented in
+> [`PRODUCT_REGISTRAR_RECEIPTS.md`](PRODUCT_REGISTRAR_RECEIPTS.md) (Phase 0E.4);
+> that phase added `registrationState` and `reconciliationState` to the
+> publication and made the outbox payload nullable. **`publicationStatus` is
+> unchanged and stays `QUEUED` throughout** — registration has its own field.
 
 ## REGISTER-only outbox scope
 
@@ -204,8 +207,10 @@ The **candidate** is never persisted: it is a deterministic derivation
 regenerated from the immutable source-record version whenever it is needed, and
 only its hash is retained.
 
-Payload disposal after registration is **deferred** — nothing clears payloads in
-this phase.
+Payload disposal after registration is deferred to Phase 0E.4, where the body is
+cleared only after a matching ACCEPTED Registrar receipt — see
+[`PRODUCT_REGISTRAR_RECEIPTS.md`](PRODUCT_REGISTRAR_RECEIPTS.md). `payloadHash`
+is retained so the disposed body stays verifiable.
 
 ## Prisma-to-domain mapping
 

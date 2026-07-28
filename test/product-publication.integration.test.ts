@@ -7,7 +7,7 @@
 
 import "dotenv/config";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import type { ProductSourceRecord } from "../src/contracts/index";
+import type { ProductSourceRecord, PublishedProductCapsule } from "../src/contracts/index";
 import {
   MONACADO_PUBLISHER_ID,
   canonicalHash,
@@ -124,6 +124,18 @@ function prepInput(f: Fixture, overrides: Record<string, unknown> = {}) {
   };
 }
 
+/**
+ * The retained capsule payload. A freshly prepared item always has one; payload
+ * disposal only happens after a matching Registrar receipt (Phase 0E.4), so an
+ * absent payload here is a real regression rather than a typing inconvenience.
+ */
+function retainedPayload(outbox: { payload?: PublishedProductCapsule }): PublishedProductCapsule {
+  if (outbox.payload === undefined) {
+    throw new Error("expected the outbox payload to be retained, but it was absent");
+  }
+  return outbox.payload;
+}
+
 /** Column names of a table in the disposable database. */
 async function columnsOf(table: string): Promise<string[]> {
   const rows = await db.$queryRawUnsafe<Array<{ COLUMN_NAME: string }>>(
@@ -174,8 +186,8 @@ describe.skipIf(!RUN)("Product publication preparation + outbox (integration)", 
     });
     const result = await pubs.prepareProductPublication(prepInput(f, { sourceRecordVersion: "1" }));
     expect(result.publication.sourceRecordVersion).toBe("1");
-    expect(result.outbox.payload.data.name).toBe(f.record.facts.name);
-    expect(result.outbox.payload.metadata.provenance.sourceRecordVersion).toBe("1");
+    expect(retainedPayload(result.outbox).data.name).toBe(f.record.facts.name);
+    expect(retainedPayload(result.outbox).metadata.provenance.sourceRecordVersion).toBe("1");
   });
 
   it("3. Product/source mismatch fails", async () => {
@@ -249,10 +261,10 @@ describe.skipIf(!RUN)("Product publication preparation + outbox (integration)", 
     const result = await pubs.prepareProductPublication(prepInput(f));
     // outboxRowToDomain already validates the payload against the strict
     // published-capsule schema; assert the persisted hash matches the capsule.
-    expect(result.outbox.payload.metadata.contentHash).toBe(
+    expect(retainedPayload(result.outbox).metadata.contentHash).toBe(
       result.publication.publishedContentHash,
     );
-    expect(Object.keys(result.outbox.payload).sort()).toEqual([
+    expect(Object.keys(retainedPayload(result.outbox)).sort()).toEqual([
       "@context",
       "@type",
       "data",
@@ -279,7 +291,7 @@ describe.skipIf(!RUN)("Product publication preparation + outbox (integration)", 
     expect(result.publication.nodePolicyVersion).toBe("3.1.4");
     expect(result.publication.capsulePolicyRef).toBe("an:policy:capsule:exact");
     expect(result.publication.capsulePolicyVersion).toBe("2.7.1");
-    expect(result.outbox.payload.metadata.nodePolicy).toEqual({
+    expect(retainedPayload(result.outbox).metadata.nodePolicy).toEqual({
       ref: "an:policy:node:exact",
       version: "3.1.4",
     });
@@ -317,8 +329,8 @@ describe.skipIf(!RUN)("Product publication preparation + outbox (integration)", 
     expect(types.filter((t) => ["json", "text", "longtext", "mediumtext"].includes(t.DATA_TYPE))).toEqual([]);
 
     // The payload is the whole capsule and lives on the outbox row.
-    expect(result.outbox.payload.metadata.capsuleId).toBe(result.publication.capsuleId);
-    expect(result.outbox.payload.metadata.bindsToNode).toBe(result.publication.nodeId);
+    expect(retainedPayload(result.outbox).metadata.capsuleId).toBe(result.publication.capsuleId);
+    expect(retainedPayload(result.outbox).metadata.bindsToNode).toBe(result.publication.nodeId);
   });
 
   it("19. publication and outbox are created atomically (both present, QUEUED)", async () => {
@@ -539,8 +551,14 @@ describe.skipIf(!RUN)("Product publication preparation + outbox (integration)", 
     ]) {
       expect(cols.some((c) => c.includes(forbidden))).toBe(false);
     }
+    // Phase 0E.4 moved the boundary again: the publication now carries bounded
+    // registration and reconciliation STATE (see PRODUCT_REGISTRAR_RECEIPTS.md).
+    // Receipts themselves live on their own immutable table, and work-processing
+    // concerns still have no business on the publication row.
     const pubCols = (await columnsOf("ProductPublication")).map((c) => c.toLowerCase());
-    for (const forbidden of ["receipt", "reconcil", "retry", "attempt", "claim", "resolver"]) {
+    expect(pubCols).toContain("registrationstate");
+    expect(pubCols).toContain("reconciliationstate");
+    for (const forbidden of ["receipt", "retry", "attempt", "claim", "lock", "resolver", "payload"]) {
       expect(pubCols.some((c) => c.includes(forbidden))).toBe(false);
     }
   });

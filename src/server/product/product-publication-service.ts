@@ -335,6 +335,10 @@ export class ProductPublicationService {
       // The publication row is created PREPARED and advanced to QUEUED once its
       // outbox item exists — both inside the one transaction below.
       publicationStatus: "PREPARED",
+      // Nothing has been submitted to a Registrar, so there is no verdict and
+      // nothing to reconcile. Only recording a receipt (Phase 0E.4) changes these.
+      registrationState: "NOT_SUBMITTED",
+      reconciliationState: "NOT_REQUIRED",
     } satisfies ProductPublicationWrite);
 
     const outboxWrite = ProductPublicationOutboxWrite.parse({

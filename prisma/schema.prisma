@@ -1,4 +1,4 @@
-// Monacado — Product persistence (Phases 0D, 0E.1, 0E.2).
+// Monacado — Product persistence (Phases 0D, 0E.1, 0E.2, 0E.3, 0E.4).
 //
 // The database is the authoritative store for the enduring Product identity and
 // its IMMUTABLE source-record version history. Capsule CANDIDATES are never
@@ -12,11 +12,15 @@
 //     home of ANS lifecycle state (Phase 0E.1).
 //   ProductPublication                       — publication identity, lineage,
 //     and integrity; no Product facts, no capsule body (Phase 0E.2).
-//   PublicationOutbox                        — durable PENDING REGISTER work and
-//     the ONLY place a published-capsule JSON body is persisted (Phase 0E.2).
+//   PublicationOutbox                        — durable REGISTER work, its claim
+//     state, and the ONLY place a published-capsule JSON body is persisted
+//     (Phases 0E.2/0E.3). The body is disposed of after successful
+//     reconciliation (Phase 0E.4); the row itself is never deleted.
+//   RegistrarReceipt                         — the immutable record of what the
+//     Registrar said, kept separate from what Monacado expected (Phase 0E.4).
 //
-// No registration receipts, retries, claims, reconciliation, or Resolver state
-// exist yet — those belong to later phases.
+// Everything here remains OFFLINE. No Resolver state exists, and no model holds
+// a live Registrar/Publisher connection, credential, or endpoint.
 
 generator client {
   provider = "prisma-client-js"
@@ -166,8 +170,10 @@ model ProductSourceRecordVersionRow {
 /// Holds identity, lineage, and integrity ONLY. No Product facts are duplicated
 /// here (they live on the immutable source-record version); no capsule JSON body
 /// is stored here (it exists only as the outbox payload); no Node lifecycle is
-/// stored here (lifecycle lives on ProductNode — ADR §11.9); and no submission,
-/// registration, receipt, retry, reconciliation, or Resolver state exists yet.
+/// stored here (lifecycle lives on ProductNode — ADR §11.9). Registration and
+/// reconciliation state (Phase 0E.4) live here as bounded enums, deliberately
+/// separate from publicationStatus, from outboxStatus, and from Node lifecycle;
+/// the receipts that drive them are separate immutable rows.
 model ProductPublication {
   /// Internal surrogate row id.
   id BigInt @id @default(autoincrement())
@@ -216,6 +222,15 @@ model ProductPublication {
   /// PREPARED | QUEUED | CANCELLED (bounded by the Zod PublicationStatus enum).
   publicationStatus String @db.VarChar(16)
 
+  // — Registrar outcome (Phase 0E.4). Independent of publicationStatus, of
+  //   outboxStatus, and of Node lifecycle. Only receipt recording changes these.
+  /// NOT_SUBMITTED | PENDING | ACCEPTED | REJECTED.
+  registrationState String @default("NOT_SUBMITTED") @db.VarChar(16)
+
+  /// NOT_REQUIRED | PENDING | MATCHED | MISMATCH — whether a recorded receipt
+  /// actually refers to THIS publication.
+  reconciliationState String @default("NOT_REQUIRED") @db.VarChar(16)
+
   createdAt DateTime @default(now()) @db.DateTime(3)
   updatedAt DateTime @updatedAt @db.DateTime(3)
 
@@ -225,7 +240,8 @@ model ProductPublication {
   node          ProductNode                   @relation(fields: [nodeId], references: [nodeId], onDelete: Restrict)
   sourceVersion ProductSourceRecordVersionRow @relation(fields: [sourceRecordId, sourceRecordVersion], references: [sourceRecordId, sourceRecordVersion], onDelete: Restrict)
 
-  outbox PublicationOutbox?
+  outbox   PublicationOutbox?
+  receipts RegistrarReceipt[]
 
   /// One publication per (Node, exact source-record version) — prevents two
   /// conflicting capsule identities being published for the same source version.
@@ -259,7 +275,12 @@ model PublicationOutbox {
 
   /// The validated FINAL published Product capsule. Strict-schema JSON, validated
   /// on read; never an arbitrary bag and never carries secrets or credentials.
-  payload Json
+  ///
+  /// NULLABLE from Phase 0E.4: the transient body is disposed of after a matching
+  /// ACCEPTED Registrar receipt. Absence is legitimate ONLY in COMPLETED. The row
+  /// itself is never deleted, and payloadHash is retained so the disposed body
+  /// remains verifiable against a regenerated capsule.
+  payload Json?
 
   /// Canonical hash of the payload exactly as stored.
   payloadHash String @db.VarChar(80)
@@ -296,6 +317,7 @@ model PublicationOutbox {
   updatedAt DateTime @updatedAt @db.DateTime(3)
 
   publication ProductPublication @relation(fields: [publicationId], references: [publicationId], onDelete: Restrict)
+  receipts    RegistrarReceipt[]
 
   /// Supports the claim query: filter by status, order by availableAt then
   /// creation order. InnoDB appends the primary key (`id`) to every secondary
@@ -303,4 +325,60 @@ model PublicationOutbox {
   /// index without a redundant explicit column — and the index is unchanged from
   /// Phase 0E.2, keeping this migration additive (new columns only).
   @@index([outboxStatus, availableAt])
+}
+
+/// Immutable record of what the Registrar said about one publication (Phase 0E.4).
+///
+/// Written once and never updated: there is no `updatedAt`, and no service
+/// mutates a receipt. A receipt is EVIDENCE, not authority — recording one never
+/// rewrites the publication's expected Node, capsule, or content hash. The
+/// capsule body is never stored here.
+model RegistrarReceipt {
+  /// Internal surrogate row id.
+  id BigInt @id @default(autoincrement())
+
+  /// Opaque internal receipt identifier (mon:rcpt:<opaque>); unique.
+  receiptId String @unique @db.VarChar(191)
+
+  /// The publication this receipt claims to describe.
+  publicationId String @db.VarChar(191)
+
+  /// The outbox item whose attempt produced it, when known.
+  outboxId String? @db.VarChar(191)
+
+  /// The Registrar's OWN registration identifier; unique where present.
+  /// NULL for a REJECTED receipt that registered nothing (MySQL allows many NULLs).
+  registrarRegistrationId String? @unique @db.VarChar(191)
+
+  /// What the receipt reports. Compared against the publication's expectation;
+  /// never copied over it.
+  registrarId           String @db.VarChar(191)
+  nodeId                String @db.VarChar(191)
+  capsuleId             String @db.VarChar(191)
+  registeredContentHash String @db.VarChar(80)
+
+  /// ACCEPTED | REJECTED (bounded by the Zod ReceiptStatus enum).
+  receiptStatus String @db.VarChar(16)
+
+  /// Registrar's registration time, and Monacado's receiving time.
+  registeredAt DateTime @db.DateTime(3)
+  receivedAt   DateTime @db.DateTime(3)
+
+  /// Narrow, closed, validated detail structure — never an arbitrary bag and
+  /// never the capsule body. See contracts/product/product-registrar-receipt.
+  receiptDetails Json
+
+  /// Set to publicationId for an ACCEPTED receipt and NULL otherwise, so the
+  /// unique index enforces AT MOST ONE ACCEPTED RECEIPT PER PUBLICATION while
+  /// permitting many rejected/mismatched receipts (MySQL has no partial indexes).
+  acceptedForPublicationId String? @unique @db.VarChar(191)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+
+  // RESTRICT: receipt history must never be cascade-deleted.
+  publication ProductPublication @relation(fields: [publicationId], references: [publicationId], onDelete: Restrict)
+  outbox      PublicationOutbox? @relation(fields: [outboxId], references: [outboxId], onDelete: Restrict)
+
+  @@index([publicationId])
+  @@index([outboxId])
 }

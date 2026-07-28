@@ -18,10 +18,12 @@ import {
 import { ProductPublicationService } from "../src/server/product/product-publication-service";
 import { PublicationOutboxRepository } from "../src/server/product/publication-outbox-repository";
 import { UnsafeErrorMetadataError } from "../src/server/product/outbox-errors";
+import { RegistrarReceiptService } from "../src/server/product/registrar-receipt-service";
 import {
   MONACADO_PUBLISHER_ID,
   canonicalHash,
   candidateHash,
+  finalizeProductCapsule,
   productSourceRecordToCapsuleCandidate,
   validatePublishedProductCapsule,
 } from "../src/contracts/index";
@@ -37,6 +39,9 @@ const CHECK_NODE = `an:node:${pad26("DBCHECKNODE")}`;
 const CHECK_NODE_ANS = `an:node:${pad26("DBCHECKANSNODE")}`;
 const CHECK_PUBLICATION = `mon:pub:${pad26("DBCHECKPUB")}`;
 const CHECK_CAPSULE = `an:capsule:${pad26("DBCHECKCAPSULE")}`;
+const CHECK_PUBLICATION2 = `mon:pub:${pad26("DBCHECKPUB2")}`;
+const CHECK_CAPSULE2 = `an:capsule:${pad26("DBCHECKCAPSULE2")}`;
+const CHECK_RECEIPT = `mon:rcpt:${pad26("DBCHECKRECEIPT")}`;
 
 function syntheticCheckRecord(): ProductSourceRecord {
   return {
@@ -100,6 +105,7 @@ async function main(): Promise<void> {
     "add_product_node",
     "add_product_publication_and_outbox",
     "add_outbox_claiming_and_retry_state",
+    "add_registrar_receipts_and_reconciliation",
   ]) {
     if (!migrations.some((m) => m.migration_name.includes(expected))) {
       fail(`expected migration not applied: ${expected}`);
@@ -118,6 +124,7 @@ async function main(): Promise<void> {
     "ProductNode",
     "ProductPublication",
     "PublicationOutbox",
+    "RegistrarReceipt",
   ]) {
     if (!names.has(t)) fail(`missing table ${t}`);
   }
@@ -292,10 +299,12 @@ async function main(): Promise<void> {
     // The published capsule validates, and the payload hash matches canonically.
     const validated = validatePublishedProductCapsule(prepared.outbox.payload);
     if (!validated.ok) fail(`published capsule failed validation: ${validated.errors?.join("; ")}`);
-    if (prepared.outbox.payloadHash !== canonicalHash(prepared.outbox.payload)) {
+    const preparedPayload = prepared.outbox.payload;
+    if (preparedPayload === undefined) fail("a freshly prepared outbox item has no payload");
+    if (prepared.outbox.payloadHash !== canonicalHash(preparedPayload)) {
       fail("outbox payloadHash does not match the canonical payload");
     }
-    if (prepared.outbox.payload.metadata.contentHash !== prepared.publication.publishedContentHash) {
+    if (preparedPayload.metadata.contentHash !== prepared.publication.publishedContentHash) {
       fail("publishedContentHash does not match the capsule contentHash");
     }
     ok("published capsule validates; payloadHash matches canonical payload");
@@ -428,6 +437,134 @@ async function main(): Promise<void> {
     }
     ok("outbox completion (PROCESSING -> COMPLETED, payload retained, publication still QUEUED)");
 
+
+    // — Registrar receipts and reconciliation (Phase 0E.4) —
+    // Structural: new publication state columns and a nullable outbox payload.
+    const pubStateCols = await db.$queryRawUnsafe<Array<{ COLUMN_NAME: string }>>(
+      "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ProductPublication'",
+    );
+    const pubStateNames = pubStateCols.map((c) => c.COLUMN_NAME);
+    for (const col of ["registrationState", "reconciliationState"]) {
+      if (!pubStateNames.includes(col)) fail(`missing ProductPublication.${col} column`);
+    }
+    const payloadCol = await db.$queryRawUnsafe<Array<{ IS_NULLABLE: string }>>(
+      "SELECT IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'PublicationOutbox' AND COLUMN_NAME = 'payload'",
+    );
+    if (payloadCol[0]?.IS_NULLABLE !== "YES") fail("PublicationOutbox.payload must be nullable");
+    const rcptUnique = await uniqueIndexNames("RegistrarReceipt");
+    for (const col of ["receiptId", "registrarRegistrationId", "acceptedForPublicationId"]) {
+      if (!rcptUnique.some((i) => i.includes(col))) fail(`missing unique RegistrarReceipt.${col} index`);
+    }
+    if (!hasFk("RegistrarReceipt", "ProductPublication")) {
+      fail("missing RegistrarReceipt -> ProductPublication foreign key");
+    }
+    ok("receipt table, publication state columns, nullable payload, receipt uniqueness + FK");
+
+    // Prepare a SECOND publication (new immutable source version) and claim it,
+    // so the Phase 0E.3 completion above is left intact.
+    await repo.createProductSourceRecordRevision({
+      internalProductId: CHECK_INTERNAL,
+      expectedCurrentSourceRecordVersion: "1",
+      sourceRecordVersion: "2",
+      updatedAt: "2026-01-06T00:00:00.000Z",
+      capsuleGeneratedAt: "2026-01-06T06:30:00.000Z",
+    });
+    const prepared2 = await pubService.prepareProductPublication({
+      publicationId: CHECK_PUBLICATION2,
+      internalProductId: CHECK_INTERNAL,
+      sourceRecordId: CHECK_SREC,
+      sourceRecordVersion: "2",
+      nodeId: CHECK_NODE_ANS,
+      capsuleId: CHECK_CAPSULE2,
+      capsuleSemver: "1.0.0",
+      publishedBy: MONACADO_PUBLISHER_ID,
+      publishedAt: "2026-01-06T12:00:00.000Z",
+      nodePolicy: { ref: "an:policy:node:dbcheck", version: "1.0.0" },
+      capsulePolicy: { ref: "an:policy:capsule:dbcheck", version: "1.0.0" },
+      availableAt: "2026-01-06T12:00:00.000Z",
+    });
+    if (prepared2.publication.registrationState !== "NOT_SUBMITTED") {
+      fail("a prepared publication must begin NOT_SUBMITTED");
+    }
+    if (prepared2.publication.reconciliationState !== "NOT_REQUIRED") {
+      fail("a prepared publication must begin NOT_REQUIRED");
+    }
+    const claimed2 = await outboxRepo.claimNextPublicationOutbox({ now: "2026-01-06T13:00:00.000Z" });
+    const payloadBefore = claimed2.outbox.payload;
+    if (payloadBefore === undefined) fail("payload must be present before reconciliation");
+    ok("second publication prepared (NOT_SUBMITTED / NOT_REQUIRED) and claimed");
+
+    // Record a MATCHING accepted receipt.
+    const receiptService = new RegistrarReceiptService(db);
+    const reconciled = await receiptService.recordRegistrarReceipt({
+      receiptId: CHECK_RECEIPT,
+      publicationId: CHECK_PUBLICATION2,
+      registrarRegistrationId: "dbcheck-registration-0e4",
+      registrarId: MONACADO_REGISTRAR_ID,
+      nodeId: CHECK_NODE_ANS,
+      capsuleId: CHECK_CAPSULE2,
+      registeredContentHash: prepared2.publication.publishedContentHash,
+      receiptStatus: "ACCEPTED",
+      registeredAt: "2026-01-06T14:00:00.000Z",
+      receivedAt: "2026-01-06T14:00:05.000Z",
+      receiptDetails: { registrarStatusCode: "REGISTERED" },
+    });
+    if (reconciled.mismatchedFields.length !== 0) fail("a matching receipt reported a mismatch");
+    if (reconciled.registrationState !== "ACCEPTED") fail("registration did not become ACCEPTED");
+    if (reconciled.reconciliationState !== "MATCHED") fail("reconciliation did not become MATCHED");
+    if (reconciled.outbox.outboxStatus !== "COMPLETED") fail("outbox did not become COMPLETED");
+    if (reconciled.outbox.completedAt === undefined) fail("completedAt was not set");
+    ok("matching accepted receipt: registration ACCEPTED, reconciliation MATCHED, outbox COMPLETED");
+
+    // Payload cleared; hashes and source pointers retained.
+    if (!reconciled.payloadDisposed || reconciled.outbox.payload !== undefined) {
+      fail("payload was not cleared after a matching accepted receipt");
+    }
+    if (reconciled.outbox.payloadHash !== prepared2.outbox.payloadHash) fail("payloadHash changed");
+    if (reconciled.publication.publishedContentHash !== prepared2.publication.publishedContentHash) {
+      fail("publishedContentHash changed");
+    }
+    if (reconciled.publication.candidateHash !== prepared2.publication.candidateHash) {
+      fail("candidateHash changed");
+    }
+    if (
+      reconciled.publication.sourceRecordId !== CHECK_SREC ||
+      reconciled.publication.sourceRecordVersion !== "2" ||
+      reconciled.publication.mappingVersion !== prepared2.publication.mappingVersion
+    ) {
+      fail("source pointers or mappingVersion were not retained");
+    }
+    await receiptService.assertPayloadDisposed(CHECK_PUBLICATION2);
+    if ((await db.publicationOutbox.count({ where: { publicationId: CHECK_PUBLICATION2 } })) !== 1) {
+      fail("the outbox row must not be deleted on disposal");
+    }
+    ok("payload cleared; payloadHash, content/candidate hashes, and source pointers retained");
+
+    // Deterministic regeneration from RETAINED data only.
+    const retainedRecord = await repo.getProductSourceRecordVersion(CHECK_SREC, "2");
+    const rebuilt = finalizeProductCapsule({
+      candidate: productSourceRecordToCapsuleCandidate(retainedRecord),
+      capsuleId: reconciled.publication.capsuleId,
+      bindsToNode: reconciled.publication.nodeId,
+      publishedBy: reconciled.publication.publishedBy,
+      publishedAt: reconciled.publication.publishedAt,
+      nodePolicy: {
+        ref: reconciled.publication.nodePolicyRef,
+        version: reconciled.publication.nodePolicyVersion,
+      },
+      capsulePolicy: {
+        ref: reconciled.publication.capsulePolicyRef,
+        version: reconciled.publication.capsulePolicyVersion,
+      },
+    });
+    if (canonicalHash(rebuilt) !== reconciled.outbox.payloadHash) {
+      fail("regenerated capsule does not match the retained payloadHash");
+    }
+    if (rebuilt.metadata.contentHash !== reconciled.publication.publishedContentHash) {
+      fail("regenerated capsule contentHash does not match the publication");
+    }
+    ok("published capsule regenerates deterministically after payload disposal");
+
     const transitioned = await nodeRepo.transitionProductNodeLifecycle({
       nodeId: CHECK_NODE_ANS,
       toState: "Inactive",
@@ -445,7 +582,12 @@ async function main(): Promise<void> {
 async function cleanup(db: ReturnType<typeof getPrisma>): Promise<void> {
   // FK-safe order (all publication FKs are RESTRICT): outbox → publication →
   // Node → source versions → Product.
-  await db.publicationOutbox.deleteMany({ where: { publicationId: CHECK_PUBLICATION } });
+  await db.registrarReceipt.deleteMany({
+    where: { publicationId: { in: [CHECK_PUBLICATION, CHECK_PUBLICATION2] } },
+  });
+  await db.publicationOutbox.deleteMany({
+    where: { publicationId: { in: [CHECK_PUBLICATION, CHECK_PUBLICATION2] } },
+  });
   await db.productPublication.deleteMany({ where: { internalProductId: CHECK_INTERNAL } });
   await db.productNode.deleteMany({ where: { internalProductId: CHECK_INTERNAL } });
   await db.productSourceRecordVersionRow.deleteMany({ where: { internalProductId: CHECK_INTERNAL } });

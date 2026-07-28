@@ -88,6 +88,13 @@ export const PUBLICATION_ID_RE = new RegExp(`^mon:pub:${OPAQUE_BODY}$`);
 export const OUTBOX_ID_RE = new RegExp(`^mon:obx:${OPAQUE_BODY}$`);
 
 /**
+ * Registrar receipt identifier (`mon:rcpt:<opaque>`). Names one immutable
+ * recorded Registrar result. Internal Monacado identity — NOT an ANS identity
+ * and never a substitute for the Registrar's own registration identifier.
+ */
+export const RECEIPT_ID_RE = new RegExp(`^mon:rcpt:${OPAQUE_BODY}$`);
+
+/**
  * Outbox claim lock token (`mon:lock:<opaque>`). Proves ownership of one claim
  * by one worker. Operational only — not an ANS identity, not a credential, and
  * never derived from Product, Node, capsule, or publication identity.
@@ -127,6 +134,11 @@ export function makePublicationId(opaque: string): string {
 /** Internal Monacado publication-outbox identifier (NOT an ANS identity). */
 export function makeOutboxId(opaque: string): string {
   return `mon:obx:${opaque}`;
+}
+
+/** Registrar receipt identifier (NOT an ANS identity). */
+export function makeReceiptId(opaque: string): string {
+  return `mon:rcpt:${opaque}`;
 }
 
 /** Outbox claim lock token (NOT an ANS identity, NOT a credential). */

@@ -121,11 +121,17 @@ outgoing transition is permitted, and none of them is claimable.
 
 ## Payload retention
 
-`payload` and `payloadHash` are **never modified** by any transition — not on
-retry, not on completion, not on dead-letter. The payload is **retained** through
-terminal states for Phase 0E.4. Payload disposal is deferred; nothing clears a
-payload in this phase. Every read still re-validates the payload against the
-strict published-capsule schema and re-verifies `payloadHash`.
+`payload` and `payloadHash` are **never modified** by any transition in this
+phase — not on retry, not on completion, not on dead-letter. Every read
+re-validates the payload against the strict published-capsule schema and
+re-verifies `payloadHash`.
+
+Phase 0E.4 added the one exception: recording a **matching ACCEPTED Registrar
+receipt** disposes of the capsule body (see
+[`PRODUCT_REGISTRAR_RECEIPTS.md`](PRODUCT_REGISTRAR_RECEIPTS.md)). `payloadHash`
+is still retained, the outbox row is never deleted, and the payload may be absent
+**only** in `COMPLETED` — absence in any other state is a contract violation. A
+completion recorded here *without* a receipt legitimately keeps its payload.
 
 ## Safe error metadata
 
@@ -171,9 +177,10 @@ object spread, or `Object.keys`.
   first thing addressed when a real worker is introduced.
 - **Worker loop and scheduled polling** — callers claim one item per call.
 - **Network submission, Publisher submission, Registrar processing.**
-- **Registrar receipts and registration state.**
-- **Reconciliation.**
-- **Payload disposal.**
+- Registrar receipts, registration state, reconciliation, and payload disposal
+  arrived in Phase 0E.4 — see
+  [`PRODUCT_REGISTRAR_RECEIPTS.md`](PRODUCT_REGISTRAR_RECEIPTS.md). Remediation
+  of mismatches and rejected receipts remains deferred.
 - **Supersession and revocation processing.**
 - Production DB wiring, authentication, Stripe, UI.
 

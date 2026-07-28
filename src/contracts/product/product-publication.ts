@@ -1,14 +1,17 @@
 /**
- * Product publication + publication-outbox domain contracts (Phase 0E.2).
+ * Product publication + publication-outbox domain contracts
+ * (Phases 0E.2, 0E.3, 0E.4).
  *
  * The **publication record** is the durable, immutable statement that one exact
  * Product source-record version was prepared for AgentNet registration as one
  * identified capsule, bound to one Product Node. The **outbox item** is the
  * durable unit of work carrying the validated published capsule payload.
  *
- * This phase is fully OFFLINE: preparation only. There is no claiming, retry,
- * receipt, reconciliation, Resolver, or network concept here, and none may be
- * added to these contracts without a new phase.
+ * Everything here is fully OFFLINE. The module grew deliberately, one bounded
+ * concern at a time: preparation (0E.2), worker claim/retry state (0E.3), and
+ * registration/reconciliation state plus a disposable payload (0E.4). Receipts
+ * themselves live in `product-registrar-receipt`. There is still no Resolver or
+ * network concept here, and none may be added without a new phase.
  *
  * Zod is the single authored source of truth (ADR §8); types are inferred. No
  * passthrough, catch-all, `any`, or arbitrary metadata bags. Prisma types never
@@ -65,6 +68,38 @@ export const OutboxId = z
 export const PUBLICATION_STATUSES = ["PREPARED", "QUEUED", "CANCELLED"] as const;
 export const PublicationStatus = z.enum(PUBLICATION_STATUSES);
 export type PublicationStatus = z.infer<typeof PublicationStatus>;
+
+/**
+ * Registration state (Phase 0E.4) — what the REGISTRAR has said about this
+ * publication. Deliberately separate from `publicationStatus` (preparation) and
+ * `outboxStatus` (work), and separate again from Node lifecycle (ADR §11.9).
+ *
+ *   NOT_SUBMITTED — prepared; no Registrar verdict recorded. The initial state.
+ *   PENDING       — a receipt exists but its verdict is unresolved (an ACCEPTED
+ *                   receipt that failed reconciliation), awaiting remediation.
+ *   ACCEPTED      — a matching ACCEPTED receipt was recorded.
+ *   REJECTED      — a REJECTED receipt was recorded.
+ *
+ * Claiming or completing an outbox item NEVER changes this: only recording a
+ * Registrar receipt does.
+ */
+export const REGISTRATION_STATES = ["NOT_SUBMITTED", "PENDING", "ACCEPTED", "REJECTED"] as const;
+export const RegistrationState = z.enum(REGISTRATION_STATES);
+export type RegistrationState = z.infer<typeof RegistrationState>;
+
+/**
+ * Reconciliation state (Phase 0E.4) — whether a recorded receipt actually refers
+ * to THIS publication (matching Registrar, Node, capsule, and content hash).
+ *
+ *   NOT_REQUIRED — no receipt recorded yet. The initial state.
+ *   PENDING      — reconciliation deferred (reserved; unused in this phase).
+ *   MATCHED      — the receipt's identity and hash match the expectation exactly.
+ *   MISMATCH     — at least one identity or hash field disagrees. Expected values
+ *                  are NEVER rewritten to match a receipt.
+ */
+export const RECONCILIATION_STATES = ["NOT_REQUIRED", "PENDING", "MATCHED", "MISMATCH"] as const;
+export const ReconciliationState = z.enum(RECONCILIATION_STATES);
+export type ReconciliationState = z.infer<typeof ReconciliationState>;
 
 /** Outbox operation type. REGISTER only in this phase. */
 export const OUTBOX_OPERATION_TYPES = ["REGISTER"] as const;
@@ -187,6 +222,10 @@ export const ProductPublication = z.strictObject({
   supersedesCapsuleId: CapsuleId.optional(),
   revokesCapsuleId: CapsuleId.optional(),
   publicationStatus: PublicationStatus,
+  /** What the Registrar has said (Phase 0E.4). Independent of the two above. */
+  registrationState: RegistrationState,
+  /** Whether a recorded receipt actually refers to THIS publication. */
+  reconciliationState: ReconciliationState,
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 });
@@ -217,15 +256,25 @@ export type ProductPublicationWrite = z.infer<typeof ProductPublicationWrite>;
 export const ProductPublicationOutboxPayload = PublishedProductCapsule;
 export type ProductPublicationOutboxPayload = z.infer<typeof ProductPublicationOutboxPayload>;
 
-/** A validated, persisted publication-outbox record. */
-export const ProductPublicationOutbox = z.strictObject({
+/**
+ * A validated, persisted publication-outbox record.
+ *
+ * `payload` is OPTIONAL from Phase 0E.4 because a successfully reconciled
+ * publication has its transient capsule body disposed of. Absence is legitimate
+ * ONLY in the `COMPLETED` state — see `OutboxPayloadPresence` below.
+ */
+const ProductPublicationOutboxBase = z.strictObject({
   id: z.string().min(1),
   outboxId: OutboxId,
   publicationId: PublicationId,
   idempotencyKey: IdempotencyKey,
   operationType: OutboxOperationType,
-  payload: ProductPublicationOutboxPayload,
-  /** Canonical hash of the payload exactly as stored. */
+  /**
+   * The validated final published capsule. Absent once disposed of after a
+   * matching ACCEPTED Registrar receipt (Phase 0E.4).
+   */
+  payload: ProductPublicationOutboxPayload.optional(),
+  /** Canonical hash of the payload. RETAINED after disposal — never cleared. */
   payloadHash: ContentHash,
   outboxStatus: OutboxStatus,
   /** Claims made against this item. Incremented by each successful claim. */
@@ -247,10 +296,29 @@ export const ProductPublicationOutbox = z.strictObject({
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 });
+
+/**
+ * Payload-presence rule: the capsule body may be absent ONLY in `COMPLETED`.
+ * A missing payload in `PENDING`, `PROCESSING`, `RETRYABLE`, `DEAD_LETTER`, or
+ * `CANCELLED` means durable work lost its body and is a contract violation.
+ */
+export function outboxPayloadPresenceIssue(record: {
+  outboxStatus: string;
+  payload?: unknown;
+}): string | undefined {
+  if (record.payload !== undefined) return undefined;
+  if (record.outboxStatus === "COMPLETED") return undefined;
+  return `payload may be absent only in COMPLETED; found absent in ${record.outboxStatus}`;
+}
+
+export const ProductPublicationOutbox = ProductPublicationOutboxBase.superRefine((record, ctx) => {
+  const issue = outboxPayloadPresenceIssue(record);
+  if (issue) ctx.addIssue({ code: "custom", path: ["payload"], message: issue });
+});
 export type ProductPublicationOutbox = z.infer<typeof ProductPublicationOutbox>;
 
 /** The validated outbox record before persistence assigns row id/timestamps. */
-export const ProductPublicationOutboxWrite = ProductPublicationOutbox.omit({
+export const ProductPublicationOutboxWrite = ProductPublicationOutboxBase.omit({
   id: true,
   createdAt: true,
   updatedAt: true,
