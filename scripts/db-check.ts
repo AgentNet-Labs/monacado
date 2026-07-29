@@ -23,6 +23,7 @@ import { RegistrarReceiptService } from "../src/server/product/registrar-receipt
 import { PublicationRemediationService } from "../src/server/product/publication-remediation-service";
 import { PublicationSubmissionAttemptService } from "../src/server/product/submission-attempt-service";
 import { runOneProductPublication } from "../src/server/product/publication-run-service";
+import { ingestRegistrarReceipt } from "../src/server/product/receipt-ingestion-service";
 import { loadRegistrarRuntimeConfiguration } from "../src/server/registrar/registrar-runtime-config";
 import type {
   RegisterRequestEnvelope,
@@ -75,6 +76,14 @@ const CHECK_PUBLICATION12 = `mon:pub:${pad26("DBCHECKPUB12")}`;
 const CHECK_CAPSULE12 = `an:capsule:${pad26("DBCHECKCAPSULE12")}`;
 const CHECK_PUBLICATION13 = `mon:pub:${pad26("DBCHECKPUB13")}`;
 const CHECK_CAPSULE13 = `an:capsule:${pad26("DBCHECKCAPSULE13")}`;
+const CHECK_PUBLICATION14 = `mon:pub:${pad26("DBCHECKPUB14")}`;
+const CHECK_CAPSULE14 = `an:capsule:${pad26("DBCHECKCAPSULE14")}`;
+const CHECK_PUBLICATION15 = `mon:pub:${pad26("DBCHECKPUB15")}`;
+const CHECK_CAPSULE15 = `an:capsule:${pad26("DBCHECKCAPSULE15")}`;
+const CHECK_PUBLICATION16 = `mon:pub:${pad26("DBCHECKPUB16")}`;
+const CHECK_CAPSULE16 = `an:capsule:${pad26("DBCHECKCAPSULE16")}`;
+const CHECK_PUBLICATION17 = `mon:pub:${pad26("DBCHECKPUB17")}`;
+const CHECK_CAPSULE17 = `an:capsule:${pad26("DBCHECKCAPSULE17")}`;
 let attemptSeq = 0;
 
 function syntheticCheckRecord(): ProductSourceRecord {
@@ -1465,6 +1474,290 @@ async function main(): Promise<void> {
     if (disabledTransport.calls.length !== 0) fail("a disabled run invoked the transport");
     ok("a disabled Registrar configuration returns without querying or mutating publication work");
 
+    // — Phase 0E.6.4: Registrar receipt ingestion —
+    //
+    // The externally-supplied receipt path, end to end against real rows. Every
+    // authoritative mutation still happens inside the existing receipt service;
+    // ingestion only validates the envelope and delegates.
+
+    // Same determinism guard as the orchestration section: claiming takes the
+    // globally-next eligible item, and the 0E.6.3 retry scheduled above becomes
+    // due before these timestamps, so it would win the claim.
+    const stillEligibleForIngestion = await db.publicationOutbox.findMany({
+      where: {
+        publicationId: {
+          in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9, CHECK_PUBLICATION10, CHECK_PUBLICATION11, CHECK_PUBLICATION12, CHECK_PUBLICATION13],
+        },
+        outboxStatus: { in: ["PENDING", "RETRYABLE"] },
+      },
+    });
+    for (const row of stillEligibleForIngestion) {
+      await outboxRepo.cancelPublicationOutbox({ outboxId: row.outboxId });
+    }
+
+    const ING_T0 = "2026-03-01T00:00:00.000Z";
+    const ING_SENT = "2026-03-01T00:10:00.000Z";
+    const ING_REGISTERED = "2026-03-01T00:15:00.000Z";
+    const ING_RECEIVED = "2026-03-01T00:20:00.000Z";
+
+    let ingSeq = 0;
+    const seedDispatchedForIngestion = async (
+      version: string,
+      publicationId: string,
+      capsuleId: string,
+      priorVersion: string,
+    ) => {
+      await repo.createProductSourceRecordRevision({
+        internalProductId: CHECK_INTERNAL,
+        expectedCurrentSourceRecordVersion: priorVersion,
+        sourceRecordVersion: version,
+        updatedAt: ING_T0,
+        capsuleGeneratedAt: ING_T0,
+      });
+      const prep = await pubService.prepareProductPublication({
+        publicationId,
+        internalProductId: CHECK_INTERNAL,
+        sourceRecordId: CHECK_SREC,
+        sourceRecordVersion: version,
+        nodeId: CHECK_NODE_ANS,
+        capsuleId,
+        capsuleSemver: "1.0.0",
+        publishedBy: MONACADO_PUBLISHER_ID,
+        publishedAt: ING_T0,
+        nodePolicy: { ref: "an:policy:node:dbcheck", version: "1.0.0" },
+        capsulePolicy: { ref: "an:policy:capsule:dbcheck", version: "1.0.0" },
+        availableAt: ING_T0,
+      });
+      const claim = await outboxRepo.claimNextPublicationOutbox({
+        now: ING_T0,
+        // Comfortably longer than the gap to ING_SENT: a lease of exactly 600s
+        // expires at the instant of dispatch, which the guard treats as expired.
+        leaseDurationSeconds: 3600,
+      });
+      if (claim.outbox.outboxId !== prep.outbox.outboxId) {
+        fail("db:check claimed an unexpected outbox item during ingestion setup");
+      }
+      ingSeq += 1;
+      const attemptId = `mon:attempt:${pad26(`DBCHECKING${String(ingSeq).padStart(3, "0")}`)}`;
+      await attemptService.preparePublicationSubmissionAttempt({
+        publicationId,
+        outboxId: prep.outbox.outboxId,
+        lockToken: claim.lockToken,
+        submissionAttemptId: attemptId,
+        preparedAt: ING_T0,
+      });
+      return { prep, attemptId, lockToken: claim.lockToken };
+    };
+
+    const dispatchFor = async (seeded: { attemptId: string; lockToken: string }) => {
+      await attemptService.markPublicationSubmissionAttemptDispatched({
+        submissionAttemptId: seeded.attemptId,
+        lockToken: seeded.lockToken,
+        dispatchedAt: ING_SENT,
+      });
+    };
+
+    const ingestionEnvelope = (
+      publicationId: string,
+      attemptId: string,
+      capsuleId: string,
+      contentHash: string,
+      overrides: Record<string, unknown> = {},
+    ) => {
+      ingSeq += 1;
+      return {
+        receiptId: `mon:rcpt:${pad26(`DBCHECKIRC${String(ingSeq).padStart(3, "0")}`)}`,
+        submissionAttemptId: attemptId,
+        publicationId,
+        registrarRegistrationId: `dbcheck-ingest-reg-${ingSeq}`,
+        registrarId: MONACADO_REGISTRAR_ID,
+        nodeId: CHECK_NODE_ANS,
+        capsuleId,
+        registeredContentHash: contentHash,
+        receiptStatus: "ACCEPTED",
+        registeredAt: ING_REGISTERED,
+        receiptDetails: { registrarStatusCode: "REGISTERED" },
+        ...overrides,
+      };
+    };
+
+    // 22. A matching acceptance ingested through the new boundary resolves the
+    //     publication, and the payload is disposed ONLY at that point.
+    const ing14 = await seedDispatchedForIngestion("14", CHECK_PUBLICATION14, CHECK_CAPSULE14, "13");
+    await dispatchFor(ing14);
+    const beforeDisposal = await outboxRepo.getPublicationOutboxById(ing14.prep.outbox.outboxId);
+    if (beforeDisposal.payload === undefined) fail("the payload was disposed before acceptance");
+    const envelope14 = ingestionEnvelope(
+      CHECK_PUBLICATION14,
+      ing14.attemptId,
+      CHECK_CAPSULE14,
+      ing14.prep.publication.publishedContentHash,
+    );
+    const ingested14 = await ingestRegistrarReceipt(
+      {
+        envelope: envelope14,
+        receivedAt: ING_RECEIVED,
+        source: "MANUAL",
+        expectedRegistrarId: MONACADO_REGISTRAR_ID,
+      },
+      { db },
+    );
+    if (ingested14.outcome !== "ACCEPTED_MATCHED") {
+      fail(`a matching acceptance ingested as ${ingested14.outcome}`);
+    }
+    if (!ingested14.payloadDisposed) fail("a matched acceptance did not dispose the payload");
+    const attempt14 = await attemptService.getPublicationSubmissionAttempt(ing14.attemptId);
+    if (attempt14.attemptStatus !== "RECEIPT_RECORDED") fail("ingestion did not answer the attempt");
+    const row14 = await outboxRepo.getPublicationOutboxById(ing14.prep.outbox.outboxId);
+    if (row14.outboxStatus !== "COMPLETED") fail("ingestion did not complete the work item");
+    if (row14.payload !== undefined) fail("the payload survived a matched acceptance");
+    if (row14.payloadHash !== beforeDisposal.payloadHash) fail("the payload hash was not retained");
+    ok("ingested matching acceptance resolves the publication and disposes the payload only then");
+
+    // 23. An identical replay is idempotent; a conflicting one on the same
+    //     receiptId is refused, and neither writes a second row.
+    const replayed = await ingestRegistrarReceipt(
+      { envelope: envelope14, receivedAt: ING_RECEIVED, source: "MANUAL" },
+      { db },
+    );
+    if (replayed.outcome !== "IDEMPOTENT_REPLAY") {
+      fail(`an identical replay reported ${replayed.outcome}`);
+    }
+
+    const stateBeforeConflict = await pubService.getProductPublication(CHECK_PUBLICATION14);
+    let conflictRefused = false;
+    try {
+      await ingestRegistrarReceipt(
+        {
+          envelope: { ...envelope14, registeredAt: "2026-03-02T00:00:00.000Z" },
+          receivedAt: ING_RECEIVED,
+          source: "MANUAL",
+        },
+        { db },
+      );
+    } catch {
+      conflictRefused = true;
+    }
+    if (!conflictRefused) fail("a conflicting replay of the same receiptId was accepted");
+    const stateAfterConflict = await pubService.getProductPublication(CHECK_PUBLICATION14);
+    if (stateAfterConflict.registrationState !== stateBeforeConflict.registrationState) {
+      fail("a refused conflicting replay mutated the publication");
+    }
+    const receiptsFor14 = await db.registrarReceipt.count({
+      where: { publicationId: CHECK_PUBLICATION14 },
+    });
+    if (receiptsFor14 !== 1) fail("replay handling created more than one receipt");
+    ok("identical replay is idempotent, a conflicting replay is refused, and one receipt remains");
+
+    // 24. A mismatched acceptance records evidence and requires remediation
+    //     WITHOUT falsely marking the publication accepted.
+    const ing15 = await seedDispatchedForIngestion("15", CHECK_PUBLICATION15, CHECK_CAPSULE15, "14");
+    await dispatchFor(ing15);
+    const ingested15 = await ingestRegistrarReceipt(
+      {
+        envelope: ingestionEnvelope(
+          CHECK_PUBLICATION15,
+          ing15.attemptId,
+          `an:capsule:${pad26("DBCHECKWRONGCAP")}`,
+          ing15.prep.publication.publishedContentHash,
+        ),
+        receivedAt: ING_RECEIVED,
+        source: "MANUAL",
+      },
+      { db },
+    );
+    if (ingested15.outcome !== "ACCEPTED_MISMATCH") {
+      fail(`a mismatched acceptance ingested as ${ingested15.outcome}`);
+    }
+    if (ingested15.registrationState === "ACCEPTED") {
+      fail("a mismatched acceptance falsely marked the publication ACCEPTED");
+    }
+    if (ingested15.remediationState !== "REQUIRED") fail("a mismatch did not require remediation");
+    const row15 = await outboxRepo.getPublicationOutboxById(ing15.prep.outbox.outboxId);
+    if (row15.payload === undefined) fail("a mismatched acceptance disposed the payload");
+    ok("ingested mismatched acceptance records evidence, requires remediation, and retains the payload");
+
+    // 25. A matching rejection records evidence and retains the payload.
+    const ing16 = await seedDispatchedForIngestion("16", CHECK_PUBLICATION16, CHECK_CAPSULE16, "15");
+    await dispatchFor(ing16);
+    const ingested16 = await ingestRegistrarReceipt(
+      {
+        envelope: ingestionEnvelope(
+          CHECK_PUBLICATION16,
+          ing16.attemptId,
+          CHECK_CAPSULE16,
+          ing16.prep.publication.publishedContentHash,
+          {
+            receiptStatus: "REJECTED",
+            registrarRegistrationId: undefined,
+            receiptDetails: { rejectionCode: "POLICY_REFUSED" },
+          },
+        ),
+        receivedAt: ING_RECEIVED,
+        source: "MANUAL",
+      },
+      { db },
+    );
+    if (ingested16.outcome !== "REJECTED_MATCHED") {
+      fail(`a matching rejection ingested as ${ingested16.outcome}`);
+    }
+    if (ingested16.remediationState !== "REQUIRED") fail("a rejection did not require remediation");
+    const row16 = await outboxRepo.getPublicationOutboxById(ing16.prep.outbox.outboxId);
+    if (row16.payload === undefined) fail("a rejection disposed the payload");
+    ok("ingested matching rejection records evidence, requires remediation, and retains the payload");
+
+    // 26. A PREPARED (never dispatched) attempt cannot be ingested, and neither
+    //     can an ABANDONED one. Neither leaves a receipt behind.
+    const ing17 = await seedDispatchedForIngestion("17", CHECK_PUBLICATION17, CHECK_CAPSULE17, "16");
+    let preparedRefused = false;
+    try {
+      await ingestRegistrarReceipt(
+        {
+          envelope: ingestionEnvelope(
+            CHECK_PUBLICATION17,
+            ing17.attemptId,
+            CHECK_CAPSULE17,
+            ing17.prep.publication.publishedContentHash,
+          ),
+          receivedAt: ING_RECEIVED,
+          source: "MANUAL",
+        },
+        { db },
+      );
+    } catch {
+      preparedRefused = true;
+    }
+    if (!preparedRefused) fail("a PREPARED attempt accepted a receipt");
+
+    await attemptService.markPublicationSubmissionAttemptAbandoned({
+      submissionAttemptId: ing17.attemptId,
+      abandonedAt: ING_SENT,
+    });
+    let ingestAbandonedRefused = false;
+    try {
+      await ingestRegistrarReceipt(
+        {
+          envelope: ingestionEnvelope(
+            CHECK_PUBLICATION17,
+            ing17.attemptId,
+            CHECK_CAPSULE17,
+            ing17.prep.publication.publishedContentHash,
+          ),
+          receivedAt: ING_RECEIVED,
+          source: "MANUAL",
+        },
+        { db },
+      );
+    } catch {
+      ingestAbandonedRefused = true;
+    }
+    if (!ingestAbandonedRefused) fail("an ABANDONED attempt accepted a receipt");
+    const receiptsFor17 = await db.registrarReceipt.count({
+      where: { publicationId: CHECK_PUBLICATION17 },
+    });
+    if (receiptsFor17 !== 0) fail("a refused ingestion still wrote a receipt");
+    ok("PREPARED and ABANDONED attempts are both refused, leaving no receipt");
+
     const transitioned = await nodeRepo.transitionProductNodeLifecycle({
       nodeId: CHECK_NODE_ANS,
       toState: "Inactive",
@@ -1485,22 +1778,22 @@ async function cleanup(db: ReturnType<typeof getPrisma>): Promise<void> {
   await db.publicationRemediation.deleteMany({
     where: {
       publicationId: {
-        in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9, CHECK_PUBLICATION10, CHECK_PUBLICATION11, CHECK_PUBLICATION12, CHECK_PUBLICATION13],
+        in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9, CHECK_PUBLICATION10, CHECK_PUBLICATION11, CHECK_PUBLICATION12, CHECK_PUBLICATION13, CHECK_PUBLICATION14, CHECK_PUBLICATION15, CHECK_PUBLICATION16, CHECK_PUBLICATION17],
       },
     },
   });
   await db.registrarReceipt.deleteMany({
-    where: { publicationId: { in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9, CHECK_PUBLICATION10, CHECK_PUBLICATION11, CHECK_PUBLICATION12, CHECK_PUBLICATION13] } },
+    where: { publicationId: { in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9, CHECK_PUBLICATION10, CHECK_PUBLICATION11, CHECK_PUBLICATION12, CHECK_PUBLICATION13, CHECK_PUBLICATION14, CHECK_PUBLICATION15, CHECK_PUBLICATION16, CHECK_PUBLICATION17] } },
   });
   await db.publicationSubmissionAttempt.deleteMany({
     where: {
       publicationId: {
-        in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9, CHECK_PUBLICATION10, CHECK_PUBLICATION11, CHECK_PUBLICATION12, CHECK_PUBLICATION13],
+        in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9, CHECK_PUBLICATION10, CHECK_PUBLICATION11, CHECK_PUBLICATION12, CHECK_PUBLICATION13, CHECK_PUBLICATION14, CHECK_PUBLICATION15, CHECK_PUBLICATION16, CHECK_PUBLICATION17],
       },
     },
   });
   await db.publicationOutbox.deleteMany({
-    where: { publicationId: { in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9, CHECK_PUBLICATION10, CHECK_PUBLICATION11, CHECK_PUBLICATION12, CHECK_PUBLICATION13] } },
+    where: { publicationId: { in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9, CHECK_PUBLICATION10, CHECK_PUBLICATION11, CHECK_PUBLICATION12, CHECK_PUBLICATION13, CHECK_PUBLICATION14, CHECK_PUBLICATION15, CHECK_PUBLICATION16, CHECK_PUBLICATION17] } },
   });
   await db.productPublication.deleteMany({ where: { internalProductId: CHECK_INTERNAL } });
   await db.productNode.deleteMany({ where: { internalProductId: CHECK_INTERNAL } });
