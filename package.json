@@ -16,6 +16,7 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy",
     "db:check": "tsx scripts/db-check.ts",
+    "worker:publication:once": "tsx scripts/run-publication-worker.ts",
     "db:test": "RUN_DB_TESTS=1 vitest run --no-file-parallelism test/*.integration.test.ts",
     "postinstall": "prisma generate",
     "validate": "npm run lint && npm run typecheck && npm run contracts:validate && npm run test && npm run build"

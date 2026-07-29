@@ -56,7 +56,11 @@ export interface RunOneProductPublicationDeps {
   configuration: RegistrarConfigurationLoad;
   /** Where the bearer secret lives. Injected; the orchestrator reads no env. */
   secretSource: EnvironmentSource;
-  /** Test seam: substitute the transport without touching configuration. */
+  /**
+   * An already-constructed transport to use instead of building one from
+   * `configuration`. The Phase 0E.7.2 entry point passes the transport it built at
+   * startup, so exactly one exists per command; tests pass a fake.
+   */
   transportOverride?: RegistrarRegisterTransport;
   db?: Db;
 }

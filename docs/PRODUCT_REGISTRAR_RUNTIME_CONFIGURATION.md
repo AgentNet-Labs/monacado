@@ -183,10 +183,21 @@ Phase 0E.6.1. It can be added when a caller genuinely needs to send an extra
 header — at which point its shape will be driven by that need rather than
 guessed.
 
+## Who loads this configuration
+
+Phase 0E.7.2 composes it. `MONACADO_PUBLICATION_WORKER_*` configures the bounds of
+one cycle, and an **enabled worker requires this configuration to be `READY`** — an
+enabled worker paired with a disabled Registrar is reported as `INCOMPLETE`,
+because the operator asked for a cycle that could never send anything. The worker
+command validates readiness (which re-applies the allow-list before the credential
+presence check) and then constructs one transport for the whole invocation
+([`PRODUCT_PUBLICATION_WORKER_ENTRYPOINT.md`](PRODUCT_PUBLICATION_WORKER_ENTRYPOINT.md)).
+
+`process.env` is read at that executable boundary and nowhere else; this loader
+still takes an injected environment.
+
 ## Deferred
 
-- **The publication worker** — polling, scheduling, claiming, dispatch,
-  receipt ingestion. This phase builds a transport; it never uses one.
 - **Production secret storage, rotation, and scoping**; real endpoint values.
 - **Live Registrar validation** — any reachability or credential-acceptance
   check requires contacting a Registrar.

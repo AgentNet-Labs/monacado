@@ -192,9 +192,18 @@ asserted by a test that proxies both and counts zero reads. Claiming an item we
 could never send would lock real work behind a lease for nothing
 ([`PRODUCT_REGISTRAR_RUNTIME_CONFIGURATION.md`](PRODUCT_REGISTRAR_RUNTIME_CONFIGURATION.md)).
 
+## Who invokes a cycle
+
+Phase 0E.7.2 adds the one executable caller: `npm run worker:publication:once`
+runs **exactly one** cycle and terminates
+([`PRODUCT_PUBLICATION_WORKER_ENTRYPOINT.md`](PRODUCT_PUBLICATION_WORKER_ENTRYPOINT.md)).
+It owns the process concerns this phase deliberately excluded — operational
+configuration, the concrete clock and identity providers, the fixed retry policy,
+JSON-lines output, signal registration, exit codes, and resource cleanup — and it
+adds no loop, no timer, and no second invocation.
+
 ## Deferred
 
-- **An executable worker** — CLI, package script, daemon, or deployment command.
 - **Production scheduling**, process management, and automatic repeated cycles.
 - **A monitoring backend**, metrics export, and alerting.
 - Automatic receipt ingestion, webhooks, polling; live Registrar calls;

@@ -60,6 +60,7 @@ export interface WorkerCycleDeps {
   retryTiming: RetryTimingProvider;
   shutdown: ShutdownSignal;
   monitor?: WorkerCycleMonitor;
+  /** Passed straight through to the orchestration; see `RunOneProductPublicationDeps`. */
   transportOverride?: RegistrarRegisterTransport;
   db?: Db;
 }
