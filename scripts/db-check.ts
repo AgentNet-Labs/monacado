@@ -22,6 +22,13 @@ import { LEASE_EXPIRED_ERROR_CODE } from "../src/contracts/index";
 import { RegistrarReceiptService } from "../src/server/product/registrar-receipt-service";
 import { PublicationRemediationService } from "../src/server/product/publication-remediation-service";
 import { PublicationSubmissionAttemptService } from "../src/server/product/submission-attempt-service";
+import { runOneProductPublication } from "../src/server/product/publication-run-service";
+import { loadRegistrarRuntimeConfiguration } from "../src/server/registrar/registrar-runtime-config";
+import type {
+  RegisterRequestEnvelope,
+  RegistrarRegisterTransport,
+  TransportResult,
+} from "../src/contracts/product/registrar-transport";
 import {
   MONACADO_PUBLISHER_ID,
   canonicalHash,
@@ -60,6 +67,14 @@ const CHECK_PUBLICATION8 = `mon:pub:${pad26("DBCHECKPUB8")}`;
 const CHECK_CAPSULE8 = `an:capsule:${pad26("DBCHECKCAPSULE8")}`;
 const CHECK_PUBLICATION9 = `mon:pub:${pad26("DBCHECKPUB9")}`;
 const CHECK_CAPSULE9 = `an:capsule:${pad26("DBCHECKCAPSULE9")}`;
+const CHECK_PUBLICATION10 = `mon:pub:${pad26("DBCHECKPUB10")}`;
+const CHECK_CAPSULE10 = `an:capsule:${pad26("DBCHECKCAPSULE10")}`;
+const CHECK_PUBLICATION11 = `mon:pub:${pad26("DBCHECKPUB11")}`;
+const CHECK_CAPSULE11 = `an:capsule:${pad26("DBCHECKCAPSULE11")}`;
+const CHECK_PUBLICATION12 = `mon:pub:${pad26("DBCHECKPUB12")}`;
+const CHECK_CAPSULE12 = `an:capsule:${pad26("DBCHECKCAPSULE12")}`;
+const CHECK_PUBLICATION13 = `mon:pub:${pad26("DBCHECKPUB13")}`;
+const CHECK_CAPSULE13 = `an:capsule:${pad26("DBCHECKCAPSULE13")}`;
 let attemptSeq = 0;
 
 function syntheticCheckRecord(): ProductSourceRecord {
@@ -1234,6 +1249,222 @@ async function main(): Promise<void> {
     if (history9[0]?.attemptStatus !== "ABANDONED") fail("the earlier attempt was mutated");
     ok("recovery abandons attempts; re-claim raises attemptNumber; old-attempt receipt refused; new one resolves");
 
+    // — Phase 0E.6.3: single-run publication orchestration —
+    //
+    // These exercise the WHOLE composed path against real rows: claim, attempt,
+    // one injected transport call, and the guarded outcome write. No socket is
+    // opened; every transport below is a local fake.
+
+    /** A fake transport that records each call. Nothing leaves the process. */
+    class CheckTransport implements RegistrarRegisterTransport {
+      calls: RegisterRequestEnvelope[] = [];
+      constructor(private readonly result: TransportResult) {}
+      async sendRegisterRequest(request: RegisterRequestEnvelope): Promise<TransportResult> {
+        this.calls.push(request);
+        return this.result;
+      }
+    }
+
+    const RUN_SECRET_VAR = "MONACADO_DBCHECK_FAKE_TOKEN";
+    const runSecretSource = { [RUN_SECRET_VAR]: "fake-dbcheck-token-not-a-real-credential" };
+    const runConfiguration = loadRegistrarRuntimeConfiguration({
+      MONACADO_REGISTRAR_ENABLED: "true",
+      MONACADO_REGISTRAR_ID: MONACADO_REGISTRAR_ID,
+      MONACADO_REGISTRAR_ENDPOINT: "https://registrar.example/v1/register",
+      MONACADO_REGISTRAR_ALLOWED_ORIGINS: "https://registrar.example",
+      MONACADO_REGISTRAR_CREDENTIAL_MODE: "BEARER_ENV",
+      MONACADO_REGISTRAR_BEARER_TOKEN_ENV: RUN_SECRET_VAR,
+    });
+    if (runConfiguration.state !== "READY") fail("the db:check runtime configuration is not READY");
+
+    // The orchestrator claims the globally-next due item, so every earlier
+    // walkthrough item must be settled first or it would win the race.
+    const stillEligible = await db.publicationOutbox.findMany({
+      where: { publicationId: { in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9] }, outboxStatus: { in: ["PENDING", "RETRYABLE"] } },
+    });
+    for (const row of stillEligible) {
+      await outboxRepo.cancelPublicationOutbox({ outboxId: row.outboxId });
+    }
+
+    const RUN_T0 = "2026-02-01T00:00:00.000Z";
+    const RUN_PREPARED = "2026-02-01T00:00:01.000Z";
+    const RUN_SENT = "2026-02-01T00:00:02.000Z";
+    const RUN_RETRY_AT = "2026-02-01T01:00:00.000Z";
+
+    let runSeq = 0;
+    const seedForRun = async (
+      version: string,
+      publicationId: string,
+      capsuleId: string,
+      priorVersion: string,
+    ) => {
+      await repo.createProductSourceRecordRevision({
+        internalProductId: CHECK_INTERNAL,
+        expectedCurrentSourceRecordVersion: priorVersion,
+        sourceRecordVersion: version,
+        updatedAt: RUN_T0,
+        capsuleGeneratedAt: RUN_T0,
+      });
+      const prep = await pubService.prepareProductPublication({
+        publicationId,
+        internalProductId: CHECK_INTERNAL,
+        sourceRecordId: CHECK_SREC,
+        sourceRecordVersion: version,
+        nodeId: CHECK_NODE_ANS,
+        capsuleId,
+        capsuleSemver: "1.0.0",
+        publishedBy: MONACADO_PUBLISHER_ID,
+        publishedAt: RUN_T0,
+        nodePolicy: { ref: "an:policy:node:dbcheck", version: "1.0.0" },
+        capsulePolicy: { ref: "an:policy:capsule:dbcheck", version: "1.0.0" },
+        availableAt: RUN_T0,
+      });
+      runSeq += 1;
+      return {
+        outboxId: prep.outbox.outboxId,
+        payloadHash: prep.outbox.payloadHash,
+        submissionAttemptId: `mon:attempt:${pad26(`DBCHECKRUN${String(runSeq).padStart(3, "0")}`)}`,
+      };
+    };
+
+    const runOnce = async (
+      seeded: { submissionAttemptId: string },
+      transport: RegistrarRegisterTransport,
+      opts: { retryAvailableAt?: string } = {},
+    ) =>
+      runOneProductPublication(
+        {
+          now: RUN_T0,
+          leaseDurationSeconds: 600,
+          submissionAttemptId: seeded.submissionAttemptId,
+          preparedAt: RUN_PREPARED,
+          dispatchedAt: RUN_SENT,
+          ...opts,
+        },
+        {
+          configuration: runConfiguration,
+          secretSource: runSecretSource,
+          transportOverride: transport,
+          db,
+        },
+      );
+
+    // 17. A successful send leaves the attempt DISPATCHED and the item PROCESSING,
+    //     and creates NO receipt — an accepted response is evidence, not authority.
+    const run10 = await seedForRun("10", CHECK_PUBLICATION10, CHECK_CAPSULE10, "9");
+    const okTransport = new CheckTransport({ outcome: "SUCCESS", transmitted: true, httpStatus: 200 });
+    const result10 = await runOnce(run10, okTransport);
+    if (result10.outcome !== "SENT") fail(`a successful send returned ${result10.outcome}`);
+    if (result10.outboxId !== run10.outboxId) fail("the run claimed an unexpected outbox item");
+    if (okTransport.calls.length !== 1) fail("the transport was not invoked exactly once");
+    const attempt10 = await attemptService.getPublicationSubmissionAttempt(run10.submissionAttemptId);
+    if (attempt10.attemptStatus !== "DISPATCHED") fail("a successful send did not leave DISPATCHED");
+    const row10 = await outboxRepo.getPublicationOutboxById(run10.outboxId);
+    if (row10.outboxStatus !== "PROCESSING") fail("a successful send did not leave PROCESSING");
+    const receipts10 = await db.registrarReceipt.count({ where: { publicationId: CHECK_PUBLICATION10 } });
+    if (receipts10 !== 0) fail("a successful send fabricated a Registrar receipt");
+    ok("one run claims one item, sends once, leaves DISPATCHED/PROCESSING, and creates no receipt");
+
+    // 18. A failure proven to precede transmission abandons the attempt and
+    //     reschedules, preserving the payload for the retry.
+    const run11 = await seedForRun("11", CHECK_PUBLICATION11, CHECK_CAPSULE11, "10");
+    const before11 = await outboxRepo.getPublicationOutboxById(run11.outboxId);
+    const result11 = await runOnce(
+      run11,
+      new CheckTransport({
+        outcome: "RETRYABLE_TRANSPORT_FAILURE",
+        transmitted: false,
+        failure: { code: "CONNECTION_FAILED", summary: "The connection was never established" },
+      }),
+      { retryAvailableAt: RUN_RETRY_AT },
+    );
+    if (result11.outcome !== "RETRY_SCHEDULED") fail(`a pre-connect failure returned ${result11.outcome}`);
+    const attempt11 = await attemptService.getPublicationSubmissionAttempt(run11.submissionAttemptId);
+    if (attempt11.attemptStatus !== "ABANDONED") fail("a retryable failure did not abandon the attempt");
+    const row11 = await outboxRepo.getPublicationOutboxById(run11.outboxId);
+    if (row11.outboxStatus !== "RETRYABLE") fail("a retryable failure did not reschedule the item");
+    if (row11.lockToken !== undefined) fail("a retryable failure did not release ownership");
+    if (row11.availableAt !== RUN_RETRY_AT) fail("the explicit retry time was not applied");
+    if (row11.payloadHash !== before11.payloadHash) fail("the payload hash changed across a retry");
+    ok("a pre-delivery failure abandons the attempt, reschedules, releases ownership, and preserves the payload");
+
+    // 19. A terminal failure dead-letters without losing the payload.
+    const run12 = await seedForRun("12", CHECK_PUBLICATION12, CHECK_CAPSULE12, "11");
+    const before12 = await outboxRepo.getPublicationOutboxById(run12.outboxId);
+    const result12 = await runOnce(
+      run12,
+      new CheckTransport({
+        outcome: "TERMINAL_TRANSPORT_FAILURE",
+        transmitted: false,
+        httpStatus: 400,
+        failure: { code: "PROTOCOL_REJECTED", summary: "The request was refused before processing" },
+      }),
+    );
+    if (result12.outcome !== "DEAD_LETTERED") fail(`a terminal failure returned ${result12.outcome}`);
+    const row12 = await outboxRepo.getPublicationOutboxById(run12.outboxId);
+    if (row12.outboxStatus !== "DEAD_LETTER") fail("a terminal failure did not dead-letter the item");
+    if (row12.payloadHash !== before12.payloadHash) fail("the payload hash changed on dead-letter");
+    const attempt12 = await attemptService.getPublicationSubmissionAttempt(run12.submissionAttemptId);
+    if (attempt12.attemptStatus !== "ABANDONED") fail("a terminal failure did not abandon the attempt");
+    ok("a terminal failure dead-letters safely and preserves the payload");
+
+    // 20. Ambiguous delivery holds its ground, and a SECOND invocation does not
+    //     resend it — the duplicate-registration guard.
+    const run13 = await seedForRun("13", CHECK_PUBLICATION13, CHECK_CAPSULE13, "12");
+    const result13 = await runOnce(
+      run13,
+      new CheckTransport({
+        outcome: "AMBIGUOUS_DELIVERY",
+        transmitted: true,
+        failure: { code: "TIMEOUT", summary: "No response was received before the deadline" },
+      }),
+    );
+    if (result13.outcome !== "AMBIGUOUS_DELIVERY") fail(`an ambiguous send returned ${result13.outcome}`);
+    const attempt13 = await attemptService.getPublicationSubmissionAttempt(run13.submissionAttemptId);
+    if (attempt13.attemptStatus !== "DISPATCHED") fail("ambiguous delivery did not leave DISPATCHED");
+    const row13 = await outboxRepo.getPublicationOutboxById(run13.outboxId);
+    if (row13.outboxStatus !== "PROCESSING") fail("ambiguous delivery did not leave PROCESSING");
+    if (row13.availableAt !== RUN_T0) fail("ambiguous delivery rescheduled the item");
+
+    const secondTransport = new CheckTransport({ outcome: "SUCCESS", transmitted: true, httpStatus: 200 });
+    const secondRun = await runOneProductPublication(
+      {
+        now: RUN_T0,
+        leaseDurationSeconds: 600,
+        submissionAttemptId: `mon:attempt:${pad26("DBCHECKRUN099")}`,
+        preparedAt: RUN_PREPARED,
+        dispatchedAt: RUN_SENT,
+      },
+      { configuration: runConfiguration, secretSource: runSecretSource, transportOverride: secondTransport, db },
+    );
+    if (secondRun.outcome !== "NO_ELIGIBLE_WORK") {
+      fail(`a second invocation found work it should not have: ${secondRun.outcome}`);
+    }
+    if (secondTransport.calls.length !== 0) fail("a second invocation resent an ambiguous attempt");
+    ok("ambiguous delivery holds DISPATCHED/PROCESSING, reschedules nothing, and is never resent");
+
+    // 21. A disabled configuration never touches the queue.
+    const disabledTransport = new CheckTransport({ outcome: "SUCCESS", transmitted: true });
+    const disabledRun = await runOneProductPublication(
+      {
+        now: RUN_T0,
+        leaseDurationSeconds: 600,
+        submissionAttemptId: `mon:attempt:${pad26("DBCHECKRUN098")}`,
+        preparedAt: RUN_PREPARED,
+        dispatchedAt: RUN_SENT,
+      },
+      {
+        configuration: loadRegistrarRuntimeConfiguration({}),
+        secretSource: runSecretSource,
+        transportOverride: disabledTransport,
+        db,
+      },
+    );
+    if (disabledRun.outcome !== "DISABLED") fail("a disabled configuration did not return DISABLED");
+    if (disabledRun.outboxId !== undefined) fail("a disabled run revealed queue contents");
+    if (disabledTransport.calls.length !== 0) fail("a disabled run invoked the transport");
+    ok("a disabled Registrar configuration returns without querying or mutating publication work");
+
     const transitioned = await nodeRepo.transitionProductNodeLifecycle({
       nodeId: CHECK_NODE_ANS,
       toState: "Inactive",
@@ -1254,22 +1485,22 @@ async function cleanup(db: ReturnType<typeof getPrisma>): Promise<void> {
   await db.publicationRemediation.deleteMany({
     where: {
       publicationId: {
-        in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9],
+        in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9, CHECK_PUBLICATION10, CHECK_PUBLICATION11, CHECK_PUBLICATION12, CHECK_PUBLICATION13],
       },
     },
   });
   await db.registrarReceipt.deleteMany({
-    where: { publicationId: { in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9] } },
+    where: { publicationId: { in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9, CHECK_PUBLICATION10, CHECK_PUBLICATION11, CHECK_PUBLICATION12, CHECK_PUBLICATION13] } },
   });
   await db.publicationSubmissionAttempt.deleteMany({
     where: {
       publicationId: {
-        in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9],
+        in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9, CHECK_PUBLICATION10, CHECK_PUBLICATION11, CHECK_PUBLICATION12, CHECK_PUBLICATION13],
       },
     },
   });
   await db.publicationOutbox.deleteMany({
-    where: { publicationId: { in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9] } },
+    where: { publicationId: { in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9, CHECK_PUBLICATION10, CHECK_PUBLICATION11, CHECK_PUBLICATION12, CHECK_PUBLICATION13] } },
   });
   await db.productPublication.deleteMany({ where: { internalProductId: CHECK_INTERNAL } });
   await db.productNode.deleteMany({ where: { internalProductId: CHECK_INTERNAL } });
