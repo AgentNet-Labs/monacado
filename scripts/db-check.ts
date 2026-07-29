@@ -24,7 +24,9 @@ import { PublicationRemediationService } from "../src/server/product/publication
 import { PublicationSubmissionAttemptService } from "../src/server/product/submission-attempt-service";
 import { runOneProductPublication } from "../src/server/product/publication-run-service";
 import { ingestRegistrarReceipt } from "../src/server/product/receipt-ingestion-service";
+import { runProductPublicationWorkerCycle } from "../src/server/product/publication-worker-cycle-service";
 import { loadRegistrarRuntimeConfiguration } from "../src/server/registrar/registrar-runtime-config";
+import type { RegistrarConfigurationLoad } from "../src/server/registrar/registrar-runtime-config";
 import type {
   RegisterRequestEnvelope,
   RegistrarRegisterTransport,
@@ -84,6 +86,12 @@ const CHECK_PUBLICATION16 = `mon:pub:${pad26("DBCHECKPUB16")}`;
 const CHECK_CAPSULE16 = `an:capsule:${pad26("DBCHECKCAPSULE16")}`;
 const CHECK_PUBLICATION17 = `mon:pub:${pad26("DBCHECKPUB17")}`;
 const CHECK_CAPSULE17 = `an:capsule:${pad26("DBCHECKCAPSULE17")}`;
+const CHECK_PUBLICATION18 = `mon:pub:${pad26("DBCHECKWCPUBA")}`;
+const CHECK_CAPSULE18 = `an:capsule:${pad26("DBCHECKWCCAPA")}`;
+const CHECK_PUBLICATION19 = `mon:pub:${pad26("DBCHECKWCPUBB")}`;
+const CHECK_CAPSULE19 = `an:capsule:${pad26("DBCHECKWCCAPB")}`;
+const CHECK_PUBLICATION20 = `mon:pub:${pad26("DBCHECKWCPUBC")}`;
+const CHECK_CAPSULE20 = `an:capsule:${pad26("DBCHECKWCCAPC")}`;
 let attemptSeq = 0;
 
 function syntheticCheckRecord(): ProductSourceRecord {
@@ -1758,6 +1766,227 @@ async function main(): Promise<void> {
     if (receiptsFor17 !== 0) fail("a refused ingestion still wrote a receipt");
     ok("PREPARED and ABANDONED attempts are both refused, leaving no receipt");
 
+    // — Phase 0E.7.1: bounded publication worker cycle —
+    //
+    // The composed cycle against real rows: bounded runs, stop conditions,
+    // shutdown, one-time recovery, and the guarantee that ambiguous work is not
+    // resent. Every transport is an in-process fake; no socket is opened.
+
+    class CycleTransport implements RegistrarRegisterTransport {
+      calls: RegisterRequestEnvelope[] = [];
+      constructor(private readonly results: TransportResult[]) {}
+      async sendRegisterRequest(request: RegisterRequestEnvelope): Promise<TransportResult> {
+        this.calls.push(request);
+        return this.results[Math.min(this.calls.length - 1, this.results.length - 1)]!;
+      }
+    }
+
+    const CYC_T0 = "2026-04-01T00:00:00.000Z";
+    let cycClock = Date.parse(CYC_T0);
+    const cycTime = {
+      now: () => {
+        const value = new Date(cycClock);
+        cycClock += 1_000;
+        return value;
+      },
+    };
+    let cycIdSeq = 0;
+    const cycAttemptIds = {
+      nextSubmissionAttemptId: () => {
+        cycIdSeq += 1;
+        return `mon:attempt:${pad26(`DBCHECKCYC${String(cycIdSeq).padStart(3, "0")}`)}`;
+      },
+    };
+    const cycRetry = {
+      nextRetryAvailableAt: ({ attemptedAt }: { attemptedAt: Date }) =>
+        new Date(attemptedAt.getTime() + 3_600_000),
+    };
+    const neverShutdown = { isShutdownRequested: () => false };
+
+    const cycConfiguration = loadRegistrarRuntimeConfiguration({
+      MONACADO_REGISTRAR_ENABLED: "true",
+      MONACADO_REGISTRAR_ID: MONACADO_REGISTRAR_ID,
+      MONACADO_REGISTRAR_ENDPOINT: "https://registrar.example/v1/register",
+      MONACADO_REGISTRAR_ALLOWED_ORIGINS: "https://registrar.example",
+      MONACADO_REGISTRAR_CREDENTIAL_MODE: "BEARER_ENV",
+      MONACADO_REGISTRAR_BEARER_TOKEN_ENV: RUN_SECRET_VAR,
+    });
+    if (cycConfiguration.state !== "READY") fail("the db:check cycle configuration is not READY");
+
+    // Same determinism guard as before: drain anything still eligible so the
+    // cycle claims only the items seeded for it.
+    const eligibleBeforeCycle = await db.publicationOutbox.findMany({
+      where: {
+        publicationId: {
+          in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9, CHECK_PUBLICATION10, CHECK_PUBLICATION11, CHECK_PUBLICATION12, CHECK_PUBLICATION13, CHECK_PUBLICATION14, CHECK_PUBLICATION15, CHECK_PUBLICATION16, CHECK_PUBLICATION17],
+        },
+        outboxStatus: { in: ["PENDING", "RETRYABLE"] },
+      },
+    });
+    for (const row of eligibleBeforeCycle) {
+      await outboxRepo.cancelPublicationOutbox({ outboxId: row.outboxId });
+    }
+
+    const seedForCycle = async (
+      version: string,
+      publicationId: string,
+      capsuleId: string,
+      priorVersion: string,
+    ) => {
+      await repo.createProductSourceRecordRevision({
+        internalProductId: CHECK_INTERNAL,
+        expectedCurrentSourceRecordVersion: priorVersion,
+        sourceRecordVersion: version,
+        updatedAt: CYC_T0,
+        capsuleGeneratedAt: CYC_T0,
+      });
+      const prep = await pubService.prepareProductPublication({
+        publicationId,
+        internalProductId: CHECK_INTERNAL,
+        sourceRecordId: CHECK_SREC,
+        sourceRecordVersion: version,
+        nodeId: CHECK_NODE_ANS,
+        capsuleId,
+        capsuleSemver: "1.0.0",
+        publishedBy: MONACADO_PUBLISHER_ID,
+        publishedAt: CYC_T0,
+        nodePolicy: { ref: "an:policy:node:dbcheck", version: "1.0.0" },
+        capsulePolicy: { ref: "an:policy:capsule:dbcheck", version: "1.0.0" },
+        availableAt: CYC_T0,
+      });
+      return prep;
+    };
+
+    const runCycle = (
+      opts: {
+        maximumRuns: number;
+        transport: RegistrarRegisterTransport;
+        shutdown?: { isShutdownRequested(): boolean };
+        recovery?: { limit: number; availableAt?: string };
+        configuration?: RegistrarConfigurationLoad;
+      },
+    ) =>
+      runProductPublicationWorkerCycle(
+        {
+          cycleStartedAt: CYC_T0,
+          maximumRuns: opts.maximumRuns,
+          leaseDurationSeconds: 3600,
+          ...(opts.recovery !== undefined ? { recovery: opts.recovery } : {}),
+        },
+        {
+          configuration: opts.configuration ?? cycConfiguration,
+          secretSource: runSecretSource,
+          time: cycTime,
+          attemptIds: cycAttemptIds,
+          retryTiming: cycRetry,
+          shutdown: opts.shutdown ?? neverShutdown,
+          transportOverride: opts.transport,
+          db,
+        },
+      );
+
+    // 27. A disabled cycle mutates nothing and never reaches the queue.
+    const cyc18 = await seedForCycle("18", CHECK_PUBLICATION18, CHECK_CAPSULE18, "17");
+    const disabledTransportCyc = new CycleTransport([{ outcome: "SUCCESS", transmitted: true }]);
+    const disabledCycle = await runCycle({
+      maximumRuns: 3,
+      transport: disabledTransportCyc,
+      configuration: loadRegistrarRuntimeConfiguration({}),
+    });
+    if (disabledCycle.outcome !== "DISABLED") fail("a disabled cycle did not return DISABLED");
+    if (disabledCycle.runsAttempted !== 0) fail("a disabled cycle attempted a run");
+    if (disabledTransportCyc.calls.length !== 0) fail("a disabled cycle invoked the transport");
+    const row18Before = await outboxRepo.getPublicationOutboxById(cyc18.outbox.outboxId);
+    if (row18Before.outboxStatus !== "PENDING") fail("a disabled cycle mutated the queue");
+    ok("a disabled worker cycle performs no queue access or mutation");
+
+    // 28. A bounded cycle processes two eligible items but never more than
+    //     maximumRuns, and creates no receipt.
+    const cyc19 = await seedForCycle("19", CHECK_PUBLICATION19, CHECK_CAPSULE19, "18");
+    const boundedTransport = new CycleTransport([{ outcome: "SUCCESS", transmitted: true, httpStatus: 200 }]);
+    // Recovery is deliberately NOT enabled here: at CYC_T0 the earlier sections'
+    // leases have expired, so a sweep would legitimately reclaim their items and
+    // the cycle would claim those instead of the two seeded for this check.
+    // Recovery reporting is asserted separately below.
+    const bounded = await runCycle({ maximumRuns: 2, transport: boundedTransport });
+    if (bounded.runsAttempted > 2) fail("the cycle exceeded maximumRuns");
+    if (boundedTransport.calls.length !== 2) fail("the cycle did not process both eligible items");
+    if (bounded.outcomeCounts.SENT !== 2) fail("the cycle did not aggregate both sends");
+    if (bounded.recovery !== undefined) fail("recovery ran though it was not requested");
+    for (const id of [cyc18.outbox.outboxId, cyc19.outbox.outboxId]) {
+      const row = await outboxRepo.getPublicationOutboxById(id);
+      if (row.outboxStatus !== "PROCESSING") fail("a sent item did not remain PROCESSING");
+    }
+    const receiptsAfterCycle = await db.registrarReceipt.count({
+      where: { publicationId: { in: [CHECK_PUBLICATION18, CHECK_PUBLICATION19] } },
+    });
+    if (receiptsAfterCycle !== 0) fail("the worker cycle created a Registrar receipt");
+    ok("a bounded cycle processes two items within maximumRuns and creates no receipt");
+
+    // 28b. When recovery IS requested it runs once and reports only safe counts.
+    const recoveryTransport = new CycleTransport([{ outcome: "SUCCESS", transmitted: true, httpStatus: 200 }]);
+    const recoveryCycle = await runCycle({
+      maximumRuns: 1,
+      transport: recoveryTransport,
+      recovery: { limit: 10, availableAt: CYC_T0 },
+    });
+    if (recoveryCycle.recovery === undefined) fail("recovery counts were not reported when requested");
+    const recoveryKeys = Object.keys(recoveryCycle.recovery).sort().join(",");
+    if (recoveryKeys !== "examined,recoveredCount,skippedCount") {
+      fail(`recovery reported unexpected fields: ${recoveryKeys}`);
+    }
+    ok("requested recovery reports exactly the safe counts and nothing else");
+
+    // 29. Shutdown before the first run prevents any work, and a cycle over an
+    //     empty queue stops on NO_ELIGIBLE_WORK rather than polling.
+    const shutdownTransport = new CycleTransport([{ outcome: "SUCCESS", transmitted: true }]);
+    const shutdownCycle = await runCycle({
+      maximumRuns: 5,
+      transport: shutdownTransport,
+      shutdown: { isShutdownRequested: () => true },
+    });
+    if (shutdownCycle.outcome !== "SHUTDOWN_REQUESTED") {
+      fail(`shutdown produced ${shutdownCycle.outcome}`);
+    }
+    if (shutdownCycle.runsAttempted !== 0) fail("shutdown did not prevent the first run");
+    if (shutdownTransport.calls.length !== 0) fail("shutdown still invoked the transport");
+
+    // The recovery sweep above legitimately made earlier items eligible again,
+    // so drain once more to assert the genuinely-empty-queue behaviour.
+    const eligibleBeforeDrain = await db.publicationOutbox.findMany({
+      where: {
+        publicationId: {
+          in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9, CHECK_PUBLICATION10, CHECK_PUBLICATION11, CHECK_PUBLICATION12, CHECK_PUBLICATION13, CHECK_PUBLICATION14, CHECK_PUBLICATION15, CHECK_PUBLICATION16, CHECK_PUBLICATION17, CHECK_PUBLICATION18, CHECK_PUBLICATION19, CHECK_PUBLICATION20],
+        },
+        outboxStatus: { in: ["PENDING", "RETRYABLE"] },
+      },
+    });
+    for (const row of eligibleBeforeDrain) {
+      await outboxRepo.cancelPublicationOutbox({ outboxId: row.outboxId });
+    }
+
+    const drainedTransport = new CycleTransport([{ outcome: "SUCCESS", transmitted: true }]);
+    const drained = await runCycle({ maximumRuns: 5, transport: drainedTransport });
+    if (!drained.stoppedForNoWork) fail("the cycle did not stop for an empty queue");
+    if (drainedTransport.calls.length !== 0) fail("an empty queue still invoked the transport");
+    ok("shutdown prevents the next run, and an empty queue stops the cycle without polling");
+
+    // 30. An ambiguous first item is never resent, while a later eligible item
+    //     still processes in the same bounded cycle.
+    const cyc20 = await seedForCycle("20", CHECK_PUBLICATION20, CHECK_CAPSULE20, "19");
+    const ambiguousTransport = new CycleTransport([
+      { outcome: "AMBIGUOUS_DELIVERY", transmitted: true, failure: { code: "TIMEOUT", summary: "No response before the deadline" } },
+    ]);
+    const ambiguousCycle = await runCycle({ maximumRuns: 3, transport: ambiguousTransport });
+    if (ambiguousCycle.outcomeCounts.AMBIGUOUS_DELIVERY !== 1) {
+      fail("the ambiguous outcome was not aggregated");
+    }
+    if (ambiguousTransport.calls.length !== 1) fail("ambiguous work was resent within the cycle");
+    const row20 = await outboxRepo.getPublicationOutboxById(cyc20.outbox.outboxId);
+    if (row20.outboxStatus !== "PROCESSING") fail("ambiguous work did not remain PROCESSING");
+    if (row20.availableAt !== CYC_T0) fail("ambiguous work was rescheduled");
+    ok("ambiguous work is held and never resent inside a bounded cycle");
+
     const transitioned = await nodeRepo.transitionProductNodeLifecycle({
       nodeId: CHECK_NODE_ANS,
       toState: "Inactive",
@@ -1778,22 +2007,22 @@ async function cleanup(db: ReturnType<typeof getPrisma>): Promise<void> {
   await db.publicationRemediation.deleteMany({
     where: {
       publicationId: {
-        in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9, CHECK_PUBLICATION10, CHECK_PUBLICATION11, CHECK_PUBLICATION12, CHECK_PUBLICATION13, CHECK_PUBLICATION14, CHECK_PUBLICATION15, CHECK_PUBLICATION16, CHECK_PUBLICATION17],
+        in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9, CHECK_PUBLICATION10, CHECK_PUBLICATION11, CHECK_PUBLICATION12, CHECK_PUBLICATION13, CHECK_PUBLICATION14, CHECK_PUBLICATION15, CHECK_PUBLICATION16, CHECK_PUBLICATION17, CHECK_PUBLICATION18, CHECK_PUBLICATION19, CHECK_PUBLICATION20],
       },
     },
   });
   await db.registrarReceipt.deleteMany({
-    where: { publicationId: { in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9, CHECK_PUBLICATION10, CHECK_PUBLICATION11, CHECK_PUBLICATION12, CHECK_PUBLICATION13, CHECK_PUBLICATION14, CHECK_PUBLICATION15, CHECK_PUBLICATION16, CHECK_PUBLICATION17] } },
+    where: { publicationId: { in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9, CHECK_PUBLICATION10, CHECK_PUBLICATION11, CHECK_PUBLICATION12, CHECK_PUBLICATION13, CHECK_PUBLICATION14, CHECK_PUBLICATION15, CHECK_PUBLICATION16, CHECK_PUBLICATION17, CHECK_PUBLICATION18, CHECK_PUBLICATION19, CHECK_PUBLICATION20] } },
   });
   await db.publicationSubmissionAttempt.deleteMany({
     where: {
       publicationId: {
-        in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9, CHECK_PUBLICATION10, CHECK_PUBLICATION11, CHECK_PUBLICATION12, CHECK_PUBLICATION13, CHECK_PUBLICATION14, CHECK_PUBLICATION15, CHECK_PUBLICATION16, CHECK_PUBLICATION17],
+        in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9, CHECK_PUBLICATION10, CHECK_PUBLICATION11, CHECK_PUBLICATION12, CHECK_PUBLICATION13, CHECK_PUBLICATION14, CHECK_PUBLICATION15, CHECK_PUBLICATION16, CHECK_PUBLICATION17, CHECK_PUBLICATION18, CHECK_PUBLICATION19, CHECK_PUBLICATION20],
       },
     },
   });
   await db.publicationOutbox.deleteMany({
-    where: { publicationId: { in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9, CHECK_PUBLICATION10, CHECK_PUBLICATION11, CHECK_PUBLICATION12, CHECK_PUBLICATION13, CHECK_PUBLICATION14, CHECK_PUBLICATION15, CHECK_PUBLICATION16, CHECK_PUBLICATION17] } },
+    where: { publicationId: { in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9, CHECK_PUBLICATION10, CHECK_PUBLICATION11, CHECK_PUBLICATION12, CHECK_PUBLICATION13, CHECK_PUBLICATION14, CHECK_PUBLICATION15, CHECK_PUBLICATION16, CHECK_PUBLICATION17, CHECK_PUBLICATION18, CHECK_PUBLICATION19, CHECK_PUBLICATION20] } },
   });
   await db.productPublication.deleteMany({ where: { internalProductId: CHECK_INTERNAL } });
   await db.productNode.deleteMany({ where: { internalProductId: CHECK_INTERNAL } });
