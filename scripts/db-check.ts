@@ -26,6 +26,10 @@ import { runOneProductPublication } from "../src/server/product/publication-run-
 import { ingestRegistrarReceipt } from "../src/server/product/receipt-ingestion-service";
 import { runProductPublicationWorkerCycle } from "../src/server/product/publication-worker-cycle-service";
 import { main as runPublicationWorkerCommand } from "./run-publication-worker";
+import { PublicationWorkerRunRepository } from "../src/server/product/publication-worker-run-repository";
+import { getPublicationWorkerHealth } from "../src/server/product/publication-worker-health-service";
+import { WorkerRunTerminalConflictError } from "../src/server/product/worker-run-errors";
+import { emptyOutcomeCounts } from "../src/contracts/product/publication-worker-cycle";
 import { loadRegistrarRuntimeConfiguration } from "../src/server/registrar/registrar-runtime-config";
 import type { RegistrarConfigurationLoad } from "../src/server/registrar/registrar-runtime-config";
 import type {
@@ -95,6 +99,8 @@ const CHECK_PUBLICATION20 = `mon:pub:${pad26("DBCHECKWCPUBC")}`;
 const CHECK_CAPSULE20 = `an:capsule:${pad26("DBCHECKWCCAPC")}`;
 const CHECK_PUBLICATION21 = `mon:pub:${pad26("DBCHECKEPPUBA")}`;
 const CHECK_CAPSULE21 = `an:capsule:${pad26("DBCHECKEPCAPA")}`;
+/** Every worker-run row db:check writes shares this prefix, so cleanup is exact. */
+const WR_PREFIX = "dbcheck-wr-";
 let attemptSeq = 0;
 
 function syntheticCheckRecord(): ProductSourceRecord {
@@ -2036,7 +2042,7 @@ async function main(): Promise<void> {
         // db:check owns the client for the rest of its run.
         disconnect: async () => {},
         transportOverride: transport,
-        cycleId: "dbcheck-once",
+        cycleId: `${WR_PREFIX}once`,
       });
 
     // 31a. A disabled command reaches neither the queue nor the database.
@@ -2106,6 +2112,412 @@ async function main(): Promise<void> {
     }
     ok("the command creates no receipt, leaks nothing, and leaves no listener behind");
 
+    // 32. Durable worker-run status and operational health (Phase 0E.7.3).
+    //
+    // The command's own evidence trail, against real rows. Every worker-run row
+    // written here shares the WR_PREFIX so cleanup is exact, and the transport
+    // stays an in-process fake throughout.
+
+    const runRepo = new PublicationWorkerRunRepository(db);
+    // Total receipt count before any worker-run work, so 32i compares like with like.
+    const receiptsBeforeWorkerRunSection = await db.registrarReceipt.count();
+    const WR_T0 = "2026-05-01T00:00:00.000Z";
+    const wrShift = (seconds: number): string =>
+      new Date(Date.parse(WR_T0) + seconds * 1_000).toISOString();
+    let wrSeq = 0;
+    const nextWrCycleId = (): string => {
+      wrSeq += 1;
+      return `${WR_PREFIX}${String(wrSeq).padStart(3, "0")}`;
+    };
+    const wrCompletion = (cycleId: string, overrides: Record<string, unknown> = {}) => ({
+      cycleId,
+      completedAt: wrShift(30),
+      outcome: "COMPLETED",
+      exitCode: 0,
+      runsAttempted: 2,
+      itemsClaimed: 1,
+      stoppedForNoWork: true,
+      shutdownRequested: false,
+      expiredClaimsExamined: 0,
+      expiredClaimsRecovered: 0,
+      expiredClaimsSkipped: 0,
+      issueCodes: [],
+      ...overrides,
+    });
+
+    // 32a. A STARTED row exists before the cycle, and the command finalises it.
+    const wrLines: string[] = [];
+    const wrSink = {
+      writeLine: (_s: "stdout" | "stderr", line: string): void => {
+        wrLines.push(line);
+      },
+    };
+    let statusSeenDuringCycle: string | undefined;
+    let wrCycleCalls = 0;
+    const commandCycleId = nextWrCycleId();
+    const runCommandWithStatus = (
+      overrides: Partial<Parameters<typeof runPublicationWorkerCommand>[0]> = {},
+    ) =>
+      runPublicationWorkerCommand({
+        env: commandEnv(),
+        secretSource: runSecretSource,
+        sink: wrSink,
+        exitCodeTarget: { exitCode: -1 },
+        time: cycTime,
+        attemptIds: cycAttemptIds,
+        createDb: () => db,
+        disconnect: async () => {},
+        transportOverride: new CycleTransport([{ outcome: "SUCCESS", transmitted: true }]),
+        ...overrides,
+      });
+
+    const statusCommand = await runCommandWithStatus({
+      cycleId: commandCycleId,
+      runCycle: async () => {
+        wrCycleCalls += 1;
+        const row = await db.publicationWorkerRun.findUnique({
+          where: { cycleId: commandCycleId },
+        });
+        statusSeenDuringCycle = row?.status;
+        return {
+          outcome: "NO_WORK" as const,
+          startedAt: WR_T0,
+          completedAt: wrShift(5),
+          runsAttempted: 1,
+          itemsClaimed: 0,
+          outcomeCounts: { ...emptyOutcomeCounts(), NO_ELIGIBLE_WORK: 1 },
+          shutdownRequested: false,
+          stoppedForNoWork: true,
+          issues: [],
+        };
+      },
+    });
+    if (statusSeenDuringCycle !== "STARTED") {
+      fail("the STARTED row was not durable before the cycle ran");
+    }
+    if (wrCycleCalls !== 1) fail("the command did not invoke exactly one cycle");
+    if (statusCommand.exitCode !== 0) fail("a coherent NO_WORK command did not exit 0");
+    const noWorkRun = await runRepo.getPublicationWorkerRun(commandCycleId);
+    if (noWorkRun?.status !== "COMPLETED") fail("the NO_WORK run was not finalised COMPLETED");
+    if (noWorkRun.outcome !== "NO_WORK") fail("the NO_WORK outcome was not stored");
+    if (noWorkRun.completedAt === null) fail("a terminal run has no completedAt");
+    if (!wrLines.some((l) => l.includes(commandCycleId))) {
+      fail("monitoring output and the durable row do not share a cycle id");
+    }
+    ok("the worker command persists STARTED before the cycle and finalises it durably");
+
+    // 32b. A work-processing run stores its safe aggregate counts.
+    const workingCycleId = nextWrCycleId();
+    await runCommandWithStatus({
+      cycleId: workingCycleId,
+      runCycle: async () => ({
+        outcome: "RUN_LIMIT_REACHED" as const,
+        startedAt: WR_T0,
+        completedAt: wrShift(9),
+        runsAttempted: 2,
+        itemsClaimed: 2,
+        outcomeCounts: { ...emptyOutcomeCounts(), SENT: 2 },
+        shutdownRequested: false,
+        stoppedForNoWork: false,
+        recovery: { examined: 3, recoveredCount: 1, skippedCount: 2 },
+        issues: ["MONITORING_HOOK_FAILURE"],
+      }),
+    });
+    const workingRun = await runRepo.getPublicationWorkerRun(workingCycleId);
+    if (workingRun?.status !== "COMPLETED") fail("a work-processing run was not COMPLETED");
+    if (workingRun.itemsClaimed !== 2 || workingRun.runsAttempted !== 2) {
+      fail("aggregate counters were not stored");
+    }
+    if (workingRun.expiredClaimsRecovered !== 1 || workingRun.expiredClaimsSkipped !== 2) {
+      fail("recovery counts were not stored");
+    }
+    if (workingRun.issueCodes.join(",") !== "MONITORING_HOOK_FAILURE") {
+      fail("issue codes were not stored safely");
+    }
+    ok("a work-processing command stores safe aggregate counts and bounded issue codes");
+
+    // 32c. A FAILED cycle persists FAILED; a thrown cycle also persists FAILED.
+    const failedCycleId = nextWrCycleId();
+    await runCommandWithStatus({
+      cycleId: failedCycleId,
+      runCycle: async () => ({
+        outcome: "FAILED" as const,
+        startedAt: WR_T0,
+        completedAt: wrShift(7),
+        runsAttempted: 1,
+        itemsClaimed: 1,
+        outcomeCounts: { ...emptyOutcomeCounts(), TERMINAL_FAILURE: 1 },
+        shutdownRequested: false,
+        stoppedForNoWork: false,
+        issues: [],
+      }),
+    });
+    const failedRun = await runRepo.getPublicationWorkerRun(failedCycleId);
+    if (failedRun?.status !== "FAILED") fail("a FAILED cycle did not persist FAILED");
+    if (failedRun.outcome !== "FAILED") fail("the FAILED outcome was not stored");
+
+    const thrownCycleId = nextWrCycleId();
+    let thrownCalls = 0;
+    await runCommandWithStatus({
+      cycleId: thrownCycleId,
+      runCycle: async () => {
+        thrownCalls += 1;
+        throw new Error("synthetic cycle fault");
+      },
+    });
+    if (thrownCalls !== 1) fail("a thrown cycle was retried");
+    const thrownRun = await runRepo.getPublicationWorkerRun(thrownCycleId);
+    if (thrownRun?.status !== "FAILED") fail("a thrown cycle did not persist FAILED");
+    // No cycle result existed, so there is no outcome to claim.
+    if (thrownRun.outcome !== null) fail("a thrown cycle invented a cycle outcome");
+    ok("a failed cycle and a thrown cycle both persist FAILED without a second cycle");
+
+    // 32d. STARTED-persistence failure prevents the cycle entirely.
+    let blockedCalls = 0;
+    const blocked = await runCommandWithStatus({
+      cycleId: nextWrCycleId(),
+      workerRuns: {
+        startPublicationWorkerRun: async () => {
+          throw new Error("synthetic status-store outage");
+        },
+        completePublicationWorkerRun: async () => {
+          throw new Error("unreachable");
+        },
+        failPublicationWorkerRun: async () => {
+          throw new Error("unreachable");
+        },
+      },
+      runCycle: async () => {
+        blockedCalls += 1;
+        throw new Error("the cycle must not run without durable evidence");
+      },
+    });
+    if (blockedCalls !== 0) fail("the cycle ran without a durable STARTED row");
+    if (blocked.exitCode === 0) fail("a status-store outage exited successfully");
+
+    // 32e. Terminal-persistence failure does not rerun the cycle.
+    const orphanCycleId = nextWrCycleId();
+    let orphanCalls = 0;
+    const orphan = await runCommandWithStatus({
+      cycleId: orphanCycleId,
+      workerRuns: {
+        startPublicationWorkerRun: (input) => runRepo.startPublicationWorkerRun(input),
+        completePublicationWorkerRun: async () => {
+          throw new Error("synthetic write failure after send");
+        },
+        failPublicationWorkerRun: async () => {
+          throw new Error("unreachable");
+        },
+      },
+      runCycle: async () => {
+        orphanCalls += 1;
+        return {
+          outcome: "COMPLETED" as const,
+          startedAt: WR_T0,
+          completedAt: wrShift(5),
+          runsAttempted: 1,
+          itemsClaimed: 1,
+          outcomeCounts: { ...emptyOutcomeCounts(), SENT: 1 },
+          shutdownRequested: false,
+          stoppedForNoWork: true,
+          issues: [],
+        };
+      },
+    });
+    if (orphanCalls !== 1) fail("a bookkeeping failure caused the cycle to rerun");
+    if (orphan.exitCode === 0) fail("a completion-persistence failure exited successfully");
+    const orphanRun = await runRepo.getPublicationWorkerRun(orphanCycleId);
+    if (orphanRun?.status !== "STARTED") fail("the orphaned run is not reconcilable");
+    ok("persistence failures never publish without evidence and never resend after one");
+
+    // 32f. Replay rules: identical is idempotent, conflicting fails.
+    const replayCycleId = nextWrCycleId();
+    await runRepo.startPublicationWorkerRun({
+      cycleId: replayCycleId,
+      startedAt: WR_T0,
+      maximumRuns: 5,
+    });
+    const firstTerminal = await runRepo.completePublicationWorkerRun(wrCompletion(replayCycleId));
+    const wrReplayed = await runRepo.completePublicationWorkerRun(wrCompletion(replayCycleId));
+    if (JSON.stringify(wrReplayed) !== JSON.stringify(firstTerminal)) {
+      fail("an identical terminal replay was not idempotent");
+    }
+    let wrConflictRefused = false;
+    try {
+      await runRepo.completePublicationWorkerRun(wrCompletion(replayCycleId, { outcome: "NO_WORK" }));
+    } catch (e) {
+      wrConflictRefused = e instanceof WorkerRunTerminalConflictError;
+    }
+    if (!wrConflictRefused) fail("a conflicting terminal replay was not refused");
+    ok("identical terminal replay is idempotent and a conflicting one is refused");
+
+    // 32g. Abandonment: only stale STARTED rows, never terminal history.
+    const staleCycleId = nextWrCycleId();
+    await runRepo.startPublicationWorkerRun({
+      cycleId: staleCycleId,
+      startedAt: wrShift(-7_200),
+      maximumRuns: 5,
+    });
+    const recentCycleId = nextWrCycleId();
+    await runRepo.startPublicationWorkerRun({
+      cycleId: recentCycleId,
+      startedAt: wrShift(-60),
+      maximumRuns: 5,
+    });
+    const sweep = await runRepo.abandonStalePublicationWorkerRuns({
+      startedBefore: wrShift(-1_800),
+      abandonedAt: wrShift(0),
+      limit: 100,
+    });
+    // The sweep also reclaims the run orphaned by 32e, which is precisely the
+    // reconcilability that check promised — so assert the specific rows rather than
+    // a bare total.
+    if (sweep.abandonedCount < 1) fail("the stale sweep abandoned nothing");
+    if (sweep.abandonedCount !== sweep.examined) fail("the stale sweep skipped an eligible run");
+    if ((await runRepo.getPublicationWorkerRun(orphanCycleId))?.status !== "ABANDONED") {
+      fail("the orphaned run from a terminal-persistence failure was not reconcilable");
+    }
+    const abandonedRun = await runRepo.getPublicationWorkerRun(staleCycleId);
+    if (abandonedRun?.status !== "ABANDONED") fail("a stale STARTED run was not abandoned");
+    if (abandonedRun.issueCodes.join(",") !== "WORKER_RUN_STALE") {
+      fail("the abandoned run lacks its bounded issue code");
+    }
+    if ((await runRepo.getPublicationWorkerRun(recentCycleId))?.status !== "STARTED") {
+      fail("a recent run was abandoned");
+    }
+    if ((await runRepo.getPublicationWorkerRun(replayCycleId))?.status !== "COMPLETED") {
+      fail("completed history was abandoned");
+    }
+    ok("only stale STARTED runs are abandoned; terminal history is never rewritten");
+
+    // 32h. Health classification over the durable store, at explicit instants.
+    //
+    // Health reads the WHOLE store, so each assessment is built on a clean slate:
+    // the classification depends on which terminal run is newest, and leaving the
+    // preceding sections' rows in place would make the expected answer depend on
+    // fixture ordering rather than on the policy. Clearing is safe and cheap —
+    // operational evidence has no foreign key and is disposable by design.
+    const healthAt = (assessedAt: string, freshnessSeconds = 3_600) =>
+      getPublicationWorkerHealth({ assessedAt, freshnessSeconds, limit: 50, db });
+    const clearRuns = () => db.publicationWorkerRun.deleteMany({});
+    let wrHealthSeq = 0;
+    /** One terminal run on an empty store, then assess as of `assessedAt`. */
+    const healthFor = async (
+      terminal: { completedAt: string; outcome?: string; exitCode?: number; issueCodes?: string[] },
+      assessedAt: string,
+      freshnessSeconds = 3_600,
+    ) => {
+      wrHealthSeq += 1;
+      const cycleId = `${WR_PREFIX}h${String(wrHealthSeq).padStart(2, "0")}`;
+      await runRepo.startPublicationWorkerRun({
+        cycleId,
+        startedAt: wrShift(-300),
+        maximumRuns: 5,
+      });
+      await runRepo.completePublicationWorkerRun(wrCompletion(cycleId, terminal));
+      return healthAt(assessedAt, freshnessSeconds);
+    };
+
+    await clearRuns();
+    const emptyHealth = await healthAt(wrShift(0));
+    if (emptyHealth.assessment !== "NO_HISTORY") {
+      fail(`health did not report NO_HISTORY (got ${emptyHealth.assessment})`);
+    }
+    if (emptyHealth.scope !== "PUBLICATION_WORKER_ONLY") {
+      fail("health did not declare its limited scope");
+    }
+
+    // A STARTED row alone is work in flight, not evidence about health.
+    await runRepo.startPublicationWorkerRun({
+      cycleId: `${WR_PREFIX}inflight`,
+      startedAt: wrShift(-60),
+      maximumRuns: 5,
+    });
+    if ((await healthAt(wrShift(0))).assessment !== "NO_HISTORY") {
+      fail("an in-flight run was treated as terminal evidence");
+    }
+
+    await clearRuns();
+    const healthy = await healthFor({ completedAt: wrShift(-60), outcome: "NO_WORK" }, wrShift(0));
+    if (healthy.assessment !== "HEALTHY") {
+      fail(`a recent coherent run was not HEALTHY (got ${healthy.assessment})`);
+    }
+    if (healthy.ageSeconds !== 60) fail("health did not use the supplied assessment instant");
+
+    // The SAME run assessed much later is STALE — explicit `now`, different answer.
+    const stale = await healthAt(wrShift(86_400));
+    if (stale.assessment !== "STALE") fail(`an old coherent run was not STALE (got ${stale.assessment})`);
+
+    await clearRuns();
+    const degradedHealth = await healthFor(
+      { completedAt: wrShift(-60), issueCodes: ["MONITORING_HOOK_FAILURE"] },
+      wrShift(0),
+    );
+    if (degradedHealth.assessment !== "DEGRADED") {
+      fail(`a run with bounded issues was not DEGRADED (got ${degradedHealth.assessment})`);
+    }
+
+    await clearRuns();
+    const failedHealth = await healthFor(
+      { completedAt: wrShift(-60), outcome: "FAILED", exitCode: 1 },
+      wrShift(0),
+    );
+    if (failedHealth.assessment !== "FAILED") {
+      fail(`a recent failed run was not FAILED (got ${failedHealth.assessment})`);
+    }
+
+    // FAILED outranks STALE: the last thing the worker did was break, and reporting
+    // staleness would send an operator to look at scheduling instead.
+    const failedAndStale = await healthAt(wrShift(864_000));
+    if (failedAndStale.assessment !== "FAILED") {
+      fail("health precedence changed: FAILED must outrank STALE");
+    }
+
+    // An abandoned run counts as a failure once explicitly reconciled.
+    await clearRuns();
+    await runRepo.startPublicationWorkerRun({
+      cycleId: `${WR_PREFIX}aband`,
+      startedAt: wrShift(-7_200),
+      maximumRuns: 5,
+    });
+    await runRepo.abandonStalePublicationWorkerRuns({
+      startedBefore: wrShift(-1_800),
+      abandonedAt: wrShift(-60),
+      limit: 10,
+    });
+    const abandonedHealth = await healthAt(wrShift(0));
+    if (abandonedHealth.assessment !== "FAILED") {
+      fail(`an abandoned run was not FAILED (got ${abandonedHealth.assessment})`);
+    }
+    ok("health reports NO_HISTORY, HEALTHY, DEGRADED, STALE, and FAILED with documented precedence");
+
+    // 32i. No receipt was created by any of this, and nothing leaked into storage.
+    const wrReceipts = await db.registrarReceipt.count();
+    if (wrReceipts !== receiptsBeforeWorkerRunSection) {
+      fail("worker-run status work created a Registrar receipt");
+    }
+    const storedRuns = await db.publicationWorkerRun.findMany({
+      where: { cycleId: { startsWith: WR_PREFIX } },
+    });
+    for (const row of storedRuns) {
+      const serialised = JSON.stringify(row, (_k, v) => (typeof v === "bigint" ? Number(v) : v));
+      for (const forbidden of [
+        RUN_SECRET_VAR,
+        runSecretSource[RUN_SECRET_VAR]!,
+        "registrar.example",
+        "mysql://",
+        "Bearer",
+        "mon:lock:",
+        '{"event"',
+        "worker.",
+      ]) {
+        if (serialised.includes(forbidden)) {
+          fail("sensitive or raw material reached worker-run persistence");
+        }
+      }
+    }
+    ok("worker-run persistence creates no receipt and stores no raw or sensitive material");
+
     const transitioned = await nodeRepo.transitionProductNodeLifecycle({
       nodeId: CHECK_NODE_ANS,
       toState: "Inactive",
@@ -2143,6 +2555,9 @@ async function cleanup(db: ReturnType<typeof getPrisma>): Promise<void> {
   await db.publicationOutbox.deleteMany({
     where: { publicationId: { in: [CHECK_PUBLICATION, CHECK_PUBLICATION2, CHECK_PUBLICATION3, CHECK_PUBLICATION4, CHECK_PUBLICATION5, CHECK_PUBLICATION6, CHECK_PUBLICATION7, CHECK_PUBLICATION8, CHECK_PUBLICATION9, CHECK_PUBLICATION10, CHECK_PUBLICATION11, CHECK_PUBLICATION12, CHECK_PUBLICATION13, CHECK_PUBLICATION14, CHECK_PUBLICATION15, CHECK_PUBLICATION16, CHECK_PUBLICATION17, CHECK_PUBLICATION18, CHECK_PUBLICATION19, CHECK_PUBLICATION20, CHECK_PUBLICATION21] } },
   });
+  // Operational evidence has no FK to any domain table, so it is removed on its
+  // own, by prefix. Order is irrelevant here for exactly that reason.
+  await db.publicationWorkerRun.deleteMany({ where: { cycleId: { startsWith: WR_PREFIX } } });
   await db.productPublication.deleteMany({ where: { internalProductId: CHECK_INTERNAL } });
   await db.productNode.deleteMany({ where: { internalProductId: CHECK_INTERNAL } });
   await db.productSourceRecordVersionRow.deleteMany({ where: { internalProductId: CHECK_INTERNAL } });

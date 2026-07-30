@@ -74,6 +74,13 @@ export const WORKER_EVENTS = {
   result: "worker.result",
   cleanupFailed: "worker.cleanup_failed",
   monitoringFailure: "worker.monitoring_failure",
+  /**
+   * Durable worker-run status (Phase 0E.7.3). These lines *announce* what was
+   * written; the durable row is the authority, and this channel is secondary.
+   */
+  runStatusStarted: "worker.run_status_started",
+  runStatusPersisted: "worker.run_status_persisted",
+  runStatusPersistenceFailed: "worker.run_status_persistence_failed",
 } as const;
 
 export type WorkerEventName = (typeof WORKER_EVENTS)[keyof typeof WORKER_EVENTS];
@@ -183,6 +190,37 @@ export class WorkerCommandReporter {
   cleanupFailed(code: string): void {
     this.emit("stderr", WORKER_EVENTS.cleanupFailed, {
       code: safeCodes([code])[0] ?? "RESOURCE_CLEANUP_FAILURE",
+    });
+  }
+
+  // — Durable worker-run status (Phase 0E.7.3) —
+  //
+  // Announcements only. The durable row is the authority; these lines exist so an
+  // operator watching the stream knows a row was written, and they carry no
+  // database identifier, SQL text, connection detail, or raw cause.
+
+  /** A STARTED row now exists and the cycle is about to run. */
+  runStatusStarted(): void {
+    this.emit("stdout", WORKER_EVENTS.runStatusStarted, { status: "STARTED" });
+  }
+
+  /** A terminal row was written. */
+  runStatusPersisted(status: string, outcome: string | null): void {
+    this.emit("stdout", WORKER_EVENTS.runStatusPersisted, {
+      status: safeCodes([status])[0] ?? "UNKNOWN",
+      ...(outcome !== null ? { outcome: safeCodes([outcome])[0] ?? "UNKNOWN" } : {}),
+    });
+  }
+
+  /**
+   * A durable write failed. The bounded code is the whole message: the underlying
+   * database error is never surfaced, because this is exactly where a connection
+   * string or a driver dump would otherwise appear.
+   */
+  runStatusPersistenceFailed(stage: string, code: string): void {
+    this.emit("stderr", WORKER_EVENTS.runStatusPersistenceFailed, {
+      stage: safeFieldNames([stage])[0] ?? "unknown",
+      code: safeCodes([code])[0] ?? "RUN_STATUS_PERSISTENCE_FAILURE",
     });
   }
 

@@ -202,10 +202,17 @@ configuration, the concrete clock and identity providers, the fixed retry policy
 JSON-lines output, signal registration, exit codes, and resource cleanup — and it
 adds no loop, no timer, and no second invocation.
 
+Phase 0E.7.3 records each such invocation as one bounded durable row and derives an
+operational health assessment from recent runs
+([`PRODUCT_PUBLICATION_WORKER_STATUS_AND_HEALTH.md`](PRODUCT_PUBLICATION_WORKER_STATUS_AND_HEALTH.md)).
+That record is **evidence, not authority**: this cycle's result and the domain
+records it drives remain authoritative, and nothing reads worker-run history to
+decide publication state.
+
 ## Deferred
 
 - **Production scheduling**, process management, and automatic repeated cycles.
-- **A monitoring backend**, metrics export, and alerting.
+- **Alert delivery, dashboards**, metrics export, and a monitoring backend.
 - Automatic receipt ingestion, webhooks, polling; live Registrar calls;
   authentication and authorisation; production database wiring; Resolver
   integration; Stripe; UI; Storefront, Listing, Offer, Review, and Buyer

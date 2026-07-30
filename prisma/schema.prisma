@@ -528,3 +528,72 @@ model PublicationSubmissionAttempt {
   @@index([publicationId])
   @@index([attemptStatus])
 }
+
+/// Durable operational evidence for ONE invocation of the one-shot publication
+/// worker command (Phase 0E.7.3).
+///
+/// This is operational infrastructure state, NOT a publishable capsule and NOT an
+/// authority over anything. Publication, outbox, submission-attempt, receipt, and
+/// remediation rows remain the sole authorities for what happened to the work
+/// itself; this table only records that a command ran, what bounded outcome it
+/// reported, and how much it attempted. Nothing here is ever read back to decide
+/// domain state.
+///
+/// It therefore has NO relation to any domain table — deliberately. A foreign key
+/// would imply this row participates in publication integrity, and would make
+/// operational history undeletable alongside domain history.
+///
+/// Every column is a bounded scalar. There is **no JSON column**, so there is
+/// nowhere for arbitrary metadata, a payload, a receipt body, a raw exception, or
+/// a stack trace to accumulate. Issue codes are stored as a sorted, comma-joined
+/// list of SCREAMING_SNAKE_CASE codes, which cannot contain a comma by their own
+/// shape — deterministic to serialise and trivially safe to read.
+model PublicationWorkerRun {
+  /// Internal surrogate row id. Never projected out of the service layer.
+  id BigInt @id @default(autoincrement())
+
+  /// The command's correlation id, shared with its JSON-lines monitoring output.
+  /// Unique: one durable row per invocation that reaches the runnable boundary.
+  cycleId String @unique @db.VarChar(64)
+
+  /// STARTED | COMPLETED | FAILED | ABANDONED.
+  status String @db.VarChar(16)
+
+  /// The Phase 0E.7.1 cycle outcome, once one exists. Null while STARTED, and for
+  /// a run that failed or was abandoned before producing a cycle result.
+  /// DISABLED | NO_WORK | COMPLETED | RUN_LIMIT_REACHED | SHUTDOWN_REQUESTED | FAILED.
+  workerOutcome String? @db.VarChar(24)
+
+  /// The process exit code this command reported. Bounded 0..255.
+  exitCode Int?
+
+  /// The bound the command was configured with, and what it actually did.
+  maximumRuns   Int
+  runsAttempted Int @default(0)
+  itemsClaimed  Int @default(0)
+
+  stoppedForNoWork  Boolean @default(false)
+  shutdownRequested Boolean @default(false)
+
+  /// Safe counts from the optional one-time stale-claim recovery sweep.
+  expiredClaimsExamined  Int @default(0)
+  expiredClaimsRecovered Int @default(0)
+  expiredClaimsSkipped   Int @default(0)
+
+  /// Sorted, deduplicated, comma-joined bounded issue codes. Empty when none.
+  /// Codes only — never a message, cause, or driver detail.
+  issueCodes String @default("") @db.VarChar(1024)
+
+  /// Explicit instants supplied by the caller; this table reads no clock.
+  startedAt   DateTime  @db.DateTime(3)
+  completedAt DateTime? @db.DateTime(3)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  /// Stale-run reconciliation scans non-terminal rows oldest-first.
+  @@index([status, startedAt])
+  /// Recent-history and health queries order by terminal instant, then identity.
+  @@index([completedAt])
+  @@index([startedAt])
+}

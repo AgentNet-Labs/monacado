@@ -21,6 +21,7 @@ import {
   EXIT_CONFIGURATION,
   EXIT_CYCLE_FAILED,
   EXIT_STARTUP_FAILURE,
+  EXIT_STATUS_PERSISTENCE_FAILURE,
   EXIT_SUCCESS,
   exitCodeForCycleOutcome,
   isDirectExecution,
@@ -56,6 +57,7 @@ import {
   type WorkerCycleResult,
 } from "../src/contracts/product/publication-worker-cycle";
 import type { PrismaClient } from "@prisma/client";
+import type { PublicationWorkerRunRecord } from "../src/contracts/product/publication-worker-run";
 
 // — Synthetic fixtures —
 
@@ -150,6 +152,65 @@ function forbiddenDb(): PrismaClient {
   ) as unknown as PrismaClient;
 }
 
+/**
+ * The Phase 0E.7.3 worker-run lifecycle, in memory.
+ *
+ * Injected so this suite keeps proving the command's *process* behaviour without a
+ * database — the durable behaviour itself is proven in
+ * `publication-worker-run.integration.test.ts` against the disposable instance.
+ * `calls` records the order, which is how "STARTED before the cycle" is asserted
+ * here without any persistence at all.
+ */
+class FakeWorkerRuns {
+  calls: string[] = [];
+  starts: Array<Record<string, unknown>> = [];
+  terminals: Array<Record<string, unknown>> = [];
+  constructor(private readonly failOn: "start" | "complete" | "fail" | "none" = "none") {}
+
+  private record(overrides: Record<string, unknown>): PublicationWorkerRunRecord {
+    return {
+      cycleId: String(overrides.cycleId ?? "cyc-TEST"),
+      status: "STARTED",
+      outcome: null,
+      exitCode: null,
+      maximumRuns: 3,
+      runsAttempted: 0,
+      itemsClaimed: 0,
+      stoppedForNoWork: false,
+      shutdownRequested: false,
+      expiredClaimsExamined: 0,
+      expiredClaimsRecovered: 0,
+      expiredClaimsSkipped: 0,
+      issueCodes: [],
+      startedAt: NOW,
+      completedAt: null,
+      ...overrides,
+    } as PublicationWorkerRunRecord;
+  }
+
+  async startPublicationWorkerRun(input: unknown): Promise<PublicationWorkerRunRecord> {
+    this.calls.push("start");
+    this.starts.push(input as Record<string, unknown>);
+    if (this.failOn === "start") throw new Error("synthetic status-store outage");
+    return this.record(input as Record<string, unknown>);
+  }
+
+  async completePublicationWorkerRun(input: unknown): Promise<PublicationWorkerRunRecord> {
+    this.calls.push("complete");
+    this.terminals.push(input as Record<string, unknown>);
+    if (this.failOn === "complete") throw new Error("synthetic write failure");
+    const req = input as Record<string, unknown>;
+    return this.record({ ...req, status: req.outcome === "FAILED" ? "FAILED" : "COMPLETED" });
+  }
+
+  async failPublicationWorkerRun(input: unknown): Promise<PublicationWorkerRunRecord> {
+    this.calls.push("fail");
+    this.terminals.push(input as Record<string, unknown>);
+    if (this.failOn === "fail") throw new Error("synthetic write failure");
+    return this.record({ ...(input as Record<string, unknown>), status: "FAILED", outcome: null });
+  }
+}
+
 function cycleResult(overrides: Partial<WorkerCycleResult> = {}): WorkerCycleResult {
   return {
     outcome: "COMPLETED",
@@ -174,6 +235,7 @@ interface Harness {
   disconnects: number;
   dbCreations: number;
   attemptIdCalls: () => number;
+  workerRuns: FakeWorkerRuns;
 }
 
 /**
@@ -189,8 +251,10 @@ function harness(
     sink?: RecordingSink;
     disconnect?: () => Promise<void>;
     createShutdownSignal?: WorkerCommandDeps["createShutdownSignal"];
+    workerRuns?: FakeWorkerRuns;
   } = {},
 ): Harness {
+  const workerRuns = options.workerRuns ?? new FakeWorkerRuns();
   const sink = options.sink ?? new RecordingSink();
   const exitTarget = { exitCode: EXIT_SUCCESS };
   const clock = new FakeClock();
@@ -216,6 +280,7 @@ function harness(
     exitTarget,
     clock,
     cycleCalls,
+    workerRuns,
     get disconnects() {
       return state.disconnects;
     },
@@ -243,6 +308,7 @@ function harness(
       createShutdownSignal:
         options.createShutdownSignal ??
         (() => ({ isShutdownRequested: () => false, signal: undefined, unregister: () => {} })),
+      workerRuns,
       transportOverride: {
         async sendRegisterRequest() {
           throw new Error("the transport must not be used with a faked cycle");
@@ -924,6 +990,130 @@ describe("publication worker command", () => {
     const result = await main(h.deps);
     expect(result.status).toBe("DISABLED");
     expect(h.disconnects).toBe(0);
+  });
+
+  // — Durable worker-run integration (Phase 0E.7.3), without a database —
+
+  it("writes STARTED before the cycle and finalises after it", async () => {
+    const h = harness();
+    await main(h.deps);
+    expect(h.workerRuns.calls).toEqual(["start", "complete"]);
+    expect(h.workerRuns.starts[0]).toMatchObject({
+      cycleId: h.deps.cycleId ?? expect.any(String),
+      startedAt: NOW,
+      maximumRuns: 3,
+    });
+    // The terminal write carries the cycle's own bounded summary.
+    expect(h.workerRuns.terminals[0]).toMatchObject({
+      outcome: "COMPLETED",
+      exitCode: EXIT_SUCCESS,
+      runsAttempted: 1,
+      itemsClaimed: 1,
+      issueCodes: [],
+    });
+  });
+
+  it("creates exactly one durable run per invocation", async () => {
+    const h = harness();
+    await main(h.deps);
+    expect(h.workerRuns.starts).toHaveLength(1);
+    expect(h.workerRuns.terminals).toHaveLength(1);
+    expect(h.cycleCalls).toHaveLength(1);
+  });
+
+  it("persists no run for a disabled or rejected command", async () => {
+    const disabled = harness({ env: {} });
+    await main(disabled.deps);
+    expect(disabled.workerRuns.calls).toEqual([]);
+
+    const invalid = harness({ env: workerEnv({ [WORKER_ENV_KEYS.maximumRuns]: "0" }) });
+    await main(invalid.deps);
+    expect(invalid.workerRuns.calls).toEqual([]);
+  });
+
+  it("refuses to run the cycle when STARTED cannot be persisted", async () => {
+    const h = harness({ workerRuns: new FakeWorkerRuns("start") });
+    const result = await main(h.deps);
+    // Publishing without durable evidence is the one trade the command will not make.
+    expect(h.cycleCalls).toHaveLength(0);
+    expect(result.status).toBe("RUN_STATUS_FAILURE");
+    expect(result.exitCode).toBe(EXIT_STARTUP_FAILURE);
+    expect(h.sink.text()).not.toContain("synthetic status-store outage");
+    // Cleanup still happened.
+    expect(h.disconnects).toBe(1);
+  });
+
+  it("never reruns the cycle when the terminal write fails", async () => {
+    const h = harness({ workerRuns: new FakeWorkerRuns("complete") });
+    const result = await main(h.deps);
+    expect(h.cycleCalls).toHaveLength(1);
+    expect(result.status).toBe("RUN_STATUS_FAILURE");
+    expect(result.exitCode).toBe(EXIT_STATUS_PERSISTENCE_FAILURE);
+    expect(result.issues).toContain("RUN_STATUS_PERSISTENCE_FAILURE");
+    expect(h.sink.text()).not.toContain("synthetic write failure");
+    // Still exactly one final result line, carrying the real exit code.
+    const finals = h.sink.events().filter((e) => e.event === WORKER_EVENTS.result);
+    expect(finals).toHaveLength(1);
+    expect(finals[0]!.exitCode).toBe(EXIT_STATUS_PERSISTENCE_FAILURE);
+  });
+
+  it("attempts a FAILED finalisation when the cycle throws", async () => {
+    const h = harness({
+      cycleImpl: async () => {
+        throw Object.assign(new Error("boom"), { code: "TIME_PROVIDER_FAILURE" });
+      },
+    });
+    const result = await main(h.deps);
+    expect(h.workerRuns.calls).toEqual(["start", "fail"]);
+    expect(h.workerRuns.terminals[0]).toMatchObject({
+      exitCode: EXIT_CYCLE_FAILED,
+      issueCodes: ["TIME_PROVIDER_FAILURE"],
+    });
+    expect(result.status).toBe("CYCLE_FAULT");
+  });
+
+  it("reports a bounded code when the FAILED finalisation also fails", async () => {
+    const h = harness({
+      workerRuns: new FakeWorkerRuns("fail"),
+      cycleImpl: async () => {
+        throw Object.assign(new Error("boom"), { code: "TIME_PROVIDER_FAILURE" });
+      },
+    });
+    const result = await main(h.deps);
+    // The row stays STARTED and remains reconcilable; nothing is rerun.
+    expect(h.cycleCalls).toHaveLength(0);
+    expect(result.issues).toEqual(["TIME_PROVIDER_FAILURE", "RUN_STATUS_PERSISTENCE_FAILURE"]);
+  });
+
+  it("does not persist cleanup failure into the durable result", async () => {
+    const h = harness({
+      disconnect: async () => {
+        throw new Error("disconnect failed");
+      },
+    });
+    await main(h.deps);
+    // Cleanup runs after finalisation, so the terminal write cannot mention it.
+    expect(h.workerRuns.calls).toEqual(["start", "complete"]);
+    expect(h.workerRuns.terminals[0]!.issueCodes).toEqual([]);
+    expect(h.sink.eventNames()).toContain(WORKER_EVENTS.cleanupFailed);
+  });
+
+  it("emits no database identifier, SQL, or raw cause on the status channel", async () => {
+    const h = harness({ workerRuns: new FakeWorkerRuns("complete") });
+    await main(h.deps);
+    const text = h.sink.text();
+    for (const forbidden of [
+      "PublicationWorkerRun",
+      "prisma",
+      "SELECT",
+      "UPDATE ",
+      "mysql://",
+      "P2002",
+      '"id"',
+      "at Object.",
+    ]) {
+      expect(text).not.toContain(forbidden);
+    }
   });
 
   it("never calls process.exit", async () => {

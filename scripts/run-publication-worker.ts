@@ -26,11 +26,28 @@
  * ## Ordering is a safety property
  *
  * Configuration → Registrar readiness → transport construction → signal handlers →
- * database client → one cycle. Every check that can refuse to run happens *before*
- * anything can be claimed, so **a startup failure cannot leave a claimed outbox
- * item behind**: at the moment it is raised, nothing has been claimed. The
- * exact-origin allow-list is applied before any secret is resolved (Phase 0E.6.2),
- * and a disabled worker touches neither the database nor the secret source.
+ * database client → durable STARTED row → one cycle → durable terminal row. Every
+ * check that can refuse to run happens *before* anything can be claimed, so **a
+ * startup failure cannot leave a claimed outbox item behind**: at the moment it is
+ * raised, nothing has been claimed. The exact-origin allow-list is applied before
+ * any secret is resolved (Phase 0E.6.2), and a disabled worker touches neither the
+ * database nor the secret source.
+ *
+ * ## Durable evidence (Phase 0E.7.3)
+ *
+ * One `PublicationWorkerRun` row per invocation that reaches the runnable
+ * boundary. It is evidence, never authority — the publication, outbox, attempt,
+ * receipt, and remediation records remain the sole authorities for what happened
+ * to the work.
+ *
+ * Two asymmetric rules, and the asymmetry is the point:
+ *
+ *   - **STARTED must be written before the cycle runs.** If it cannot be, the cycle
+ *     does not run. Publishing without durable evidence that we published is the
+ *     one trade this command will not make.
+ *   - **A failed terminal write never reruns the cycle.** By then the request has
+ *     been sent; resending on the strength of a bookkeeping failure would duplicate
+ *     a registration. The command reports a bounded code and exits 75.
  *
  * ## `process.env`
  *
@@ -44,6 +61,8 @@ import type { PrismaClient } from "@prisma/client";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { runProductPublicationWorkerCycle } from "../src/server/product/publication-worker-cycle-service";
 import { createProcessShutdownSignal } from "../src/server/product/process-shutdown-signal";
+import { PublicationWorkerRunRepository } from "../src/server/product/publication-worker-run-repository";
+import type { PublicationWorkerRunRecord } from "../src/contracts/product/publication-worker-run";
 import {
   loadPublicationWorkerRuntimeConfiguration,
   type WorkerRuntimeConfigurationLoad,
@@ -97,6 +116,16 @@ export const EXIT_CYCLE_FAILED = 1;
 export const EXIT_STARTUP_FAILURE = 70;
 /** Configuration is invalid, incomplete, or not ready. (sysexits EX_CONFIG) */
 export const EXIT_CONFIGURATION = 78;
+/**
+ * The work is fine but the durable worker-run record is not (Phase 0E.7.3).
+ * (sysexits EX_TEMPFAIL — "temporary failure, the user is invited to retry")
+ *
+ * Distinct from `EXIT_CYCLE_FAILED` deliberately: "the cycle failed" and "the cycle
+ * succeeded but we could not record it" call for opposite responses — investigate
+ * the publication path versus investigate the status store — and collapsing them
+ * would send an operator to the wrong place.
+ */
+export const EXIT_STATUS_PERSISTENCE_FAILURE = 75;
 
 /**
  * Cycle outcome → exit code, as a closed record. A new outcome without an exit
@@ -125,6 +154,8 @@ export const WORKER_COMMAND_STATUSES = [
   "STARTUP_FAILURE",
   "CYCLE_FINISHED",
   "CYCLE_FAULT",
+  /** A durable worker-run write failed (Phase 0E.7.3). */
+  "RUN_STATUS_FAILURE",
 ] as const;
 export type WorkerCommandStatus = (typeof WORKER_COMMAND_STATUSES)[number];
 
@@ -153,6 +184,20 @@ export interface WorkerCommandResult {
 export type RunWorkerCycle = typeof runProductPublicationWorkerCycle;
 
 /**
+ * The narrow slice of the worker-run store this command uses.
+ *
+ * Three methods, not the whole repository: the command starts a run and finalises
+ * it, and has no business reading history or reconciling stale rows. Stale-run
+ * abandonment in particular is deliberately absent, so no invocation of this
+ * command can ever mark another run abandoned.
+ */
+export interface PublicationWorkerRunLifecycle {
+  startPublicationWorkerRun(input: unknown): Promise<PublicationWorkerRunRecord>;
+  completePublicationWorkerRun(input: unknown): Promise<PublicationWorkerRunRecord>;
+  failPublicationWorkerRun(input: unknown): Promise<PublicationWorkerRunRecord>;
+}
+
+/**
  * Every ambient dependency, injectable. Production supplies none of them and gets
  * the real environment, clock, randomness, streams, process, and database.
  */
@@ -179,6 +224,12 @@ export interface WorkerCommandDeps {
   fetchImpl?: typeof fetch;
   /** Test seam substituting the whole transport. No socket is opened. */
   transportOverride?: RegistrarRegisterTransport;
+  /**
+   * The durable worker-run store (Phase 0E.7.3). Defaults to the repository over
+   * the owned database client; injectable so a test can assert the write order and
+   * drive persistence failures without a database.
+   */
+  workerRuns?: PublicationWorkerRunLifecycle;
   /** Caller-supplied correlation id, overriding configuration and generation. */
   cycleId?: string;
 }
@@ -196,6 +247,47 @@ function fieldNamesFromIssues(issues: readonly string[]): string[] {
     const separator = issue.indexOf(":");
     return (separator === -1 ? issue : issue.slice(0, separator)).trim();
   });
+}
+
+/** Keep only codes that already satisfy the shared safe-code shape. */
+function safeIssueCodes(codes: readonly string[]): string[] {
+  return Array.from(new Set(codes.filter((code) => ERROR_CODE_RE.test(code)))).sort();
+}
+
+/** The injected clock, defensively. `undefined` when it cannot be trusted. */
+function readIsoNow(time: TimeProvider): string | undefined {
+  try {
+    const value = time.now();
+    if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString();
+  } catch {
+    // fall through
+  }
+  return undefined;
+}
+
+/**
+ * Best-effort FAILED finalisation for a run whose cycle threw.
+ *
+ * Best-effort by design: the cycle has already ended, so there is nothing left to
+ * undo, and letting a bookkeeping failure throw here would replace a specific
+ * cycle fault with a vaguer one. If this write also fails the row stays STARTED and
+ * an operator can reconcile it to ABANDONED — which is exactly the case that path
+ * exists for. Returns bounded codes describing what failed, for the command result.
+ */
+async function finalizeFailedRun(
+  runs: PublicationWorkerRunLifecycle,
+  reporter: WorkerCommandReporter,
+  input: { cycleId: string; completedAt: string; exitCode: number; issueCodes: string[] },
+): Promise<string[]> {
+  try {
+    const record = await runs.failPublicationWorkerRun(input);
+    reporter.runStatusPersisted(record.status, record.outcome);
+    return [];
+  } catch (error) {
+    const code = safeCode(error, "RUN_STATUS_PERSISTENCE_FAILURE");
+    reporter.runStatusPersistenceFailed("finalize", code);
+    return [code];
+  }
 }
 
 /** A code that is already SCREAMING_SNAKE_CASE, or a safe classification. */
@@ -348,6 +440,39 @@ export async function main(deps: WorkerCommandDeps = {}): Promise<WorkerCommandR
 
     const runCycle = deps.runCycle ?? runProductPublicationWorkerCycle;
     const shutdownSignal: ShutdownSignal = shutdown;
+    const runs = deps.workerRuns ?? new PublicationWorkerRunRepository(db);
+
+    // — Durable STARTED row, immediately before the cycle (Phase 0E.7.3) —
+    //
+    // Here and nowhere earlier: configuration is READY, readiness passed, the
+    // pre-claim dependencies exist, handlers are installed, and the owned client
+    // exists, so the very next thing is the cycle. A row created earlier would
+    // record runs that could never have claimed anything; one created later would
+    // lose exactly the evidence that matters when a command dies mid-cycle.
+    //
+    // **If this write fails the cycle does not run.** Publishing without durable
+    // evidence that we published is the one trade this command will not make: an
+    // operator would have a registration in the world and no record that anything
+    // ran. Refusing costs a retry; proceeding costs the audit trail.
+    try {
+      await runs.startPublicationWorkerRun({ cycleId, startedAt: cycleStartedAt, maximumRuns: load.config.maximumRuns });
+    } catch (error) {
+      const code = safeCode(error, "RUN_STATUS_PERSISTENCE_FAILURE");
+      reporter.runStatusPersistenceFailed("start", code);
+      return settle({
+        status: "RUN_STATUS_FAILURE",
+        exitCode: EXIT_STARTUP_FAILURE,
+        cycleId,
+        issues: [code],
+        fields: ["start"],
+      });
+    }
+    // From here the row exists. Both remaining exits — a thrown cycle and a
+    // completed cycle — finalise it themselves, and the outer handler below is
+    // reachable only from the startup steps above, which all precede this write. So
+    // a created row is always either finalised or left STARTED for explicit
+    // reconciliation; it is never silently orphaned.
+    reporter.runStatusStarted();
 
     // ONE invocation. There is deliberately no loop, no retry of the cycle, and
     // no second call anywhere in this file.
@@ -369,11 +494,20 @@ export async function main(deps: WorkerCommandDeps = {}): Promise<WorkerCommandR
       // work item; the command only classifies and reports.
       const code = safeCode(error, "UNCLASSIFIED_WORKER_FAILURE");
       reporter.cycleFault(code);
+      // Best-effort FAILED finalisation. A thrown cycle still deserves durable
+      // evidence, and if this write also fails the row stays STARTED and can be
+      // reconciled to ABANDONED later — which is precisely why that path exists.
+      const finalizeIssues = await finalizeFailedRun(runs, reporter, {
+        cycleId,
+        completedAt: readIsoNow(time) ?? cycleStartedAt,
+        exitCode: EXIT_CYCLE_FAILED,
+        issueCodes: [code],
+      });
       return settle({
         status: "CYCLE_FAULT",
         exitCode: EXIT_CYCLE_FAILED,
         cycleId,
-        issues: [code],
+        issues: [code, ...finalizeIssues],
         fields:
           error instanceof Error && "fields" in error && Array.isArray(error.fields)
             ? (error.fields as string[])
@@ -382,13 +516,47 @@ export async function main(deps: WorkerCommandDeps = {}): Promise<WorkerCommandR
     }
 
     const exitCode = exitCodeForCycleOutcome(cycle.outcome);
-    reporter.result(cycle, exitCode);
+
+    // — Durable terminal row from the validated cycle result —
+    //
+    // The cycle has already happened. If this write fails we do NOT rerun it: the
+    // orchestration's own durable records remain authoritative for the work, and a
+    // resend on the strength of a bookkeeping failure would duplicate a
+    // registration. The command reports a bounded issue and exits non-zero so an
+    // operator knows the audit trail is incomplete.
+    let statusIssues: string[] = [];
+    try {
+      const record = await runs.completePublicationWorkerRun({
+        cycleId,
+        completedAt: cycle.completedAt,
+        outcome: cycle.outcome,
+        exitCode,
+        runsAttempted: cycle.runsAttempted,
+        itemsClaimed: cycle.itemsClaimed,
+        stoppedForNoWork: cycle.stoppedForNoWork,
+        shutdownRequested: cycle.shutdownRequested,
+        expiredClaimsExamined: cycle.recovery?.examined ?? 0,
+        expiredClaimsRecovered: cycle.recovery?.recoveredCount ?? 0,
+        expiredClaimsSkipped: cycle.recovery?.skippedCount ?? 0,
+        issueCodes: safeIssueCodes(cycle.issues),
+      });
+      reporter.runStatusPersisted(record.status, record.outcome);
+    } catch (error) {
+      const code = safeCode(error, "RUN_STATUS_PERSISTENCE_FAILURE");
+      reporter.runStatusPersistenceFailed("finalize", code);
+      statusIssues = [code];
+    }
+
+    // The durable status is the audit channel; this line remains the process
+    // channel. Emitted once, after finalisation, so its exit code is the real one.
+    const finalExitCode = statusIssues.length > 0 ? EXIT_STATUS_PERSISTENCE_FAILURE : exitCode;
+    reporter.result(cycle, finalExitCode);
     return settle({
-      status: "CYCLE_FINISHED",
-      exitCode,
+      status: statusIssues.length > 0 ? "RUN_STATUS_FAILURE" : "CYCLE_FINISHED",
+      exitCode: finalExitCode,
       cycleId,
       cycle,
-      issues: [...cycle.issues],
+      issues: [...cycle.issues, ...statusIssues],
       fields: [],
     });
   } catch (error) {

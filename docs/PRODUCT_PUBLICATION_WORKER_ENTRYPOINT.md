@@ -80,6 +80,15 @@ trace to be told a variable is unset.
 
 Ordering is a safety property, not a style choice.
 
+Phase 0E.7.3 adds two durable steps to this sequence — a `STARTED` row immediately
+before the cycle and a terminal row immediately after it. Their two
+persistence-failure rules are deliberately asymmetric (a failed `STARTED` write
+stops the command; a failed terminal write never reruns the cycle) and are
+documented in
+[`PRODUCT_PUBLICATION_WORKER_STATUS_AND_HEALTH.md`](PRODUCT_PUBLICATION_WORKER_STATUS_AND_HEALTH.md).
+Disabled and rejected invocations still create no database client, so they persist
+no row.
+
 1. **Load** worker and Registrar configuration from `process.env`. This is the
    only read of `process.env` in the publication path; every collaborator receives
    an injected environment object.
@@ -199,8 +208,15 @@ it. The Phase 0E.7.1 cycle independently swallows a throwing hook as a
 | --- | --- |
 | `0` | `DISABLED`, `COMPLETED`, `NO_WORK`, `RUN_LIMIT_REACHED`, `SHUTDOWN_REQUESTED` |
 | `1` | the cycle returned `FAILED`, or threw |
-| `70` | a runtime dependency could not be constructed (sysexits `EX_SOFTWARE`) |
+| `70` | a runtime dependency could not be constructed, or the durable `STARTED` row could not be written (sysexits `EX_SOFTWARE`) |
+| `75` | the cycle succeeded but its durable terminal record could not be written (sysexits `EX_TEMPFAIL`) |
 | `78` | configuration invalid, incomplete, or not ready (sysexits `EX_CONFIG`) |
+
+`75` is distinct from `1` deliberately: "the cycle failed" and "the cycle succeeded
+but we could not record it" call for opposite responses — investigate the
+publication path versus investigate the status store — and collapsing them would
+send an operator to the wrong place
+([`PRODUCT_PUBLICATION_WORKER_STATUS_AND_HEALTH.md`](PRODUCT_PUBLICATION_WORKER_STATUS_AND_HEALTH.md)).
 
 The mapping from cycle outcome to exit code is a **closed record**, so a new
 outcome without an exit code is a type error rather than a silent success.
