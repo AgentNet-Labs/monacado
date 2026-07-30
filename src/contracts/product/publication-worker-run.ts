@@ -273,6 +273,15 @@ export const MAX_FAILURE_STREAK = 10;
 export const DEFAULT_FAILURE_STREAK = 2;
 
 /**
+ * Bounds on how many consecutive `RUN_LIMIT_REACHED` outcomes constitute backlog
+ * pressure. Minimum 2, because a single bounded cycle hitting its limit is the
+ * bound doing its job, not a symptom.
+ */
+export const MIN_BACKLOG_PRESSURE_STREAK = 2;
+export const MAX_BACKLOG_PRESSURE_STREAK = 10;
+export const DEFAULT_BACKLOG_PRESSURE_STREAK = 2;
+
+/**
  * Everything the pure assessment needs.
  *
  * `runs` is supplied by the caller, newest terminal instant first, so the policy
@@ -288,6 +297,12 @@ export const AssessPublicationWorkerHealthInput = z.strictObject({
     .int()
     .min(MIN_FAILURE_STREAK)
     .max(MAX_FAILURE_STREAK)
+    .optional(),
+  /** How many consecutive `RUN_LIMIT_REACHED` outcomes read as backlog pressure. */
+  backlogPressureThreshold: z
+    .int()
+    .min(MIN_BACKLOG_PRESSURE_STREAK)
+    .max(MAX_BACKLOG_PRESSURE_STREAK)
     .optional(),
   runs: z.array(PublicationWorkerRunRecord).max(MAX_RECENT_RUN_LIMIT),
 });
@@ -450,10 +465,12 @@ export function assessPublicationWorkerHealth(
   const degraded: WorkerHealthReasonCode[] = [];
   if (latest.issueCodes.length > 0) degraded.push("LATEST_RUN_HAS_ISSUES");
   if (counts.failed + counts.abandoned > 0) degraded.push("RECENT_FAILURES_PRESENT");
+  const backlogThreshold = input.backlogPressureThreshold ?? DEFAULT_BACKLOG_PRESSURE_STREAK;
   if (
-    terminal.length >= 2 &&
-    terminal[0]!.outcome === "RUN_LIMIT_REACHED" &&
-    terminal[1]!.outcome === "RUN_LIMIT_REACHED"
+    terminal.length >= backlogThreshold &&
+    terminal
+      .slice(0, backlogThreshold)
+      .every((run) => run.outcome === "RUN_LIMIT_REACHED")
   ) {
     degraded.push("REPEATED_RUN_LIMIT_REACHED");
   }

@@ -29,6 +29,9 @@ import { main as runPublicationWorkerCommand } from "./run-publication-worker";
 import { PublicationWorkerRunRepository } from "../src/server/product/publication-worker-run-repository";
 import { getPublicationWorkerHealth } from "../src/server/product/publication-worker-health-service";
 import { WorkerRunTerminalConflictError } from "../src/server/product/worker-run-errors";
+import { getInternalPublicationWorkerStatus } from "../src/server/product/publication-worker-status-service";
+import { WorkerStatusAccessDeniedError } from "../src/server/product/worker-status-errors";
+import { PUBLICATION_WORKER_STATUS_READ_CAPABILITY } from "../src/contracts/product/publication-worker-status";
 import { emptyOutcomeCounts } from "../src/contracts/product/publication-worker-cycle";
 import { loadRegistrarRuntimeConfiguration } from "../src/server/registrar/registrar-runtime-config";
 import type { RegistrarConfigurationLoad } from "../src/server/registrar/registrar-runtime-config";
@@ -2517,6 +2520,190 @@ async function main(): Promise<void> {
       }
     }
     ok("worker-run persistence creates no receipt and stores no raw or sensitive material");
+
+    // 33. The Phase 0E.7.4.1 internal status application service.
+    //
+    // Authorization is an injected fake — there is no identity provider, session,
+    // API key, or shared secret in this phase — and every read is against the same
+    // disposable rows. The service is read-only, so each case starts from a clean
+    // slate and the store is compared byte for byte afterwards.
+
+    const statusCaller = {
+      actorId: "dbcheck.operator",
+      actorType: "INTERNAL_OPERATOR" as const,
+      requestedCapability: PUBLICATION_WORKER_STATUS_READ_CAPABILITY,
+      requestId: "dbcheck-status-1",
+    };
+    const statusRequest = (overrides: Record<string, unknown> = {}) => ({
+      caller: statusCaller,
+      assessedAt: wrShift(0),
+      freshnessSeconds: 3_600,
+      recentRunLimit: 20,
+      failureStreakThreshold: 2,
+      ...overrides,
+    });
+    const allowAuthorizer = {
+      authorizePublicationWorkerStatusRead: () => "AUTHORIZED" as const,
+    };
+    const denyAuthorizer = {
+      authorizePublicationWorkerStatusRead: () => "DENIED" as const,
+    };
+    let statusQueries = 0;
+    const countingHistory = {
+      listRecentPublicationWorkerRuns: (input: unknown) => {
+        statusQueries += 1;
+        return runRepo.listRecentPublicationWorkerRuns(input);
+      },
+    };
+    const readStatus = (overrides: Record<string, unknown> = {}, extra = {}) =>
+      getInternalPublicationWorkerStatus(statusRequest(overrides), {
+        authorizer: allowAuthorizer,
+        history: countingHistory,
+        db,
+        ...extra,
+      });
+
+    // 33a. A denied caller performs no worker-run query and learns nothing.
+    await clearRuns();
+    await runRepo.startPublicationWorkerRun({
+      cycleId: `${WR_PREFIX}s1`,
+      startedAt: wrShift(-300),
+      maximumRuns: 5,
+    });
+    await runRepo.completePublicationWorkerRun(
+      wrCompletion(`${WR_PREFIX}s1`, { completedAt: wrShift(-60), outcome: "FAILED", exitCode: 1 }),
+    );
+    const queriesBeforeDenial = statusQueries;
+    let denialCode: string | undefined;
+    let denialMessage = "";
+    try {
+      await readStatus({}, { authorizer: denyAuthorizer });
+      fail("a denied caller received a status response");
+    } catch (e) {
+      denialCode = e instanceof WorkerStatusAccessDeniedError ? e.code : undefined;
+      denialMessage = e instanceof Error ? `${e.message}${JSON.stringify(e)}` : "";
+    }
+    if (denialCode !== "WORKER_STATUS_ACCESS_DENIED") fail("denial did not use the stable code");
+    if (statusQueries !== queriesBeforeDenial) fail("a denied caller reached the database");
+    for (const leak of ["FAILED", WR_PREFIX, "dbcheck.operator"]) {
+      if (denialMessage.includes(leak)) fail("a denial disclosed status or caller detail");
+    }
+    ok("a denied status read performs no worker-run query and discloses nothing");
+
+    // 33b. NO_HISTORY on an empty store; HEALTHY, DEGRADED, STALE, and FAILED under
+    //      fixtures — all delegated to the existing Phase 0E.7.3 policy.
+    await clearRuns();
+    const emptyStatus = await readStatus();
+    if (emptyStatus.assessment !== "NO_HISTORY") fail("status did not report NO_HISTORY");
+    if (emptyStatus.recentRuns.length !== 0) fail("an empty store returned runs");
+    if (emptyStatus.scope !== "PUBLICATION_WORKER_ONLY") fail("status omitted its scope marker");
+    if (emptyStatus.requestId !== statusCaller.requestId) fail("status did not echo the requestId");
+
+    const seedStatusRun = async (
+      suffix: string,
+      startedOffset: number,
+      overrides: Record<string, unknown>,
+    ) => {
+      const cycleId = `${WR_PREFIX}${suffix}`;
+      await runRepo.startPublicationWorkerRun({
+        cycleId,
+        startedAt: wrShift(startedOffset),
+        maximumRuns: 5,
+      });
+      await runRepo.completePublicationWorkerRun(wrCompletion(cycleId, overrides));
+      return cycleId;
+    };
+
+    await clearRuns();
+    await seedStatusRun("h1", -300, { completedAt: wrShift(-60), outcome: "NO_WORK" });
+    if ((await readStatus()).assessment !== "HEALTHY") fail("a recent coherent run was not HEALTHY");
+    // The same rows assessed much later are STALE — explicit `assessedAt` decides.
+    if ((await readStatus({ assessedAt: wrShift(86_400) })).assessment !== "STALE") {
+      fail("old coherent history was not STALE");
+    }
+
+    await clearRuns();
+    await seedStatusRun("d1", -300, {
+      completedAt: wrShift(-60),
+      issueCodes: ["MONITORING_HOOK_FAILURE"],
+    });
+    if ((await readStatus()).assessment !== "DEGRADED") {
+      fail("recent issue history was not DEGRADED");
+    }
+
+    await clearRuns();
+    await seedStatusRun("f1", -300, {
+      completedAt: wrShift(-60),
+      outcome: "FAILED",
+      exitCode: 1,
+    });
+    const failedStatus = await readStatus();
+    if (failedStatus.assessment !== "FAILED") fail("failed history was not FAILED");
+    if (failedStatus.mostRecentOutcome !== "FAILED") fail("status omitted the latest outcome");
+    ok("internal status reports NO_HISTORY, HEALTHY, DEGRADED, STALE, and FAILED");
+
+    // 33c. Recent history is bounded and newest first; the projection is safe.
+    await clearRuns();
+    const oldest = await seedStatusRun("r1", -900, { completedAt: wrShift(-300) });
+    const middle = await seedStatusRun("r2", -600, { completedAt: wrShift(-200) });
+    const newest = await seedStatusRun("r3", -300, {
+      completedAt: wrShift(-100),
+      issueCodes: ["CLEANUP_FAILURE"],
+    });
+    const ordered = await readStatus();
+    const ids = ordered.recentRuns.map((r) => r.cycleId);
+    if (ids.join(",") !== [newest, middle, oldest].join(",")) {
+      fail("recent status history is not newest first");
+    }
+    const boundedStatus = await readStatus({ recentRunLimit: 2 });
+    if (boundedStatus.recentRuns.length !== 2) fail("the recent-run limit was not enforced");
+    if (boundedStatus.recentRuns[0]!.cycleId !== newest) fail("the bounded list is not newest first");
+    if (boundedStatus.counts.returned !== 2) fail("returned count does not match the bounded list");
+
+    const projected = JSON.stringify(ordered);
+    for (const forbidden of [
+      '"id"',
+      "createdAt",
+      "updatedAt",
+      RUN_SECRET_VAR,
+      runSecretSource[RUN_SECRET_VAR]!,
+      "registrar.example",
+      "mysql://",
+      "Bearer",
+      "mon:lock:",
+      "prisma",
+    ]) {
+      if (projected.includes(forbidden)) fail("the status response exposed an unsafe field");
+    }
+    ok("internal status history is bounded, newest first, and safely projected");
+
+    // 33d. The read mutates nothing, and an audit failure cannot change its output.
+    const storeBefore = await db.publicationWorkerRun.findMany({ orderBy: { cycleId: "asc" } });
+    const serialiseStore = (rows: unknown) =>
+      JSON.stringify(rows, (_k, v) => (typeof v === "bigint" ? Number(v) : v));
+    const throwingAudit = {
+      publicationWorkerStatusReadAuthorized: () => {
+        throw new Error("audit backend unavailable");
+      },
+      publicationWorkerStatusReadCompleted: () => {
+        throw new Error("audit backend unavailable");
+      },
+    };
+    const audited = await readStatus({}, { audit: throwingAudit });
+    if (audited.assessment !== ordered.assessment) {
+      fail("an audit failure altered an authorized status read");
+    }
+    if (audited.recentRuns.length !== ordered.recentRuns.length) {
+      fail("an audit failure altered the returned history");
+    }
+    const storeAfter = await db.publicationWorkerRun.findMany({ orderBy: { cycleId: "asc" } });
+    if (serialiseStore(storeAfter) !== serialiseStore(storeBefore)) {
+      fail("reading status mutated the worker-run store");
+    }
+    ok("internal status is read-only and unaffected by audit-hook failure");
+
+    // Leave the section's rows in place for the FK-safe cleanup below.
+    await clearRuns();
 
     const transitioned = await nodeRepo.transitionProductNodeLifecycle({
       nodeId: CHECK_NODE_ANS,

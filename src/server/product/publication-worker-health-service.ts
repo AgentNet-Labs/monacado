@@ -39,6 +39,8 @@ export interface GetPublicationWorkerHealthOptions {
   assessedAt: string;
   freshnessSeconds: number;
   failureStreakThreshold?: number;
+  /** How many consecutive `RUN_LIMIT_REACHED` outcomes read as backlog pressure. */
+  backlogPressureThreshold?: number;
   /** How many recent runs to consider. Bounded 1…100. */
   limit: number;
   db?: Db;
@@ -71,6 +73,9 @@ export async function getPublicationWorkerHealth(
     freshnessSeconds: options.freshnessSeconds,
     ...(options.failureStreakThreshold !== undefined
       ? { failureStreakThreshold: options.failureStreakThreshold }
+      : {}),
+    ...(options.backlogPressureThreshold !== undefined
+      ? { backlogPressureThreshold: options.backlogPressureThreshold }
       : {}),
     runs,
   });

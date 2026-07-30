@@ -210,11 +210,27 @@ endpoint, and no UI in this phase.
   needs; an expression language over operational history is a query surface nobody
   asked for.
 
-`getPublicationWorkerHealth({ assessedAt, freshnessSeconds, failureStreakThreshold?, limit })`
+`getPublicationWorkerHealth({ assessedAt, freshnessSeconds, failureStreakThreshold?, backlogPressureThreshold?, limit })`
 
 - reads only terminal rows, within the bounded window;
 - no secret lookup, no network call, no queue mutation, no worker execution, and no
   automatic reconciliation.
+
+`backlogPressureThreshold` (2…10, default 2) sets how many consecutive
+`RUN_LIMIT_REACHED` outcomes read as backlog pressure. Its minimum is 2 because a
+single bounded cycle hitting its limit is the bound doing its job, not a symptom.
+
+## Who calls these queries
+
+Phase 0E.7.4.1 adds one server-only internal application service,
+`getInternalPublicationWorkerStatus`, which composes the bounded history read and
+the health assessment behind an explicit authorization boundary and a strict safe
+response projection
+([`PRODUCT_PUBLICATION_WORKER_INTERNAL_STATUS_SERVICE.md`](PRODUCT_PUBLICATION_WORKER_INTERNAL_STATUS_SERVICE.md)).
+
+It restates none of the policy here — precedence, reason codes, the terminal-only
+rule, and the future-timestamp refusal all remain in this phase. There is still no
+HTTP route, public endpoint, dashboard, or production identity integration.
 
 ## Health classification
 
