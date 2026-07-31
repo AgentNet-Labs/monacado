@@ -200,11 +200,22 @@ environment value, or stack trace.
 - Not exported through the browser-facing contracts barrel; no `NEXT_PUBLIC_`
   value exists.
 
+## The route built on this service
+
+Phase 0E.7.4.2B adds exactly one authenticated caller,
+`GET /api/internal/operations/publication-worker/status`
+([`PRODUCT_PUBLICATION_WORKER_INTERNAL_STATUS_ROUTE.md`](PRODUCT_PUBLICATION_WORKER_INTERNAL_STATUS_ROUTE.md)).
+
+It restates none of the policy here. It resolves an opaque session, requires an
+active persisted entitlement, maps the principal onto the caller context above, and
+delegates — so **authorize-before-query survives as a second, independent
+boundary**: this service still calls its injected authorizer before its first
+worker-run query, regardless of what the route decided. There is still no public
+endpoint, no dashboard, and no UI.
+
 ## Deferred
 
-- **The authenticated route adapter** — an internal HTTP route, an operator CLI, or
-  any other transport, together with the production identity, session, and
-  authorization policy behind the seam.
+- **Operator CLI or any other transport** beyond that one route.
 - **Admin dashboard and any UI.**
 - **Alert delivery** — email, Slack, SMS, PagerDuty, webhooks.
 - **Retention policy** for operational history, and any purge job.

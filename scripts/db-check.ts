@@ -49,6 +49,8 @@ import {
 } from "../src/server/account/account-entitlement-service";
 import { resolveAuthenticatedPrincipal } from "../src/server/account/account-principal";
 import { hashSessionToken } from "../src/server/account/session-token";
+import { SESSION_COOKIE_NAME } from "../src/server/account/session-cookie";
+import { handleWorkerStatusRequest } from "../src/server/operations/worker-status-route-handler";
 import {
   DuplicateAccountEmailError,
   InvalidCredentialsError,
@@ -2932,6 +2934,121 @@ async function main(): Promise<void> {
       }
     }
     ok("the safe principal contains no email, password hash, or raw session token");
+
+    // 35. The authenticated internal worker-status route (Phase 0E.7.4.2B).
+    //
+    // The full chain against real rows: cookie -> session -> entitlement ->
+    // caller context -> status service. No framework request object is involved;
+    // the handler takes a cookie header and a query string.
+
+    const routeClock = { now: () => new Date(idShift(300)) };
+    const routeRequestIds = { nextRequestId: () => "req-DBCHECK0000000000000000RT" };
+    const callRoute = (cookieHeader: string | null, query = "") =>
+      handleWorkerStatusRequest(
+        { cookieHeader, searchParams: new URLSearchParams(query) },
+        { clock: routeClock, requestIds: routeRequestIds, db },
+      );
+
+    // 35a. Unauthenticated callers are refused without reaching the queue.
+    for (const header of [null, "other=1", `${SESSION_COOKIE_NAME}=not-a-real-token`]) {
+      const anon = await callRoute(header);
+      if (anon.status !== 401) fail("an unauthenticated route request was not refused");
+      if (JSON.stringify(anon.body) !== JSON.stringify({ error: "UNAUTHENTICATED" })) {
+        fail("the unauthenticated envelope is not the bounded safe body");
+      }
+      if (anon.headers["cache-control"] !== "no-store") fail("the route response is cacheable");
+    }
+    ok("an unauthenticated worker-status request is refused with a bounded safe body");
+
+    // 35b. An ordinary authenticated account is refused; an entitled one is not.
+    const ordinarySessionCookie = `${SESSION_COOKIE_NAME}=${ordinarySession.token}`;
+    const denied = await callRoute(ordinarySessionCookie);
+    if (denied.status !== 403) fail("an ordinary account was not refused by the route");
+    if (JSON.stringify(denied.body) !== JSON.stringify({ error: "WORKER_STATUS_ACCESS_DENIED" })) {
+      fail("the denied envelope is not the bounded safe body");
+    }
+
+    const operatorCookie = `${SESSION_COOKIE_NAME}=${issued.token}`;
+    const authorized = await callRoute(operatorCookie);
+    if (authorized.status !== 200) fail("an entitled operator was refused by the route");
+    const authorizedBody = authorized.body as { scope?: string; assessment?: string; requestId?: string };
+    if (authorizedBody.scope !== "PUBLICATION_WORKER_ONLY") fail("the route omitted the scope marker");
+    if (authorizedBody.requestId !== "req-DBCHECK0000000000000000RT") {
+      fail("the route did not echo its server-generated requestId");
+    }
+    ok("only an entitled operator receives worker status; an ordinary account gets 403");
+
+    // 35c. A FAILED assessment is operational data, still HTTP 200.
+    await clearRuns();
+    await runRepo.startPublicationWorkerRun({
+      cycleId: `${WR_PREFIX}rt1`,
+      startedAt: idShift(-600),
+      maximumRuns: 5,
+    });
+    await runRepo.completePublicationWorkerRun(
+      wrCompletion(`${WR_PREFIX}rt1`, {
+        completedAt: idShift(60),
+        outcome: "FAILED",
+        exitCode: 1,
+      }),
+    );
+    const failedRouteStatus = await callRoute(operatorCookie);
+    if (failedRouteStatus.status !== 200) fail("a FAILED assessment did not return HTTP 200");
+    if ((failedRouteStatus.body as { assessment?: string }).assessment !== "FAILED") {
+      fail("the route did not report the FAILED assessment");
+    }
+    ok("a FAILED worker assessment is reported as operational data with HTTP 200");
+
+    // 35d. Malformed queries are refused, and the route writes nothing.
+    const runsBeforeRoute = await db.publicationWorkerRun.findMany({ orderBy: { cycleId: "asc" } });
+    const sessionsBeforeRoute = await db.accountSession.findMany({ orderBy: { id: "asc" } });
+    for (const query of ["recentRunLimit=0", "recentRunLimit=abc", "unknownParam=1", "recentRunLimit=1&recentRunLimit=2"]) {
+      const bad = await callRoute(operatorCookie, query);
+      if (bad.status !== 400) fail("a malformed query was not refused");
+      if (JSON.stringify(bad.body) !== JSON.stringify({ error: "INVALID_WORKER_STATUS_QUERY" })) {
+        fail("the invalid-query envelope is not the bounded safe body");
+      }
+    }
+    await callRoute(operatorCookie);
+    const serialiseRoute = (rows: unknown) =>
+      JSON.stringify(rows, (_k, v) => (typeof v === "bigint" ? Number(v) : v));
+    if (
+      serialiseRoute(await db.publicationWorkerRun.findMany({ orderBy: { cycleId: "asc" } })) !==
+      serialiseRoute(runsBeforeRoute)
+    ) {
+      fail("the route mutated worker-run history");
+    }
+    if (
+      serialiseRoute(await db.accountSession.findMany({ orderBy: { id: "asc" } })) !==
+      serialiseRoute(sessionsBeforeRoute)
+    ) {
+      fail("the route mutated session state");
+    }
+    ok("the route refuses malformed queries and performs no database write");
+
+    // 35e. No response leaks a token, cookie, email, or infrastructure detail.
+    const routeBodies = [
+      JSON.stringify(await callRoute(operatorCookie)),
+      JSON.stringify(await callRoute(null)),
+      JSON.stringify(await callRoute(ordinarySessionCookie)),
+      JSON.stringify(await callRoute(operatorCookie, "recentRunLimit=0")),
+    ];
+    for (const text of routeBodies) {
+      for (const forbidden of [
+        issued.token,
+        ordinarySession.token,
+        SESSION_COOKIE_NAME,
+        "example.com",
+        "$argon2id$",
+        "tokenHash",
+        "mon:asess:",
+        "mysql://",
+        ID_PASSWORD,
+      ]) {
+        if (text.includes(forbidden)) fail("a route response leaked sensitive material");
+      }
+    }
+    ok("no route response exposes a token, cookie, email, hash, or infrastructure detail");
 
     const transitioned = await nodeRepo.transitionProductNodeLifecycle({
       nodeId: CHECK_NODE_ANS,
