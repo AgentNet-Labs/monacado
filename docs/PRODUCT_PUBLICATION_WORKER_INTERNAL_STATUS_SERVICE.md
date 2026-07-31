@@ -36,7 +36,16 @@ byte-identical whether the store is empty or full of failures, and that zero
 queries ran.
 
 **There is no default authorizer and no permissive fallback.** The dependency is
-required, so status cannot be obtained by omitting it. The decision is a two-value
+required, so status cannot be obtained by omitting it.
+
+Phase 0E.7.4.2A supplies what an authorizer can now be built from: a persisted
+account, an opaque server-validated session, and an **explicit internal
+entitlement** for exactly this capability
+([`IDENTITY_SESSION_AND_INTERNAL_ENTITLEMENT_FOUNDATION.md`](IDENTITY_SESSION_AND_INTERNAL_ENTITLEMENT_FOUNDATION.md)).
+`resolveAuthenticatedPrincipal` yields `actorType: "INTERNAL_OPERATOR"` only when
+that entitlement is active, so a route adapter can map a principal onto the caller
+context below without ever authorizing on a login, an email domain, an allow-list,
+or an environment value. The adapter itself remains deferred. The decision is a two-value
 enum rather than a boolean, so an authorizer returning something unexpected —
 `undefined` from an unimplemented stub, say — cannot be mistaken for consent by a
 truthiness check. An authorizer that **throws is treated as a denial**: failing

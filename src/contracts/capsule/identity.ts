@@ -121,6 +121,30 @@ export const ACTOR_ID_RE = new RegExp(`^mon:actor:${OPAQUE_BODY}$`);
  */
 export const LOCK_TOKEN_RE = new RegExp(`^mon:lock:${OPAQUE_BODY}$`);
 
+/**
+ * Account identifier (`mon:acct:<opaque>`) — Phase 0E.7.4.2A.
+ *
+ * The durable identity of one human account, and the ONLY thing downstream
+ * authorization is allowed to key on. Deliberately opaque and **never derived
+ * from the email address**: an email is a mutable contact detail that a person
+ * may change or that may be reassigned, so binding an entitlement to it would
+ * make authorization follow the mailbox rather than the person.
+ */
+export const ACCOUNT_ID_RE = new RegExp(`^mon:acct:${OPAQUE_BODY}$`);
+
+/**
+ * Account session identifier (`mon:asess:<opaque>`). Names one server-side
+ * session row. This is NOT the session token — the token is a separate secret
+ * that is never persisted and never appears in an identifier.
+ */
+export const ACCOUNT_SESSION_ID_RE = new RegExp(`^mon:asess:${OPAQUE_BODY}$`);
+
+/**
+ * Account entitlement identifier (`mon:aent:<opaque>`). Names one explicit grant
+ * of one capability to one account.
+ */
+export const ACCOUNT_ENTITLEMENT_ID_RE = new RegExp(`^mon:aent:${OPAQUE_BODY}$`);
+
 // — Synthetic constructors (tests/demo only; a real Registrar issues ANS ids) —
 
 export function makeSyntheticNodeId(opaque: string): string {

@@ -32,6 +32,27 @@ import { WorkerRunTerminalConflictError } from "../src/server/product/worker-run
 import { getInternalPublicationWorkerStatus } from "../src/server/product/publication-worker-status-service";
 import { WorkerStatusAccessDeniedError } from "../src/server/product/worker-status-errors";
 import { PUBLICATION_WORKER_STATUS_READ_CAPABILITY } from "../src/contracts/product/publication-worker-status";
+import {
+  authenticateAccount,
+  createAccount,
+  setAccountStatus,
+} from "../src/server/account/account-service";
+import {
+  createAccountSession,
+  resolveAccountSession,
+  revokeAccountSession,
+} from "../src/server/account/account-session-service";
+import {
+  accountHasCapability,
+  grantAccountEntitlement,
+  revokeAccountEntitlement,
+} from "../src/server/account/account-entitlement-service";
+import { resolveAuthenticatedPrincipal } from "../src/server/account/account-principal";
+import { hashSessionToken } from "../src/server/account/session-token";
+import {
+  DuplicateAccountEmailError,
+  InvalidCredentialsError,
+} from "../src/server/account/account-errors";
 import { emptyOutcomeCounts } from "../src/contracts/product/publication-worker-cycle";
 import { loadRegistrarRuntimeConfiguration } from "../src/server/registrar/registrar-runtime-config";
 import type { RegistrarConfigurationLoad } from "../src/server/registrar/registrar-runtime-config";
@@ -2705,6 +2726,213 @@ async function main(): Promise<void> {
     // Leave the section's rows in place for the FK-safe cleanup below.
     await clearRuns();
 
+    // 34. Identity, session, and internal entitlement foundation (0E.7.4.2A).
+    //
+    // The authorization substrate the deferred worker-status route will stand on.
+    // Every password here is synthetic, every instant explicit, and every row is
+    // removed by the FK-safe cleanup below.
+
+    const ID_T0 = "2027-03-01T09:00:00.000Z";
+    const idShift = (seconds: number): string =>
+      new Date(Date.parse(ID_T0) + seconds * 1_000).toISOString();
+    const ID_PASSWORD = "dbcheck-synthetic-passphrase-7781";
+    const ID_CAPABILITY = "publication-worker:status:read";
+
+    // 34a. Creation stores an argon2id hash and never the plaintext.
+    const operator = await createAccount(
+      {
+        name: "db:check operator",
+        email: "DbCheck.Operator@example.com",
+        password: ID_PASSWORD,
+        createdAt: ID_T0,
+      },
+      { db },
+    );
+    const operatorRow = await db.account.findUnique({ where: { id: operator.accountId } });
+    if (!operatorRow) fail("the account was not persisted");
+    if (!operatorRow.passwordHash.startsWith("$argon2id$")) {
+      fail("the password was not hashed with argon2id");
+    }
+    if (JSON.stringify(operatorRow).includes(ID_PASSWORD)) {
+      fail("the plaintext password reached persistence");
+    }
+    // Normalisation is authoritative for uniqueness.
+    if (operatorRow.normalizedEmail !== "dbcheck.operator@example.com") {
+      fail("the email was not normalised deterministically");
+    }
+    let duplicateRefused = false;
+    try {
+      await createAccount(
+        {
+          name: "duplicate",
+          email: "DBCHECK.OPERATOR@EXAMPLE.COM",
+          password: ID_PASSWORD,
+          createdAt: ID_T0,
+        },
+        { db },
+      );
+    } catch (e) {
+      duplicateRefused = e instanceof DuplicateAccountEmailError;
+    }
+    if (!duplicateRefused) fail("case-insensitive email uniqueness was not enforced");
+    ok("an account stores an argon2id hash, never plaintext, with normalised unique email");
+
+    // 34b. Valid credentials authenticate; every failure is indistinguishable.
+    const authed = await authenticateAccount(
+      { email: "dbcheck.operator@EXAMPLE.com", password: ID_PASSWORD },
+      { db },
+    );
+    if (authed.accountId !== operator.accountId) fail("valid credentials did not authenticate");
+
+    const failures: string[] = [];
+    for (const attempt of [
+      { email: "nobody-here@example.com", password: ID_PASSWORD },
+      { email: "dbcheck.operator@example.com", password: "wrong-passphrase-000000" },
+    ]) {
+      try {
+        await authenticateAccount(attempt, { db });
+        fail("an invalid credential authenticated");
+      } catch (e) {
+        if (!(e instanceof InvalidCredentialsError)) fail("login failure was not generic");
+        failures.push(`${(e as Error).message}|${JSON.stringify(e)}`);
+      }
+    }
+    if (failures[0] !== failures[1]) {
+      fail("unknown-account and wrong-password failures are distinguishable");
+    }
+    ok("valid credentials authenticate and invalid ones fail identically");
+
+    // 34c. Sessions store only a digest; the raw token is unrecoverable.
+    const issued = await createAccountSession(
+      { accountId: operator.accountId, createdAt: ID_T0, ttlSeconds: 3_600 },
+      { db },
+    );
+    const sessionRow = await db.accountSession.findUnique({
+      where: { id: issued.session.sessionId },
+    });
+    if (!sessionRow) fail("the session was not persisted");
+    if (sessionRow.tokenHash !== hashSessionToken(issued.token)) {
+      fail("the stored session digest does not match the issued token");
+    }
+    if (JSON.stringify(await db.accountSession.findMany({})).includes(issued.token)) {
+      fail("a raw session token is recoverable from the database");
+    }
+    const liveSession = await resolveAccountSession(issued.token, { now: idShift(60), db });
+    if (liveSession?.accountId !== operator.accountId) fail("a live session did not resolve");
+    if (await resolveAccountSession(issued.token, { now: idShift(3_600), db })) {
+      fail("an expired session resolved");
+    }
+    ok("a session stores only a token digest, resolves while live, and expires");
+
+    // 34d. Revocation and account disabling both fail closed immediately.
+    const revocable = await createAccountSession(
+      { accountId: operator.accountId, createdAt: ID_T0, ttlSeconds: 3_600 },
+      { db },
+    );
+    await revokeAccountSession(revocable.token, { revokedAt: idShift(60), db });
+    if (await resolveAccountSession(revocable.token, { now: idShift(120), db })) {
+      fail("a revoked session resolved");
+    }
+
+    const disabled = await createAccount(
+      {
+        name: "db:check disabled",
+        email: "dbcheck.disabled@example.com",
+        password: ID_PASSWORD,
+        createdAt: ID_T0,
+      },
+      { db },
+    );
+    const disabledSession = await createAccountSession(
+      { accountId: disabled.accountId, createdAt: ID_T0, ttlSeconds: 3_600 },
+      { db },
+    );
+    await setAccountStatus(disabled.accountId, "DISABLED", { db });
+    if (await resolveAccountSession(disabledSession.token, { now: idShift(60), db })) {
+      fail("a session for a disabled account resolved");
+    }
+    ok("revoked sessions and disabled accounts fail closed on the next request");
+
+    // 34e. Entitlement is the only path to INTERNAL_OPERATOR.
+    const ordinary = await createAccount(
+      {
+        name: "db:check ordinary",
+        email: "dbcheck.ordinary@example.com",
+        password: ID_PASSWORD,
+        createdAt: ID_T0,
+      },
+      { db },
+    );
+    if (await accountHasCapability(ordinary.accountId, ID_CAPABILITY, { db })) {
+      fail("an ordinary account holds the worker-status capability");
+    }
+    const ordinarySession = await createAccountSession(
+      { accountId: ordinary.accountId, createdAt: ID_T0, ttlSeconds: 3_600 },
+      { db },
+    );
+    const ordinaryPrincipal = await resolveAuthenticatedPrincipal(ordinarySession.token, {
+      now: idShift(60),
+      db,
+    });
+    if (ordinaryPrincipal?.actorType !== "ACCOUNT") {
+      fail("an ordinary authenticated account was not projected as ACCOUNT");
+    }
+
+    await grantAccountEntitlement(
+      { accountId: operator.accountId, capability: ID_CAPABILITY, grantedAt: ID_T0 },
+      { db },
+    );
+    if (!(await accountHasCapability(operator.accountId, ID_CAPABILITY, { db }))) {
+      fail("an active entitlement did not grant the capability");
+    }
+    const operatorPrincipal = await resolveAuthenticatedPrincipal(issued.token, {
+      now: idShift(60),
+      db,
+    });
+    if (operatorPrincipal?.actorType !== "INTERNAL_OPERATOR") {
+      fail("an entitled account was not projected as INTERNAL_OPERATOR");
+    }
+
+    // Same email domain, different entitlement: a domain cannot authorize.
+    if (await accountHasCapability(ordinary.accountId, ID_CAPABILITY, { db })) {
+      fail("email domain granted the worker-status capability");
+    }
+
+    await revokeAccountEntitlement(
+      { accountId: operator.accountId, capability: ID_CAPABILITY, revokedAt: idShift(120) },
+      { db },
+    );
+    const demoted = await resolveAuthenticatedPrincipal(issued.token, { now: idShift(180), db });
+    if (demoted?.actorType !== "ACCOUNT") fail("a revoked entitlement did not fail closed");
+    if (demoted.capabilities.length !== 0) fail("a revoked capability survived in the principal");
+    ok("only an active persisted entitlement yields INTERNAL_OPERATOR, and revocation demotes");
+
+    // 34f. The safe principal carries no secret or profile detail.
+    await grantAccountEntitlement(
+      { accountId: operator.accountId, capability: ID_CAPABILITY, grantedAt: idShift(200) },
+      { db },
+    );
+    const finalPrincipal = await resolveAuthenticatedPrincipal(issued.token, {
+      now: idShift(240),
+      db,
+    });
+    const principalText = JSON.stringify(finalPrincipal);
+    for (const forbidden of [
+      ID_PASSWORD,
+      issued.token,
+      hashSessionToken(issued.token),
+      "$argon2id$",
+      "example.com",
+      "db:check operator",
+      "passwordHash",
+      "mysql://",
+    ]) {
+      if (principalText.includes(forbidden)) {
+        fail("the authenticated principal exposed a secret or profile detail");
+      }
+    }
+    ok("the safe principal contains no email, password hash, or raw session token");
+
     const transitioned = await nodeRepo.transitionProductNodeLifecycle({
       nodeId: CHECK_NODE_ANS,
       toState: "Inactive",
@@ -2720,6 +2948,13 @@ async function main(): Promise<void> {
 }
 
 async function cleanup(db: ReturnType<typeof getPrisma>): Promise<void> {
+  // Identity rows have no relation to publication data, so they are removed on
+  // their own. Order matters within the group: AccountEntitlement is RESTRICT, so
+  // it must go before the accounts it protects; AccountSession would cascade but
+  // is removed explicitly so the ordering documents itself.
+  await db.accountEntitlement.deleteMany({});
+  await db.accountSession.deleteMany({});
+  await db.account.deleteMany({});
   // FK-safe order (all publication FKs are RESTRICT): outbox → publication →
   // Node → source versions → Product.
   await db.publicationRemediation.deleteMany({

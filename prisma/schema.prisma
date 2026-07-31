@@ -597,3 +597,109 @@ model PublicationWorkerRun {
   @@index([completedAt])
   @@index([startedAt])
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Identity, session, and internal entitlement foundation (Phase 0E.7.4.2A).
+//
+// Relational-first operational identity. An account is NOT a publishable
+// descriptive entity: the ADR's capsule-backed entities are Product, Storefront,
+// Creator, Promoter, Listing, and Offer, and a person's login is none of those.
+// Nothing here is ever published, and no capsule references these rows.
+//
+// This is the minimum honest foundation for authenticating a human and proving
+// an explicit internal operational entitlement. It is deliberately NOT a role
+// system: there is one capability vocabulary, validated in the application layer,
+// and no generalized RBAC.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One human account. Credentials only — no profile, no Stripe, no underwriting.
+model Account {
+  /// Opaque durable identity (mon:acct:<opaque>). The ONLY key authorization
+  /// uses. Never derived from the email, which is a mutable contact detail.
+  id String @id @db.VarChar(191)
+
+  /// Display name. Never authoritative for identity or authorization.
+  name String @db.VarChar(191)
+
+  /// The address as the person typed it, kept for display and correspondence.
+  email String @db.VarChar(320)
+
+  /// Deterministically normalised address. Authoritative for lookup and
+  /// uniqueness, so `Ada@Example.com` and `ada@example.com` cannot both exist.
+  normalizedEmail String @unique @db.VarChar(320)
+
+  /// Argon2id PHC string. Never a plaintext or reversibly encrypted password.
+  passwordHash String @db.VarChar(255)
+
+  /// ACTIVE | DISABLED. A DISABLED account cannot authenticate, and every one of
+  /// its existing sessions stops resolving immediately.
+  status String @db.VarChar(16)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  sessions     AccountSession[]
+  entitlements AccountEntitlement[]
+
+  @@index([status])
+}
+
+/// One server-side session. Opaque and revocable — deliberately not a JWT.
+model AccountSession {
+  /// Opaque session-row identity (mon:asess:<opaque>). Not the session token.
+  id String @id @db.VarChar(191)
+
+  accountId String @db.VarChar(191)
+
+  /// SHA-256 of the session token, hex. The raw token is returned once at
+  /// creation and NEVER persisted, so a database disclosure yields no usable
+  /// credential. A fast hash is correct here precisely because the token is 256
+  /// bits of randomness rather than a low-entropy human secret.
+  tokenHash String @unique @db.VarChar(64)
+
+  createdAt  DateTime  @db.DateTime(3)
+  expiresAt  DateTime  @db.DateTime(3)
+  revokedAt  DateTime? @db.DateTime(3)
+  lastSeenAt DateTime? @db.DateTime(3)
+
+  // CASCADE: a session is an ephemeral credential, not history. Deleting the
+  // account must not leave a resolvable session behind.
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
+  @@index([expiresAt])
+  @@index([accountId, revokedAt, expiresAt])
+}
+
+/// One explicit grant of one capability to one account.
+model AccountEntitlement {
+  /// Opaque entitlement identity (mon:aent:<opaque>).
+  id String @id @db.VarChar(191)
+
+  accountId String @db.VarChar(191)
+
+  /// A member of the closed capability vocabulary, validated in the application
+  /// layer. Not a free-form role or permission string.
+  capability String @db.VarChar(64)
+
+  /// ACTIVE | REVOKED. Revocation fails closed on the very next request, because
+  /// authorization reads this row rather than anything cached in a token.
+  status String @db.VarChar(16)
+
+  grantedAt DateTime  @db.DateTime(3)
+  revokedAt DateTime? @db.DateTime(3)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  // RESTRICT: an entitlement is an authorization record. Deleting an account
+  // that still holds one must be refused, forcing an explicit revocation first
+  // rather than silently dropping the grant.
+  account Account @relation(fields: [accountId], references: [id], onDelete: Restrict)
+
+  /// One row per account+capability: granting an already-granted capability is
+  /// idempotent, and revocation flips this row rather than appending. A full
+  /// grant/revoke audit log is deliberately deferred.
+  @@unique([accountId, capability])
+  @@index([accountId, capability, status])
+}
