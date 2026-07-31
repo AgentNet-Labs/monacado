@@ -139,6 +139,10 @@ worker-operations work.
 
 **None of that work begins in this phase.**
 
+That sequence is now planned in
+[`POST_0E7_MARKETPLACE_ROADMAP.md`](POST_0E7_MARKETPLACE_ROADMAP.md), beginning
+with Phase 0M.1.
+
 ## Reference
 
 - [`PRODUCT_PUBLICATION_WORKER_CYCLE.md`](PRODUCT_PUBLICATION_WORKER_CYCLE.md)

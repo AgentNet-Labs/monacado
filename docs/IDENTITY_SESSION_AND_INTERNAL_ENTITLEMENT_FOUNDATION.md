@@ -295,6 +295,39 @@ The route can now:
 Nothing forbidden is required: no login-only access, no email domain, no allow-list,
 no environment variable.
 
+## Marketplace reconciliation (Phase 0M.1)
+
+Phase 0M.1 reviewed this foundation against Monacado's marketplace participants,
+roles, activation lifecycle, and Buyer review authority. **No contradiction was
+found, and no code in this foundation was altered.**
+
+What 0M.1 confirmed, and preserved:
+
+- `Account` remains the **authentication** identity, and its status remains
+  identity-level only (`ACTIVE` / `DISABLED`). **Marketplace activation is not
+  encoded here.** A separate `MarketplaceParticipant` carries admission state, so
+  disabling a compromised login and suspending a seller stay different operations.
+- `AccountEntitlement` remains reserved for **internal operational capabilities**.
+  **Marketplace roles are never stored as entitlements** — the separation is
+  enforced in both directions by two functions in the 0M.1 capability contracts,
+  and a test proves that holding `publication-worker:status:read` changes no
+  marketplace decision.
+- `ACCOUNT` and `INTERNAL_OPERATOR` remain the only principal types; marketplace
+  roles are not principal types and add none.
+- `normalizedEmail` uniqueness is untouched, and **no marketplace record keys on
+  an email address** — including the deferred claim of prior guest purchases,
+  which requires an explicit verified process rather than an address match.
+- No automatic marketplace-role assignment, and no automatic operator bootstrap.
+
+One **future, non-blocking** change is noted rather than made: when a marketplace
+UI exists, `AuthenticatedPrincipal` may need a marketplace-participant reference so
+a route need not re-query. That belongs to the phase that first needs it (0M.4),
+with its own review.
+
+See
+[`MARKETPLACE_ACCOUNT_ROLE_AND_ACTIVATION_ARCHITECTURE.md`](MARKETPLACE_ACCOUNT_ROLE_AND_ACTIVATION_ARCHITECTURE.md)
+and [`POST_0E7_MARKETPLACE_ROADMAP.md`](POST_0E7_MARKETPLACE_ROADMAP.md).
+
 ## Deferred
 
 - **Login, logout, and signup surfaces** of any kind — UI or route.

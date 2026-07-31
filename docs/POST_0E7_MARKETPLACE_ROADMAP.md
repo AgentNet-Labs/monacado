@@ -1,0 +1,124 @@
+# Post-0E.7 Marketplace Roadmap (Track 0M)
+
+Phase 0E.7 closed with an authenticated internal status route. Development now
+leaves worker operations and resumes the marketplace sequence the thesis
+describes.
+
+This roadmap names six phases, in order, with the boundary each one must not
+cross. It is a plan, not an authorization: **each phase begins only when
+explicitly instructed**, and none of the deferred work below is started early
+because it appears here.
+
+## Sequence
+
+| Phase | Title | State |
+| --- | --- | --- |
+| **0M.1** | Account, role, activation, and review-authority architecture | **complete** — committed on `main` (this commit); not yet pushed |
+| 0M.2 | Offer capsule | **not started** |
+| 0M.3 | Storefront and Listing capsules | planned |
+| 0M.4 | Participant persistence and draft onboarding | planned |
+| 0M.5 | Payment-provider onboarding and activation | planned |
+| 0M.6 | Buyer checkout, Order, commission, payout, and review-submission foundation | planned |
+
+---
+
+## 0M.1 — Account, role, activation, and review authority architecture
+
+**Complete.** Reconciles the Phase 0E.7.4.2A identity foundation with the
+marketplace's participants, roles, activation lifecycle, and Buyer review
+authority.
+
+- `Account` versus `MarketplaceParticipant`, and why activation never enters
+  account status.
+- Additive SELLER / PROMOTER / BUYER roles; `INTERNAL_OPERATOR` is not one.
+- Guest Buyer as the absence of an identity, never a silently created account.
+- Three independent lifecycles — participant admission, role assignment, payment
+  readiness — with explicit transition tables.
+- Twelve pure capability decisions with bounded reason codes.
+- Buyer review authority: the submission authorizes that review's capsule and
+  nothing else.
+- Proposed relational models, documented and **not** migrated.
+
+Full detail:
+[`MARKETPLACE_ACCOUNT_ROLE_AND_ACTIVATION_ARCHITECTURE.md`](MARKETPLACE_ACCOUNT_ROLE_AND_ACTIVATION_ARCHITECTURE.md).
+
+## 0M.2 — Offer capsule
+
+The creator-authorized commercial terms capsule (ADR §2), following the Product
+capsule's established pattern: authored Zod schema, ontology and context terms,
+deterministic canonical hashing, derived JSON Schema, and a synthetic fixture.
+
+**Must hold:** the Product/Offer boundary stays where ADR §10.2 put it — price,
+currency, availability windows, territory, and checkout eligibility belong to the
+Offer, never to `generalAvailabilityState` on the Product. The Offer's factual
+authority is the creator; Monacado remains Publisher and Registrar.
+
+**Not in scope:** persistence, publication, checkout, or pricing logic.
+
+## 0M.3 — Storefront and Listing capsules
+
+The promoter-authoritative Listing capsule and the Storefront capsule, with the
+authority partition ADR §2 requires: **a Listing may not restate or override the
+creator's Product facts.**
+
+**Not in scope:** activation, publication, or the storefront UI.
+
+## 0M.4 — Participant persistence and draft onboarding
+
+The first phase in this track to touch the database. Migrates the models proposed
+in 0M.1 §9 — `MarketplaceParticipant`, `MarketplaceRoleAssignment`,
+`ParticipantProfile`, `ParticipantActivation` — and wires the 0M.1 capability
+decisions to real rows behind an application service.
+
+Also the phase that must settle 0M.1's open decisions 1, 2, and 4 (the `Creator`
+versus `Seller` capsule name; where email verification and terms acceptance are
+enforced; the public participant projection's field set), and that would carry any
+`AuthenticatedPrincipal` change if a route genuinely needs one.
+
+**Must hold:** drafting only. No activation approval, no payment provider, no
+publication.
+
+## 0M.5 — Payment-provider onboarding and activation
+
+Stripe Connect onboarding, requirement and capability synchronisation, and the
+governed activation review that moves a participant to `ACTIVE`.
+
+**Must hold:** the generic `PaymentReadinessStatus` lifecycle stays
+provider-neutral — Stripe's requirement model is mapped onto it, never substituted
+for it. **No raw participant provider credential is ever stored** (thesis §5.5).
+Marketplace activation and payment readiness remain two independent gates, both
+required for commerce.
+
+## 0M.6 — Buyer checkout, Order, commission, payout, and review-submission foundation
+
+Guest and account checkout, Order persistence, attributed commissions, payouts,
+and the first real `ReviewSubmissionAuthority` rows.
+
+**Must hold:** guest checkout creates no Account; financial records are
+relational-first and are not entity capsules (ADR §1); a review submission
+authorizes that review's capsule and nothing else; buyer identity is not published
+by default. Also the phase that must design the explicit verified process for
+claiming prior guest purchases.
+
+---
+
+## Standing constraints across the track
+
+1. **Publication stays gated and asynchronous.** Creators and promoters never hold
+   AgentNet publishing credentials, and no live Registrar call belongs inside an
+   ordinary save request (ADR §5, §11.1).
+2. **Authority stays partitioned.** Creator, promoter, Monacado, and buyer
+   assertions live in separate capsules around a shared node identity, never one
+   flat capsule (ADR §2).
+3. **Private data never enters a capsule.** Profiles, provider state, buyer
+   identity, and purchase evidence are operational-only.
+4. **Internal entitlements and marketplace roles never meet.**
+5. **Narrow phases, tests and validation at every boundary, and a pre-commit
+   fix-now-versus-acceptable review** (CLAUDE.md).
+
+## Reference
+
+- [`MARKETPLACE_ACCOUNT_ROLE_AND_ACTIVATION_ARCHITECTURE.md`](MARKETPLACE_ACCOUNT_ROLE_AND_ACTIVATION_ARCHITECTURE.md)
+- [`CDD_ARCHITECTURE_DECISIONS.md`](CDD_ARCHITECTURE_DECISIONS.md)
+- [`IDENTITY_SESSION_AND_INTERNAL_ENTITLEMENT_FOUNDATION.md`](IDENTITY_SESSION_AND_INTERNAL_ENTITLEMENT_FOUNDATION.md)
+- [`PRODUCT_PUBLICATION_WORKER_OPERATIONS_TRACK.md`](PRODUCT_PUBLICATION_WORKER_OPERATIONS_TRACK.md)
