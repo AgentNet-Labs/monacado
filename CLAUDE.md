@@ -30,12 +30,30 @@ proceed only under an explicit ruling.
 
 (Full detail lives in the ADR — this is the orientation, not a substitute.)
 
-- **Dual representation.** Publishable descriptive entities (Product,
-  Storefront, Creator, Promoter, Listing, Offer) use the **versioned capsule as
-  their canonical semantic representation**; **relational storage serves
-  operational integrity, authorization, indexing, querying, and deterministic
-  reconstruction**. Financial/transactional records are relational-first and are
-  not entity capsules.
+- **Database first — the sole source of truth.** Monacado conducts commerce
+  through an authoritative transactional platform and publishes **deterministic
+  capsule projections of selected transactional truth**. The database owns every
+  business fact, authority, lifecycle state, immutable source version, audit
+  record, and publication obligation. **Capsules never become authoritative
+  records, never create provenance, never authorize business changes, and never
+  write back into transactional records.** Projection runs one way only:
+  authoritative record → source version → mapping → capsule projection →
+  publication. See
+  [`docs/TRANSACTIONAL_TRUTH_AND_CAPSULE_PROJECTION_ADR.md`](docs/TRANSACTIONAL_TRUTH_AND_CAPSULE_PROJECTION_ADR.md).
+- **Approved terminology.** Authoritative Source Model · Authoritative Source
+  Version · Projection Mapping · Capsule Projection Shape · Capsule Projection ·
+  Publication Lifecycle. Avoid unqualified "Capsule Foundation" in phase titles;
+  "capsule shape" is acceptable shorthand, but formal documentation uses **Capsule
+  Projection Shape**.
+- **Dual representation.** For publishable descriptive entities (Product,
+  Storefront, Creator, Promoter, Listing, Offer), the versioned capsule is the
+  **canonical semantic representation of the exact public artifact generated and
+  published from an identified authoritative database source version**. **It is
+  never the canonical source of transactional truth, authority, provenance, or
+  lifecycle state.** Relational records carry that truth, plus integrity,
+  authorization, indexing, querying, and deterministic reconstruction.
+  Financial/transactional records are relational-first and are not entity
+  capsules.
 - **Authority partitioning.** Keep assertions partitioned by authority. **Do not
   merge creator, promoter, Monacado, and buyer assertions into one flat
   capsule** — each authority gets its own capsule around a shared node identity.

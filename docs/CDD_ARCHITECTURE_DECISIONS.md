@@ -31,10 +31,15 @@ Descriptive, publishable entities use a **dual representation**. This applies to
 
 For these entities:
 
-- The **versioned capsule is the canonical semantic representation.**
-- **Normalized relational records are the operational persistence
-  representation**, responsible for integrity, authorization, indexing,
-  querying, joins, and transactional consistency.
+- The **versioned capsule is the canonical semantic representation of the exact
+  public artifact generated and published from an identified authoritative
+  database source version.** **It is never the canonical source of transactional
+  truth, authority, provenance, or lifecycle state.**
+- **The authoritative database is the sole source of transactional truth.**
+  Normalized relational records are not merely an "operational persistence
+  representation" — they *are* the truth, responsible for integrity,
+  authorization, indexing, querying, joins, transactional consistency, lifecycle,
+  authority, provenance, and audit evidence.
 
 Requirements (binding):
 
@@ -68,7 +73,9 @@ document does not authorize them yet.
 > Reconciliation note: this ruling is what resolves the apparent conflict
 > between the CDD document's "capsule as canonical semantic model" and the
 > thesis's "database as operational system of record" (thesis §6.4). Both hold,
-> for different responsibilities, over the same entity. See §9.
+> for different responsibilities, over the same entity — **and the database's
+> responsibility is the truth itself.** The capsule is canonical only for the
+> published artifact. See §9 and §12.
 
 ---
 
@@ -328,7 +335,9 @@ Recorded explicitly and binding:
 3. **The dual-representation persistence ruling (§1) reconciles** the apparent
    conflict between "capsule as canonical semantic model" (CDD) and "database as
    operational system of record" (thesis §6.4). Both are true, over different
-   responsibilities for the same entity.
+   responsibilities for the same entity — the capsule is canonical for the
+   published artifact, and **the database is the sole source of transactional
+   truth** (§12).
 4. **The thesis controls publication gating** (§5) where the earlier CDD
    examples imply immediate publication.
 5. **No unresolved material conflict may be silently implemented.** A phase that
@@ -728,6 +737,85 @@ Binding. ANS Core v2.0 §6 requires a Registrar to be **accredited**, with
    operator identity.
 9. The precise accreditation document, registry, signature mechanism, and public
    verification endpoint remain **deferred to AgentNet governance work**.
+
+---
+
+## 12. Transactional truth and capsule projection
+
+Binding (Phase 0A.2 — Transactional Truth, Capsule Projection, and Source-Version
+Retention). **Additive**: it accompanies the narrow correction made to §1 and
+replaces nothing. Full ruling:
+[`TRANSACTIONAL_TRUTH_AND_CAPSULE_PROJECTION_ADR.md`](TRANSACTIONAL_TRUTH_AND_CAPSULE_PROJECTION_ADR.md).
+
+**Monacado conducts commerce through an authoritative transactional platform and
+publishes deterministic capsule representations of selected transactional truth.**
+
+### 12.1 The database is the sole source of truth
+
+The authoritative database owns accounts and participants; roles and activation;
+Products, Offers, Storefronts, Listings, Reviews, Orders, and financial records;
+authority and authorization records; lifecycle state; immutable source versions;
+audit evidence; and publication obligations and receipts. **All business changes
+occur through database-backed transactional services.**
+
+### 12.2 The capsulization layer and its one permitted direction
+
+The capsulization layer may only: read an identified authoritative source version;
+validate projection eligibility; select approved public claims; apply a recorded
+projection mapping version; generate a deterministic capsule projection;
+canonicalize and hash it; register, publish, supersede, or revoke it; and retain
+publication and reconciliation evidence.
+
+```
+authoritative record → source version → projection mapping
+  → capsule projection shape → capsule projection → registration
+```
+
+**The reverse direction is prohibited.** Capsules never become authoritative
+records, never create provenance, never authorize business changes, never write
+back into transactional records, and never replace source-version, authority,
+audit, or publication-receipt evidence.
+
+### 12.3 Scoping §1
+
+§1's ruling that the versioned capsule is the "canonical semantic representation"
+**stands, and is narrower than it sounds.** The capsule is canonical for *what
+Monacado published and how that published meaning is expressed* — the artifact ANS
+consumers resolve, for which no second semantic payload may be invented (§5). It
+is **not** canonical for whether a fact is true, who is authorized, what state an
+entity is in, or what happened in a transaction.
+
+Where §1's phrasing and §12 could be read against each other, **§12 controls.**
+
+### 12.4 Provenance
+
+Provenance originates in authoritative source records, immutable source versions,
+authority and authorization records, audit records, projection mapping versions,
+generation records, publication receipts, and reconciliation results. A capsule
+may **represent** selected provenance claims; it does not **create** them. This
+restates §11.8 rather than amending it.
+
+### 12.5 Publication replay
+
+A publication obligation is satisfied only from the **exact source-version ID**
+bound to it, or the **exact prepared canonical projection** attached to it. It must
+never be regenerated from the entity's current record. Publication failure never
+reverses transactional truth, and capsule content never repairs the database.
+
+### 12.6 Retention
+
+Storage retention is a lifecycle independent of business and publication state.
+Archival alters no historical fact and revokes no Node. A hash or receipt
+**verifies**; only a full authoritative source snapshot plus its mapping version
+**reconstructs**. See
+[`SOURCE_VERSION_RETENTION_AND_ARCHIVAL_POLICY.md`](SOURCE_VERSION_RETENTION_AND_ARCHIVAL_POLICY.md).
+
+### 12.7 Terminology
+
+Authoritative Source Model · Authoritative Source Version · Projection Mapping ·
+Capsule Projection Shape · Capsule Projection · Publication Lifecycle. Unqualified
+"Capsule Foundation" is avoided in phase titles. Stable code is **not** renamed for
+style; only terminology creating a genuine source-of-truth ambiguity is corrected.
 
 ---
 

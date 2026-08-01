@@ -171,3 +171,10 @@ validation + schema generation), `contracts:export` (derived JSON Schema),
 - Retention note: after successful Registrar registration Monacado need not
   retain the published capsule body permanently, provided source records, hashes,
   identifiers, receipts, and reconciliation state are retained.
+
+  > **The source record is what makes this safe, not the hash.** The capsule body
+  > is a projection and is regenerable from the retained source version plus its
+  > mapping version; the hash only *verifies* that a presented body was the one
+  > published. A hash is never sufficient to rebuild a source version, and the
+  > authoritative source snapshot is never disposable on these terms. See
+  > [`SOURCE_VERSION_RETENTION_AND_ARCHIVAL_POLICY.md`](SOURCE_VERSION_RETENTION_AND_ARCHIVAL_POLICY.md).
