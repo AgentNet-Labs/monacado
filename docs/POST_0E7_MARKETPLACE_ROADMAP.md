@@ -20,9 +20,9 @@ the truth it projects exists (ADR §12;
 | Phase | Title | State |
 | --- | --- | --- |
 | **0M.1** | Account, role, activation, and review-authority architecture | **complete** — `084b315` |
-| **0M.2A** | Authoritative Offer Source Model | **complete** — this commit |
-| **0M.2B** | Offer Capsule Projection Shape | **not started** |
-| 0M.3A | Authoritative Storefront Source Model | planned |
+| **0M.2A** | Authoritative Offer Source Model | **complete** — `4687772` |
+| **0M.2B** | Offer Capsule Projection Shape | **complete** — this commit |
+| **0M.3A** | Authoritative Storefront Source Model | **not started** |
 | 0M.3B | Storefront Capsule Projection Shape | planned |
 | 0M.4A | Authoritative Listing Source Model | planned |
 | 0M.4B | Listing Capsule Projection Shape | planned |
@@ -80,22 +80,31 @@ Full detail:
 
 ## 0M.2B — Offer Capsule Projection Shape
 
-**Not started.** The deterministic projection of an Offer source version,
+**Complete.** The deterministic projection of an Offer source version,
 following the Product pattern: authored Zod schema, ontology and context terms,
-canonical hashing, derived JSON Schema, and a synthetic fixture.
+canonical hashing, and derived JSON Schema — plus a strict projection context
+carrying the Node bindings, and a bounded eligibility decision.
 
 **Must hold — the database-first one-way boundary (ADR §12):** the projection
 reads **one identified `OfferSourceVersion`**, never the current record and never
 "the latest". It adds no field to the Offer source model, creates no provenance,
 and **writes nothing back**. Monacado remains Publisher and Registrar; the
-`mon:offer:` identity stays internal, and any public Node mapping is a decision
-0M.2B must make explicitly rather than assume.
+`mon:offer:` identity stays internal, and public Node references come only from
+the validated projection context.
+
+**Not in scope:** publication, Node issuance or registration, Registrar
+interaction, persistence, and the `SUSPENDED`/`WITHDRAWN` publication decision.
+
+Full detail:
+[`OFFER_CAPSULE_PROJECTION_SHAPE.md`](OFFER_CAPSULE_PROJECTION_SHAPE.md).
 
 ## 0M.3A — Authoritative Storefront Source Model
 
-The authoritative Storefront record and its source versions.
+**Not started.** The authoritative Storefront record and its source versions,
+following the source-model-before-projection ordering 0M.2A/0M.2B established.
 
-**Not in scope:** the projection shape, activation, publication, or UI.
+**Not in scope:** the projection shape, activation, publication, persistence, or
+UI. **No Storefront or Listing implementation has begun.**
 
 ## 0M.3B — Storefront Capsule Projection Shape
 

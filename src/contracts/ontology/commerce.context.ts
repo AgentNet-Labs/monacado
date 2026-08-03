@@ -29,6 +29,11 @@ export const COMMERCE_CONTEXT = {
   name: "schema:name",
   description: "schema:description",
   image: { "@id": "schema:image", "@type": "@id" },
+  Offer: "schema:Offer",
+  itemOffered: { "@id": "schema:itemOffered", "@type": "@id" },
+  priceCurrency: "schema:priceCurrency",
+  validFrom: { "@id": "schema:validFrom", "@type": "schema:DateTime" },
+  validThrough: { "@id": "schema:validThrough", "@type": "schema:DateTime" },
 
   // AN-O (ANS-defined concepts)
   capsuleId: "an:capsuleId",
@@ -63,6 +68,18 @@ export const COMMERCE_CONTEXT = {
   relationships: "mon:relationships",
   creator: { "@id": "mon:creator", "@type": "@id" },
   offer: { "@id": "mon:offer", "@type": "@id" },
+
+  // Offer capsule projection (Phase 0M.2B)
+  commercialState: "mon:commercialState",
+  price: "mon:price",
+  priceType: "mon:priceType",
+  priceMinorUnits: "mon:priceMinorUnits",
+  commission: "mon:commission",
+  commissionType: "mon:commissionType",
+  commissionBasisPoints: "mon:commissionBasisPoints",
+  fixedCommissionMinorUnits: "mon:fixedCommissionMinorUnits",
+  fixedCommissionCurrency: "mon:fixedCommissionCurrency",
+  offeredBy: { "@id": "mon:offeredBy", "@type": "@id" },
 } as const;
 
 /** Reference IRI a capsule places in `@context` (design target). */

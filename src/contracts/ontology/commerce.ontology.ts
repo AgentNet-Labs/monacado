@@ -41,6 +41,12 @@ export const SCHEMA_ORG_TERMS: readonly OntologyTerm[] = [
   { term: "name", iri: `${SCHEMA_ORG}name`, kind: "property", source: "schema.org", description: "Human-readable product name." },
   { term: "description", iri: `${SCHEMA_ORG}description`, kind: "property", source: "schema.org", description: "Human-readable product description." },
   { term: "image", iri: `${SCHEMA_ORG}image`, kind: "property", source: "schema.org", description: "Representative product image URL." },
+  // Offer capsule projection (Phase 0M.2B) — reused where meaning fits exactly.
+  { term: "Offer", iri: `${SCHEMA_ORG}Offer`, kind: "class", source: "schema.org", description: "The commercial terms under which a Product is offered." },
+  { term: "itemOffered", iri: `${SCHEMA_ORG}itemOffered`, kind: "property", source: "schema.org", description: "The Product Node this Offer is for." },
+  { term: "priceCurrency", iri: `${SCHEMA_ORG}priceCurrency`, kind: "property", source: "schema.org", description: "Currency of a paid Offer price." },
+  { term: "validFrom", iri: `${SCHEMA_ORG}validFrom`, kind: "property", source: "schema.org", description: "Instant from which the Offer terms apply." },
+  { term: "validThrough", iri: `${SCHEMA_ORG}validThrough`, kind: "property", source: "schema.org", description: "Instant after which the Offer terms no longer apply." },
 ];
 
 /** ANS-defined concepts mapped to AN-O IRIs (reused, not duplicated). */
@@ -79,6 +85,22 @@ export const MONACADO_TERMS: readonly OntologyTerm[] = [
   { term: "relationships", iri: `${MON_NS}relationships`, kind: "property", source: "monacado", description: "Container for typed domain relationships in Product data." },
   { term: "creator", iri: `${MON_NS}creator`, kind: "property", source: "monacado", description: "Relationship to the authoritative Creator node (a Monacado marketplace role; not schema:creator)." },
   { term: "offer", iri: `${MON_NS}offer`, kind: "property", source: "monacado", description: "Optional reference to a future Offer node (reference only; no offer data)." },
+  // — Offer capsule projection (Phase 0M.2B) —
+  //
+  // schema.org `price` is a decimal and `availability` is an ItemAvailability
+  // enumeration; neither matches Monacado's minor-unit money or its
+  // AVAILABLE/TEMPORARILY_UNAVAILABLE/ENDED public state, so these are Monacado
+  // terms rather than a reuse that would quietly change their meaning.
+  { term: "commercialState", iri: `${MON_NS}commercialState`, kind: "property", source: "monacado", description: "Public commercial state of the Offer, derived from authoritative lifecycle and availability." },
+  { term: "price", iri: `${MON_NS}price`, kind: "property", source: "monacado", description: "Container for the Offer's public price terms." },
+  { term: "priceType", iri: `${MON_NS}priceType`, kind: "property", source: "monacado", description: "FREE or PAID." },
+  { term: "priceMinorUnits", iri: `${MON_NS}priceMinorUnits`, kind: "property", source: "monacado", description: "Paid price as a positive integer in minor currency units (never a decimal)." },
+  { term: "commission", iri: `${MON_NS}commission`, kind: "property", source: "monacado", description: "Container for the seller-offered promoter commission terms." },
+  { term: "commissionType", iri: `${MON_NS}commissionType`, kind: "property", source: "monacado", description: "PERCENTAGE or FIXED." },
+  { term: "commissionBasisPoints", iri: `${MON_NS}commissionBasisPoints`, kind: "property", source: "monacado", description: "Percentage commission in basis points (1 = 0.01%)." },
+  { term: "fixedCommissionMinorUnits", iri: `${MON_NS}fixedCommissionMinorUnits`, kind: "property", source: "monacado", description: "Fixed commission as a positive integer in minor currency units." },
+  { term: "fixedCommissionCurrency", iri: `${MON_NS}fixedCommissionCurrency`, kind: "property", source: "monacado", description: "Currency of a fixed commission; always equal to the Offer's price currency, and validated against it." },
+  { term: "offeredBy", iri: `${MON_NS}offeredBy`, kind: "property", source: "monacado", description: "Approved public authority Node offering these terms (a Monacado marketplace role)." },
 ];
 
 export const ALL_TERMS: readonly OntologyTerm[] = [

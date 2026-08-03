@@ -14,6 +14,7 @@ import {
   PublishedProductCapsuleBase,
 } from "../product/product.capsule";
 import { ProductSourceRecordBase } from "../product/product-source-record";
+import { OfferCapsuleProjectionBase } from "../marketplace/offer.capsule";
 
 export interface GeneratedSchema {
   name: string;
@@ -41,10 +42,18 @@ export function generateProductSourceRecordJsonSchema(): Record<string, unknown>
   >;
 }
 
+export function generateOfferCapsuleProjectionJsonSchema(): Record<string, unknown> {
+  return z.toJSONSchema(OfferCapsuleProjectionBase, { target: "draft-2020-12" }) as Record<
+    string,
+    unknown
+  >;
+}
+
 export function generateAllSchemas(): GeneratedSchema[] {
   return [
     { name: "product.capsule.published.schema.json", schema: generatePublishedProductJsonSchema() },
     { name: "product.capsule.candidate.schema.json", schema: generateProductCandidateJsonSchema() },
     { name: "product.source-record.schema.json", schema: generateProductSourceRecordJsonSchema() },
+    { name: "offer.capsule.projection.schema.json", schema: generateOfferCapsuleProjectionJsonSchema() },
   ];
 }
