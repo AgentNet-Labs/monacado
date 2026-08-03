@@ -20,8 +20,8 @@ the truth it projects exists (ADR §12;
 | Phase | Title | State |
 | --- | --- | --- |
 | **0M.1** | Account, role, activation, and review-authority architecture | **complete** — `084b315` |
-| **0M.2A** | Authoritative Offer Source Model | **not started** |
-| 0M.2B | Offer Capsule Projection Shape | planned |
+| **0M.2A** | Authoritative Offer Source Model | **complete** — this commit |
+| **0M.2B** | Offer Capsule Projection Shape | **not started** |
 | 0M.3A | Authoritative Storefront Source Model | planned |
 | 0M.3B | Storefront Capsule Projection Shape | planned |
 | 0M.4A | Authoritative Listing Source Model | planned |
@@ -61,27 +61,35 @@ Full detail:
 
 ## 0M.2A — Authoritative Offer Source Model
 
-**Not started.** The authoritative record and immutable source version for
-creator-authorized commercial terms: fields, lifecycle, authority linkage,
-uniqueness, and the mapping controls a later projection will need.
+**Complete.** The authoritative record and immutable source versions for
+seller-authorized commercial terms: fields, operational lifecycle, commercial
+availability, price and promotion terms, Seller authority decisions, and the
+material-change policy that decides when a new source version is minted.
 
 **Must hold:** the Product/Offer boundary stays where ADR §10.2 put it — price,
 currency, availability windows, territory, and checkout eligibility belong to the
-Offer, never to `generalAvailabilityState` on the Product. The Offer's factual
-authority is the creator.
+Offer, never to `generalAvailabilityState` on the Product. Authority is
+transactional (`sellerParticipantId`); no Creator Node or other public semantic
+identity is introduced.
 
-**Not in scope:** the capsule projection shape, publication, checkout, or pricing
-logic.
+**Not in scope:** the capsule projection shape, projection mapping, Node or
+capsule identity, publication, persistence, checkout, or pricing logic.
+
+Full detail:
+[`AUTHORITATIVE_OFFER_SOURCE_MODEL.md`](AUTHORITATIVE_OFFER_SOURCE_MODEL.md).
 
 ## 0M.2B — Offer Capsule Projection Shape
 
-The deterministic projection of an Offer source version, following the Product
-pattern: authored Zod schema, ontology and context terms, canonical hashing,
-derived JSON Schema, and a synthetic fixture.
+**Not started.** The deterministic projection of an Offer source version,
+following the Product pattern: authored Zod schema, ontology and context terms,
+canonical hashing, derived JSON Schema, and a synthetic fixture.
 
-**Must hold:** the projection reads an identified source version and never the
-current record; it creates no provenance; Monacado remains Publisher and
-Registrar.
+**Must hold — the database-first one-way boundary (ADR §12):** the projection
+reads **one identified `OfferSourceVersion`**, never the current record and never
+"the latest". It adds no field to the Offer source model, creates no provenance,
+and **writes nothing back**. Monacado remains Publisher and Registrar; the
+`mon:offer:` identity stays internal, and any public Node mapping is a decision
+0M.2B must make explicitly rather than assume.
 
 ## 0M.3A — Authoritative Storefront Source Model
 

@@ -28,6 +28,16 @@ import { OPAQUE_BODY } from "../capsule/identity";
  */
 export const MARKETPLACE_PARTICIPANT_ID_RE = new RegExp(`^mon:mpart:${OPAQUE_BODY}$`);
 
+/**
+ * Internal Offer identifier (`mon:offer:<opaque>`).
+ *
+ * The enduring identity of one authoritative Offer record, in the same internal
+ * form as `mon:product:` and `mon:creator:`. It is **not** an ANS Node ID and not
+ * a capsule ID: the public identity an Offer may eventually carry is issued by
+ * the Registrar and mapped in a later phase (ADR §11.5).
+ */
+export const INTERNAL_OFFER_ID_RE = new RegExp(`^mon:offer:${OPAQUE_BODY}$`);
+
 /** One role assignment on one participant (`mon:mrole:<opaque>`). */
 export const MARKETPLACE_ROLE_ASSIGNMENT_ID_RE = new RegExp(`^mon:mrole:${OPAQUE_BODY}$`);
 
