@@ -21,9 +21,12 @@ the truth it projects exists (ADR §12;
 | --- | --- | --- |
 | **0M.1** | Account, role, activation, and review-authority architecture | **complete** — `084b315` |
 | **0M.2A** | Authoritative Offer Source Model | **complete** — `4687772` |
-| **0M.2B** | Offer Capsule Projection Shape | **complete** — this commit |
-| **0M.3A** | Authoritative Storefront Source Model | **not started** |
-| 0M.3B | Storefront Capsule Projection Shape | planned |
+| **0M.2B** | Offer Capsule Projection Shape | **complete** — `cb4a96d` |
+| **0M.3A** | Authoritative Storefront Source Model | **complete** — this commit |
+| **0M.3B** | Storefront Capsule Projection Shape | **not started** |
+| **0M.2C** | **Offer economics correction** — required before any Listing pricing, checkout, or settlement | **required, not started** |
+| **0M.4A′** | **Authoritative Listing source model** — seller-controlled vs promoted, promoter retail price, upstream blocking | **not started** |
+| **0M.N** | **Notification records** — durable admin-panel notices, deduplication, recipients, notice states | **not started** |
 | 0M.4A | Authoritative Listing Source Model | planned |
 | 0M.4B | Listing Capsule Projection Shape | planned |
 | 0M.5 | Participant persistence and draft onboarding | planned |
@@ -100,11 +103,76 @@ Full detail:
 
 ## 0M.3A — Authoritative Storefront Source Model
 
-**Not started.** The authoritative Storefront record and its source versions,
-following the source-model-before-projection ordering 0M.2A/0M.2B established.
+**Complete.** The authoritative Storefront record and its immutable source
+versions, following the source-model-before-projection ordering 0M.2A/0M.2B
+established: participant ownership, lifecycle and visibility as separate axes, a
+strict public handle, bounded presentation text, six authority decisions, and the
+material-change policy.
 
-**Not in scope:** the projection shape, activation, publication, persistence, or
-UI. **No Storefront or Listing implementation has begun.**
+**Must hold:** a Storefront belongs to **one participant and to no role** — roles
+are additive capabilities, not Storefront types, and a Storefront may later hold
+owned Listings, promoted Listings, or both. Placement authority is evaluated **per
+Listing**, against the roles its owner holds at that moment. It **embeds no
+Product, Offer, or Listing array** — Listings reference Storefronts, not the
+reverse.
+
+Governance is a second axis: exactly one active **`SUPER_OWNER`** is required
+before a Storefront may go live and holds financial responsibility; zero or more
+**`ADMIN`** assignments hold operational authority only. Monacado's **go-live
+approval** is a supplied decision input, never a Storefront field, and **live** is
+derived — there is no stored `isLive`.
+
+**Not in scope:** the capsule projection shape, ontology terms, Node or capsule
+identity, persistence, publication, routes, UI, and all Listing or placement
+work.
+
+Full detail:
+[`AUTHORITATIVE_STOREFRONT_SOURCE_MODEL.md`](AUTHORITATIVE_STOREFRONT_SOURCE_MODEL.md).
+
+## 0M.2C — Offer economics correction (required)
+
+**Required, not started.** The committed Offer contracts (`0M.2A`, `0M.2B`) were
+written before the final wholesale-price interpretation and **must be corrected
+before any Listing pricing, checkout, or settlement implementation begins.**
+
+The correction must address:
+
+- **wholesale-price terminology** — the Offer's price is what the *creator*
+  receives, not what a buyer pays;
+- **`PERCENT_OF_WHOLESALE`** and **`FIXED_AMOUNT`** as the commission methods;
+- **deterministic commission calculation**, including minor-unit rounding;
+- **exact creator-proceeds presentation** — the creator must see the precise
+  commission and expected gross proceeds before Offer activation;
+- **immutable Offer-version economics** — a completed sale binds to the exact Offer
+  source version, and later Offer changes never alter an accepted order;
+- **compatibility with the existing Offer capsule projection**, which is already
+  committed and published-shaped.
+
+**Do not start this correction as part of 0M.3A.** The economics are documented in
+[`AUTHORITATIVE_STOREFRONT_SOURCE_MODEL.md`](AUTHORITATIVE_STOREFRONT_SOURCE_MODEL.md)
+§3; no committed Offer file is modified there.
+
+## Authoritative Listing source model (required, not started)
+
+Must define: seller-controlled versus promoted Listing; the promoter retail price;
+Listing versioning; **upstream availability blocking** (an unavailable Offer makes
+every dependent Listing non-sellable, and no promoter authority can override it);
+the **wholesale-price review state**; **explicit reactivation** rules —
+acknowledgement alone never reactivates; and the Offer-version dependency.
+
+## Notification records (required, not started)
+
+Must define: durable **admin-panel** notices as the canonical channel;
+deduplication as one obligation per **promoter participant × exact Offer source
+version × change category**; recipients (the promoter participant's active
+`SUPER_OWNER` and `ADMIN`); the unread / acknowledged / resolved / archived states;
+and optional supplemental delivery channels that can never replace the
+admin-panel notice.
+
+**None of this is implemented.** The rules are recorded in
+[`AUTHORITATIVE_STOREFRONT_SOURCE_MODEL.md`](AUTHORITATIVE_STOREFRONT_SOURCE_MODEL.md)
+§3/§3a and are binding on these phases; the Storefront source module contains no
+executable form of them.
 
 ## 0M.3B — Storefront Capsule Projection Shape
 

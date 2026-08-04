@@ -38,6 +38,16 @@ export const MARKETPLACE_PARTICIPANT_ID_RE = new RegExp(`^mon:mpart:${OPAQUE_BOD
  */
 export const INTERNAL_OFFER_ID_RE = new RegExp(`^mon:offer:${OPAQUE_BODY}$`);
 
+/**
+ * Internal Storefront identifier (`mon:storefront:<opaque>`).
+ *
+ * The enduring identity of one authoritative Storefront record. Like
+ * `mon:offer:`, it is **not** an ANS Node ID, **not** a capsule identity, and
+ * **not** a public URL — the storefront's public routing name is a separate
+ * `publicHandle`, and any public Node is Registrar-issued in a later phase.
+ */
+export const INTERNAL_STOREFRONT_ID_RE = new RegExp(`^mon:storefront:${OPAQUE_BODY}$`);
+
 /** One role assignment on one participant (`mon:mrole:<opaque>`). */
 export const MARKETPLACE_ROLE_ASSIGNMENT_ID_RE = new RegExp(`^mon:mrole:${OPAQUE_BODY}$`);
 
