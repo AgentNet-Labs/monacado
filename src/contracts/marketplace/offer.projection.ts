@@ -64,6 +64,7 @@ import {
   OfferSourceRecordId,
   OfferSourceRecordVersion,
   OfferSourceVersion,
+  calculateOfferEconomics,
   type OfferAvailability,
   type OfferLifecycleState,
 } from "./offer-source";
@@ -184,6 +185,12 @@ export const OFFER_PROJECTION_ERROR_CODES = [
   "AUTHORITY_BINDING_MISMATCH",
   "NOT_PROJECTION_ELIGIBLE",
   "INVALID_PROJECTION_OUTPUT",
+  /** A pre-correction major version cannot carry corrected economic semantics. */
+  "STALE_CAPSULE_MAJOR_VERSION",
+  /** A capsule version this mapper does not know how to produce. */
+  "UNSUPPORTED_CAPSULE_VERSION",
+  /** A mapping version other than the one this mapper implements. */
+  "UNSUPPORTED_MAPPING_VERSION",
 ] as const;
 export type OfferProjectionErrorCode = (typeof OFFER_PROJECTION_ERROR_CODES)[number];
 
@@ -208,6 +215,37 @@ export class OfferProjectionError extends Error {
 /** The method recorded in provenance: this capsule is a projection of a version. */
 export const OFFER_PROJECTION_METHOD = "governed-source-version-projection" as const;
 
+/**
+ * The Offer capsule major version the corrected economic semantics live at.
+ *
+ * Phase 0M.2C is a breaking change: a consumer reading `priceMinorUnits` as "what
+ * a buyer pays" and one reading `wholesalePriceMinorUnits` as "what the creator
+ * is owed" cannot both be right, so `1.x` may not be reused.
+ *
+ * No Offer persistence or production publication exists, so **no migration or
+ * republishing operation is performed** — nothing has been published under the
+ * old semantics to migrate.
+ */
+export const CORRECTED_OFFER_CAPSULE_MAJOR = 2;
+
+/**
+ * The exact capsule version this mapper emits and accepts.
+ *
+ * Pinned rather than treated as a floor: a future `2.1.0` would carry claims this
+ * mapper does not know how to produce, and accepting it implicitly would let a
+ * caller label output as a shape it is not. A later minor is an explicit,
+ * reviewed change here — never a silent one.
+ */
+export const SUPPORTED_OFFER_CAPSULE_VERSION = "2.0.0" as const;
+
+/**
+ * The projection mapping version for the corrected economics.
+ *
+ * Replaced rather than incremented in place, so a stored mapping version can
+ * never be mistaken for the pre-correction mapping.
+ */
+export const OFFER_PROJECTION_MAPPING_VERSION = "offer-projection/2.0.0" as const;
+
 function buildProvenance(
   source: OfferSourceVersion,
   context: OfferProjectionContext,
@@ -229,37 +267,48 @@ function buildProvenance(
   };
 }
 
-/** Source price → public price. Structure-preserving; nothing is reinterpreted. */
+/** Source wholesale price → public wholesale price. Nothing is reinterpreted. */
 function mapPrice(source: OfferSourceVersion): PublicOfferPrice {
   const price = source.terms.price;
   return price.type === "FREE"
     ? { priceType: "FREE" }
     : {
         priceType: "PAID",
-        priceMinorUnits: price.amountMinorUnits,
-        priceCurrency: price.currency,
+        wholesalePriceMinorUnits: price.wholesalePriceMinorUnits,
+        wholesalePriceCurrency: price.wholesalePriceCurrency,
       };
 }
 
 /**
- * Source promotion → public commission.
+ * Source promotion → public commission, including the **exact calculated amount**.
  *
- * A fixed commission's currency is taken **directly from the source commission**
- * — not from the price, and never inferred, substituted, or normalized. The
- * source already requires the two to be equal, and the published shape re-checks
- * it; copying from the price instead would silently paper over a source that
- * somehow disagreed, which is exactly the failure worth surfacing.
+ * The amount is recomputed from the source terms by the authoritative calculator
+ * rather than copied from the version's stored snapshot: the two are required to
+ * be equal (the source schema refuses a mismatch), and recomputing means a
+ * projection can never publish an amount the calculator would not produce.
+ *
+ * A fixed commission's currency is taken **directly from the source commission** —
+ * not from the wholesale price, and never inferred or normalized. Copying from
+ * the price would paper over a source that somehow disagreed, which is exactly
+ * the failure worth surfacing.
  */
 function mapCommission(source: OfferSourceVersion): PublicOfferCommission | undefined {
   const promotion = source.terms.promotion;
   if (promotion.type !== "PROMOTABLE") return undefined;
   const commission = promotion.commission;
-  return commission.kind === "PERCENTAGE"
-    ? { commissionType: "PERCENTAGE", commissionBasisPoints: commission.basisPoints }
+  const { calculatedCommissionMinorUnits } = calculateOfferEconomics(source.terms);
+
+  return commission.method === "PERCENT_OF_WHOLESALE"
+    ? {
+        commissionMethod: "PERCENT_OF_WHOLESALE",
+        commissionBasisPoints: commission.commissionBasisPoints,
+        calculatedCommissionMinorUnits,
+      }
     : {
-        commissionType: "FIXED",
-        fixedCommissionMinorUnits: commission.amountMinorUnits,
-        fixedCommissionCurrency: commission.currency,
+        commissionMethod: "FIXED_AMOUNT",
+        fixedCommissionMinorUnits: commission.fixedCommissionMinorUnits,
+        fixedCommissionCurrency: commission.fixedCommissionCurrency,
+        calculatedCommissionMinorUnits,
       };
 }
 
@@ -300,6 +349,20 @@ export function projectOfferCapsule(input: {
   }
   if (context.authorityBinding.sellerParticipantId !== source.sellerParticipantId) {
     throw new OfferProjectionError("AUTHORITY_BINDING_MISMATCH");
+  }
+
+  /* The corrected shape may not be published under a pre-correction major
+     version — the same number would mean two different economic things — nor
+     under a future version whose claims this mapper cannot produce. */
+  const major = Number(context.capsuleVersion.split(".")[0]);
+  if (major < CORRECTED_OFFER_CAPSULE_MAJOR) {
+    throw new OfferProjectionError("STALE_CAPSULE_MAJOR_VERSION");
+  }
+  if (context.capsuleVersion !== SUPPORTED_OFFER_CAPSULE_VERSION) {
+    throw new OfferProjectionError("UNSUPPORTED_CAPSULE_VERSION");
+  }
+  if (context.mappingVersion !== OFFER_PROJECTION_MAPPING_VERSION) {
+    throw new OfferProjectionError("UNSUPPORTED_MAPPING_VERSION");
   }
 
   const eligibility = evaluateOfferProjectionEligibility({

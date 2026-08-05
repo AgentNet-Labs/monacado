@@ -199,16 +199,25 @@ export const FreeOfferPrice = z.strictObject({
   type: z.literal("FREE"),
 });
 
+/**
+ * A **PAID** Offer's wholesale price — what the creator is owed for the item,
+ * before any promoter commission is deducted.
+ *
+ * Deliberately **not** a generic "price": what a buyer eventually pays is the
+ * Promoter's retail price, set on a future Listing and never here. Naming this
+ * field `price` was the ambiguity this phase exists to correct — the same number
+ * cannot be both what the creator receives and what the buyer pays.
+ */
 export const PaidOfferPrice = z.strictObject({
   type: z.literal("PAID"),
-  amountMinorUnits: MinorUnitAmount,
-  currency: CurrencyCode,
+  wholesalePriceMinorUnits: MinorUnitAmount,
+  wholesalePriceCurrency: CurrencyCode,
 });
 
 /**
- * A discriminated union, so a FREE Offer has **no field** for an amount or a
- * currency. Absence by construction: a free Offer cannot carry a stray price
- * because there is nowhere to put one.
+ * A discriminated union, so a FREE Offer has **no field** for a wholesale amount
+ * or a currency. Absence by construction: a free Offer cannot carry a stray
+ * price because there is nowhere to put one.
  */
 export const OfferPrice = z.discriminatedUnion("type", [FreeOfferPrice, PaidOfferPrice]);
 export type OfferPrice = z.infer<typeof OfferPrice>;
@@ -219,21 +228,46 @@ export type OfferPrice = z.infer<typeof OfferPrice>;
 export const MIN_COMMISSION_BASIS_POINTS = 1;
 export const MAX_COMMISSION_BASIS_POINTS = 10_000;
 
-export const PercentageCommission = z.strictObject({
-  kind: z.literal("PERCENTAGE"),
-  basisPoints: z
+/**
+ * The two commission methods, and the only two.
+ *
+ * **The commission basis is always the wholesale price.** `PERCENT_OF_RETAIL`,
+ * `PERCENT_OF_LISTING_PRICE`, `PERCENT_OF_CHECKOUT_TOTAL`, and any selectable
+ * basis are refused by construction: a commission computed from a number the
+ * Promoter controls would let the Promoter change what the creator owes them, and
+ * the creator agreed to neither the number nor the change.
+ */
+export const COMMISSION_METHODS = ["PERCENT_OF_WHOLESALE", "FIXED_AMOUNT"] as const;
+export const CommissionMethod = z.enum(COMMISSION_METHODS);
+export type CommissionMethod = z.infer<typeof CommissionMethod>;
+
+export const PercentOfWholesaleCommission = z.strictObject({
+  method: z.literal("PERCENT_OF_WHOLESALE"),
+  commissionBasisPoints: z
     .int()
     .min(MIN_COMMISSION_BASIS_POINTS, "commission must be greater than 0 basis points")
     .max(MAX_COMMISSION_BASIS_POINTS, "commission may not exceed 10,000 basis points"),
 });
 
-export const FixedCommission = z.strictObject({
-  kind: z.literal("FIXED"),
-  amountMinorUnits: MinorUnitAmount,
-  currency: CurrencyCode,
+export const FixedAmountCommission = z.strictObject({
+  method: z.literal("FIXED_AMOUNT"),
+  fixedCommissionMinorUnits: MinorUnitAmount,
+  fixedCommissionCurrency: CurrencyCode,
 });
 
-export const OfferCommission = z.discriminatedUnion("kind", [PercentageCommission, FixedCommission]);
+/**
+ * Strictly discriminated, so a percentage carries no fixed fields and a fixed
+ * amount carries no basis points.
+ *
+ * The two stay **semantically distinct even when they produce the same number**
+ * for one wholesale price: "20% of whatever I charge" and "£2.00" mean different
+ * things the moment the wholesale price moves, and collapsing them would silently
+ * reinterpret the creator's intent at the next price change.
+ */
+export const OfferCommission = z.discriminatedUnion("method", [
+  PercentOfWholesaleCommission,
+  FixedAmountCommission,
+]);
 export type OfferCommission = z.infer<typeof OfferCommission>;
 
 export const NotPromotable = z.strictObject({
@@ -242,31 +276,31 @@ export const NotPromotable = z.strictObject({
 
 export const Promotable = z.strictObject({
   type: z.literal("PROMOTABLE"),
-  /** Seller-controlled. A promoter selects an Offer; it never sets these terms. */
+  /** Creator-controlled. A promoter selects an Offer; it never sets these terms. */
   commission: OfferCommission,
 });
 
 export const OfferPromotion = z.discriminatedUnion("type", [NotPromotable, Promotable]);
 export type OfferPromotion = z.infer<typeof OfferPromotion>;
 
-// — Commercial terms (price and promotion together) —
+// — Commercial terms (wholesale price and promotion together) —
 
 /**
- * Price and promotion in one object, because the rules that bind them are
- * cross-field and must be validated together rather than trusted to a caller.
+ * Wholesale price and promotion in one object, because the rules that bind them
+ * are cross-field and must be validated together rather than trusted to a caller.
  *
  * Refused combinations, each for a stated reason:
- *   - **PROMOTABLE on a FREE Offer** — there is no sale proceeds to pay a
- *     commission from. Non-monetary referral incentives are deferred, not
- *     smuggled in as a commission on nothing.
- *   - **Fixed commission in a different currency than the Offer** — a cross-rate
- *     the Offer never agreed to.
- *   - **Fixed commission exceeding the price** — a sale that pays out more than
- *     it takes in.
+ *   - **PROMOTABLE on a FREE Offer** — there are no proceeds to pay a commission
+ *     from. Non-monetary referral incentives are deferred, not smuggled in as a
+ *     commission on nothing.
+ *   - **Fixed commission in a different currency than the wholesale price** — a
+ *     cross-rate the Offer never agreed to.
+ *   - **Fixed commission exceeding the wholesale price** — a sale that would owe
+ *     the promoter more than the creator is due.
  *
  * Earned commissions, attribution, settlement, and payouts are **not** here.
- * Those are financial records (relational-first, ADR §1) about sales that
- * happened; this is the standing term a seller offers.
+ * Those are financial records about sales that happened; this is the standing
+ * term a creator offers.
  */
 export const OfferCommercialTerms = z
   .strictObject({
@@ -286,24 +320,141 @@ export const OfferCommercialTerms = z
     }
 
     const commission = terms.promotion.commission;
-    if (commission.kind !== "FIXED") return;
+    if (commission.method !== "FIXED_AMOUNT") return;
 
-    if (commission.currency !== terms.price.currency) {
+    if (commission.fixedCommissionCurrency !== terms.price.wholesalePriceCurrency) {
       ctx.addIssue({
         code: "custom",
-        path: ["promotion", "commission", "currency"],
-        message: "a fixed commission must be in the same currency as the Offer price",
+        path: ["promotion", "commission", "fixedCommissionCurrency"],
+        message: "a fixed commission must be in the same currency as the wholesale price",
       });
     }
-    if (commission.amountMinorUnits > terms.price.amountMinorUnits) {
+    if (commission.fixedCommissionMinorUnits > terms.price.wholesalePriceMinorUnits) {
       ctx.addIssue({
         code: "custom",
-        path: ["promotion", "commission", "amountMinorUnits"],
-        message: "a fixed commission must not exceed the Offer price",
+        path: ["promotion", "commission", "fixedCommissionMinorUnits"],
+        message: "a fixed commission must not exceed the wholesale price",
       });
     }
   });
 export type OfferCommercialTerms = z.infer<typeof OfferCommercialTerms>;
+
+// — Deterministic economics —
+
+/**
+ * The commission-calculation policy these amounts were produced under.
+ *
+ * Versioned separately from the capsule mapping version: **how much a creator is
+ * owed is a business rule, and how a capsule is shaped is a projection rule.**
+ * Tying them together would make a presentational change look like a repricing.
+ */
+export const COMMISSION_CALCULATION_POLICY_VERSIONS = ["WHOLESALE_COMMISSION_V1"] as const;
+export const CommissionCalculationPolicyVersion = z.enum(COMMISSION_CALCULATION_POLICY_VERSIONS);
+export type CommissionCalculationPolicyVersion = z.infer<
+  typeof CommissionCalculationPolicyVersion
+>;
+
+export const CURRENT_COMMISSION_CALCULATION_POLICY: CommissionCalculationPolicyVersion =
+  "WHOLESALE_COMMISSION_V1";
+
+/** Half-up to the minor unit — stated as a named policy, not left to a library. */
+export const COMMISSION_ROUNDING_POLICY = "HALF_UP_TO_MINOR_UNIT" as const;
+
+/**
+ * The largest minor-unit amount this contract accepts.
+ *
+ * `Number.MAX_SAFE_INTEGER` is the boundary past which integer arithmetic stops
+ * being exact in JavaScript. Amounts are checked against it **after** the BigInt
+ * computation, so an overflow is refused rather than silently rounded.
+ */
+export const MAX_MINOR_UNIT_AMOUNT = Number.MAX_SAFE_INTEGER;
+
+export const OfferEconomics = z.strictObject({
+  calculatedCommissionMinorUnits: z.int().min(0).max(MAX_MINOR_UNIT_AMOUNT),
+  calculatedCreatorGrossProceedsMinorUnits: z.int().min(0).max(MAX_MINOR_UNIT_AMOUNT),
+  commissionCalculationPolicyVersion: CommissionCalculationPolicyVersion,
+});
+export type OfferEconomics = z.infer<typeof OfferEconomics>;
+
+export class OfferEconomicsError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OfferEconomicsError";
+  }
+}
+
+/**
+ * Compute the exact commission and creator gross proceeds for validated terms.
+ *
+ * Pure: no clock, no randomness, no I/O. Same inputs, same outputs, always.
+ *
+ * **Percentage arithmetic runs in `BigInt`.** `wholesale × basisPoints` exceeds
+ * `Number.MAX_SAFE_INTEGER` for perfectly ordinary amounts once a currency has
+ * small units, and a silent precision loss in money is the kind of bug that
+ * surfaces as a rounding complaint months later. The result is converted back
+ * only after it is confirmed to be in range.
+ *
+ * Rounding is **half-up to the minor unit**: `floor((wholesale × bp + 5000) /
+ * 10000)`. Fixed commissions need no rounding at all.
+ *
+ * Deliberately **excludes** Monacado fees, payment-processing fees, taxes,
+ * shipping, refunds, chargebacks, and payout adjustments — "gross proceeds before
+ * separately disclosed fees" means exactly that, and folding a fee in here would
+ * make the creator's disclosed number quietly wrong.
+ */
+export function calculateOfferEconomics(terms: OfferCommercialTerms): OfferEconomics {
+  const parsed = OfferCommercialTerms.parse(terms);
+
+  if (parsed.price.type === "FREE") {
+    return {
+      calculatedCommissionMinorUnits: 0,
+      calculatedCreatorGrossProceedsMinorUnits: 0,
+      commissionCalculationPolicyVersion: CURRENT_COMMISSION_CALCULATION_POLICY,
+    };
+  }
+
+  const wholesale = parsed.price.wholesalePriceMinorUnits;
+
+  let commission = 0;
+  if (parsed.promotion.type === "PROMOTABLE") {
+    const terms_ = parsed.promotion.commission;
+    if (terms_.method === "PERCENT_OF_WHOLESALE") {
+      const scaled =
+        (BigInt(wholesale) * BigInt(terms_.commissionBasisPoints) + 5_000n) / 10_000n;
+      if (scaled > BigInt(MAX_MINOR_UNIT_AMOUNT)) {
+        throw new OfferEconomicsError(
+          "calculated commission exceeds the safe minor-unit range",
+        );
+      }
+      commission = Number(scaled);
+    } else {
+      commission = terms_.fixedCommissionMinorUnits;
+    }
+  }
+
+  /* Guaranteed by the term refinements above; asserted because a violated
+     invariant must fail loudly rather than produce negative proceeds. */
+  if (commission > wholesale) {
+    throw new OfferEconomicsError("calculated commission exceeds the wholesale price");
+  }
+
+  return {
+    calculatedCommissionMinorUnits: commission,
+    calculatedCreatorGrossProceedsMinorUnits: wholesale - commission,
+    commissionCalculationPolicyVersion: CURRENT_COMMISSION_CALCULATION_POLICY,
+  };
+}
+
+/** True when a stored economics snapshot exactly matches the calculator. */
+export function economicsMatch(terms: OfferCommercialTerms, stored: OfferEconomics): boolean {
+  const computed = calculateOfferEconomics(terms);
+  return (
+    computed.calculatedCommissionMinorUnits === stored.calculatedCommissionMinorUnits &&
+    computed.calculatedCreatorGrossProceedsMinorUnits ===
+      stored.calculatedCreatorGrossProceedsMinorUnits &&
+    computed.commissionCalculationPolicyVersion === stored.commissionCalculationPolicyVersion
+  );
+}
 
 // — Effective interval —
 
@@ -380,7 +531,7 @@ export function normalizeOfferEffectiveIntervalInput(
  * state, Node identity, capsule identity, retention state, or a metadata bag —
  * so none of them can arrive without a phase that decides to add it.
  */
-export const OfferSourceRecord = z.strictObject({
+export const OfferSourceRecordBase = z.strictObject({
   // Identity
   offerSourceRecordId: OfferSourceRecordId,
   internalOfferId: InternalOfferId,
@@ -407,9 +558,33 @@ export const OfferSourceRecord = z.strictObject({
   effectiveInterval: OfferEffectiveIntervalField,
 
   // Record control — explicit instants, never read from a clock here
+  /**
+   * The exact economics the creator was shown, stored alongside their inputs so
+   * the accepted numbers can be reproduced and audited rather than recomputed
+   * under whatever policy happens to be current later.
+   */
+  economics: OfferEconomics,
+
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 });
+
+/** Stored economics must match the deterministic calculator exactly. */
+function economicsRefine(
+  value: { terms: OfferCommercialTerms; economics: OfferEconomics },
+  ctx: z.RefinementCtx,
+): void {
+  if (!economicsMatch(value.terms, value.economics)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["economics"],
+      message:
+        "stored economics do not match the authoritative calculation for these commercial terms",
+    });
+  }
+}
+
+export const OfferSourceRecord = OfferSourceRecordBase.superRefine(economicsRefine);
 export type OfferSourceRecord = z.infer<typeof OfferSourceRecord>;
 
 // — The immutable source version —
@@ -427,7 +602,7 @@ export type OfferSourceRecord = z.infer<typeof OfferSourceRecord>;
  * projection mapping is a capsulization-layer control (ADR §12.2), and this is
  * the transactional layer.
  */
-export const OfferSourceVersion = z.strictObject({
+export const OfferSourceVersionBase = z.strictObject({
   // Identity and lineage
   offerSourceRecordId: OfferSourceRecordId,
   sourceRecordVersion: OfferSourceRecordVersion,
@@ -449,11 +624,228 @@ export const OfferSourceVersion = z.strictObject({
   effectiveInterval: OfferEffectiveIntervalField,
 
   // Authorization trace — who authorized this change, and when it was recorded
+  /** The exact economics accepted for this version. */
+  economics: OfferEconomics,
+
   authorizedBySellerParticipantId: MarketplaceParticipantId,
   authorizedByActorId: AuthorizingActorId,
   recordedAt: z.iso.datetime(),
 });
+
+export const OfferSourceVersion = OfferSourceVersionBase.superRefine(economicsRefine);
 export type OfferSourceVersion = z.infer<typeof OfferSourceVersion>;
+
+// — Creator disclosure and exact-version confirmation —
+
+/**
+ * Everything a creator must see **before** activating an Offer.
+ *
+ * The exact commission and exact gross proceeds are here because a rate alone is
+ * not disclosure: what a creator wants to know is what they receive per sale, and
+ * making them compute it themselves is how a surprise becomes possible.
+ *
+ * Fees, taxes, shipping, refunds, and payout adjustments are deliberately absent —
+ * this is gross proceeds **before separately disclosed fees**, and folding one in
+ * would make the disclosed number quietly wrong.
+ */
+export const CreatorEconomicsDisclosure = z.strictObject({
+  offerSourceRecordId: OfferSourceRecordId,
+  /** The exact version whose economics are being shown. */
+  sourceRecordVersion: OfferSourceRecordVersion,
+  terms: OfferCommercialTerms,
+  economics: OfferEconomics,
+});
+export type CreatorEconomicsDisclosure = z.infer<typeof CreatorEconomicsDisclosure>;
+
+/** Build the disclosure for one version's terms. Pure; nothing is persisted. */
+export function buildCreatorEconomicsDisclosure(input: {
+  offerSourceRecordId: string;
+  sourceRecordVersion: string;
+  terms: OfferCommercialTerms;
+}): CreatorEconomicsDisclosure {
+  return CreatorEconomicsDisclosure.parse({
+    offerSourceRecordId: input.offerSourceRecordId,
+    sourceRecordVersion: input.sourceRecordVersion,
+    terms: input.terms,
+    economics: calculateOfferEconomics(input.terms),
+  });
+}
+
+/**
+ * A creator's confirmation of the economics they were shown.
+ *
+ * Deliberately **not** a bare boolean. `creatorConfirmedEconomics: true` says
+ * nothing about *which* economics were confirmed, so it would survive a price
+ * change untouched and authorize terms the creator never saw.
+ *
+ * It binds to **both halves of the identity** — the source-record id *and* the
+ * version label — because a version label alone is not unique across Offers. Two
+ * Offers each have a "v3", and a confirmation carrying only "v3" would authorize
+ * the wrong Offer's economics with amounts that happened to match.
+ */
+export const CreatorEconomicsConfirmation = z.strictObject({
+  /** The exact Offer whose disclosure the creator confirmed. */
+  confirmedOfferSourceRecordId: OfferSourceRecordId,
+  /** The exact version of that Offer. */
+  confirmedOfferSourceRecordVersion: OfferSourceRecordVersion,
+  calculatedCommissionMinorUnits: z.int().min(0).max(MAX_MINOR_UNIT_AMOUNT),
+  calculatedCreatorGrossProceedsMinorUnits: z.int().min(0).max(MAX_MINOR_UNIT_AMOUNT),
+  commissionCalculationPolicyVersion: CommissionCalculationPolicyVersion,
+});
+export type CreatorEconomicsConfirmation = z.infer<typeof CreatorEconomicsConfirmation>;
+
+export const CONFIRMATION_MISMATCH_REASONS = [
+  "CONFIRMATION_MISSING",
+  "CONFIRMATION_SOURCE_RECORD_MISMATCH",
+  "CONFIRMATION_VERSION_MISMATCH",
+  "CONFIRMATION_AMOUNTS_STALE",
+  "CONFIRMATION_POLICY_VERSION_MISMATCH",
+] as const;
+export const ConfirmationMismatchReason = z.enum(CONFIRMATION_MISMATCH_REASONS);
+export type ConfirmationMismatchReason = z.infer<typeof ConfirmationMismatchReason>;
+
+/**
+ * Whether a confirmation authorizes activating **this** Offer version's economics.
+ *
+ * Five distinct failures, five codes: absent, for another Offer, for another
+ * version of this Offer, carrying amounts that no longer match, or computed under
+ * a different policy. The two identity components are compared **independently**,
+ * so "right Offer, wrong version" and "right version label, wrong Offer" are
+ * never conflated — an operator reading a refusal should not have to guess which.
+ */
+export function checkCreatorEconomicsConfirmation(input: {
+  offerSourceRecordId: string;
+  sourceRecordVersion: string;
+  terms: OfferCommercialTerms;
+  confirmation: CreatorEconomicsConfirmation | null;
+}): ConfirmationMismatchReason | undefined {
+  const { confirmation } = input;
+  if (confirmation === null) return "CONFIRMATION_MISSING";
+  if (confirmation.confirmedOfferSourceRecordId !== input.offerSourceRecordId) {
+    return "CONFIRMATION_SOURCE_RECORD_MISMATCH";
+  }
+  if (confirmation.confirmedOfferSourceRecordVersion !== input.sourceRecordVersion) {
+    return "CONFIRMATION_VERSION_MISMATCH";
+  }
+  const authoritative = calculateOfferEconomics(input.terms);
+  if (
+    confirmation.commissionCalculationPolicyVersion !==
+    authoritative.commissionCalculationPolicyVersion
+  ) {
+    return "CONFIRMATION_POLICY_VERSION_MISMATCH";
+  }
+  if (
+    confirmation.calculatedCommissionMinorUnits !==
+      authoritative.calculatedCommissionMinorUnits ||
+    confirmation.calculatedCreatorGrossProceedsMinorUnits !==
+      authoritative.calculatedCreatorGrossProceedsMinorUnits
+  ) {
+    return "CONFIRMATION_AMOUNTS_STALE";
+  }
+  return undefined;
+}
+
+// — Business change classification —
+
+/**
+ * What kind of business change happened between two immutable versions.
+ *
+ * `WHOLESALE_PRICE_CHANGED` **absorbs** the derived commission movement under a
+ * percentage method: the creator changed one thing, and reporting two changes
+ * would tell a promoter their commission terms were altered when they were not.
+ * `COMMISSION_TERMS_CHANGED` means the creator changed the method, the rate, or
+ * the fixed amount itself.
+ */
+export const OFFER_BUSINESS_CHANGE_CATEGORIES = [
+  "COMMERCIAL_AVAILABILITY_CHANGED",
+  "WHOLESALE_PRICE_CHANGED",
+  "COMMISSION_TERMS_CHANGED",
+  "OTHER_MATERIAL_OFFER_CHANGE",
+] as const;
+export const OfferBusinessChangeCategory = z.enum(OFFER_BUSINESS_CHANGE_CATEGORIES);
+export type OfferBusinessChangeCategory = z.infer<typeof OfferBusinessChangeCategory>;
+
+type OfferBusinessState = Pick<
+  OfferSourceVersion,
+  | "internalProductId"
+  | "sellerParticipantId"
+  | "lifecycle"
+  | "availability"
+  | "terms"
+  | "effectiveInterval"
+>;
+
+function commissionTermsOf(terms: OfferCommercialTerms): unknown {
+  return terms.promotion.type === "PROMOTABLE" ? terms.promotion.commission : null;
+}
+
+function wholesaleOf(terms: OfferCommercialTerms): unknown {
+  return terms.price.type === "PAID"
+    ? {
+        amount: terms.price.wholesalePriceMinorUnits,
+        currency: terms.price.wholesalePriceCurrency,
+      }
+    : null;
+}
+
+/**
+ * The deterministic order categories are reported in.
+ *
+ * Fixed so two callers comparing results never disagree because of ordering, and
+ * so a test can assert an exact array rather than a set.
+ */
+export const OFFER_BUSINESS_CHANGE_ORDER: readonly OfferBusinessChangeCategory[] = Object.freeze([
+  "COMMERCIAL_AVAILABILITY_CHANGED",
+  "WHOLESALE_PRICE_CHANGED",
+  "COMMISSION_TERMS_CHANGED",
+  "OTHER_MATERIAL_OFFER_CHANGE",
+]);
+
+/**
+ * Classify the business changes between two validated versions.
+ *
+ * Returns **zero or more** categories in `OFFER_BUSINESS_CHANGE_ORDER`: one
+ * governed edit can legitimately change availability, wholesale price, and
+ * commission terms at once, and reporting only the first would leave a promoter
+ * unaware of the rest.
+ *
+ * **A calculated commission that moved solely because the wholesale price moved
+ * adds no `COMMISSION_TERMS_CHANGED`** — the creator changed one thing, and
+ * saying otherwise would tell a promoter their terms were altered when they were
+ * not. Only the commission *inputs* (method, basis points, fixed amount, fixed
+ * currency) count.
+ *
+ * **Classification only.** It creates no notification, identifies no recipient,
+ * mutates no Listing, persists no event, and starts no job — those belong to the
+ * future notification phase, and a classifier that did any of them would make
+ * "what changed?" impossible to ask without side effects.
+ */
+export function classifyOfferBusinessChanges(
+  prior: OfferBusinessState,
+  next: OfferBusinessState,
+): readonly OfferBusinessChangeCategory[] {
+  const categories: OfferBusinessChangeCategory[] = [];
+  const differs = (a: unknown, b: unknown) => canonicalJsonString(a) !== canonicalJsonString(b);
+
+  if (prior.availability !== next.availability) categories.push("COMMERCIAL_AVAILABILITY_CHANGED");
+  if (differs(wholesaleOf(prior.terms), wholesaleOf(next.terms))) {
+    categories.push("WHOLESALE_PRICE_CHANGED");
+  }
+  if (differs(commissionTermsOf(prior.terms), commissionTermsOf(next.terms))) {
+    categories.push("COMMISSION_TERMS_CHANGED");
+  }
+  if (
+    prior.internalProductId !== next.internalProductId ||
+    prior.sellerParticipantId !== next.sellerParticipantId ||
+    prior.lifecycle !== next.lifecycle ||
+    differs(prior.effectiveInterval, next.effectiveInterval)
+  ) {
+    categories.push("OTHER_MATERIAL_OFFER_CHANGE");
+  }
+  return Object.freeze(
+    OFFER_BUSINESS_CHANGE_ORDER.filter((category) => categories.includes(category)),
+  );
+}
 
 // — Material versus operational change classification —
 
@@ -692,6 +1084,16 @@ export const OFFER_SPECIFIC_REASON_CODES = [
   "OFFER_LIFECYCLE_TRANSITION_NOT_PERMITTED",
   /** The Offer is in a terminal state; nothing further may be authorized. */
   "OFFER_LIFECYCLE_TERMINAL",
+  /** No creator confirmation of this version's economics was supplied. */
+  "CREATOR_ECONOMICS_NOT_CONFIRMED",
+  /** The confirmation names a different Offer. */
+  "CREATOR_CONFIRMATION_SOURCE_RECORD_MISMATCH",
+  /** The confirmation names a different version of this Offer. */
+  "CREATOR_CONFIRMATION_VERSION_MISMATCH",
+  /** The confirmed amounts no longer match the authoritative calculation. */
+  "CREATOR_CONFIRMATION_STALE",
+  /** The confirmation was computed under a different calculation policy. */
+  "CREATOR_CONFIRMATION_POLICY_MISMATCH",
 ] as const;
 export const OfferSpecificReasonCode = z.enum(OFFER_SPECIFIC_REASON_CODES);
 
@@ -741,6 +1143,19 @@ export type OfferAuthorityRequest = z.infer<typeof OfferAuthorityRequest>;
 /** A request about an Offer that already exists, and therefore has a state. */
 export const OfferLifecycleActionRequest = OfferAuthorityRequest.extend({
   lifecycle: OfferLifecycleState,
+  /**
+   * The version and terms being acted on, plus the creator's confirmation of the
+   * economics they were shown. Supplied for activation; absent elsewhere because
+   * standing an Offer down asserts nothing about its economics.
+   */
+  economicsContext: z
+    .strictObject({
+      offerSourceRecordId: OfferSourceRecordId,
+      sourceRecordVersion: OfferSourceRecordVersion,
+      terms: OfferCommercialTerms,
+      confirmation: CreatorEconomicsConfirmation.nullable(),
+    })
+    .optional(),
 });
 export type OfferLifecycleActionRequest = z.infer<typeof OfferLifecycleActionRequest>;
 
@@ -831,12 +1246,50 @@ function evaluateLifecycleAction(
   return allow(capability);
 }
 
-/** Taking an Offer live. Full commerce gates plus Product authority. */
+const CONFIRMATION_REASON_BY_MISMATCH: Record<ConfirmationMismatchReason, OfferReasonCode> = {
+  CONFIRMATION_MISSING: "CREATOR_ECONOMICS_NOT_CONFIRMED",
+  CONFIRMATION_SOURCE_RECORD_MISMATCH: "CREATOR_CONFIRMATION_SOURCE_RECORD_MISMATCH",
+  CONFIRMATION_VERSION_MISMATCH: "CREATOR_CONFIRMATION_VERSION_MISMATCH",
+  CONFIRMATION_AMOUNTS_STALE: "CREATOR_CONFIRMATION_STALE",
+  CONFIRMATION_POLICY_VERSION_MISMATCH: "CREATOR_CONFIRMATION_POLICY_MISMATCH",
+};
+
+/**
+ * Going live requires the creator to have confirmed **this exact version's**
+ * economics.
+ *
+ * A material change to the wholesale price or commission terms mints a new
+ * version, so a confirmation bound to the previous one stops matching by
+ * construction — the creator has to look again before the new terms can sell.
+ */
+function creatorConfirmationProblem(
+  request: OfferLifecycleActionRequest,
+): OfferReasonCode | undefined {
+  const context = request.economicsContext;
+  if (context === undefined) return "CREATOR_ECONOMICS_NOT_CONFIRMED";
+  const mismatch = checkCreatorEconomicsConfirmation({
+    offerSourceRecordId: context.offerSourceRecordId,
+    sourceRecordVersion: context.sourceRecordVersion,
+    terms: context.terms,
+    confirmation: context.confirmation,
+  });
+  return mismatch === undefined ? undefined : CONFIRMATION_REASON_BY_MISMATCH[mismatch];
+}
+
+/**
+ * Taking an Offer live. Full commerce gates, Product authority, **and the
+ * creator's exact-version economics confirmation.**
+ */
 export function canActivateOffer(request: OfferLifecycleActionRequest): OfferAuthorityDecision {
-  return evaluateLifecycleAction("offer:activate", request, "ACTIVE", {
+  const gated = evaluateLifecycleAction("offer:activate", request, "ACTIVE", {
     requiresCommerce: true,
     requiresProductAuthority: true,
   });
+  if (!isOfferActionAllowed(gated)) return gated;
+  const confirmation = creatorConfirmationProblem(request);
+  return confirmation === undefined
+    ? gated
+    : { capability: "offer:activate", decision: "DENY", reasonCodes: [confirmation] };
 }
 
 /** Resuming a suspended Offer — live again, so the same gates as activation. */

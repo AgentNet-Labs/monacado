@@ -22,9 +22,9 @@ the truth it projects exists (ADR §12;
 | **0M.1** | Account, role, activation, and review-authority architecture | **complete** — `084b315` |
 | **0M.2A** | Authoritative Offer Source Model | **complete** — `4687772` |
 | **0M.2B** | Offer Capsule Projection Shape | **complete** — `cb4a96d` |
-| **0M.3A** | Authoritative Storefront Source Model | **complete** — this commit |
+| **0M.3A** | Authoritative Storefront Source Model | **complete** — `fe0f803` |
 | **0M.3B** | Storefront Capsule Projection Shape | **not started** |
-| **0M.2C** | **Offer economics correction** — required before any Listing pricing, checkout, or settlement | **required, not started** |
+| **0M.2C** | **Offer economics correction** — required before any Listing pricing, checkout, or settlement | **complete** |
 | **0M.4A′** | **Authoritative Listing source model** — seller-controlled vs promoted, promoter retail price, upstream blocking | **not started** |
 | **0M.N** | **Notification records** — durable admin-panel notices, deduplication, recipients, notice states | **not started** |
 | 0M.4A | Authoritative Listing Source Model | planned |
@@ -32,6 +32,11 @@ the truth it projects exists (ADR §12;
 | 0M.5 | Participant persistence and draft onboarding | planned |
 | 0M.6 | Payment-provider onboarding and activation | planned |
 | 0M.7 | Buyer checkout, Order, commission, payout, and review-submission foundation | planned |
+
+**Nothing downstream of 0M.2C has begun.** Storefront capsule projection (0M.3B),
+authoritative Listing work, notification records, checkout, and settlement are all
+**not started** — no contract, no persistence, no route, no orchestration. The
+corrected Offer economics are a *contract*; nothing consumes them yet.
 
 > **Renumbering note.** Splitting Storefront and Listing into their own
 > source-model/projection pairs consumed the numbers 0M.3 and 0M.4, so participant
@@ -131,11 +136,23 @@ Full detail:
 
 ## 0M.2C — Offer economics correction (required)
 
-**Required, not started.** The committed Offer contracts (`0M.2A`, `0M.2B`) were
-written before the final wholesale-price interpretation and **must be corrected
-before any Listing pricing, checkout, or settlement implementation begins.**
+**Complete.** The committed Offer contracts (`0M.2A`, `0M.2B`) were written
+before the final wholesale-price interpretation and are corrected here, **before
+any Listing pricing, checkout, or settlement implementation begins.**
 
-The correction must address:
+Corrected: wholesale-price terminology; `PERCENT_OF_WHOLESALE` and `FIXED_AMOUNT`;
+deterministic BigInt half-up commission calculation under
+`WHOLESALE_COMMISSION_V1`; exact creator commission and gross-proceeds disclosure;
+creator confirmation bound to **both** the Offer source-record id and its version
+label, which a material change invalidates by construction; **multi-category**
+business-change classification in a deterministic order; and the Offer capsule's
+public economic shape, pinned to capsule version **`2.0.0`** and mapping version
+**`offer-projection/2.0.0`** exactly.
+
+No Offer persistence or production publication exists, so **no migration or
+republishing is performed**.
+
+The correction addressed:
 
 - **wholesale-price terminology** — the Offer's price is what the *creator*
   receives, not what a buyer pays;
@@ -147,6 +164,12 @@ The correction must address:
   source version, and later Offer changes never alter an accepted order;
 - **compatibility with the existing Offer capsule projection**, which is already
   committed and published-shaped.
+
+The downstream behaviours documented below — availability flow-through,
+wholesale-price review with Listing deactivation, commission-change notice without
+deactivation, and canonical admin-panel notices — are **documented policy only**.
+0M.2C implements none of them; they belong to the Listing and notification phases,
+which have not started.
 
 **Do not start this correction as part of 0M.3A.** The economics are documented in
 [`AUTHORITATIVE_STOREFRONT_SOURCE_MODEL.md`](AUTHORITATIVE_STOREFRONT_SOURCE_MODEL.md)

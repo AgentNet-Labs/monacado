@@ -1,4 +1,4 @@
-# Offer Capsule Projection Shape (Phase 0M.2B)
+# Offer Capsule Projection Shape (Phase 0M.2B, corrected by 0M.2C)
 
 Status: **binding** for the Offer projection. Subordinate to
 [`TRANSACTIONAL_TRUTH_AND_CAPSULE_PROJECTION_ADR.md`](TRANSACTIONAL_TRUTH_AND_CAPSULE_PROJECTION_ADR.md)
@@ -103,8 +103,8 @@ established building blocks from `capsule/envelope.ts`.
 `data` carries:
 
 - `commercialState` — `AVAILABLE` | `TEMPORARILY_UNAVAILABLE` | `ENDED`;
-- `price` — `{ priceType: "FREE" }` or `{ priceType: "PAID", priceMinorUnits,
-  priceCurrency }`;
+- `price` — `{ priceType: "FREE" }` or `{ priceType: "PAID",
+  wholesalePriceMinorUnits, wholesalePriceCurrency }` (§6);
 - `promotable`, and `commission` **if and only if** promotable;
 - `validFrom` / `validThrough` where the source holds them;
 - `relationships` — `itemOffered` (Product Node) and `offeredBy` (authority Node).
@@ -152,36 +152,74 @@ The source rules survive projection unchanged, and are **re-validated on the
 output** rather than trusted:
 
 - `FREE` emits no amount and no currency — there is no field for either;
-- `PAID` emits positive integer **minor units** and a structural uppercase
-  currency. schema.org `price` is a decimal, which is why `priceMinorUnits` is a
-  Monacado term: emitting `9.99` would hand a consumer a float where the record
-  holds an integer;
-- promotion requires `PAID`; a fixed commission cannot exceed the price;
+- `PAID` emits the positive integer **wholesale** minor units and a structural
+  uppercase currency. schema.org `price` is a decimal, which is why
+  `wholesalePriceMinorUnits` is a Monacado term: emitting `9.99` would hand a
+  consumer a float where the record holds an integer;
+- promotion requires `PAID`; a commission cannot exceed the wholesale price;
 - a fixed commission **states its own currency** — see below.
 
-### Fixed-commission currency
+### Wholesale price and commission (corrected in 0M.2C)
 
-A fixed commission publishes both halves of the money:
+The capsule publishes **wholesale economics**, not a generic price:
 
 ```
-{ commissionType: "FIXED", fixedCommissionMinorUnits, fixedCommissionCurrency }
+price:      { priceType: "PAID", wholesalePriceMinorUnits, wholesalePriceCurrency }
+commission: { commissionMethod: "PERCENT_OF_WHOLESALE", commissionBasisPoints,
+              calculatedCommissionMinorUnits }
+        or  { commissionMethod: "FIXED_AMOUNT", fixedCommissionMinorUnits,
+              fixedCommissionCurrency, calculatedCommissionMinorUnits }
 ```
 
-**A monetary amount published without a currency is not a monetary amount.** A
-consumer reading the commission would otherwise have to reach into a sibling
-field to learn what the number means, and any future consumer that forgot to
-would be silently wrong.
+**`wholesalePriceMinorUnits` is what the creator is owed, not what a buyer pays.**
+The buyer-facing retail price belongs to a future Listing and is set by the
+Promoter; it has no field here and never will.
 
-The currency is taken **directly from the source commission** — not from the
-price, and never inferred, substituted, or normalized. The source already
-requires the two to be equal, and the published shape **re-checks** it: a capsule
-whose commission is denominated differently from its price fails validation and
-cannot be hand-assembled. Copying from the price instead would paper over a
-source that somehow disagreed, which is exactly the failure worth surfacing.
+**The exact calculated commission is published** because a rate alone forces every
+consumer to re-derive it — and to agree with Monacado's rounding while doing so.
+The mapper recomputes it from the source terms with the authoritative calculator
+rather than copying the version's stored snapshot, so a projection can never
+publish an amount the calculator would not produce.
 
-A **percentage** commission carries basis points only — there is no money in it
-to denominate, and a currency field is refused. **FREE** and **NOT_PROMOTABLE**
-Offers publish no commission at all, and therefore no commission currency.
+A fixed commission states **its own currency**: a monetary amount published
+without one is not a monetary amount. It must equal the wholesale currency and is
+checked against it, not assumed. A percentage carries basis points; there is no
+money in a rate to denominate.
+
+**Creator gross proceeds are deliberately not a public claim.** What a creator
+nets is between the creator and Monacado; a promoter needs the commission, and a
+buyer needs neither. It remains part of the creator-facing authoritative
+disclosure and the source economics.
+
+Also excluded: promoter retail price, retail-price floors, MSRP, creator
+confirmation, platform and payment-processing fees, orders, settlement, Listing
+state, and notification state.
+
+## 6a. Breaking version change (0M.2C)
+
+This is a **breaking correction to the capsule's public economic semantics**. A
+consumer reading `priceMinorUnits` as "what a buyer pays" and one reading
+`wholesalePriceMinorUnits` as "what the creator is owed" cannot both be right, so
+the old version numbers may not be reused:
+
+- **capsule version exactly `2.0.0`** — pinned, not treated as a floor:
+  - a `1.x` context is refused with `STALE_CAPSULE_MAJOR_VERSION`;
+  - `3.0.0` and above are refused with `UNSUPPORTED_CAPSULE_VERSION`;
+  - an unreviewed `2.1.0` or `2.0.1` is **also** refused. A future minor would
+    carry claims this mapper cannot produce, and accepting it implicitly would let
+    a caller label output as a shape it is not. Supporting a later version is an
+    explicit, reviewed change here — never a silent one.
+- **projection mapping version exactly `offer-projection/2.0.0`** — replaced
+  rather than incremented in place, so a stored mapping version can never be
+  mistaken for the pre-correction mapping. Any other value is refused with
+  `UNSUPPORTED_MAPPING_VERSION`.
+
+There is **no compatibility alias**: one schema does not carry both economic
+meanings.
+
+**No Offer persistence or production publication exists**, so nothing has been
+published under the old semantics — **no migration or republishing operation is
+performed or required.**
 
 **Absent interval bounds are omitted keys**, never `null` — one canonical public
 representation, mirroring the source's single canonical `null`. `validFrom` and

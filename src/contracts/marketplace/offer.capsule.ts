@@ -49,6 +49,7 @@ import {
 import {
   CurrencyCode,
   MAX_COMMISSION_BASIS_POINTS,
+  MAX_MINOR_UNIT_AMOUNT,
   MIN_COMMISSION_BASIS_POINTS,
   MinorUnitAmount,
 } from "./offer-source";
@@ -95,10 +96,17 @@ export const PublicFreePrice = z.strictObject({
   priceType: z.literal("FREE"),
 });
 
+/**
+ * The **wholesale** price — what the creator is owed, not what a buyer pays.
+ *
+ * The buyer-facing retail price belongs to a future Listing and set by the
+ * Promoter; it has no field here and never will. Publishing a generic "price"
+ * was the ambiguity this correction removes.
+ */
 export const PublicPaidPrice = z.strictObject({
   priceType: z.literal("PAID"),
-  priceMinorUnits: MinorUnitAmount,
-  priceCurrency: CurrencyCode,
+  wholesalePriceMinorUnits: MinorUnitAmount,
+  wholesalePriceCurrency: CurrencyCode,
 });
 
 /** A FREE Offer has no field for an amount or a currency. */
@@ -111,31 +119,38 @@ export type PublicOfferPrice = z.infer<typeof PublicOfferPrice>;
 // — Public commission —
 
 /**
- * The commission a seller offers a promoter.
+ * The commission a creator offers a promoter, and the **exact amount** a
+ * completed sale owes.
  *
- * A fixed commission **states its own currency**. It is required to equal the
- * Offer's currency and is validated against it below — but a monetary amount
- * published without a currency is not a monetary amount, and a consumer reading
- * the commission would have to reach into a sibling field to learn what the
- * number means. The redundancy is the point: it is checked, not assumed.
+ * The calculated amount is published because a rate alone forces every consumer
+ * to re-derive it — and to agree with Monacado's rounding while doing so.
  *
- * A percentage commission carries basis points only; there is no money in it to
- * denominate.
+ * A fixed commission states its own currency: a monetary amount published
+ * without one is not a monetary amount. It is required to equal the wholesale
+ * currency and is checked against it, not assumed. A percentage carries basis
+ * points; there is no money in the rate itself to denominate.
+ *
+ * **Creator gross proceeds are deliberately not a public claim.** What a creator
+ * nets is between the creator and Monacado; a promoter needs the commission, and
+ * a buyer needs neither.
  */
-export const PublicPercentageCommission = z.strictObject({
-  commissionType: z.literal("PERCENTAGE"),
+export const PublicPercentOfWholesaleCommission = z.strictObject({
+  commissionMethod: z.literal("PERCENT_OF_WHOLESALE"),
   commissionBasisPoints: z.int().min(MIN_COMMISSION_BASIS_POINTS).max(MAX_COMMISSION_BASIS_POINTS),
+  /** The exact amount a completed sale owes, computed from the wholesale price. */
+  calculatedCommissionMinorUnits: z.int().min(0).max(MAX_MINOR_UNIT_AMOUNT),
 });
 
-export const PublicFixedCommission = z.strictObject({
-  commissionType: z.literal("FIXED"),
+export const PublicFixedAmountCommission = z.strictObject({
+  commissionMethod: z.literal("FIXED_AMOUNT"),
   fixedCommissionMinorUnits: MinorUnitAmount,
   fixedCommissionCurrency: CurrencyCode,
+  calculatedCommissionMinorUnits: z.int().min(0).max(MAX_MINOR_UNIT_AMOUNT),
 });
 
-export const PublicOfferCommission = z.discriminatedUnion("commissionType", [
-  PublicPercentageCommission,
-  PublicFixedCommission,
+export const PublicOfferCommission = z.discriminatedUnion("commissionMethod", [
+  PublicPercentOfWholesaleCommission,
+  PublicFixedAmountCommission,
 ]);
 export type PublicOfferCommission = z.infer<typeof PublicOfferCommission>;
 
@@ -199,23 +214,32 @@ export const OfferCapsuleData = OfferCapsuleDataBase.superRefine((data, ctx) => 
       message: "a FREE Offer cannot be promotable; a paid commission requires a PAID Offer",
     });
   }
-  if (data.commission?.commissionType === "FIXED" && data.price.priceType === "PAID") {
-    if (data.commission.fixedCommissionMinorUnits > data.price.priceMinorUnits) {
+  if (data.commission !== undefined && data.price.priceType === "PAID") {
+    if (data.commission.calculatedCommissionMinorUnits > data.price.wholesalePriceMinorUnits) {
       ctx.addIssue({
         code: "custom",
-        path: ["commission", "fixedCommissionMinorUnits"],
-        message: "a fixed commission must not exceed the Offer price",
+        path: ["commission", "calculatedCommissionMinorUnits"],
+        message: "a commission must not exceed the wholesale price",
       });
     }
-    /* The published currency is checked against the price, not trusted. A capsule
-       whose commission is denominated differently from its price cannot be
-       assembled by hand or by a future mapper that got it wrong. */
-    if (data.commission.fixedCommissionCurrency !== data.price.priceCurrency) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["commission", "fixedCommissionCurrency"],
-        message: "a fixed commission must be in the same currency as the Offer price",
-      });
+    if (data.commission.commissionMethod === "FIXED_AMOUNT") {
+      if (data.commission.fixedCommissionMinorUnits > data.price.wholesalePriceMinorUnits) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["commission", "fixedCommissionMinorUnits"],
+          message: "a fixed commission must not exceed the wholesale price",
+        });
+      }
+      /* The published currency is checked against the wholesale price, not
+         trusted: a capsule whose commission is denominated differently cannot be
+         assembled by hand or by a future mapper that got it wrong. */
+      if (data.commission.fixedCommissionCurrency !== data.price.wholesalePriceCurrency) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["commission", "fixedCommissionCurrency"],
+          message: "a fixed commission must be in the same currency as the wholesale price",
+        });
+      }
     }
   }
   if (

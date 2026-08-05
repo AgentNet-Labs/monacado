@@ -14,7 +14,10 @@ import { describe, expect, it } from "vitest";
 import { publishedContentHash } from "../src/contracts/integrity/hash";
 import { COMMERCE_CONTEXT } from "../src/contracts/ontology/commerce.context";
 import { ALL_TERMS } from "../src/contracts/ontology/commerce.ontology";
-import { OfferSourceVersion } from "../src/contracts/marketplace/offer-source";
+import {
+  OfferSourceVersion,
+  calculateOfferEconomics,
+} from "../src/contracts/marketplace/offer-source";
 import {
   FORBIDDEN_INTERNAL_ID_PREFIXES,
   OFFER_TYPE,
@@ -26,6 +29,9 @@ import {
   validateOfferCapsuleProjection,
 } from "../src/contracts/marketplace/offer.capsule";
 import {
+  CORRECTED_OFFER_CAPSULE_MAJOR,
+  SUPPORTED_OFFER_CAPSULE_VERSION,
+  OFFER_PROJECTION_MAPPING_VERSION,
   OfferProjectionContext,
   OfferProjectionError,
   evaluateOfferProjectionEligibility,
@@ -51,7 +57,7 @@ const AUTHORITY_NODE = `an:node:${opaque(3)}`;
 const CAPSULE_ID = `an:capsule:${opaque(4)}`;
 
 const PAID_TERMS = {
-  price: { type: "PAID", amountMinorUnits: 10_000, currency: "USD" },
+  price: { type: "PAID", wholesalePriceMinorUnits: 10_000, wholesalePriceCurrency: "USD" },
   promotion: { type: "NOT_PROMOTABLE" },
 } as const;
 
@@ -70,6 +76,7 @@ function sourceVersion(overrides: Record<string, unknown> = {}): OfferSourceVers
     availability: "AVAILABLE",
     terms: PAID_TERMS,
     effectiveInterval: null,
+    economics: calculateOfferEconomics((overrides.terms ?? PAID_TERMS) as never),
     authorizedBySellerParticipantId: SELLER_PARTICIPANT_ID,
     authorizedByActorId: ACTOR_ID,
     recordedAt: "2026-08-01T12:00:00.000Z",
@@ -87,8 +94,8 @@ function projectionContext(overrides: Record<string, unknown> = {}): OfferProjec
     },
     sourceVersionBinding: { offerSourceRecordId: OFFER_SREC_ID, sourceRecordVersion: "3" },
     capsuleId: CAPSULE_ID,
-    capsuleVersion: "1.0.0",
-    mappingVersion: "offer-projection/1.0.0",
+    capsuleVersion: "2.0.0",
+    mappingVersion: OFFER_PROJECTION_MAPPING_VERSION,
     generatedAt: "2026-08-02T09:00:00.000Z",
     nodePolicy: { ref: "mon:policy:node/offer", version: "1" },
     capsulePolicy: { ref: "mon:policy:capsule/offer", version: "1" },
@@ -459,7 +466,7 @@ describe("12. a FREE projection carries no amount or currency", () => {
     expect(
       OfferCapsuleData.safeParse({
         ...capsule.data,
-        price: { priceType: "FREE", priceMinorUnits: 100 },
+        price: { priceType: "FREE", wholesalePriceMinorUnits: 100 },
       }).success,
     ).toBe(false);
   });
@@ -476,19 +483,19 @@ describe("13. a PAID projection preserves minor units and currency", () => {
   it("carries the exact integer amount and currency", () => {
     expect(project().data.price).toEqual({
       priceType: "PAID",
-      priceMinorUnits: 10_000,
-      priceCurrency: "USD",
+      wholesalePriceMinorUnits: 10_000,
+      wholesalePriceCurrency: "USD",
     });
   });
 
   it("never converts money to a decimal", () => {
     const serialized = JSON.stringify(project());
-    expect(serialized).toContain('"priceMinorUnits":10000');
+    expect(serialized).toContain('"wholesalePriceMinorUnits":10000');
     expect(serialized).not.toContain("100.00");
     expect(
       OfferCapsuleData.safeParse({
         ...project().data,
-        price: { priceType: "PAID", priceMinorUnits: 99.99, priceCurrency: "USD" },
+        price: { priceType: "PAID", wholesalePriceMinorUnits: 99.99, wholesalePriceCurrency: "USD" },
       }).success,
     ).toBe(false);
   });
@@ -548,7 +555,7 @@ describe("15. promotion and commission mapping preserves source truth", () => {
   const percentage = {
     terms: {
       price: PAID_TERMS.price,
-      promotion: { type: "PROMOTABLE", commission: { kind: "PERCENTAGE", basisPoints: 1_500 } },
+      promotion: { type: "PROMOTABLE", commission: { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 1_500 } },
     },
   };
   const fixed = {
@@ -556,7 +563,7 @@ describe("15. promotion and commission mapping preserves source truth", () => {
       price: PAID_TERMS.price,
       promotion: {
         type: "PROMOTABLE",
-        commission: { kind: "FIXED", amountMinorUnits: 2_500, currency: "USD" },
+        commission: { method: "FIXED_AMOUNT", fixedCommissionMinorUnits: 2_500, fixedCommissionCurrency: "USD" },
       },
     },
   };
@@ -565,8 +572,9 @@ describe("15. promotion and commission mapping preserves source truth", () => {
     const capsule = project(percentage);
     expect(capsule.data.promotable).toBe(true);
     expect(capsule.data.commission).toEqual({
-      commissionType: "PERCENTAGE",
+      commissionMethod: "PERCENT_OF_WHOLESALE",
       commissionBasisPoints: 1_500,
+      calculatedCommissionMinorUnits: 1_500,
     });
   });
 
@@ -582,16 +590,21 @@ describe("15. promotion and commission mapping preserves source truth", () => {
       OfferCapsuleData.safeParse({
         ...data,
         commission: {
-          commissionType: "FIXED",
+          commissionMethod: "FIXED_AMOUNT",
           fixedCommissionMinorUnits: 10_001,
           fixedCommissionCurrency: "USD",
+          calculatedCommissionMinorUnits: 10_001,
         },
       }).success,
     ).toBe(false);
     expect(
       OfferCapsuleData.safeParse({
         ...data,
-        commission: { commissionType: "PERCENTAGE", commissionBasisPoints: 10_001 },
+        commission: {
+          commissionMethod: "PERCENT_OF_WHOLESALE",
+          commissionBasisPoints: 10_001,
+          calculatedCommissionMinorUnits: 10_001,
+        },
       }).success,
     ).toBe(false);
   });
@@ -605,16 +618,16 @@ describe("15b. a fixed commission publishes its own currency", () => {
       price: PAID_TERMS.price, // 10 000 USD
       promotion: {
         type: "PROMOTABLE",
-        commission: { kind: "FIXED", amountMinorUnits: 2_500, currency: "USD" },
+        commission: { method: "FIXED_AMOUNT", fixedCommissionMinorUnits: 2_500, fixedCommissionCurrency: "USD" },
       },
     },
   };
   const fixedEur = {
     terms: {
-      price: { type: "PAID", amountMinorUnits: 8_000, currency: "EUR" },
+      price: { type: "PAID", wholesalePriceMinorUnits: 8_000, wholesalePriceCurrency: "EUR" },
       promotion: {
         type: "PROMOTABLE",
-        commission: { kind: "FIXED", amountMinorUnits: 800, currency: "EUR" },
+        commission: { method: "FIXED_AMOUNT", fixedCommissionMinorUnits: 800, fixedCommissionCurrency: "EUR" },
       },
     },
   };
@@ -622,9 +635,10 @@ describe("15b. a fixed commission publishes its own currency", () => {
   it("1. emits the currency alongside the amount", () => {
     /* A monetary amount published without a currency is not a monetary amount. */
     expect(project(fixedUsd).data.commission).toEqual({
-      commissionType: "FIXED",
+      commissionMethod: "FIXED_AMOUNT",
       fixedCommissionMinorUnits: 2_500,
       fixedCommissionCurrency: "USD",
+      calculatedCommissionMinorUnits: 2_500,
     });
   });
 
@@ -637,34 +651,37 @@ describe("15b. a fixed commission publishes its own currency", () => {
     const sourcePromotion = source.terms.promotion;
     const sourceCommission =
       sourcePromotion.type === "PROMOTABLE" ? sourcePromotion.commission : undefined;
-    expect(sourceCommission?.kind).toBe("FIXED");
+    expect(sourceCommission?.method).toBe("FIXED_AMOUNT");
     expect(capsule.data.commission).toEqual({
-      commissionType: "FIXED",
+      commissionMethod: "FIXED_AMOUNT",
       fixedCommissionMinorUnits: 800,
       fixedCommissionCurrency: "EUR",
+      calculatedCommissionMinorUnits: 800,
     });
-    /* Taken from the source commission itself — and it agrees with the price. */
+    /* Taken from the source commission itself — and it agrees with the wholesale price. */
     expect(capsule.data.commission).toHaveProperty("fixedCommissionCurrency", "EUR");
-    expect(capsule.data.price).toHaveProperty("priceCurrency", "EUR");
+    expect(capsule.data.price).toHaveProperty("wholesalePriceCurrency", "EUR");
   });
 
   it("3. a percentage commission emits no currency", () => {
     const capsule = project({
       terms: {
         price: PAID_TERMS.price,
-        promotion: { type: "PROMOTABLE", commission: { kind: "PERCENTAGE", basisPoints: 1_500 } },
+        promotion: { type: "PROMOTABLE", commission: { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 1_500 } },
       },
     });
-    expect(Object.keys(capsule.data.commission!)).toEqual([
-      "commissionType",
+    expect(Object.keys(capsule.data.commission!).sort()).toEqual([
+      "calculatedCommissionMinorUnits",
       "commissionBasisPoints",
+      "commissionMethod",
     ]);
     expect(
       OfferCapsuleData.safeParse({
         ...capsule.data,
         commission: {
-          commissionType: "PERCENTAGE",
+          commissionMethod: "PERCENT_OF_WHOLESALE",
           commissionBasisPoints: 1_500,
+          calculatedCommissionMinorUnits: 1_500,
           fixedCommissionCurrency: "USD",
         },
       }).success,
@@ -691,9 +708,10 @@ describe("15b. a fixed commission publishes its own currency", () => {
       OfferCapsuleData.safeParse({
         ...data,
         commission: {
-          commissionType: "FIXED",
+          commissionMethod: "FIXED_AMOUNT",
           fixedCommissionMinorUnits: 2_500,
           fixedCommissionCurrency: "EUR",
+          calculatedCommissionMinorUnits: 2_500,
         },
       }).success,
     ).toBe(false);
@@ -704,7 +722,7 @@ describe("15b. a fixed commission publishes its own currency", () => {
           price: PAID_TERMS.price,
           promotion: {
             type: "PROMOTABLE",
-            commission: { kind: "FIXED", amountMinorUnits: 2_500, currency: "EUR" },
+            commission: { method: "FIXED_AMOUNT", fixedCommissionMinorUnits: 2_500, fixedCommissionCurrency: "EUR" },
           },
         },
       }),
@@ -881,7 +899,7 @@ describe("20. provenance is represented but not created", () => {
     expect(provenance.sourceSystem).toBe("monacado");
     expect(provenance.sourceRecordType).toBe("Offer");
     expect(provenance.sourceClass).toBe("governed-database-record");
-    expect(provenance.generatorVersion).toBe("offer-projection/1.0.0");
+    expect(provenance.generatorVersion).toBe(OFFER_PROJECTION_MAPPING_VERSION);
     expect(provenance.generatedAt).toBe("2026-08-02T09:00:00.000Z");
     expect(provenance.assertionKind).toBe("Asserted");
   });
@@ -928,8 +946,8 @@ describe("21. the same inputs produce an identical capsule and hash", () => {
         capsulePolicy: { ref: "mon:policy:capsule/offer", version: "1" },
         nodePolicy: { ref: "mon:policy:node/offer", version: "1" },
         generatedAt: "2026-08-02T09:00:00.000Z",
-        mappingVersion: "offer-projection/1.0.0",
-        capsuleVersion: "1.0.0",
+        mappingVersion: OFFER_PROJECTION_MAPPING_VERSION,
+        capsuleVersion: "2.0.0",
         capsuleId: CAPSULE_ID,
         sourceVersionBinding: { sourceRecordVersion: "3", offerSourceRecordId: OFFER_SREC_ID },
         authorityBinding: {
@@ -955,26 +973,24 @@ describe("22. a material public change changes the hash", () => {
       project({ lifecycle: "ENDED" }),
       project({
         terms: {
-          price: { type: "PAID", amountMinorUnits: 12_000, currency: "USD" },
+          price: { type: "PAID", wholesalePriceMinorUnits: 12_000, wholesalePriceCurrency: "USD" },
           promotion: { type: "NOT_PROMOTABLE" },
         },
       }),
       project({
         terms: {
-          price: { type: "PAID", amountMinorUnits: 10_000, currency: "EUR" },
+          price: { type: "PAID", wholesalePriceMinorUnits: 10_000, wholesalePriceCurrency: "EUR" },
           promotion: { type: "NOT_PROMOTABLE" },
         },
       }),
       project({
         terms: {
           price: PAID_TERMS.price,
-          promotion: { type: "PROMOTABLE", commission: { kind: "PERCENTAGE", basisPoints: 500 } },
+          promotion: { type: "PROMOTABLE", commission: { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 500 } },
         },
       }),
       project({ effectiveInterval: { startsAt: "2026-09-01T00:00:00.000Z", endsAt: null } }),
-      project({}, { capsuleVersion: "1.0.1" }),
       project({}, { generatedAt: "2026-08-02T10:00:00.000Z" }),
-      project({}, { mappingVersion: "offer-projection/1.1.0" }),
     ];
     const hashes = new Set(variants.map((c) => c.metadata.contentHash));
     expect(hashes.size).toBe(variants.length);
@@ -1055,7 +1071,7 @@ describe("24. unknown keys and enum values fail", () => {
     expect(
       OfferCapsuleData.safeParse({
         ...capsule.data,
-        price: { priceType: "SUBSCRIPTION", priceMinorUnits: 1, priceCurrency: "USD" },
+        price: { priceType: "SUBSCRIPTION", wholesalePriceMinorUnits: 1, wholesalePriceCurrency: "USD" },
       }).success,
     ).toBe(false);
   });
@@ -1089,8 +1105,17 @@ describe("24. unknown keys and enum values fail", () => {
       }
     }
     /* And the Offer-specific terms really are present. */
-    for (const term of ["commercialState", "priceType", "priceMinorUnits", "offeredBy", "itemOffered"]) {
-      expect(term in COMMERCE_CONTEXT).toBe(true);
+    for (const term of [
+      "commercialState",
+      "priceType",
+      "wholesalePriceMinorUnits",
+      "wholesalePriceCurrency",
+      "commissionMethod",
+      "calculatedCommissionMinorUnits",
+      "offeredBy",
+      "itemOffered",
+    ]) {
+      expect(term in COMMERCE_CONTEXT, term).toBe(true);
     }
   });
 
@@ -1104,5 +1129,193 @@ describe("24. unknown keys and enum values fail", () => {
         expect(source, `${file} must not reference ${token}`).not.toContain(token);
       }
     }
+  });
+});
+
+// — 25 (Phase 0M.2C) —
+
+describe("25. the corrected capsule publishes wholesale economics", () => {
+  const percent = {
+    terms: {
+      price: PAID_TERMS.price,
+      promotion: {
+        type: "PROMOTABLE",
+        commission: { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 2_000 },
+      },
+    },
+  };
+  const fixed = {
+    terms: {
+      price: PAID_TERMS.price,
+      promotion: {
+        type: "PROMOTABLE",
+        commission: {
+          method: "FIXED_AMOUNT",
+          fixedCommissionMinorUnits: 2_500,
+          fixedCommissionCurrency: "USD",
+        },
+      },
+    },
+  };
+
+  it("exposes the wholesale price, not a generic price", () => {
+    expect(project().data.price).toEqual({
+      priceType: "PAID",
+      wholesalePriceMinorUnits: 10_000,
+      wholesalePriceCurrency: "USD",
+    });
+  });
+
+  it("exposes PERCENT_OF_WHOLESALE with its exact calculated commission", () => {
+    expect(project(percent).data.commission).toEqual({
+      commissionMethod: "PERCENT_OF_WHOLESALE",
+      commissionBasisPoints: 2_000,
+      calculatedCommissionMinorUnits: 2_000,
+    });
+  });
+
+  it("exposes FIXED_AMOUNT with its currency and exact calculated commission", () => {
+    expect(project(fixed).data.commission).toEqual({
+      commissionMethod: "FIXED_AMOUNT",
+      fixedCommissionMinorUnits: 2_500,
+      fixedCommissionCurrency: "USD",
+      calculatedCommissionMinorUnits: 2_500,
+    });
+  });
+
+  it("the published commission always equals the authoritative calculation", () => {
+    for (const variant of [percent, fixed]) {
+      const capsule = project(variant);
+      const expected = calculateOfferEconomics(variant.terms as never);
+      expect(capsule.data.commission?.calculatedCommissionMinorUnits).toBe(
+        expected.calculatedCommissionMinorUnits,
+      );
+    }
+  });
+
+  it("excludes promoter retail price, price floors, and MSRP", () => {
+    const data = project(percent).data;
+    for (const forbidden of [
+      "promoterRetailPrice",
+      "retailPrice",
+      "suggestedRetailPrice",
+      "minimumRetailPrice",
+      "creatorPriceFloor",
+      "msrp",
+    ]) {
+      expect(OfferCapsuleData.safeParse({ ...data, [forbidden]: 1 }).success, forbidden).toBe(
+        false,
+      );
+    }
+    expect(JSON.stringify(project(percent))).not.toContain("etailPrice");
+  });
+
+  it("excludes creator confirmation and a dedicated creator-proceeds claim", () => {
+    const data = project(percent).data;
+    for (const forbidden of [
+      "creatorConfirmedEconomics",
+      "creatorConfirmation",
+      "calculatedCreatorGrossProceedsMinorUnits",
+      "creatorGrossProceeds",
+      "platformFee",
+      "processingFee",
+    ]) {
+      expect(OfferCapsuleData.safeParse({ ...data, [forbidden]: 1 }).success, forbidden).toBe(
+        false,
+      );
+    }
+    /* What a creator nets is between the creator and Monacado. */
+    expect(JSON.stringify(project(percent))).not.toContain("GrossProceeds");
+  });
+
+  it("rejects the pre-correction generic-price semantics", () => {
+    const data = project().data;
+    expect(
+      OfferCapsuleData.safeParse({
+        ...data,
+        price: { priceType: "PAID", priceMinorUnits: 10_000, priceCurrency: "USD" },
+      }).success,
+    ).toBe(false);
+    expect(
+      OfferCapsuleData.safeParse({
+        ...data,
+        commission: { commissionType: "PERCENTAGE", commissionBasisPoints: 2_000 },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("emits the supported capsule and mapping version pair", () => {
+    expect(CORRECTED_OFFER_CAPSULE_MAJOR).toBe(2);
+    expect(SUPPORTED_OFFER_CAPSULE_VERSION).toBe("2.0.0");
+    expect(OFFER_PROJECTION_MAPPING_VERSION).toBe("offer-projection/2.0.0");
+    expect(project().metadata.version).toBe(SUPPORTED_OFFER_CAPSULE_VERSION);
+    expect(project().metadata.provenance.generatorVersion).toBe(OFFER_PROJECTION_MAPPING_VERSION);
+  });
+
+  it("a pre-correction major version is refused as stale", () => {
+    /* `1.x` means "what a buyer pays"; `2.x` means "what the creator is owed".
+       The same number cannot mean both. */
+    for (const capsuleVersion of ["1.0.0", "1.9.9", "0.1.0"]) {
+      expectProjectionError(
+        () => project({}, { capsuleVersion }),
+        "STALE_CAPSULE_MAJOR_VERSION",
+      );
+    }
+  });
+
+  it("a future major version is refused as unsupported", () => {
+    for (const capsuleVersion of ["3.0.0", "4.2.1"]) {
+      expectProjectionError(
+        () => project({}, { capsuleVersion }),
+        "UNSUPPORTED_CAPSULE_VERSION",
+      );
+    }
+  });
+
+  it("an unreviewed 2.x minor or patch is refused, not accepted implicitly", () => {
+    /* A future 2.1.0 would carry claims this mapper cannot produce; accepting it
+       would let a caller label output as a shape it is not. */
+    for (const capsuleVersion of ["2.1.0", "2.0.1"]) {
+      expectProjectionError(
+        () => project({}, { capsuleVersion }),
+        "UNSUPPORTED_CAPSULE_VERSION",
+      );
+    }
+  });
+
+  it("a wrong mapping version is refused", () => {
+    for (const mappingVersion of ["offer-projection/1.0.0", "offer-projection/2.1.0", "custom"]) {
+      expectProjectionError(
+        () => project({}, { mappingVersion }),
+        "UNSUPPORTED_MAPPING_VERSION",
+      );
+    }
+  });
+
+  it("identical corrected inputs produce an identical capsule and hash", () => {
+    expect(JSON.stringify(project(percent))).toBe(JSON.stringify(project(percent)));
+    expect(project(percent).metadata.contentHash).toBe(project(percent).metadata.contentHash);
+  });
+
+  it("a wholesale or commission change changes the hash", () => {
+    const baseline = project(percent).metadata.contentHash;
+    const repriced = project({
+      terms: {
+        price: { type: "PAID", wholesalePriceMinorUnits: 12_000, wholesalePriceCurrency: "USD" },
+        promotion: percent.terms.promotion,
+      },
+    });
+    const reRated = project({
+      terms: {
+        price: PAID_TERMS.price,
+        promotion: {
+          type: "PROMOTABLE",
+          commission: { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 3_000 },
+        },
+      },
+    });
+    expect(repriced.metadata.contentHash).not.toBe(baseline);
+    expect(reRated.metadata.contentHash).not.toBe(baseline);
+    expect(repriced.metadata.contentHash).not.toBe(reRated.metadata.contentHash);
   });
 });

@@ -1,4 +1,4 @@
-# Authoritative Offer Source Model (Phase 0M.2A)
+# Authoritative Offer Source Model (Phase 0M.2A, corrected by 0M.2C)
 
 Status: **binding** for the Offer track. Subordinate to
 [`TRANSACTIONAL_TRUTH_AND_CAPSULE_PROJECTION_ADR.md`](TRANSACTIONAL_TRUTH_AND_CAPSULE_PROJECTION_ADR.md)
@@ -133,50 +133,189 @@ make a dead one live.
 A later projection may derive a public ended state from authoritative lifecycle
 data. **That projection is not defined here.**
 
-## 7. Price terms
+## 7. Wholesale price (corrected in 0M.2C)
 
 A strict discriminated union on `type`:
 
-- **`FREE`** — no amount field, no currency field. Absence by construction: a free
-  Offer cannot carry a stray price because there is nowhere to put one.
-- **`PAID`** — `amountMinorUnits` (positive integer) and `currency`.
+- **`FREE`** — no amount field, no currency field, no commission.
+- **`PAID`** — `wholesalePriceMinorUnits` (positive integer) and
+  `wholesalePriceCurrency`.
 
-**Money is minor units only.** `9.99` is rejected by the type: floating-point
-money is a rounding bug that surfaces in settlement months later, so it is refused
-at the boundary rather than discovered by the ledger.
+**This is the wholesale price: what the creator is owed, before any promoter
+commission is deducted.** It is deliberately not a generic "price". What a buyer
+eventually pays is the **Promoter's retail price**, set on a future Listing —
+the same number cannot be both, and naming it `price` was the ambiguity 0M.2C
+exists to correct. The old `amountMinorUnits` / `currency` spellings are refused.
 
-### Currency validation is structural, and says so
+**Money is minor units only**, integer, never a decimal. Currency validation is
+structural (`/^[A-Z]{3}$/`) and is **not** an ISO 4217 registry — that remains a
+future service concern.
 
-`/^[A-Z]{3}$/` — three uppercase letters. **This is not ISO 4217 registry
-validation**, and must never be described as such. The repository holds no
-maintained currency registry, and a frozen list here would be wrong within a year.
-Full registry validation — which currencies Monacado actually supports, and their
-minor-unit exponents (`JPY` has none, so "minor units" is not universally
-"cents") — is a **future service concern**. A test asserts that an unassigned code
-still parses, so the limitation is visible rather than assumed away.
+## 8. Commission (corrected in 0M.2C)
 
-## 8. Promotion and commission terms
+The creator selects exactly one method:
 
-`NOT_PROMOTABLE` | `PROMOTABLE`, with Seller-controlled commission terms:
+| Method | Requires | Commission |
+| --- | --- | --- |
+| **`PERCENT_OF_WHOLESALE`** | `commissionBasisPoints`, 1–10 000 | `round(wholesale × bp / 10 000)` |
+| **`FIXED_AMOUNT`** | `fixedCommissionMinorUnits` + `fixedCommissionCurrency` | the fixed amount |
 
-- **percentage** — basis points, `1 … 10 000` (1 = 0.01%, 10 000 = 100%);
-- **fixed** — positive minor units plus a currency.
+**The commission basis is always the wholesale price.** `PERCENT_OF_RETAIL`,
+`PERCENT_OF_LISTING_PRICE`, `PERCENT_OF_CHECKOUT_TOTAL`, and any selectable basis
+are refused by construction: a commission computed from a number the *Promoter*
+controls would let the Promoter change what the creator owes them, and the
+creator agreed to neither the number nor the change.
 
-Cross-field rules, validated on `terms` as a whole rather than trusted to a
-caller:
+The two methods stay **semantically distinct even when they produce the same
+amount** for one wholesale price — "20% of whatever I charge" and "£2.00" diverge
+the moment the price moves.
 
-| Refused | Because |
-| --- | --- |
-| `PROMOTABLE` on a `FREE` Offer | there are no sale proceeds to pay a commission from |
-| fixed commission in a different currency | a cross-rate the Offer never agreed to |
-| fixed commission exceeding the price | a sale that pays out more than it takes in |
-| a commission on `NOT_PROMOTABLE` | no field exists for one |
+Cross-field rules, validated together: promotion requires `PAID`; a fixed
+commission must match the wholesale currency and may not exceed the wholesale
+price; each method refuses the other's fields.
 
-**Earned commissions, attribution, settlement, and payouts are not part of the
-Offer source record.** Those are financial records — relational-first, not entity
-capsules (ADR §1) — about sales that happened. This is the standing term a seller
-offers. Non-monetary referral incentives are deferred (§12), not admitted as a
-commission on nothing.
+### Deterministic calculation
+
+```
+calculatedCommission              = per the table above
+calculatedCreatorGrossProceeds    = wholesalePrice − calculatedCommission
+```
+
+- **Rounding policy: `HALF_UP_TO_MINOR_UNIT`** —
+  `floor((wholesale × bp + 5 000) / 10 000)`. Named as a policy rather than left
+  to a library. Fixed commissions need no rounding.
+- **Percentage arithmetic runs in `BigInt`.** `wholesale × basisPoints` exceeds
+  `Number.MAX_SAFE_INTEGER` for ordinary amounts in small-unit currencies, and a
+  silent precision loss in money surfaces as a rounding complaint months later.
+  The result converts back only after it is confirmed in range.
+- `calculateOfferEconomics` is pure: no clock, no randomness, no I/O.
+
+Invariants, each tested: commission and proceeds are never negative; neither
+method can exceed the wholesale price; **commission + proceeds = wholesale**;
+`PAID` + `NOT_PROMOTABLE` gives commission 0 and proceeds = wholesale; `FREE`
+gives 0 and 0.
+
+**Excluded from these numbers:** Monacado fees, payment-processing fees, taxes,
+shipping, refunds, chargebacks, and payout adjustments. "Gross proceeds before
+separately disclosed fees" means exactly that; folding a fee in would make the
+creator's disclosed number quietly wrong. Those belong to future checkout and
+settlement phases.
+
+### Promoter economics (future Listing)
+
+```
+promoterGrossEarnings = calculatedCommission + (promoterRetailPrice − wholesalePrice)
+```
+
+A Promoter may price **below wholesale** (surrendering part of the commission),
+**at wholesale** (earning the commission), or **above wholesale** (commission plus
+positive spread). Many Promoters may carry the same Offer at different retail
+prices. **The Promoter's retail price never affects the commission due, the
+creator's proceeds, or Offer source truth**, and there is no field for it here.
+
+The Offer model imposes **no** creator-controlled retail floor, minimum advertised
+price, suggested retail price, mandatory markup, or minimum promoter profit.
+Whether a negative promoter result is permitted or must be separately funded is a
+future Listing and checkout decision.
+
+## 8a. Authoritative storage and calculation policy
+
+The immutable source version retains enough to **reproduce and audit** the exact
+economics the creator accepted: the wholesale inputs, the commission method and
+inputs, `calculatedCommissionMinorUnits`,
+`calculatedCreatorGrossProceedsMinorUnits`, and the
+`commissionCalculationPolicyVersion` (`WHOLESALE_COMMISSION_V1`).
+
+**The calculation policy version is not the capsule mapping version.** How much a
+creator is owed is a business rule; how a capsule is shaped is a projection rule.
+Tying them together would make a presentational change look like a repricing.
+
+Validation **rejects stored amounts that do not exactly match the calculator**, so
+a hand-edited or drifted snapshot cannot masquerade as accepted economics.
+
+## 8b. Creator disclosure and exact-version confirmation
+
+Before activation the creator must be shown: the wholesale price; the commission
+method; the rate or fixed amount; **the exact calculated commission per completed
+sale**; **the exact calculated gross proceeds before separately disclosed fees**;
+and the calculation policy version. A rate alone is not disclosure — what a
+creator wants to know is what they receive per sale.
+
+Confirmation is **not** an unbound `creatorConfirmedEconomics: true`. Such a flag
+says nothing about *which* economics were confirmed, so it would survive a
+repricing untouched and authorize terms the creator never saw.
+
+It carries exactly five fields:
+
+- `confirmedOfferSourceRecordId`
+- `confirmedOfferSourceRecordVersion`
+- `calculatedCommissionMinorUnits`
+- `calculatedCreatorGrossProceedsMinorUnits`
+- `commissionCalculationPolicyVersion`
+
+**Both halves of the identity are required, and are compared independently.** A
+version label alone is not unique across Offers: two Offers each have a "v3", and
+a confirmation carrying only "v3" would authorize the wrong Offer's economics
+whenever the amounts happened to coincide.
+
+Activation denies with a **distinct code for each** failure: a missing
+confirmation; one naming another Offer; one naming another version of this Offer;
+one whose amounts no longer match the authoritative calculator; and one computed
+under a different policy version.
+
+**A material economic change mints a new source version, so a confirmation bound
+to the previous one stops matching by construction** — the creator has to look
+again before the new terms can sell. Nobody has to remember to clear a flag.
+
+Confirmation persistence and UI are **not** implemented.
+
+## 8bb. Business-change classification
+
+`classifyOfferBusinessChanges` returns a **readonly array of zero or more**
+categories, in this fixed order:
+
+1. `COMMERCIAL_AVAILABILITY_CHANGED`
+2. `WHOLESALE_PRICE_CHANGED`
+3. `COMMISSION_TERMS_CHANGED`
+4. `OTHER_MATERIAL_OFFER_CHANGE`
+
+**Multi-category on purpose.** One governed edit can legitimately change
+availability, wholesale price, and commission terms at once, and reporting only
+the first would leave a promoter unaware of the rest. The order is fixed so two
+callers comparing results never disagree because of ordering, and so a test can
+assert an exact array rather than a set.
+
+**A calculated commission that moved solely because the wholesale price moved adds
+no `COMMISSION_TERMS_CHANGED`.** Only the commission *inputs* — method, basis
+points, fixed amount, fixed currency — count. The creator changed one thing, and
+saying otherwise would tell a promoter their terms were altered when they were
+not.
+
+The classifier notifies nobody, enqueues nothing, persists nothing, mutates no
+Listing, and identifies no recipient.
+
+## 8c. Downstream effects (documented, not implemented)
+
+Binding on the future Listing and notification phases. **The canonical notice
+channel is the Monacado admin panel**; email, SMS, and push may be supplemental
+and can never replace it.
+
+| Offer change | Dependent promoted Listings | Notice | Promoter action |
+| --- | --- | --- | --- |
+| **Becomes unavailable** | non-sellable, checkout disabled; promoter cannot override; relationships preserved, **never destructively deleted** | yes | none possible until the Offer returns |
+| **Wholesale price changes** (up or down) | non-sellable, price-review-required | yes | **explicit review and retail-price confirmation**; acknowledgement alone does not reactivate |
+| **Commission terms change** (method, rate, fixed amount) | **remain sellable** | yes | repricing optional; acknowledgement informational |
+
+**Monacado never automatically alters a Promoter's retail price.** Restoration
+behaviour after unavailability is a Listing-lifecycle decision.
+
+## 8d. Immutable sale economics (future)
+
+Each completed sale must bind to the exact Offer source version, the exact
+promoted Listing version, the actual retail price, the wholesale price, the
+commission method, the rate or fixed amount, the exact calculated commission, and
+the applicable fee schedule. **Later Offer changes must never alter an already
+accepted order.**
 
 ## 9. Effective interval
 

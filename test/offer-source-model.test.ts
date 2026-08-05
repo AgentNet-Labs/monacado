@@ -22,6 +22,7 @@ import {
   DEFERRED_OFFER_EXTENSIONS,
   INITIAL_OFFER_LIFECYCLE_STATE,
   MATERIAL_OFFER_FIELDS,
+  COMMISSION_METHODS,
   MAX_COMMISSION_BASIS_POINTS,
   NEVER_PROJECTION_ELIGIBLE_OFFER_DATA,
   OFFER_CAPABILITIES,
@@ -35,6 +36,12 @@ import {
   OfferPrice,
   OfferSourceRecord,
   OfferSourceVersion,
+  CURRENT_COMMISSION_CALCULATION_POLICY,
+  CreatorEconomicsConfirmation,
+  buildCreatorEconomicsDisclosure,
+  calculateOfferEconomics,
+  OFFER_BUSINESS_CHANGE_ORDER,
+  classifyOfferBusinessChanges,
   PROJECTION_ELIGIBLE_OFFER_FIELDS,
   normalizeOfferEffectiveIntervalInput,
   canActivateOffer,
@@ -69,7 +76,7 @@ const OTHER_PRODUCT_ID = `mon:product:${body(8)}`;
 const ACTOR_ID = `mon:actor:${body(9)}`;
 
 const PAID_TERMS = {
-  price: { type: "PAID", amountMinorUnits: 10_000, currency: "USD" },
+  price: { type: "PAID", wholesalePriceMinorUnits: 10_000, wholesalePriceCurrency: "USD" },
   promotion: { type: "NOT_PROMOTABLE" },
 } as const;
 
@@ -87,6 +94,7 @@ function offerRecord(overrides: Record<string, unknown> = {}) {
     availability: "AVAILABLE",
     terms: PAID_TERMS,
     effectiveInterval: null,
+    economics: calculateOfferEconomics((overrides.terms ?? PAID_TERMS) as never),
     createdAt: "2026-08-01T00:00:00.000Z",
     updatedAt: "2026-08-01T00:00:00.000Z",
     ...overrides,
@@ -108,6 +116,7 @@ function offerVersion(overrides: Record<string, unknown> = {}) {
     availability: "AVAILABLE",
     terms: PAID_TERMS,
     effectiveInterval: null,
+    economics: calculateOfferEconomics((overrides.terms ?? PAID_TERMS) as never),
     authorizedBySellerParticipantId: SELLER_PARTICIPANT_ID,
     authorizedByActorId: ACTOR_ID,
     recordedAt: "2026-08-01T12:00:00.000Z",
@@ -153,6 +162,22 @@ const BARE_SELLER = subject({
   paymentReadiness: "NOT_STARTED",
 });
 
+/** A confirmation that exactly matches the supplied terms and version. */
+function matchingConfirmation(
+  terms: OfferCommercialTerms = PAID_TERMS as never,
+  sourceRecordVersion = "3",
+) {
+  const economics = calculateOfferEconomics(terms);
+  return {
+    confirmedOfferSourceRecordId: OFFER_SREC_ID,
+    confirmedOfferSourceRecordVersion: sourceRecordVersion,
+    calculatedCommissionMinorUnits: economics.calculatedCommissionMinorUnits,
+    calculatedCreatorGrossProceedsMinorUnits:
+      economics.calculatedCreatorGrossProceedsMinorUnits,
+    commissionCalculationPolicyVersion: economics.commissionCalculationPolicyVersion,
+  };
+}
+
 function lifecycleRequest(
   overrides: Partial<OfferLifecycleActionRequest> = {},
 ): OfferLifecycleActionRequest {
@@ -161,6 +186,12 @@ function lifecycleRequest(
     offerSellerParticipantId: SELLER_PARTICIPANT_ID,
     hasProductAuthority: true,
     lifecycle: "ACTIVE",
+    economicsContext: {
+      offerSourceRecordId: OFFER_SREC_ID,
+      sourceRecordVersion: "3",
+      terms: PAID_TERMS as never,
+      confirmation: matchingConfirmation(),
+    },
     ...overrides,
   };
 }
@@ -456,20 +487,20 @@ describe("10. a FREE Offer carries no amount or currency", () => {
 describe("11. a PAID Offer requires a positive integer in minor units", () => {
   it("accepts a positive integer", () => {
     expect(
-      OfferPrice.parse({ type: "PAID", amountMinorUnits: 1, currency: "USD" }).type,
+      OfferPrice.parse({ type: "PAID", wholesalePriceMinorUnits: 1, wholesalePriceCurrency: "USD" }).type,
     ).toBe("PAID");
   });
 
   it("refuses zero and negative amounts", () => {
     for (const amountMinorUnits of [0, -1, -10_000]) {
-      expect(OfferPrice.safeParse({ type: "PAID", amountMinorUnits, currency: "USD" }).success)
+      expect(OfferPrice.safeParse({ type: "PAID", wholesalePriceMinorUnits: amountMinorUnits, wholesalePriceCurrency: "USD" }).success)
         .toBe(false);
     }
   });
 
   it("requires both an amount and a currency", () => {
-    expect(OfferPrice.safeParse({ type: "PAID", currency: "USD" }).success).toBe(false);
-    expect(OfferPrice.safeParse({ type: "PAID", amountMinorUnits: 100 }).success).toBe(false);
+    expect(OfferPrice.safeParse({ type: "PAID", wholesalePriceCurrency: "USD" }).success).toBe(false);
+    expect(OfferPrice.safeParse({ type: "PAID", wholesalePriceMinorUnits: 100 }).success).toBe(false);
   });
 });
 
@@ -478,14 +509,14 @@ describe("11. a PAID Offer requires a positive integer in minor units", () => {
 describe("12. a floating-point amount fails", () => {
   it("refuses fractional minor units", () => {
     for (const amountMinorUnits of [9.99, 0.5, 1.0000001]) {
-      expect(OfferPrice.safeParse({ type: "PAID", amountMinorUnits, currency: "USD" }).success)
+      expect(OfferPrice.safeParse({ type: "PAID", wholesalePriceMinorUnits: amountMinorUnits, wholesalePriceCurrency: "USD" }).success)
         .toBe(false);
     }
   });
 
   it("refuses a numeric string", () => {
     expect(
-      OfferPrice.safeParse({ type: "PAID", amountMinorUnits: "999", currency: "USD" }).success,
+      OfferPrice.safeParse({ type: "PAID", wholesalePriceMinorUnits: "999", wholesalePriceCurrency: "USD" }).success,
     ).toBe(false);
   });
 });
@@ -495,14 +526,14 @@ describe("12. a floating-point amount fails", () => {
 describe("13. currency is structurally validated", () => {
   it("accepts three uppercase letters", () => {
     for (const currency of ["USD", "EUR", "GBP", "JPY"]) {
-      expect(OfferPrice.safeParse({ type: "PAID", amountMinorUnits: 100, currency }).success)
+      expect(OfferPrice.safeParse({ type: "PAID", wholesalePriceMinorUnits: 100, wholesalePriceCurrency: currency }).success)
         .toBe(true);
     }
   });
 
   it("refuses lowercase, wrong length, digits, and symbols", () => {
     for (const currency of ["usd", "US", "USDD", "US1", "$", "", "U S"]) {
-      expect(OfferPrice.safeParse({ type: "PAID", amountMinorUnits: 100, currency }).success)
+      expect(OfferPrice.safeParse({ type: "PAID", wholesalePriceMinorUnits: 100, wholesalePriceCurrency: currency }).success)
         .toBe(false);
     }
   });
@@ -511,7 +542,7 @@ describe("13. currency is structurally validated", () => {
     /* Deliberate: the repository holds no maintained ISO 4217 registry, and this
        contract does not pretend to be one. Registry validation is a future
        service concern, documented rather than faked here. */
-    expect(OfferPrice.safeParse({ type: "PAID", amountMinorUnits: 100, currency: "ZZZ" }).success)
+    expect(OfferPrice.safeParse({ type: "PAID", wholesalePriceMinorUnits: 100, wholesalePriceCurrency: "ZZZ" }).success)
       .toBe(true);
   });
 });
@@ -655,7 +686,7 @@ describe("15. a FREE Offer cannot carry paid promotion terms", () => {
     expect(
       OfferCommercialTerms.safeParse({
         price: { type: "FREE" },
-        promotion: { type: "PROMOTABLE", commission: { kind: "PERCENTAGE", basisPoints: 500 } },
+        promotion: { type: "PROMOTABLE", commission: { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 500 } },
       }).success,
     ).toBe(false);
   });
@@ -675,7 +706,7 @@ describe("15. a FREE Offer cannot carry paid promotion terms", () => {
         price: PAID_TERMS.price,
         promotion: {
           type: "NOT_PROMOTABLE",
-          commission: { kind: "PERCENTAGE", basisPoints: 500 },
+          commission: { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 500 },
         },
       }).success,
     ).toBe(false);
@@ -688,7 +719,7 @@ describe("16. percentage commission bounds are enforced", () => {
   const withPercentage = (basisPoints: unknown) =>
     OfferCommercialTerms.safeParse({
       price: PAID_TERMS.price,
-      promotion: { type: "PROMOTABLE", commission: { kind: "PERCENTAGE", basisPoints } },
+      promotion: { type: "PROMOTABLE", commission: { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: basisPoints } },
     }).success;
 
   it("accepts 1 through 10,000 basis points", () => {
@@ -713,7 +744,7 @@ describe("17. a fixed commission must match the Offer currency", () => {
         price: PAID_TERMS.price,
         promotion: {
           type: "PROMOTABLE",
-          commission: { kind: "FIXED", amountMinorUnits: 1_000, currency: "USD" },
+          commission: { method: "FIXED_AMOUNT", fixedCommissionMinorUnits: 1_000, fixedCommissionCurrency: "USD" },
         },
       }).success,
     ).toBe(true);
@@ -725,7 +756,7 @@ describe("17. a fixed commission must match the Offer currency", () => {
         price: PAID_TERMS.price,
         promotion: {
           type: "PROMOTABLE",
-          commission: { kind: "FIXED", amountMinorUnits: 1_000, currency: "EUR" },
+          commission: { method: "FIXED_AMOUNT", fixedCommissionMinorUnits: 1_000, fixedCommissionCurrency: "EUR" },
         },
       }).success,
     ).toBe(false);
@@ -740,7 +771,11 @@ describe("18. a fixed commission cannot exceed the price", () => {
       price: PAID_TERMS.price, // 10 000 USD minor units
       promotion: {
         type: "PROMOTABLE",
-        commission: { kind: "FIXED", amountMinorUnits, currency: "USD" },
+        commission: {
+          method: "FIXED_AMOUNT",
+          fixedCommissionMinorUnits: amountMinorUnits,
+          fixedCommissionCurrency: "USD",
+        },
       },
     }).success;
 
@@ -1050,7 +1085,7 @@ describe("22. material changes require a new source version", () => {
       materialChangesBetween(
         prior,
         offerRecord({
-          terms: { price: { type: "PAID", amountMinorUnits: 12_000, currency: "USD" }, promotion: { type: "NOT_PROMOTABLE" } },
+          terms: { price: { type: "PAID", wholesalePriceMinorUnits: 12_000, wholesalePriceCurrency: "USD" }, promotion: { type: "NOT_PROMOTABLE" } },
         }),
       ),
     ).toEqual(["price"]);
@@ -1069,7 +1104,7 @@ describe("22. material changes require a new source version", () => {
     const promotable = offerRecord({
       terms: {
         price: PAID_TERMS.price,
-        promotion: { type: "PROMOTABLE", commission: { kind: "PERCENTAGE", basisPoints: 500 } },
+        promotion: { type: "PROMOTABLE", commission: { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 500 } },
       },
     });
     expect(materialChangesBetween(notPromotable, promotable)).toEqual(["promotion"]);
@@ -1077,7 +1112,7 @@ describe("22. material changes require a new source version", () => {
     const higherCommission = offerRecord({
       terms: {
         price: PAID_TERMS.price,
-        promotion: { type: "PROMOTABLE", commission: { kind: "PERCENTAGE", basisPoints: 1_500 } },
+        promotion: { type: "PROMOTABLE", commission: { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 1_500 } },
       },
     });
     expect(materialChangesBetween(promotable, higherCommission)).toEqual(["commission"]);
@@ -1323,5 +1358,773 @@ describe("26. unknown keys and enum values fail", () => {
     ]) {
       expect(source, `offer-source.ts must not reference ${token}`).not.toContain(token);
     }
+  });
+});
+
+// — 28 (Phase 0M.2C) —
+
+describe("28. wholesale-price terminology replaces the generic price", () => {
+  it("a PAID Offer carries wholesale price fields", () => {
+    const price = offerRecord().terms.price;
+    expect(price).toEqual({
+      type: "PAID",
+      wholesalePriceMinorUnits: 10_000,
+      wholesalePriceCurrency: "USD",
+    });
+  });
+
+  it("the old generic price fields are rejected", () => {
+    for (const legacy of [
+      { type: "PAID", amountMinorUnits: 10_000, currency: "USD" },
+      { type: "PAID", priceMinorUnits: 10_000, priceCurrency: "USD" },
+    ]) {
+      expect(OfferPrice.safeParse(legacy).success).toBe(false);
+    }
+  });
+
+  it("promoter retail price, MSRP, and price floors are rejected", () => {
+    for (const foreign of [
+      "promoterRetailPrice",
+      "retailPrice",
+      "suggestedRetailPrice",
+      "minimumRetailPrice",
+      "creatorPriceFloor",
+      "msrp",
+    ]) {
+      expect(
+        OfferPrice.safeParse({ ...offerRecord().terms.price, [foreign]: 1 }).success,
+        foreign,
+      ).toBe(false);
+      expect(
+        OfferSourceRecord.safeParse({ ...offerRecord(), [foreign]: 1 }).success,
+        foreign,
+      ).toBe(false);
+      expect(
+        OfferSourceVersion.safeParse({ ...offerVersion(), [foreign]: 1 }).success,
+        foreign,
+      ).toBe(false);
+    }
+  });
+
+  it("a FREE Offer carries no wholesale amount, currency, or commission", () => {
+    const free = { price: { type: "FREE" }, promotion: { type: "NOT_PROMOTABLE" } } as const;
+    expect(OfferCommercialTerms.safeParse(free).success).toBe(true);
+    expect(calculateOfferEconomics(free as never)).toEqual({
+      calculatedCommissionMinorUnits: 0,
+      calculatedCreatorGrossProceedsMinorUnits: 0,
+      commissionCalculationPolicyVersion: "WHOLESALE_COMMISSION_V1",
+    });
+  });
+});
+
+// — 29 —
+
+describe("29. commission methods are wholesale-based and strictly discriminated", () => {
+  const withCommission = (commission: unknown) =>
+    OfferCommercialTerms.safeParse({
+      price: PAID_TERMS.price,
+      promotion: { type: "PROMOTABLE", commission },
+    }).success;
+
+  it("PERCENT_OF_WHOLESALE and FIXED_AMOUNT validate", () => {
+    expect(
+      withCommission({ method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 1_500 }),
+    ).toBe(true);
+    expect(
+      withCommission({
+        method: "FIXED_AMOUNT",
+        fixedCommissionMinorUnits: 2_500,
+        fixedCommissionCurrency: "USD",
+      }),
+    ).toBe(true);
+    expect(COMMISSION_METHODS).toEqual(["PERCENT_OF_WHOLESALE", "FIXED_AMOUNT"]);
+  });
+
+  it("a retail or checkout basis is refused", () => {
+    /* A commission computed from a number the Promoter controls would let the
+       Promoter change what the creator owes them. */
+    for (const method of [
+      "PERCENT_OF_RETAIL",
+      "PERCENT_OF_LISTING_PRICE",
+      "PERCENT_OF_CHECKOUT_TOTAL",
+      "PERCENTAGE",
+    ]) {
+      expect(withCommission({ method, commissionBasisPoints: 1_500 }), method).toBe(false);
+    }
+  });
+
+  it("each method refuses the other's fields", () => {
+    expect(
+      withCommission({
+        method: "PERCENT_OF_WHOLESALE",
+        commissionBasisPoints: 1_500,
+        fixedCommissionMinorUnits: 100,
+      }),
+    ).toBe(false);
+    expect(
+      withCommission({
+        method: "FIXED_AMOUNT",
+        fixedCommissionMinorUnits: 100,
+        fixedCommissionCurrency: "USD",
+        commissionBasisPoints: 1_500,
+      }),
+    ).toBe(false);
+  });
+
+  it("fixed currency must match wholesale, and cannot exceed it", () => {
+    expect(
+      withCommission({
+        method: "FIXED_AMOUNT",
+        fixedCommissionMinorUnits: 100,
+        fixedCommissionCurrency: "EUR",
+      }),
+    ).toBe(false);
+    expect(
+      withCommission({
+        method: "FIXED_AMOUNT",
+        fixedCommissionMinorUnits: 10_001,
+        fixedCommissionCurrency: "USD",
+      }),
+    ).toBe(false);
+  });
+
+  it("percentage bounds hold", () => {
+    expect(withCommission({ method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 0 })).toBe(false);
+    expect(
+      withCommission({ method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 10_001 }),
+    ).toBe(false);
+    expect(
+      withCommission({
+        method: "PERCENT_OF_WHOLESALE",
+        commissionBasisPoints: MAX_COMMISSION_BASIS_POINTS,
+      }),
+    ).toBe(true);
+  });
+});
+
+// — 30 —
+
+describe("30. commission calculation is deterministic and integer-safe", () => {
+  const paid = (wholesale: number, commission?: unknown) =>
+    ({
+      price: {
+        type: "PAID",
+        wholesalePriceMinorUnits: wholesale,
+        wholesalePriceCurrency: "USD",
+      },
+      promotion:
+        commission === undefined
+          ? { type: "NOT_PROMOTABLE" }
+          : { type: "PROMOTABLE", commission },
+    }) as never;
+
+  it("percentage uses the wholesale price as the basis", () => {
+    const economics = calculateOfferEconomics(
+      paid(10_000, { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 2_000 }),
+    );
+    expect(economics.calculatedCommissionMinorUnits).toBe(2_000);
+    expect(economics.calculatedCreatorGrossProceedsMinorUnits).toBe(8_000);
+  });
+
+  it("rounds half-up to the minor unit, deterministically", () => {
+    /* 333 × 5% = 16.65 → 17; 333 × 1.5% = 4.995 → 5. */
+    expect(
+      calculateOfferEconomics(
+        paid(333, { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 500 }),
+      ).calculatedCommissionMinorUnits,
+    ).toBe(17);
+    expect(
+      calculateOfferEconomics(
+        paid(333, { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 150 }),
+      ).calculatedCommissionMinorUnits,
+    ).toBe(5);
+    /* Exactly .5 rounds up, not to even. */
+    expect(
+      calculateOfferEconomics(
+        paid(1, { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 5_000 }),
+      ).calculatedCommissionMinorUnits,
+    ).toBe(1);
+  });
+
+  it("a fixed commission is exact and needs no rounding", () => {
+    expect(
+      calculateOfferEconomics(
+        paid(10_000, {
+          method: "FIXED_AMOUNT",
+          fixedCommissionMinorUnits: 2_499,
+          fixedCommissionCurrency: "USD",
+        }),
+      ),
+    ).toEqual({
+      calculatedCommissionMinorUnits: 2_499,
+      calculatedCreatorGrossProceedsMinorUnits: 7_501,
+      commissionCalculationPolicyVersion: "WHOLESALE_COMMISSION_V1",
+    });
+  });
+
+  it("BigInt arithmetic prevents silent precision loss at large amounts", () => {
+    /* wholesale × basisPoints exceeds Number.MAX_SAFE_INTEGER here; a float
+       multiply would round before the division ever happened. */
+    const large = 2_000_000_000_000;
+    const economics = calculateOfferEconomics(
+      paid(large, { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 9_999 }),
+    );
+    expect(large * 9_999 > Number.MAX_SAFE_INTEGER).toBe(true);
+    expect(economics.calculatedCommissionMinorUnits).toBe(
+      Number((BigInt(large) * 9_999n + 5_000n) / 10_000n),
+    );
+    expect(
+      economics.calculatedCommissionMinorUnits +
+        economics.calculatedCreatorGrossProceedsMinorUnits,
+    ).toBe(large);
+  });
+
+  it("commission plus creator proceeds always equals the wholesale price", () => {
+    for (const bp of [1, 137, 2_500, 9_999, 10_000]) {
+      const economics = calculateOfferEconomics(
+        paid(7_777, { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: bp }),
+      );
+      expect(
+        economics.calculatedCommissionMinorUnits +
+          economics.calculatedCreatorGrossProceedsMinorUnits,
+      ).toBe(7_777);
+      expect(economics.calculatedCommissionMinorUnits).toBeGreaterThanOrEqual(0);
+      expect(economics.calculatedCreatorGrossProceedsMinorUnits).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("NOT_PROMOTABLE yields zero commission and full proceeds", () => {
+    expect(calculateOfferEconomics(paid(10_000))).toEqual({
+      calculatedCommissionMinorUnits: 0,
+      calculatedCreatorGrossProceedsMinorUnits: 10_000,
+      commissionCalculationPolicyVersion: "WHOLESALE_COMMISSION_V1",
+    });
+  });
+
+  it("the same inputs always produce the same outputs", () => {
+    const terms = paid(4_321, { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 777 });
+    expect(calculateOfferEconomics(terms)).toEqual(calculateOfferEconomics(terms));
+  });
+
+  it("stored economics that disagree with the calculator are refused", () => {
+    expect(
+      OfferSourceRecord.safeParse({
+        ...offerRecord(),
+        economics: {
+          calculatedCommissionMinorUnits: 1,
+          calculatedCreatorGrossProceedsMinorUnits: 9_999,
+          commissionCalculationPolicyVersion: "WHOLESALE_COMMISSION_V1",
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      OfferSourceVersion.safeParse({
+        ...offerVersion(),
+        economics: {
+          calculatedCommissionMinorUnits: 0,
+          calculatedCreatorGrossProceedsMinorUnits: 1,
+          commissionCalculationPolicyVersion: "WHOLESALE_COMMISSION_V1",
+        },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+// — 31 —
+
+describe("31. creator disclosure and exact-version confirmation", () => {
+  const version = "3";
+  const disclosure = () =>
+    buildCreatorEconomicsDisclosure({
+      offerSourceRecordId: OFFER_SREC_ID,
+      sourceRecordVersion: version,
+      terms: PAID_TERMS as never,
+    });
+
+  it("the disclosure carries the exact commission, proceeds, and policy version", () => {
+    const shown = disclosure();
+    expect(shown.economics.calculatedCommissionMinorUnits).toBe(0);
+    expect(shown.economics.calculatedCreatorGrossProceedsMinorUnits).toBe(10_000);
+    expect(shown.economics.commissionCalculationPolicyVersion).toBe("WHOLESALE_COMMISSION_V1");
+    expect(shown.sourceRecordVersion).toBe(version);
+  });
+
+  it("a promotable disclosure shows what the creator actually nets", () => {
+    const terms = {
+      price: PAID_TERMS.price,
+      promotion: {
+        type: "PROMOTABLE",
+        commission: { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 2_000 },
+      },
+    } as const;
+    const shown = buildCreatorEconomicsDisclosure({
+      offerSourceRecordId: OFFER_SREC_ID,
+      sourceRecordVersion: version,
+      terms: terms as never,
+    });
+    expect(shown.economics.calculatedCommissionMinorUnits).toBe(2_000);
+    expect(shown.economics.calculatedCreatorGrossProceedsMinorUnits).toBe(8_000);
+  });
+
+  it("activation is refused without a confirmation", () => {
+    expectDeny(
+      canActivateOffer(lifecycleRequest({ lifecycle: "DRAFT", economicsContext: undefined })),
+      "CREATOR_ECONOMICS_NOT_CONFIRMED",
+    );
+    expectDeny(
+      canActivateOffer(
+        lifecycleRequest({
+          lifecycle: "DRAFT",
+          economicsContext: {
+            offerSourceRecordId: OFFER_SREC_ID,
+            sourceRecordVersion: version,
+            terms: PAID_TERMS as never,
+            confirmation: null,
+          },
+        }),
+      ),
+      "CREATOR_ECONOMICS_NOT_CONFIRMED",
+    );
+  });
+
+  it("a confirmation for another source version is refused", () => {
+    expectDeny(
+      canActivateOffer(
+        lifecycleRequest({
+          lifecycle: "DRAFT",
+          economicsContext: {
+            offerSourceRecordId: OFFER_SREC_ID,
+            sourceRecordVersion: "4",
+            terms: PAID_TERMS as never,
+            confirmation: matchingConfirmation(PAID_TERMS as never, "3"),
+          },
+        }),
+      ),
+      "CREATOR_CONFIRMATION_VERSION_MISMATCH",
+    );
+  });
+
+  it("stale confirmed amounts are refused", () => {
+    const stale = { ...matchingConfirmation(), calculatedCommissionMinorUnits: 1 };
+    expectDeny(
+      canActivateOffer(
+        lifecycleRequest({
+          lifecycle: "DRAFT",
+          economicsContext: {
+            offerSourceRecordId: OFFER_SREC_ID,
+            sourceRecordVersion: version,
+            terms: PAID_TERMS as never,
+            confirmation: stale,
+          },
+        }),
+      ),
+      "CREATOR_CONFIRMATION_STALE",
+    );
+  });
+
+  it("a confirmation under another calculation policy is refused", () => {
+    expect(
+      CreatorEconomicsConfirmation.safeParse({
+        ...matchingConfirmation(),
+        commissionCalculationPolicyVersion: "SOME_OTHER_POLICY",
+      }).success,
+    ).toBe(false);
+    /* The bounded enum makes an unknown policy unrepresentable, which is the
+       stronger guarantee than a runtime comparison. */
+    expect(CURRENT_COMMISSION_CALCULATION_POLICY).toBe("WHOLESALE_COMMISSION_V1");
+  });
+
+  it("an exactly matching confirmation permits activation when all other gates pass", () => {
+    expectAllow(canActivateOffer(lifecycleRequest({ lifecycle: "DRAFT" })));
+  });
+
+  it("a material economic change invalidates the prior confirmation", () => {
+    /* The creator confirmed version 3's economics; version 4 raised the wholesale
+       price, so the confirmation no longer matches by construction. */
+    const repriced = {
+      price: { type: "PAID", wholesalePriceMinorUnits: 12_000, wholesalePriceCurrency: "USD" },
+      promotion: { type: "NOT_PROMOTABLE" },
+    } as const;
+    expectDeny(
+      canActivateOffer(
+        lifecycleRequest({
+          lifecycle: "DRAFT",
+          economicsContext: {
+            offerSourceRecordId: OFFER_SREC_ID,
+            sourceRecordVersion: "4",
+            terms: repriced as never,
+            confirmation: matchingConfirmation(PAID_TERMS as never, "4"),
+          },
+        }),
+      ),
+      "CREATOR_CONFIRMATION_STALE",
+    );
+  });
+
+  it("confirmation is not an unbound boolean", () => {
+    /* A bare `true` says nothing about which economics were confirmed, so it
+       would survive a repricing untouched. */
+    expect(CreatorEconomicsConfirmation.safeParse(true).success).toBe(false);
+    expect(CreatorEconomicsConfirmation.safeParse({}).success).toBe(false);
+    for (const key of [
+      "confirmedOfferSourceRecordId",
+      "confirmedOfferSourceRecordVersion",
+      "calculatedCommissionMinorUnits",
+      "calculatedCreatorGrossProceedsMinorUnits",
+      "commissionCalculationPolicyVersion",
+    ]) {
+      const partial = { ...matchingConfirmation() } as Record<string, unknown>;
+      delete partial[key];
+      expect(CreatorEconomicsConfirmation.safeParse(partial).success, key).toBe(false);
+    }
+  });
+
+  it("standing an Offer down needs no economics confirmation", () => {
+    /* Withdrawing a commitment asserts nothing about its economics. */
+    for (const decide of [canSuspendOffer, canEndOffer, canWithdrawOffer]) {
+      expectAllow(decide(lifecycleRequest({ lifecycle: "ACTIVE", economicsContext: undefined })));
+    }
+  });
+});
+
+// — 32 —
+
+describe("32. business change classification", () => {
+  const state = (overrides: Record<string, unknown> = {}) => ({
+    internalProductId: PRODUCT_ID,
+    sellerParticipantId: SELLER_PARTICIPANT_ID,
+    lifecycle: "ACTIVE" as const,
+    availability: "AVAILABLE" as const,
+    terms: PAID_TERMS as never,
+    effectiveInterval: null,
+    ...overrides,
+  });
+
+  it("an availability change is classified", () => {
+    expect(
+      classifyOfferBusinessChanges(state(), state({ availability: "TEMPORARILY_UNAVAILABLE" })),
+    ).toEqual(["COMMERCIAL_AVAILABILITY_CHANGED"]);
+  });
+
+  it("a wholesale increase and decrease are both classified", () => {
+    const at = (amount: number) =>
+      state({
+        terms: {
+          price: {
+            type: "PAID",
+            wholesalePriceMinorUnits: amount,
+            wholesalePriceCurrency: "USD",
+          },
+          promotion: { type: "NOT_PROMOTABLE" },
+        },
+      });
+    expect(classifyOfferBusinessChanges(at(10_000), at(12_000))).toEqual([
+      "WHOLESALE_PRICE_CHANGED",
+    ]);
+    expect(classifyOfferBusinessChanges(at(10_000), at(8_000))).toEqual([
+      "WHOLESALE_PRICE_CHANGED",
+    ]);
+  });
+
+  it("rate, fixed-amount, and method changes are commission-terms changes", () => {
+    const withCommission = (commission: unknown) =>
+      state({ terms: { price: PAID_TERMS.price, promotion: { type: "PROMOTABLE", commission } } });
+    const percent = (bp: number) => ({
+      method: "PERCENT_OF_WHOLESALE",
+      commissionBasisPoints: bp,
+    });
+    const fixed = (amount: number) => ({
+      method: "FIXED_AMOUNT",
+      fixedCommissionMinorUnits: amount,
+      fixedCommissionCurrency: "USD",
+    });
+
+    expect(
+      classifyOfferBusinessChanges(withCommission(percent(1_000)), withCommission(percent(2_000))),
+    ).toEqual(["COMMISSION_TERMS_CHANGED"]);
+    expect(
+      classifyOfferBusinessChanges(withCommission(fixed(1_000)), withCommission(fixed(2_000))),
+    ).toEqual(["COMMISSION_TERMS_CHANGED"]);
+    expect(
+      classifyOfferBusinessChanges(withCommission(percent(1_000)), withCommission(fixed(1_000))),
+    ).toEqual(["COMMISSION_TERMS_CHANGED"]);
+  });
+
+  it("a wholesale change under a percentage does not double-report a commission change", () => {
+    /* The derived commission amount moved, but the creator changed one thing —
+       reporting two would tell a promoter their terms were altered when they
+       were not. */
+    const withPercent = (wholesale: number) =>
+      state({
+        terms: {
+          price: {
+            type: "PAID",
+            wholesalePriceMinorUnits: wholesale,
+            wholesalePriceCurrency: "USD",
+          },
+          promotion: {
+            type: "PROMOTABLE",
+            commission: { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 2_000 },
+          },
+        },
+      });
+    expect(classifyOfferBusinessChanges(withPercent(10_000), withPercent(20_000))).toEqual([
+      "WHOLESALE_PRICE_CHANGED",
+    ]);
+  });
+
+  it("no change produces no category", () => {
+    expect(classifyOfferBusinessChanges(state(), state())).toEqual([]);
+  });
+
+  it("other material changes are classified separately", () => {
+    expect(classifyOfferBusinessChanges(state(), state({ lifecycle: "SUSPENDED" }))).toEqual([
+      "OTHER_MATERIAL_OFFER_CHANGE",
+    ]);
+  });
+
+  it("the classifier only classifies — it creates and mutates nothing", () => {
+    const source = readFileSync(
+      new URL("../src/contracts/marketplace/offer-source.ts", import.meta.url),
+      "utf8",
+    );
+    /* Code tokens only — the prose above deliberately says it enqueues no job. */
+    for (const token of [
+      "sendNotice(",
+      "notifyPromoter(",
+      "enqueue(",
+      "persistEvent(",
+      "prisma",
+      "fetch(",
+    ]) {
+      expect(source, `offer-source.ts must not call ${token}`).not.toContain(token);
+    }
+    const before = JSON.stringify(state());
+    classifyOfferBusinessChanges(state(), state({ availability: "TEMPORARILY_UNAVAILABLE" }));
+    expect(JSON.stringify(state())).toBe(before);
+  });
+
+  it("operational-only changes produce no economic category", () => {
+    for (const field of OPERATIONAL_ONLY_OFFER_FIELDS) {
+      expect(classifyOfferChange([field]).requiresNewSourceVersion).toBe(false);
+    }
+    expect(classifyOfferBusinessChanges(state(), state())).toEqual([]);
+  });
+});
+
+// — 33 —
+
+describe("33. confirmation binds to the exact Offer record and version", () => {
+  const OTHER_OFFER_SREC_ID = `mon:srec:${body(20)}`;
+
+  const activationWith = (
+    confirmation: unknown,
+    context: { offerSourceRecordId?: string; sourceRecordVersion?: string } = {},
+  ) =>
+    canActivateOffer(
+      lifecycleRequest({
+        lifecycle: "DRAFT",
+        economicsContext: {
+          offerSourceRecordId: context.offerSourceRecordId ?? OFFER_SREC_ID,
+          sourceRecordVersion: context.sourceRecordVersion ?? "3",
+          terms: PAID_TERMS as never,
+          confirmation: confirmation as never,
+        },
+      }),
+    );
+
+  it("carries exactly the five required fields", () => {
+    expect(Object.keys(matchingConfirmation()).sort()).toEqual([
+      "calculatedCommissionMinorUnits",
+      "calculatedCreatorGrossProceedsMinorUnits",
+      "commissionCalculationPolicyVersion",
+      "confirmedOfferSourceRecordId",
+      "confirmedOfferSourceRecordVersion",
+    ]);
+    expect(
+      CreatorEconomicsConfirmation.safeParse({ ...matchingConfirmation(), extra: 1 }).success,
+    ).toBe(false);
+  });
+
+  it("Offer A's v3 confirmation cannot activate Offer B's v3", () => {
+    /* A version label alone is not unique across Offers — two Offers each have a
+       "v3", and the amounts may coincidentally match. */
+    const offerAConfirmation = {
+      ...matchingConfirmation(PAID_TERMS as never, "3"),
+      confirmedOfferSourceRecordId: OTHER_OFFER_SREC_ID,
+    };
+    expectDeny(
+      activationWith(offerAConfirmation, { offerSourceRecordId: OFFER_SREC_ID }),
+      "CREATOR_CONFIRMATION_SOURCE_RECORD_MISMATCH",
+    );
+  });
+
+  it("the correct record with the wrong version is denied", () => {
+    expectDeny(
+      activationWith(matchingConfirmation(PAID_TERMS as never, "2"), {
+        sourceRecordVersion: "3",
+      }),
+      "CREATOR_CONFIRMATION_VERSION_MISMATCH",
+    );
+  });
+
+  it("the correct version label on the wrong record is denied", () => {
+    expectDeny(
+      activationWith(
+        {
+          ...matchingConfirmation(PAID_TERMS as never, "3"),
+          confirmedOfferSourceRecordId: OTHER_OFFER_SREC_ID,
+        },
+        { sourceRecordVersion: "3" },
+      ),
+      "CREATOR_CONFIRMATION_SOURCE_RECORD_MISMATCH",
+    );
+  });
+
+  it("the exact record and version pairing activates when all other gates pass", () => {
+    expectAllow(activationWith(matchingConfirmation(PAID_TERMS as never, "3")));
+  });
+
+  it("an economic source-version change invalidates the prior confirmation", () => {
+    const repriced = {
+      price: { type: "PAID", wholesalePriceMinorUnits: 15_000, wholesalePriceCurrency: "USD" },
+      promotion: { type: "NOT_PROMOTABLE" },
+    } as const;
+    expectDeny(
+      canActivateOffer(
+        lifecycleRequest({
+          lifecycle: "DRAFT",
+          economicsContext: {
+            offerSourceRecordId: OFFER_SREC_ID,
+            sourceRecordVersion: "4",
+            terms: repriced as never,
+            confirmation: matchingConfirmation(PAID_TERMS as never, "4"),
+          },
+        }),
+      ),
+      "CREATOR_CONFIRMATION_STALE",
+    );
+  });
+
+  it("a bare boolean and every incomplete object fail", () => {
+    for (const bad of [true, false, {}, null, "CONFIRMED", 1]) {
+      expect(CreatorEconomicsConfirmation.safeParse(bad).success, String(bad)).toBe(false);
+    }
+    for (const key of Object.keys(matchingConfirmation())) {
+      const partial = { ...matchingConfirmation() } as Record<string, unknown>;
+      delete partial[key];
+      expect(CreatorEconomicsConfirmation.safeParse(partial).success, key).toBe(false);
+    }
+  });
+});
+
+// — 34 —
+
+describe("34. business changes are multi-category and deterministically ordered", () => {
+  const percent = (bp: number) => ({
+    method: "PERCENT_OF_WHOLESALE" as const,
+    commissionBasisPoints: bp,
+  });
+
+  const state = (spec: {
+    availability?: "AVAILABLE" | "TEMPORARILY_UNAVAILABLE";
+    wholesale?: number;
+    basisPoints?: number;
+    lifecycle?: "ACTIVE" | "SUSPENDED";
+  } = {}) => ({
+    internalProductId: PRODUCT_ID,
+    sellerParticipantId: SELLER_PARTICIPANT_ID,
+    lifecycle: spec.lifecycle ?? ("ACTIVE" as const),
+    availability: spec.availability ?? ("AVAILABLE" as const),
+    terms: {
+      price: {
+        type: "PAID",
+        wholesalePriceMinorUnits: spec.wholesale ?? 10_000,
+        wholesalePriceCurrency: "USD",
+      },
+      promotion: { type: "PROMOTABLE", commission: percent(spec.basisPoints ?? 2_000) },
+    } as never,
+    effectiveInterval: null,
+  });
+
+  it("returns a readonly array in the fixed order", () => {
+    expect(OFFER_BUSINESS_CHANGE_ORDER).toEqual([
+      "COMMERCIAL_AVAILABILITY_CHANGED",
+      "WHOLESALE_PRICE_CHANGED",
+      "COMMISSION_TERMS_CHANGED",
+      "OTHER_MATERIAL_OFFER_CHANGE",
+    ]);
+    expect(Object.isFrozen(classifyOfferBusinessChanges(state(), state()))).toBe(true);
+  });
+
+  it("no change returns an empty array", () => {
+    expect(classifyOfferBusinessChanges(state(), state())).toEqual([]);
+  });
+
+  it("each single change returns exactly one category", () => {
+    expect(
+      classifyOfferBusinessChanges(state(), state({ availability: "TEMPORARILY_UNAVAILABLE" })),
+    ).toEqual(["COMMERCIAL_AVAILABILITY_CHANGED"]);
+    expect(classifyOfferBusinessChanges(state(), state({ wholesale: 12_000 }))).toEqual([
+      "WHOLESALE_PRICE_CHANGED",
+    ]);
+    expect(classifyOfferBusinessChanges(state(), state({ basisPoints: 3_000 }))).toEqual([
+      "COMMISSION_TERMS_CHANGED",
+    ]);
+  });
+
+  it("availability plus wholesale returns both, in order", () => {
+    expect(
+      classifyOfferBusinessChanges(
+        state(),
+        state({ availability: "TEMPORARILY_UNAVAILABLE", wholesale: 12_000 }),
+      ),
+    ).toEqual(["COMMERCIAL_AVAILABILITY_CHANGED", "WHOLESALE_PRICE_CHANGED"]);
+  });
+
+  it("wholesale plus commission inputs returns both, in order", () => {
+    expect(
+      classifyOfferBusinessChanges(state(), state({ wholesale: 12_000, basisPoints: 3_000 })),
+    ).toEqual(["WHOLESALE_PRICE_CHANGED", "COMMISSION_TERMS_CHANGED"]);
+  });
+
+  it("all three at once returns all three, in order", () => {
+    expect(
+      classifyOfferBusinessChanges(
+        state(),
+        state({
+          availability: "TEMPORARILY_UNAVAILABLE",
+          wholesale: 12_000,
+          basisPoints: 3_000,
+        }),
+      ),
+    ).toEqual([
+      "COMMERCIAL_AVAILABILITY_CHANGED",
+      "WHOLESALE_PRICE_CHANGED",
+      "COMMISSION_TERMS_CHANGED",
+    ]);
+  });
+
+  it("an unrelated material change appends the other category last", () => {
+    expect(
+      classifyOfferBusinessChanges(state(), state({ wholesale: 12_000, lifecycle: "SUSPENDED" })),
+    ).toEqual(["WHOLESALE_PRICE_CHANGED", "OTHER_MATERIAL_OFFER_CHANGE"]);
+  });
+
+  it("a derived commission move from a wholesale change is not a terms change", () => {
+    /* 20% of 10 000 = 2 000; 20% of 20 000 = 4 000. The amount moved; the terms
+       did not. */
+    const before = state({ wholesale: 10_000 });
+    const after = state({ wholesale: 20_000 });
+    expect(calculateOfferEconomics(before.terms).calculatedCommissionMinorUnits).toBe(2_000);
+    expect(calculateOfferEconomics(after.terms).calculatedCommissionMinorUnits).toBe(4_000);
+    expect(classifyOfferBusinessChanges(before, after)).toEqual(["WHOLESALE_PRICE_CHANGED"]);
+  });
+
+  it("operational-only data cannot produce a category", () => {
+    for (const field of OPERATIONAL_ONLY_OFFER_FIELDS) {
+      expect(classifyOfferChange([field]).requiresNewSourceVersion).toBe(false);
+    }
+    expect(classifyOfferBusinessChanges(state(), state())).toEqual([]);
   });
 });
