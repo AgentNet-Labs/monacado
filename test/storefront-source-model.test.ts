@@ -1596,7 +1596,10 @@ describe("14. documentation records the governance and pricing boundaries", () =
     );
     expect(roadmap).toContain("0M.2C");
     expect(roadmap).toContain("Offer economics correction");
-    expect(roadmap).toContain("Authoritative Listing source model (required, not started)");
+    /* Phase 0M.5 merged the duplicate Listing entry into the canonical 0M.4A
+       heading. One future Listing source-model phase, still not started. */
+    expect(roadmap).toContain("0M.4A — Authoritative Listing Source Model (required, not started)");
+    expect(roadmap).not.toContain("0M.4A′");
     expect(roadmap).toContain("Notification records (required, not started)");
     expect(roadmap).toContain("Storefront Capsule Projection Shape | **not started**");
     expect(roadmap).toContain("Authoritative Storefront Source Model | **complete**");

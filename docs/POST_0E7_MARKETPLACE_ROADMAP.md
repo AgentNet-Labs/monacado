@@ -25,18 +25,25 @@ the truth it projects exists (ADR §12;
 | **0M.3A** | Authoritative Storefront Source Model | **complete** — `fe0f803` |
 | **0M.3B** | Storefront Capsule Projection Shape | **not started** |
 | **0M.2C** | **Offer economics correction** — required before any Listing pricing, checkout, or settlement | **complete** |
-| **0M.4A′** | **Authoritative Listing source model** — seller-controlled vs promoted, promoter retail price, upstream blocking | **not started** |
 | **0M.N** | **Notification records** — durable admin-panel notices, deduplication, recipients, notice states | **not started** |
-| 0M.4A | Authoritative Listing Source Model | planned |
+| **0M.4A** | **Authoritative Listing Source Model** — seller-controlled vs promoted, promoter retail price, upstream blocking | **not started** |
 | 0M.4B | Listing Capsule Projection Shape | planned |
-| 0M.5 | Participant persistence and draft onboarding | planned |
+| **0M.5** | Participant persistence and draft onboarding | **complete** — draft-only |
 | 0M.6 | Payment-provider onboarding and activation | planned |
 | 0M.7 | Buyer checkout, Order, commission, payout, and review-submission foundation | planned |
 
-**Nothing downstream of 0M.2C has begun.** Storefront capsule projection (0M.3B),
-authoritative Listing work, notification records, checkout, and settlement are all
-**not started** — no contract, no persistence, no route, no orchestration. The
-corrected Offer economics are a *contract*; nothing consumes them yet.
+**Apart from 0M.5, nothing downstream of 0M.2C has begun.** Storefront capsule
+projection (0M.3B), authoritative Listing work, notification records, checkout,
+and settlement are all **not started** — no contract, no persistence, no route, no
+orchestration. The corrected Offer economics are a *contract*; nothing consumes
+them yet.
+
+**0M.5 was taken out of table order**, ahead of 0M.3B, because every completed
+0M contract terminates at a `mon:mpart:` identity that had no table: Offer
+authority, Storefront ownership, and all twelve capability decisions were
+unreachable from persisted state. It is **draft onboarding only** — no activation
+approval, no payment provider, no Node, no capsule, no route, no UI. The
+remaining phases keep their numbers and their order.
 
 > **Renumbering note.** Splitting Storefront and Listing into their own
 > source-model/projection pairs consumed the numbers 0M.3 and 0M.4, so participant
@@ -175,14 +182,6 @@ which have not started.
 [`AUTHORITATIVE_STOREFRONT_SOURCE_MODEL.md`](AUTHORITATIVE_STOREFRONT_SOURCE_MODEL.md)
 §3; no committed Offer file is modified there.
 
-## Authoritative Listing source model (required, not started)
-
-Must define: seller-controlled versus promoted Listing; the promoter retail price;
-Listing versioning; **upstream availability blocking** (an unavailable Offer makes
-every dependent Listing non-sellable, and no promoter authority can override it);
-the **wholesale-price review state**; **explicit reactivation** rules —
-acknowledgement alone never reactivates; and the Offer-version dependency.
-
 ## Notification records (required, not started)
 
 Must define: durable **admin-panel** notices as the canonical channel;
@@ -201,10 +200,16 @@ executable form of them.
 
 The deterministic Storefront projection, on the same terms as 0M.2B.
 
-## 0M.4A — Authoritative Listing Source Model
+## 0M.4A — Authoritative Listing Source Model (required, not started)
 
 The authoritative promoter-curated Listing record and its source versions,
 including the relationship to the creator's Product.
+
+Must define: seller-controlled versus promoted Listing; the promoter retail price;
+Listing versioning; **upstream availability blocking** (an unavailable Offer makes
+every dependent Listing non-sellable, and no promoter authority can override it);
+the **wholesale-price review state**; **explicit reactivation** rules —
+acknowledgement alone never reactivates; and the Offer-version dependency.
 
 **Must hold:** the authority partition ADR §2 requires — **a Listing may not
 restate or override the creator's Product facts.**
@@ -216,18 +221,29 @@ promoter/creator authority partition.
 
 ## 0M.5 — Participant persistence and draft onboarding
 
-The first phase in this track to touch the database. Migrates the models proposed
-in 0M.1 §9 — `MarketplaceParticipant`, `MarketplaceRoleAssignment`,
-`ParticipantProfile`, `ParticipantActivation` — and wires the 0M.1 capability
-decisions to real rows behind an application service.
+**Complete.** The first phase in this track to touch the database. Migrates
+`MarketplaceParticipant`, `MarketplaceRoleAssignment`, `ParticipantProfile`, and
+`ParticipantActivation` from the 0M.1 §9 design, and wires the twelve 0M.1
+capability decisions to real rows behind an application service that
+materializes `MarketplaceSubject`.
 
-Also the phase that must settle 0M.1's open decisions 1, 2, and 4 (the `Creator`
-versus `Seller` capsule name; where email verification and terms acceptance are
-enforced; the public participant projection's field set), and that would carry any
-`AuthenticatedPrincipal` change if a route genuinely needs one.
+Settles 0M.1's open decisions 1, 2, and 4: one neutral `Participant` identity
+with additive roles rather than separate Creator/Seller identities; email
+verification and terms acceptance are operational onboarding gates, never capsule
+facts; and the public participant projection is a closed allow-list that excludes
+private profile, credentials, payment state, and account/session data. No
+`AuthenticatedPrincipal` change was needed — this phase adds no route.
 
-**Must hold:** drafting only. No activation approval, no payment provider, no
-publication.
+Also resolves `ProductSourceRecordVersionRow`'s long-deferred creator FK, as an
+**additive nullable** `authorityCreatorParticipantId` beside the untouched
+`mon:creator:` column — the same migration-safety pattern
+`RegistrarReceipt.submissionAttemptId` used in 0E.5.3.
+
+**Held:** drafting only. No activation approval, no payment provider, no Node, no
+capsule, no publication, no route, no UI.
+
+Full detail:
+[`PARTICIPANT_PERSISTENCE.md`](PARTICIPANT_PERSISTENCE.md).
 
 ## 0M.6 — Payment-provider onboarding and activation
 

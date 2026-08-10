@@ -1,4 +1,6 @@
-// Monacado — Product persistence (Phases 0D, 0E.1, 0E.2, 0E.3, 0E.4).
+// Monacado — Product persistence (Phases 0D, 0E.1–0E.5), publication-worker
+// operations (0E.7.3), identity and internal entitlement (0E.7.4.2A), and
+// marketplace participant persistence (0M.5).
 //
 // The database is the authoritative store for the enduring Product identity and
 // its IMMUTABLE source-record version history. Capsule CANDIDATES are never
@@ -115,12 +117,32 @@ model ProductSourceRecordVersionRow {
   sourceRecordType String @db.VarChar(64)
   sourceClass      String @db.VarChar(64)
 
-  // — Internal creator authority (opaque governed references; deferred FK to a
-  //   future participant model) —
+  // — Internal creator authority (opaque governed references) —
+  /// The `mon:creator:<opaque>` authority reference this version was authored
+  /// under. UNCHANGED by Phase 0M.5: it is part of an immutable historical row,
+  /// it is a different identifier scheme from `mon:mpart:`, and rewriting it
+  /// would either invent a participant that never existed or silently rename a
+  /// committed identity convention.
   authorityCreatorId          String  @db.VarChar(191)
   authorityScope              String  @db.VarChar(64)
   authorityAuthorizationState String  @db.VarChar(32)
   authorityAuthorizationRef   String? @db.VarChar(191)
+
+  /// The MarketplaceParticipant holding creator authority for this version
+  /// (Phase 0M.5) — the resolution of this table's long-deferred participant FK.
+  ///
+  /// ADDITIVE and NULLABLE, beside `authorityCreatorId` rather than replacing it.
+  /// This is the same migration-safety pattern `RegistrarReceipt.submissionAttemptId`
+  /// used in Phase 0E.5.3: rows written before participants existed carry a
+  /// `mon:creator:` reference that matches no participant row, so a NOT NULL
+  /// column — or an FK on the existing column — could only be created by
+  /// fabricating backfill data. A historical NULL stays readable and can never be
+  /// repaired into a participant that did not exist.
+  ///
+  /// RESTRICT: a participant that authored any Product source version cannot be
+  /// deleted. Immutable Product history is never cascade-deleted by a
+  /// marketplace-side operation.
+  authorityCreatorParticipantId String? @db.VarChar(191)
 
   // — Product facts (normalized scalars) —
   factName                     String  @db.VarChar(512)
@@ -157,10 +179,13 @@ model ProductSourceRecordVersionRow {
 
   product Product @relation(fields: [internalProductId], references: [internalProductId])
 
+  authorityCreatorParticipant MarketplaceParticipant? @relation(fields: [authorityCreatorParticipantId], references: [id], onDelete: Restrict)
+
   publications ProductPublication[]
 
   @@unique([sourceRecordId, sourceRecordVersion])
   @@index([internalProductId, seq])
+  @@index([authorityCreatorParticipantId])
 }
 
 /// Immutable record that ONE exact Product source-record version was prepared for
@@ -641,6 +666,10 @@ model Account {
   sessions     AccountSession[]
   entitlements AccountEntitlement[]
 
+  /// At most one marketplace participant (Phase 0M.5). The account remains the
+  /// authentication identity; the participant is who transacts.
+  participant MarketplaceParticipant?
+
   @@index([status])
 }
 
@@ -702,4 +731,213 @@ model AccountEntitlement {
   /// grant/revoke audit log is deliberately deferred.
   @@unique([accountId, capability])
   @@index([accountId, capability, status])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Marketplace participant persistence and draft onboarding (Phase 0M.5).
+//
+// The relational foundation the completed 0M contracts already depend on: every
+// one of them names a `mon:mpart:` identity that until now had no table.
+//
+// Four separations are load-bearing here, and each is a separate table or a
+// deliberate absence rather than a column on one row:
+//
+//   1. **Account is not participant.** `Account` answers "who authenticated";
+//      `MarketplaceParticipant` answers "who is transacting". Disabling a login
+//      and suspending a seller must stay different operations.
+//   2. **Participant status is not role status.** Admission is participant-wide;
+//      each role carries its own lifecycle, because a suspended PROMOTER role
+//      must not imply a suspended SELLER role on the same participant.
+//   3. **Payment readiness has NO storage in this phase.** There is no
+//      `ParticipantPaymentAccount` table and no readiness column — so nothing
+//      here can report ENABLED, by construction rather than by discipline.
+//      Materialization reports the initial `NOT_STARTED` and 0M.6 adds the real
+//      provider axis.
+//   4. **Private profile CONTENT has no storage either.** `ParticipantProfile`
+//      holds completion markers and onboarding gates only — no legal name, no
+//      address, no date of birth, no tax id, no document, no provider
+//      identifier, no moderation note. A field that does not exist cannot leak
+//      into a projection, which is a stronger guarantee than a denylist.
+//
+// Nothing here is publishable. No participant Node, no participant capsule, and
+// no projection is created by this phase; the public projection's permitted
+// field set is recorded as a contract allow-list and implemented by nobody yet.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The marketplace identity of one account: who is transacting (Phase 0M.5).
+model MarketplaceParticipant {
+  /// Opaque durable identity (mon:mpart:<opaque>). Distinct from the account id
+  /// by construction — the account id answers "who authenticated", and collapsing
+  /// them would make every marketplace record reachable from an auth key.
+  id String @id @db.VarChar(191)
+
+  /// One participant per account.
+  accountId String @unique @db.VarChar(191)
+
+  /// Monacado's ADMISSION lifecycle — never the account's, never a role's, and
+  /// never the payment provider's. DRAFT | PROFILE_INCOMPLETE | PROFILE_COMPLETE
+  /// | UNDER_REVIEW | ACTIVE | RESTRICTED | SUSPENDED | CLOSED, bounded by the
+  /// Zod ParticipantStatus enum and the 0M.1 transition table.
+  ///
+  /// Phase 0M.5 writes only the drafting subset. UNDER_REVIEW, ACTIVE,
+  /// RESTRICTED, and SUSPENDED are refused by the service: reaching them is an
+  /// activation decision, and this phase makes none.
+  status String @db.VarChar(24)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  // RESTRICT: a participant anchors commercial history. Deleting an account that
+  // holds one must be refused, forcing an explicit closure first.
+  account Account @relation(fields: [accountId], references: [id], onDelete: Restrict)
+
+  roles       MarketplaceRoleAssignment[]
+  profile     ParticipantProfile?
+  activations ParticipantActivation[]
+
+  /// Product source versions authored under this participant's creator authority.
+  /// RESTRICT on the far side — immutable Product history is never cascade-deleted.
+  authoredProductSourceVersions ProductSourceRecordVersionRow[]
+
+  @@index([status])
+}
+
+/// One additive role grant on one participant (Phase 0M.5).
+///
+/// Roles are additive, never a hierarchy: SELLER, PROMOTER, and BUYER coexist on
+/// one participant, and ADR §11.5 forbids issuing a second Node merely because a
+/// participant holds several roles.
+model MarketplaceRoleAssignment {
+  /// Opaque identity (mon:mrole:<opaque>).
+  id String @id @db.VarChar(191)
+
+  participantId String @db.VarChar(191)
+
+  /// SELLER | PROMOTER | BUYER, bounded by the Zod MarketplaceRole enum.
+  /// INTERNAL_OPERATOR is deliberately absent — that is an AccountEntitlement,
+  /// and one enum serving both questions is how a Monacado employee ends up
+  /// holding seller authority.
+  role String @db.VarChar(16)
+
+  /// DRAFT | PENDING_ACTIVATION | ACTIVE | SUSPENDED | REVOKED.
+  ///
+  /// SELLER and PROMOTER are created DRAFT; BUYER is created ACTIVE, because
+  /// guest checkout is a first-class path and a buyer role requiring approval
+  /// would be stricter than buying with no account at all.
+  status String @db.VarChar(24)
+
+  grantedAt   DateTime  @db.DateTime(3)
+  activatedAt DateTime? @db.DateTime(3)
+  revokedAt   DateTime? @db.DateTime(3)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  // RESTRICT: an authorization record. Revocation is a state change, not a
+  // delete, so the grant history survives.
+  participant MarketplaceParticipant @relation(fields: [participantId], references: [id], onDelete: Restrict)
+
+  /// One assignment per role per participant — granting a held role is
+  /// idempotent rather than duplicating the grant.
+  @@unique([participantId, role])
+  @@index([participantId, status])
+}
+
+/// The private onboarding profile of one participant (Phase 0M.5).
+///
+/// **Completion markers and onboarding gates ONLY.** There is deliberately no
+/// column for a legal name, trading name, address, date of birth, tax
+/// identifier, document reference, bank or payout detail, provider account id,
+/// provider secret, phone number, private contact field, or internal moderation
+/// note. Phase 0M.1 §9 defers the field-level contents, and the thesis requires
+/// them to be driven dynamically rather than frozen into a static global
+/// checklist — so this table records WHICH sections are satisfied, never WHAT
+/// was supplied.
+///
+/// That is the privacy control. A projection cannot leak a column that does not
+/// exist, which holds even against code nobody has written yet.
+///
+/// There is no stored `completeness`: it is DERIVED from the markers and gates
+/// below, on the same reasoning that keeps `isLive` off the Storefront source
+/// model. A stored copy is a second answer that can disagree with the first.
+model ParticipantProfile {
+  /// Opaque identity (mon:mprof:<opaque>).
+  id String @id @db.VarChar(191)
+
+  /// One profile per participant.
+  participantId String @unique @db.VarChar(191)
+
+  // — Section completion markers. Booleans, not content. —
+  identityComplete            Boolean @default(false)
+  businessStructureComplete   Boolean @default(false)
+  representativesComplete     Boolean @default(false)
+  commercialProfileComplete   Boolean @default(false)
+  riskComplete                Boolean @default(false)
+  payoutConfigurationComplete Boolean @default(false)
+  documentsComplete           Boolean @default(false)
+
+  // — Onboarding gates (0M.1 open decision 2, settled in 0M.5) —
+  //
+  // Email verification and terms acceptance are OPERATIONAL onboarding gates,
+  // enforced here as profile prerequisites. They are never capsule facts and
+  // never participant statuses: a distinct status would duplicate an
+  // account-level fact on the marketplace axis.
+  //
+  // The verified ADDRESS is not stored here — only the instant verification
+  // completed. The address itself stays on Account, where it already is.
+  emailVerifiedAt DateTime? @db.DateTime(3)
+  termsAcceptedAt DateTime? @db.DateTime(3)
+
+  /// Which terms version was accepted. A version label, never the document.
+  termsVersion String? @db.VarChar(64)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  // CASCADE: the profile is subordinate onboarding state, not history. It exists
+  // only to describe its participant, and must not outlive it.
+  participant MarketplaceParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+}
+
+/// One governed activation review and its decision (Phase 0M.5 — table only).
+///
+/// **Phase 0M.5 creates no row here.** Submitting and deciding an activation is
+/// 0M.6; the table exists so the participant's admission axis has a real audit
+/// home from the start rather than an activation being invented as a status
+/// write with no record of who decided it.
+///
+/// Append-only: one row per submission, and the decision fields are filled in
+/// once. No capsule, no publication, no payment state.
+model ParticipantActivation {
+  /// Opaque identity (mon:mact:<opaque>).
+  id String @id @db.VarChar(191)
+
+  participantId String @db.VarChar(191)
+
+  submittedAt DateTime @db.DateTime(3)
+
+  /// APPROVED | MORE_INFORMATION_REQUIRED | REJECTED. NULL while undecided.
+  decision  String?   @db.VarChar(32)
+  decidedAt DateTime? @db.DateTime(3)
+
+  /// Opaque actor identifier (mon:actor:<opaque>) — never an email address or a
+  /// display name, matching the existing remediation-decision pattern.
+  decidedByActorId String? @db.VarChar(191)
+
+  /// Bounded decision reason code. A classification, never free text and never
+  /// private profile content.
+  decisionReasonCode String? @db.VarChar(64)
+
+  /// Set to participantId while UNDECIDED and NULL once decided, so this unique
+  /// index enforces AT MOST ONE UNDECIDED ACTIVATION PER PARTICIPANT while
+  /// permitting any number of decided ones. MySQL has no partial indexes; this
+  /// is the same technique `RegistrarReceipt.acceptedForPublicationId` uses.
+  undecidedForParticipantId String? @unique @db.VarChar(191)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+
+  // RESTRICT: the audit trail for admission must never be cascade-deleted.
+  participant MarketplaceParticipant @relation(fields: [participantId], references: [id], onDelete: Restrict)
+
+  @@index([participantId, submittedAt])
 }
