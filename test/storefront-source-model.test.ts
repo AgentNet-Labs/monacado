@@ -1601,7 +1601,9 @@ describe("14. documentation records the governance and pricing boundaries", () =
     expect(roadmap).toContain("0M.4A — Authoritative Listing Source Model (required, not started)");
     expect(roadmap).not.toContain("0M.4A′");
     expect(roadmap).toContain("Notification records (required, not started)");
-    expect(roadmap).toContain("Storefront Capsule Projection Shape | **not started**");
+    /* Phase 0M.3B delivered the Storefront projection, so this pair is now
+       complete. The source model itself is unchanged by that phase. */
+    expect(roadmap).toContain("Storefront Capsule Projection Shape | **complete**");
     expect(roadmap).toContain("Authoritative Storefront Source Model | **complete**");
   });
 

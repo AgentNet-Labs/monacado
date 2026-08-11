@@ -46,6 +46,7 @@ import {
   ProvenanceRecord,
   SemVer,
 } from "../capsule/envelope";
+import { findInternalIdentifiers } from "../capsule/internal-identifiers";
 import {
   CurrencyCode,
   MAX_COMMISSION_BASIS_POINTS,
@@ -284,70 +285,18 @@ export type OfferProjectionMetadata = z.infer<typeof OfferProjectionMetadata>;
 // — Internal-identifier guard —
 
 /**
- * Internal identifier prefixes that must never appear anywhere in a public
- * capsule — as a value, not merely as a key.
+ * The guard moved to `capsule/internal-identifiers` in Phase 0M.3B, when the
+ * Storefront projection needed the same rule — a rule two capsules share belongs
+ * in one place, not copied.
  *
- * Strict schemas already refuse unknown *keys*; this refuses an internal id
- * placed in a field that legitimately accepts strings. The two guards answer
- * different questions, and the value one is the one that catches a copy-paste.
- *
- * **`mon:srec:` is deliberately absent.** The source-record identifier is part of
- * the already-approved Product provenance pattern (`provenance.sourceRecordId`,
- * ANS §3 / ADR §11.8): it is opaque, encodes no business meaning, and exists
- * precisely so a published claim can be traced back to the exact governed record
- * version it came from. Forbidding it here would break provenance rather than
- * protect anything — and this phase is not authorized to introduce a *new* raw
- * internal identifier beyond that approved pattern, which is why every other
- * prefix below is refused.
+ * Re-exported here so this module's public surface is unchanged. The shared list
+ * additionally refuses `mon:storefront:`, which strengthens this capsule too.
  */
-export const FORBIDDEN_INTERNAL_ID_PREFIXES = [
-  "mon:offer:",
-  "mon:product:",
-  "mon:mpart:",
-  "mon:mrole:",
-  "mon:acct:",
-  "mon:asess:",
-  "mon:aent:",
-  "mon:actor:",
-  "mon:creator:",
-  "mon:mprof:",
-  "mon:mact:",
-  "mon:mpay:",
-  "mon:pvev:",
-] as const;
-
-export interface InternalIdentifierFinding {
-  path: string;
-  prefix: string;
-}
-
-/** Every internal identifier reachable in `value`, with its path. */
-export function findInternalIdentifiers(value: unknown, basePath = ""): InternalIdentifierFinding[] {
-  const findings: InternalIdentifierFinding[] = [];
-
-  const walk = (node: unknown, path: string): void => {
-    if (typeof node === "string") {
-      /* `includes`, not `startsWith`: an internal id embedded mid-string — inside
-         a provenance `source` line, say — is exactly the leak worth catching, and
-         it is the one a prefix check would miss. */
-      for (const prefix of FORBIDDEN_INTERNAL_ID_PREFIXES) {
-        if (node.includes(prefix)) findings.push({ path: path || "(root)", prefix });
-      }
-      return;
-    }
-    if (node === null || typeof node !== "object") return;
-    if (Array.isArray(node)) {
-      node.forEach((item, i) => walk(item, `${path}[${i}]`));
-      return;
-    }
-    for (const [key, child] of Object.entries(node as Record<string, unknown>)) {
-      walk(child, path ? `${path}.${key}` : key);
-    }
-  };
-
-  walk(value, basePath);
-  return findings;
-}
+export {
+  FORBIDDEN_INTERNAL_ID_PREFIXES,
+  findInternalIdentifiers,
+  type InternalIdentifierFinding,
+} from "../capsule/internal-identifiers";
 
 // — The capsule —
 

@@ -47,6 +47,13 @@ export const SCHEMA_ORG_TERMS: readonly OntologyTerm[] = [
   { term: "priceCurrency", iri: `${SCHEMA_ORG}priceCurrency`, kind: "property", source: "schema.org", description: "Currency of a paid Offer price." },
   { term: "validFrom", iri: `${SCHEMA_ORG}validFrom`, kind: "property", source: "schema.org", description: "Instant from which the Offer terms apply." },
   { term: "validThrough", iri: `${SCHEMA_ORG}validThrough`, kind: "property", source: "schema.org", description: "Instant after which the Offer terms no longer apply." },
+  // Storefront capsule projection (Phase 0M.3B).
+  //
+  // `schema:Store` is deliberately NOT reused: it is a LocalBusiness subtype and
+  // implies physical premises, which a Monacado storefront does not have.
+  // `name` and `description` above are reused verbatim for the storefront's
+  // display name and summary — the meanings coincide exactly.
+  { term: "slogan", iri: `${SCHEMA_ORG}slogan`, kind: "property", source: "schema.org", description: "Short public tagline for a Storefront." },
 ];
 
 /** ANS-defined concepts mapped to AN-O IRIs (reused, not duplicated). */
@@ -103,6 +110,19 @@ export const MONACADO_TERMS: readonly OntologyTerm[] = [
   { term: "fixedCommissionMinorUnits", iri: `${MON_NS}fixedCommissionMinorUnits`, kind: "property", source: "monacado", description: "Fixed commission as a positive integer in minor currency units." },
   { term: "fixedCommissionCurrency", iri: `${MON_NS}fixedCommissionCurrency`, kind: "property", source: "monacado", description: "Currency of a fixed commission; always equal to the Offer's price currency, and validated against it." },
   { term: "offeredBy", iri: `${MON_NS}offeredBy`, kind: "property", source: "monacado", description: "Approved public authority Node offering these terms (a Monacado marketplace role)." },
+
+  // — Storefront capsule projection (Phase 0M.3B) —
+  //
+  // `Storefront` is a Monacado class because schema.org has no online-marketplace
+  // storefront: `schema:Store` implies physical premises. `publicHandle` and
+  // `discoverable` are Monacado marketplace concepts with no schema.org
+  // equivalent, and `operatedBy` names a Monacado marketplace role rather than
+  // schema.org's `provider`/`seller`, on the same reasoning that made `creator` a
+  // Monacado term.
+  { term: "Storefront", iri: `${MON_NS}Storefront`, kind: "class", source: "monacado", description: "A Monacado marketplace storefront operated by a participant. Not schema:Store, which implies physical premises." },
+  { term: "publicHandle", iri: `${MON_NS}publicHandle`, kind: "property", source: "monacado", description: "The storefront's public routing name. Public by construction; never an internal identifier." },
+  { term: "discoverable", iri: `${MON_NS}discoverable`, kind: "property", source: "monacado", description: "Whether the storefront should be listed in discovery surfaces. Derived from authoritative visibility and go-live approval; never a stored flag." },
+  { term: "operatedBy", iri: `${MON_NS}operatedBy`, kind: "property", source: "monacado", description: "Approved public authority Node that operates the storefront (a Monacado marketplace role). Never a participant, account, or legal identity." },
 ];
 
 export const ALL_TERMS: readonly OntologyTerm[] = [

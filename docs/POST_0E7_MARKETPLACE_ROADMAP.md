@@ -23,7 +23,7 @@ the truth it projects exists (ADR §12;
 | **0M.2A** | Authoritative Offer Source Model | **complete** — `4687772` |
 | **0M.2B** | Offer Capsule Projection Shape | **complete** — `cb4a96d` |
 | **0M.3A** | Authoritative Storefront Source Model | **complete** — `fe0f803` |
-| **0M.3B** | Storefront Capsule Projection Shape | **not started** |
+| **0M.3B** | Storefront Capsule Projection Shape | **complete** |
 | **0M.2C** | **Offer economics correction** — required before any Listing pricing, checkout, or settlement | **complete** |
 | **0M.N** | **Notification records** — durable admin-panel notices, deduplication, recipients, notice states | **not started** |
 | **0M.4A** | **Authoritative Listing Source Model** — seller-controlled vs promoted, promoter retail price, upstream blocking | **not started** |
@@ -32,18 +32,22 @@ the truth it projects exists (ADR §12;
 | 0M.6 | Payment-provider onboarding and activation | planned |
 | 0M.7 | Buyer checkout, Order, commission, payout, and review-submission foundation | planned |
 
-**Apart from 0M.5, nothing downstream of 0M.2C has begun.** Storefront capsule
-projection (0M.3B), authoritative Listing work, notification records, checkout,
-and settlement are all **not started** — no contract, no persistence, no route, no
-orchestration. The corrected Offer economics are a *contract*; nothing consumes
-them yet.
+**Apart from 0M.5 and 0M.3B, nothing downstream of 0M.2C has begun.**
+Authoritative Listing work, notification records, checkout, and settlement are all
+**not started** — no contract, no persistence, no route, no orchestration. The
+corrected Offer economics are a *contract*; nothing consumes them yet.
 
 **0M.5 was taken out of table order**, ahead of 0M.3B, because every completed
 0M contract terminates at a `mon:mpart:` identity that had no table: Offer
 authority, Storefront ownership, and all twelve capability decisions were
 unreachable from persisted state. It is **draft onboarding only** — no activation
-approval, no payment provider, no Node, no capsule, no route, no UI. The
-remaining phases keep their numbers and their order.
+approval, no payment provider, no Node, no capsule, no route, no UI. 0M.3B then
+completed the Storefront source-model/projection pair. The remaining phases keep
+their numbers and their order.
+
+**No entity is published yet.** Product is the only entity with a publication
+path, and it stays gated off. Offer and Storefront both have a projection shape
+and no publication, no persistence, and no Node.
 
 > **Renumbering note.** Splitting Storefront and Listing into their own
 > source-model/projection pairs consumed the numbers 0M.3 and 0M.4, so participant
@@ -198,7 +202,26 @@ executable form of them.
 
 ## 0M.3B — Storefront Capsule Projection Shape
 
-The deterministic Storefront projection, on the same terms as 0M.2B.
+**Complete.** The deterministic Storefront projection, on the same terms as
+0M.2B: authored Zod shape, ontology and context terms, canonical hashing, and
+derived JSON Schema — plus a strict projection context carrying the Node
+bindings, a bounded eligibility decision, and a re-derivation verifier.
+
+**Must hold — and held:** the projection reads **one identified
+`StorefrontSourceVersion`**, never the current record and never "the latest". It
+adds no field to the Storefront source model, creates no provenance, and **writes
+nothing back**; there is no inverse mapper. The public field set is exactly
+0M.3A's `PROJECTION_ELIGIBLE_STOREFRONT_FIELDS`, with governance, account,
+private-profile, payment, and moderation data refused by an allow-list rather
+than a denylist. `mon:storefront:` stays internal, and public Node references come
+only from the validated projection context.
+
+**Not in scope:** publication, Node issuance or registration, Registrar
+interaction, persistence, routes, UI, and the `SUSPENDED`/`CLOSED` publication
+decision.
+
+Full detail:
+[`STOREFRONT_CAPSULE_PROJECTION.md`](STOREFRONT_CAPSULE_PROJECTION.md).
 
 ## 0M.4A — Authoritative Listing Source Model (required, not started)
 

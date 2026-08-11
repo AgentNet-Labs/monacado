@@ -34,6 +34,7 @@ export const COMMERCE_CONTEXT = {
   priceCurrency: "schema:priceCurrency",
   validFrom: { "@id": "schema:validFrom", "@type": "schema:DateTime" },
   validThrough: { "@id": "schema:validThrough", "@type": "schema:DateTime" },
+  slogan: "schema:slogan",
 
   // AN-O (ANS-defined concepts)
   capsuleId: "an:capsuleId",
@@ -82,6 +83,12 @@ export const COMMERCE_CONTEXT = {
   fixedCommissionMinorUnits: "mon:fixedCommissionMinorUnits",
   fixedCommissionCurrency: "mon:fixedCommissionCurrency",
   offeredBy: { "@id": "mon:offeredBy", "@type": "@id" },
+
+  // Storefront capsule projection (Phase 0M.3B)
+  Storefront: "mon:Storefront",
+  publicHandle: "mon:publicHandle",
+  discoverable: "mon:discoverable",
+  operatedBy: { "@id": "mon:operatedBy", "@type": "@id" },
 } as const;
 
 /** Reference IRI a capsule places in `@context` (design target). */

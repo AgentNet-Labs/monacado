@@ -21,6 +21,15 @@ import {
   syntheticFinalizeInputs,
   syntheticSourceRecord,
 } from "../src/contracts/fixtures/synthetic-product";
+import {
+  syntheticStorefrontProjectionContext,
+  syntheticStorefrontSourceVersion,
+} from "../src/contracts/fixtures/synthetic-storefront";
+import {
+  storefrontSourceRecordToCapsuleProjection,
+  verifyStorefrontCapsuleProjection,
+} from "../src/contracts/marketplace/storefront.projection";
+import { validateStorefrontCapsuleProjection } from "../src/contracts/marketplace/storefront.capsule";
 
 function fail(msg: string): never {
   console.error(`✗ ${msg}`);
@@ -88,7 +97,60 @@ for (const term of seen) {
 }
 pass("capsule: recognised terms resolve through the local context");
 
-// 7. Derived JSON Schemas generate.
+// 7. Synthetic Storefront source version projects and validates (Phase 0M.3B).
+const storefrontSource = syntheticStorefrontSourceVersion();
+const storefrontContext = syntheticStorefrontProjectionContext();
+const storefrontCapsule = storefrontSourceRecordToCapsuleProjection({
+  sourceVersion: storefrontSource,
+  context: storefrontContext,
+});
+const storefrontValidation = validateStorefrontCapsuleProjection(storefrontCapsule);
+if (!storefrontValidation.ok) {
+  fail(`Storefront projection failed validation: ${storefrontValidation.errors?.join("; ")}`);
+}
+pass("storefront: synthetic Storefront source version projects and validates");
+
+// 8. The Storefront projection is deterministic and re-derivable.
+const storefrontRepeat = storefrontSourceRecordToCapsuleProjection({
+  sourceVersion: storefrontSource,
+  context: storefrontContext,
+});
+if (JSON.stringify(storefrontRepeat) !== JSON.stringify(storefrontCapsule)) {
+  fail("Storefront projection is not deterministic for identical input");
+}
+if (
+  !verifyStorefrontCapsuleProjection({
+    sourceVersion: storefrontSource,
+    context: storefrontContext,
+    capsule: storefrontCapsule,
+  }).matches
+) {
+  fail("Storefront projection does not verify against its own re-derivation");
+}
+pass("storefront: projection is deterministic and verifies against re-derivation");
+
+// 9. Storefront capsule terms resolve through the local context.
+const storefrontSeen = new Set<string>();
+const collectStorefront = (node: unknown): void => {
+  if (node === null || typeof node !== "object") return;
+  if (Array.isArray(node)) return node.forEach(collectStorefront);
+  for (const [k, v] of Object.entries(node)) {
+    if (!STRUCTURAL.has(k)) storefrontSeen.add(k);
+    collectStorefront(v);
+  }
+};
+collectStorefront(storefrontCapsule);
+for (const term of storefrontSeen) {
+  if (ontologyTermSet.has(term) && !(term in COMMERCE_CONTEXT)) {
+    fail(`Storefront capsule uses ontology term "${term}" not mapped in context`);
+  }
+}
+if (!ontologyTermSet.has("Storefront") || !("Storefront" in COMMERCE_CONTEXT)) {
+  fail("Storefront class term is not defined in both ontology and context");
+}
+pass("storefront: recognised terms resolve through the local context");
+
+// 10. Derived JSON Schemas generate.
 const schemas = generateAllSchemas();
 for (const { name, schema } of schemas) {
   if (typeof schema !== "object" || schema === null) fail(`JSON Schema ${name} did not generate`);
