@@ -1597,9 +1597,12 @@ describe("14. documentation records the governance and pricing boundaries", () =
     expect(roadmap).toContain("0M.2C");
     expect(roadmap).toContain("Offer economics correction");
     /* Phase 0M.5 merged the duplicate Listing entry into the canonical 0M.4A
-       heading. One future Listing source-model phase, still not started. */
-    expect(roadmap).toContain("0M.4A — Authoritative Listing Source Model (required, not started)");
+       heading; 0M.4A then delivered the Listing source model. One entry, and the
+       Storefront model itself is unchanged by either phase. */
+    expect(roadmap).toContain("0M.4A — Authoritative Listing Source Model");
     expect(roadmap).not.toContain("0M.4A′");
+    /* Risk management is now a named phase, and still not started. */
+    expect(roadmap).toContain("0M.R — Risk Management and Commercial Controls");
     expect(roadmap).toContain("Notification records (required, not started)");
     /* Phase 0M.3B delivered the Storefront projection, so this pair is now
        complete. The source model itself is unchanged by that phase. */

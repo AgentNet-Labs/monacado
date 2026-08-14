@@ -26,16 +26,18 @@ the truth it projects exists (ADR §12;
 | **0M.3B** | Storefront Capsule Projection Shape | **complete** |
 | **0M.2C** | **Offer economics correction** — required before any Listing pricing, checkout, or settlement | **complete** |
 | **0M.N** | **Notification records** — durable admin-panel notices, deduplication, recipients, notice states | **not started** |
-| **0M.4A** | **Authoritative Listing Source Model** — seller-controlled vs promoted, promoter retail price, upstream blocking | **not started** |
+| **0M.4A** | **Authoritative Listing Source Model** — seller-controlled vs promoted, promoter retail price, upstream blocking | **complete** |
 | 0M.4B | Listing Capsule Projection Shape | planned |
 | **0M.5** | Participant persistence and draft onboarding | **complete** — draft-only |
+| **0M.R** | **Risk Management and Commercial Controls** — required before payment activation and checkout are production-capable | **not started** |
+| **0M.T** | **Tax, MoR and Transaction Accounting** — required before checkout/payment architecture is production-capable | **not started** |
 | 0M.6 | Payment-provider onboarding and activation | planned |
 | 0M.7 | Buyer checkout, Order, commission, payout, and review-submission foundation | planned |
 
-**Apart from 0M.5 and 0M.3B, nothing downstream of 0M.2C has begun.**
-Authoritative Listing work, notification records, checkout, and settlement are all
-**not started** — no contract, no persistence, no route, no orchestration. The
-corrected Offer economics are a *contract*; nothing consumes them yet.
+**Apart from 0M.5, 0M.3B, and 0M.4A, nothing downstream of 0M.2C has begun.**
+Notification records, risk management, checkout, and settlement are all **not
+started** — no contract, no persistence, no route, no orchestration. The corrected
+Offer economics are a *contract*; nothing consumes them yet.
 
 **0M.5 was taken out of table order**, ahead of 0M.3B, because every completed
 0M contract terminates at a `mon:mpart:` identity that had no table: Offer
@@ -48,6 +50,16 @@ their numbers and their order.
 **No entity is published yet.** Product is the only entity with a publication
 path, and it stays gated off. Offer and Storefront both have a projection shape
 and no publication, no persistence, and no Node.
+
+**Monacado's commercial model is Merchant-of-Record.** Monacado is the retailer
+and buyer-facing counterparty, and acquires each item at the moment of sale under
+a versioned wholesale-acquisition policy — currently 92.5% of the commercial
+retail price minus $1.00. There is no separate platform fee. The governing
+description is [`MONACADO_MOR_BUSINESS_MODEL.md`](MONACADO_MOR_BUSINESS_MODEL.md),
+which carries a governance rule: material changes to the MoR role, the
+wholesale-acquisition formula, tax or shipping treatment, fulfillment
+responsibility, settlement, or risk-policy application must update that document
+before or with implementation.
 
 > **Renumbering note.** Splitting Storefront and Listing into their own
 > source-model/projection pairs consumed the numbers 0M.3 and 0M.4, so participant
@@ -223,19 +235,45 @@ decision.
 Full detail:
 [`STOREFRONT_CAPSULE_PROJECTION.md`](STOREFRONT_CAPSULE_PROJECTION.md).
 
-## 0M.4A — Authoritative Listing Source Model (required, not started)
+## 0M.4A — Authoritative Listing Source Model
 
-The authoritative promoter-curated Listing record and its source versions,
-including the relationship to the creator's Product.
+**Complete.** The authoritative Listing record and its immutable source versions:
+the buyer-facing placement of a Product in a Storefront, as either a
+seller-controlled direct sale or a promoter-controlled resale under an Offer.
 
-Must define: seller-controlled versus promoted Listing; the promoter retail price;
-Listing versioning; **upstream availability blocking** (an unavailable Offer makes
-every dependent Listing non-sellable, and no promoter authority can override it);
-the **wholesale-price review state**; **explicit reactivation** rules —
-acknowledgement alone never reactivates; and the Offer-version dependency.
+Delivered: the `SELLER_DIRECT` / `PROMOTED` discriminated split; seller-only
+scheduled sale pricing with half-open UTC timing and a supplied instant;
+promoter retail-price autonomy; deterministic non-negative promoter economics in
+integer minor units; exact Offer-source-version binding; the wholesale-change
+review state with **explicit** reactivation; deterministic upstream blocking; and
+the immutable source-version shape.
 
-**Must hold:** the authority partition ADR §2 requires — **a Listing may not
-restate or override the creator's Product facts.**
+**Held:** a seller's temporary sale is structurally isolated — it changes no
+wholesale price, mints no Offer version, alters no promoted Listing, and creates
+no promoter obligation, because a seller placement has no field through which it
+could. A promoter's retail-price change never amends the Offer.
+
+**Monacado is the Merchant of Record, not a fee collector.** Listing economics
+consume an externally supplied, versioned **wholesale-acquisition policy**:
+Monacado retains a percentage plus a fixed amount from the commercial retail
+price and acquires the item for the remainder. The earlier "platform fee charged
+to the promoter" framing was corrected before commit — it double-counted
+Monacado's retention. No rate is hard-coded; policy lookup, risk adjustment, and
+override selection belong to `0M.R`.
+
+The seller / promoter / Monacado reconciliation balances exactly to the
+commercial retail price, and the Offer's `wholesalePrice` and the MoR
+`wholesaleAcquisitionAmount` are named distinctly because they are different
+economic layers. Tax and shipping are outside every basis, and the same policy
+applies to physical goods under **JIT Monacado Inventory** — just-in-time
+economic acquisition with direct supplier fulfillment, requiring no Monacado
+warehousing or physical possession.
+
+**Not in scope:** persistence, capsule projection, Node, publication, checkout,
+payment, notification delivery, and risk-management policy selection.
+
+Full detail:
+[`LISTING_SOURCE_MODEL.md`](LISTING_SOURCE_MODEL.md).
 
 ## 0M.4B — Listing Capsule Projection Shape
 
@@ -267,6 +305,48 @@ capsule, no publication, no route, no UI.
 
 Full detail:
 [`PARTICIPANT_PERSISTENCE.md`](PARTICIPANT_PERSISTENCE.md).
+
+## 0M.R — Risk Management and Commercial Controls
+
+**Not started.** Platform-wide risk-adjusted commercial controls, and the phase
+that must land **before payment activation and buyer checkout become
+production-capable**.
+
+Its scope will include the versioned Monacado **wholesale-acquisition policy**
+that Listing economics already consume as a supplied input — policy lookup,
+applicability, and override selection — together with the risk controls that
+adjust commercial terms. 0M.R may supply a higher, lower, or otherwise different
+effective policy per transaction, participant, or product class.
+
+**Deliberately not designed yet.** Risk classifications, provider and
+card-network scoring, reserves, payout holds, transaction caps, velocity limits,
+manual-review policy, enhanced verification, account restrictions, additive
+surcharges, and override hierarchy are all named here only to record that they
+belong to this phase and to no earlier one.
+
+**Must hold:** risk classifications are **private operational data** and must
+never become public capsule facts.
+
+## 0M.T — Tax, MoR and Transaction Accounting
+
+**Not started.** The phase that must land **before checkout and payment
+architecture become production-capable**, because Merchant-of-Record status
+places transaction-tax and transaction-accounting responsibility on Monacado
+rather than on the seller.
+
+Reserved for this phase, and designed in none of it yet: sales-tax nexus and
+registration; VAT and GST; product tax classification; sourcing; tax calculation;
+filing and remittance; tax refunds and reversals; shipping accounting; the MoR
+transaction ledger; refunds; chargebacks; and settlement audit evidence.
+
+**Must hold:** tax and shipping stay **outside** the wholesale-acquisition basis
+and outside commission and promoter-margin bases — `0M.4A` already enforces that
+structurally, and this phase must not relax it. Customer tax and location
+evidence remains private operational data and never becomes public capsule
+content.
+
+See [`MONACADO_MOR_BUSINESS_MODEL.md`](MONACADO_MOR_BUSINESS_MODEL.md) §G, §H,
+and §I.
 
 ## 0M.6 — Payment-provider onboarding and activation
 

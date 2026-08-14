@@ -48,6 +48,21 @@ export const INTERNAL_OFFER_ID_RE = new RegExp(`^mon:offer:${OPAQUE_BODY}$`);
  */
 export const INTERNAL_STOREFRONT_ID_RE = new RegExp(`^mon:storefront:${OPAQUE_BODY}$`);
 
+/**
+ * Internal Listing identifier (`mon:listing:<opaque>`).
+ *
+ * The enduring identity of one authoritative Listing record — the buyer-facing
+ * placement of a Product in a Storefront. Like `mon:offer:` and
+ * `mon:storefront:`, it is **not** an ANS Node ID and **not** a capsule identity:
+ * a Listing's public identity, if it is ever warranted, is Registrar-issued and
+ * mapped in a later phase (ADR §11.5).
+ *
+ * It encodes neither the storefront, the product, the listing type, nor the
+ * controlling participant. A Listing that changed hands or type would otherwise
+ * carry a lie in its own identifier.
+ */
+export const INTERNAL_LISTING_ID_RE = new RegExp(`^mon:listing:${OPAQUE_BODY}$`);
+
 /** One role assignment on one participant (`mon:mrole:<opaque>`). */
 export const MARKETPLACE_ROLE_ASSIGNMENT_ID_RE = new RegExp(`^mon:mrole:${OPAQUE_BODY}$`);
 
