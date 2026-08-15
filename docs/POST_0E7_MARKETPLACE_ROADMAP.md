@@ -27,17 +27,17 @@ the truth it projects exists (ADR §12;
 | **0M.2C** | **Offer economics correction** — required before any Listing pricing, checkout, or settlement | **complete** |
 | **0M.N** | **Notification records** — durable admin-panel notices, deduplication, recipients, notice states | **not started** |
 | **0M.4A** | **Authoritative Listing Source Model** — seller-controlled vs promoted, promoter retail price, upstream blocking | **complete** |
-| 0M.4B | Listing Capsule Projection Shape | planned |
+| **0M.4B** | Listing Capsule Projection Shape | **complete** |
 | **0M.5** | Participant persistence and draft onboarding | **complete** — draft-only |
 | **0M.R** | **Risk Management and Commercial Controls** — required before payment activation and checkout are production-capable | **not started** |
 | **0M.T** | **Tax, MoR and Transaction Accounting** — required before checkout/payment architecture is production-capable | **not started** |
 | 0M.6 | Payment-provider onboarding and activation | planned |
 | 0M.7 | Buyer checkout, Order, commission, payout, and review-submission foundation | planned |
 
-**Apart from 0M.5, 0M.3B, and 0M.4A, nothing downstream of 0M.2C has begun.**
-Notification records, risk management, checkout, and settlement are all **not
-started** — no contract, no persistence, no route, no orchestration. The corrected
-Offer economics are a *contract*; nothing consumes them yet.
+**Every publishable marketplace entity now has a source model and a capsule
+projection shape.** Notification records, risk management, tax and transaction
+accounting, checkout, and settlement are all **not started** — no contract, no
+persistence, no route, no orchestration.
 
 **0M.5 was taken out of table order**, ahead of 0M.3B, because every completed
 0M contract terminates at a `mon:mpart:` identity that had no table: Offer
@@ -48,8 +48,8 @@ completed the Storefront source-model/projection pair. The remaining phases keep
 their numbers and their order.
 
 **No entity is published yet.** Product is the only entity with a publication
-path, and it stays gated off. Offer and Storefront both have a projection shape
-and no publication, no persistence, and no Node.
+path, and it stays gated off. Offer, Storefront, and Listing each have a
+projection shape and no publication, no persistence, and no Node.
 
 **Monacado's commercial model is Merchant-of-Record.** Monacado is the retailer
 and buyer-facing counterparty, and acquires each item at the moment of sale under
@@ -277,8 +277,41 @@ Full detail:
 
 ## 0M.4B — Listing Capsule Projection Shape
 
-The deterministic Listing projection, on the same terms as 0M.2B, preserving the
-promoter/creator authority partition.
+**Complete.** The deterministic Listing projection, on the same terms as 0M.2B
+and 0M.3B: authored Zod shape, ontology and context terms, canonical hashing, and
+derived JSON Schema — plus a strict projection context carrying five Node
+bindings and the upstream state, a buyer-eligibility gate, and a re-derivation
+verifier.
+
+The public claim set is deliberately small — `listingType`, a self-describing
+buyer-facing price, and three Node relationships. A seller-direct price publishes
+the ordinary price **and** any scheduled sale, so the capsule stays semantically
+correct as time advances and **no publication is required merely because a sale
+starts or ends**. **No Monacado economics reach it**:
+not the retained amount, the MoR wholesale acquisition amount, the policy
+identity, the minimum viable price, nor any party's proceeds, spread, or margin.
+No Offer internal reaches it either — the mapper never reads the Offer
+dependency.
+
+**A promoted Listing publishes no Offer reference**, deliberately: the Offer
+capsule publishes its own wholesale price, so a reference would let a consumer
+subtract it from this retail price and recover the promoter's spread. A reference
+that discloses by composition discloses just the same.
+
+**Must hold — and held:** the projection reads **one identified
+`ListingSourceVersion`**, never the current record; it creates no provenance and
+**writes nothing back**; there is no inverse mapper. Only a purchasable Listing
+projects at all, using the source model's own eligibility decision rather than a
+second copy of the upstream rules, and the refusal carries one coarse reason so a
+public failure cannot probe a seller's standing. Tax and shipping are outside the
+price. The authority partition ADR §2 requires holds — a Listing restates no
+Product fact.
+
+**Not in scope:** publication, Node issuance, Registrar interaction, persistence,
+checkout, tax, shipping, fulfillment, routes, and UI.
+
+Full detail:
+[`LISTING_CAPSULE_PROJECTION.md`](LISTING_CAPSULE_PROJECTION.md).
 
 ## 0M.5 — Participant persistence and draft onboarding
 

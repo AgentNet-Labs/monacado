@@ -89,6 +89,15 @@ export const COMMERCE_CONTEXT = {
   publicHandle: "mon:publicHandle",
   discoverable: "mon:discoverable",
   operatedBy: { "@id": "mon:operatedBy", "@type": "@id" },
+
+  // Listing capsule projection (Phase 0M.4B)
+  Listing: "mon:Listing",
+  listingType: "mon:listingType",
+  basePrice: "mon:basePrice",
+  salePrice: "mon:salePrice",
+  sale: "mon:sale",
+  offeredProduct: { "@id": "mon:offeredProduct", "@type": "@id" },
+  listedInStorefront: { "@id": "mon:listedInStorefront", "@type": "@id" },
 } as const;
 
 /** Reference IRI a capsule places in `@context` (design target). */

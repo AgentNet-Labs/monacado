@@ -122,7 +122,25 @@ export const MONACADO_TERMS: readonly OntologyTerm[] = [
   { term: "Storefront", iri: `${MON_NS}Storefront`, kind: "class", source: "monacado", description: "A Monacado marketplace storefront operated by a participant. Not schema:Store, which implies physical premises." },
   { term: "publicHandle", iri: `${MON_NS}publicHandle`, kind: "property", source: "monacado", description: "The storefront's public routing name. Public by construction; never an internal identifier." },
   { term: "discoverable", iri: `${MON_NS}discoverable`, kind: "property", source: "monacado", description: "Whether the storefront should be listed in discovery surfaces. Derived from authoritative visibility and go-live approval; never a stored flag." },
-  { term: "operatedBy", iri: `${MON_NS}operatedBy`, kind: "property", source: "monacado", description: "Approved public authority Node that operates the storefront (a Monacado marketplace role). Never a participant, account, or legal identity." },
+  { term: "operatedBy", iri: `${MON_NS}operatedBy`, kind: "property", source: "monacado", description: "Approved public authority Node that operates the subject entity — a Storefront, or a Listing (a Monacado marketplace role). Never a participant, account, or legal identity. Generalized in Phase 0M.4B; the IRI and meaning are unchanged." },
+
+  // — Listing capsule projection (Phase 0M.4B) —
+  //
+  // `Listing` is a Monacado class: schema.org has no term for a marketplace
+  // placement of someone else's product in someone else's storefront.
+  // `basePrice` and `salePrice` are Monacado terms because schema.org `price` is
+  // a decimal and these are integer minor units — and because `mon:price` is
+  // already the Offer's price CONTAINER, so reusing it would give one IRI two
+  // shapes. `priceCurrency`, `operatedBy`, and — for the sale interval —
+  // `validFrom` / `validThrough` are reused verbatim: a sale is a price valid
+  // over an interval, which is exactly what those schema.org terms already mean.
+  { term: "Listing", iri: `${MON_NS}Listing`, kind: "class", source: "monacado", description: "A buyer-facing placement of a Product in a Storefront, sold directly by its seller or resold by a promoter." },
+  { term: "listingType", iri: `${MON_NS}listingType`, kind: "property", source: "monacado", description: "SELLER_DIRECT or PROMOTED — whether the buyer is purchasing from the seller or from a reseller. Discloses nothing about the commercial arrangement behind a resale." },
+  { term: "basePrice", iri: `${MON_NS}basePrice`, kind: "property", source: "monacado", description: "The ordinary buyer-facing commercial price in integer minor units. The merchandise or service price alone: tax and shipping are excluded, and it is never the Monacado wholesale acquisition amount. Not reduced by a scheduled sale — the sale is published alongside it." },
+  { term: "salePrice", iri: `${MON_NS}salePrice`, kind: "property", source: "monacado", description: "A seller's scheduled temporary price in integer minor units, strictly lower than the base price, applying over the published validFrom/validThrough interval. Seller-direct Listings only." },
+  { term: "sale", iri: `${MON_NS}sale`, kind: "property", source: "monacado", description: "Container for a seller-direct Listing's scheduled sale: the sale price and the interval it applies over." },
+  { term: "offeredProduct", iri: `${MON_NS}offeredProduct`, kind: "property", source: "monacado", description: "The Product Node this Listing sells. Distinct from schema:itemOffered, which names an Offer's Product." },
+  { term: "listedInStorefront", iri: `${MON_NS}listedInStorefront`, kind: "property", source: "monacado", description: "The Storefront Node this Listing appears in." },
 ];
 
 export const ALL_TERMS: readonly OntologyTerm[] = [

@@ -30,6 +30,16 @@ import {
   verifyStorefrontCapsuleProjection,
 } from "../src/contracts/marketplace/storefront.projection";
 import { validateStorefrontCapsuleProjection } from "../src/contracts/marketplace/storefront.capsule";
+import {
+  syntheticListingProjectionContext,
+  syntheticListingSourceVersion,
+  syntheticPromotedListingSourceVersion,
+} from "../src/contracts/fixtures/synthetic-listing";
+import {
+  listingSourceRecordToCapsuleProjection,
+  verifyListingCapsuleProjection,
+} from "../src/contracts/marketplace/listing.projection";
+import { validateListingCapsuleProjection } from "../src/contracts/marketplace/listing.capsule";
 
 function fail(msg: string): never {
   console.error(`✗ ${msg}`);
@@ -150,7 +160,70 @@ if (!ontologyTermSet.has("Storefront") || !("Storefront" in COMMERCE_CONTEXT)) {
 }
 pass("storefront: recognised terms resolve through the local context");
 
-// 10. Derived JSON Schemas generate.
+// 10. Synthetic Listing source versions project and validate (Phase 0M.4B).
+const listingContext = syntheticListingProjectionContext();
+for (const [label, sourceVersion] of [
+  ["seller-direct", syntheticListingSourceVersion()],
+  ["promoted", syntheticPromotedListingSourceVersion()],
+] as const) {
+  const capsule = listingSourceRecordToCapsuleProjection({ sourceVersion, context: listingContext });
+  const validation = validateListingCapsuleProjection(capsule);
+  if (!validation.ok) {
+    fail(`Listing ${label} projection failed validation: ${validation.errors?.join("; ")}`);
+  }
+  if (
+    !verifyListingCapsuleProjection({ sourceVersion, context: listingContext, capsule }).matches
+  ) {
+    fail(`Listing ${label} projection does not verify against its own re-derivation`);
+  }
+}
+pass("listing: seller-direct and promoted source versions project, validate, and verify");
+
+// 11. The Listing capsule publishes no private economics.
+const listingCapsule = listingSourceRecordToCapsuleProjection({
+  sourceVersion: syntheticPromotedListingSourceVersion(),
+  context: listingContext,
+});
+const listingSerialized = JSON.stringify(listingCapsule);
+for (const forbidden of [
+  "wholesale",
+  "commission",
+  "proceeds",
+  "spread",
+  "retained",
+  "policyId",
+  "acceptedOffer",
+  "upstreamReviewState",
+  "authorizedBy",
+]) {
+  if (listingSerialized.toLowerCase().includes(forbidden.toLowerCase())) {
+    fail(`Listing capsule must not disclose "${forbidden}"`);
+  }
+}
+pass("listing: capsule discloses no MoR, Offer, or settlement economics");
+
+// 12. Listing capsule terms resolve through the local context.
+const listingSeen = new Set<string>();
+const collectListing = (node: unknown): void => {
+  if (node === null || typeof node !== "object") return;
+  if (Array.isArray(node)) return node.forEach(collectListing);
+  for (const [k, v] of Object.entries(node)) {
+    if (!STRUCTURAL.has(k)) listingSeen.add(k);
+    collectListing(v);
+  }
+};
+collectListing(listingCapsule);
+for (const term of listingSeen) {
+  if (ontologyTermSet.has(term) && !(term in COMMERCE_CONTEXT)) {
+    fail(`Listing capsule uses ontology term "${term}" not mapped in context`);
+  }
+}
+if (!ontologyTermSet.has("Listing") || !("Listing" in COMMERCE_CONTEXT)) {
+  fail("Listing class term is not defined in both ontology and context");
+}
+pass("listing: recognised terms resolve through the local context");
+
+// 13. Derived JSON Schemas generate.
 const schemas = generateAllSchemas();
 for (const { name, schema } of schemas) {
   if (typeof schema !== "object" || schema === null) fail(`JSON Schema ${name} did not generate`);

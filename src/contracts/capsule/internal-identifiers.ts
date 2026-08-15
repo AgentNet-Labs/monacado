@@ -1,10 +1,14 @@
 /**
  * Internal-identifier leak guard for public capsules.
  *
- * Introduced by the Offer projection (Phase 0M.2B) and lifted here by the
- * Storefront projection (Phase 0M.3B), because a second capsule needing the same
- * rule is the point at which a rule belongs in one place. `offer.capsule.ts`
- * re-exports every name below, so its public surface is unchanged.
+ * Introduced by the Offer projection (Phase 0M.2B), lifted here by the Storefront
+ * projection (Phase 0M.3B) because a second capsule needing the same rule is the
+ * point at which a rule belongs in one place, and extended by the Listing
+ * projection (Phase 0M.4B) with `mon:listing:`. `offer.capsule.ts` re-exports
+ * every name below, so its public surface is unchanged.
+ *
+ * The list only ever grows: adding a prefix strengthens every capsule that uses
+ * the guard, and removing one would silently weaken all of them at once.
  *
  * **What this guard is for.** Strict schemas already refuse unknown *keys*. This
  * refuses an internal identifier placed as a *value* in a field that legitimately
@@ -34,6 +38,7 @@ export const FORBIDDEN_INTERNAL_ID_PREFIXES = [
   "mon:offer:",
   "mon:product:",
   "mon:storefront:",
+  "mon:listing:",
   "mon:mpart:",
   "mon:mrole:",
   "mon:acct:",
