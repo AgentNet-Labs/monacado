@@ -144,14 +144,11 @@ describe("draft-only scope", () => {
     expect(SCHEMA_CODE).not.toMatch(/model MarketplaceParticipantCapsule/);
   });
 
-  it("adds no Storefront, Offer, Listing, or Review persistence", () => {
-    for (const model of [
-      "model Storefront",
-      "model Offer",
-      "model Listing",
-      "model Review",
-      "model Order",
-    ]) {
+  it("adds no Offer, Listing, Review, or Order persistence", () => {
+    /* Storefront persistence arrived later, in Phase 0M.3C — this assertion was
+       narrowed then rather than deleted, because what 0M.5 actually claims is
+       that *it* added none, and the remaining four are still absent. */
+    for (const model of ["model Offer", "model Listing", "model Review", "model Order"]) {
       expect(SCHEMA_CODE).not.toContain(model);
     }
   });

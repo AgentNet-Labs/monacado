@@ -63,6 +63,16 @@ export const INTERNAL_STOREFRONT_ID_RE = new RegExp(`^mon:storefront:${OPAQUE_BO
  */
 export const INTERNAL_LISTING_ID_RE = new RegExp(`^mon:listing:${OPAQUE_BODY}$`);
 
+/**
+ * One Storefront governance assignment (`mon:sgov:<opaque>`).
+ *
+ * Names one appointment of one participant to `SUPER_OWNER` or `ADMIN` on one
+ * Storefront. Operational only — governance is never published, because who
+ * administers a storefront is nobody's business but the marketplace's
+ * (0M.3A `NEVER_PROJECTION_ELIGIBLE_STOREFRONT_DATA`).
+ */
+export const STOREFRONT_GOVERNANCE_ASSIGNMENT_ID_RE = new RegExp(`^mon:sgov:${OPAQUE_BODY}$`);
+
 /** One role assignment on one participant (`mon:mrole:<opaque>`). */
 export const MARKETPLACE_ROLE_ASSIGNMENT_ID_RE = new RegExp(`^mon:mrole:${OPAQUE_BODY}$`);
 

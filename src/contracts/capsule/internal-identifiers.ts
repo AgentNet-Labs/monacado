@@ -4,7 +4,8 @@
  * Introduced by the Offer projection (Phase 0M.2B), lifted here by the Storefront
  * projection (Phase 0M.3B) because a second capsule needing the same rule is the
  * point at which a rule belongs in one place, and extended by the Listing
- * projection (Phase 0M.4B) with `mon:listing:`. `offer.capsule.ts` re-exports
+ * projection (Phase 0M.4B) with `mon:listing:`, and by Storefront persistence
+ * (Phase 0M.3C) with `mon:sgov:`. `offer.capsule.ts` re-exports
  * every name below, so its public surface is unchanged.
  *
  * The list only ever grows: adding a prefix strengthens every capsule that uses
@@ -41,6 +42,7 @@ export const FORBIDDEN_INTERNAL_ID_PREFIXES = [
   "mon:listing:",
   "mon:mpart:",
   "mon:mrole:",
+  "mon:sgov:",
   "mon:acct:",
   "mon:asess:",
   "mon:aent:",

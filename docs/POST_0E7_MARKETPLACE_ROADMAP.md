@@ -11,11 +11,26 @@ because it appears here.
 
 ## Sequence
 
-Each publishable entity now takes **two phases, in this order**: the authoritative
-source model first, its capsule projection shape second. That ordering is the
-bifurcated architecture made procedural — a projection cannot be designed before
-the truth it projects exists (ADR §12;
+Each publishable entity takes **three phases**, in this order:
+
+1. **authoritative source model** — what the entity is, and who may change it;
+2. **authoritative persistence** — the immutable source *versions* that actually
+   exist in the database;
+3. **capsule projection shape** — the deterministic public artifact derived from
+   one of those versions.
+
+That ordering is the bifurcated architecture made procedural — a projection
+cannot be designed before the truth it projects exists (ADR §12;
 [`TRANSACTIONAL_TRUTH_AND_CAPSULE_PROJECTION_ADR.md`](TRANSACTIONAL_TRUTH_AND_CAPSULE_PROJECTION_ADR.md)).
+
+> **The middle stage was originally missing from this plan.** Offer, Storefront,
+> and Listing each received a source model and a projection shape with no
+> persistence phase between them, so their projections could only ever be fed
+> synthetic fixtures — the declared pipeline's `AUTHORITATIVE_SOURCE_VERSION`
+> stage had nothing behind it. `0M.3C` closes that gap for the Storefront;
+> `0M.2D` and `0M.4C` are reserved for the Offer and the Listing. Phase *2* may
+> legitimately run after phase *3* for an entity whose projection already exists,
+> as it did here.
 
 | Phase | Title | State |
 | --- | --- | --- |
@@ -24,20 +39,25 @@ the truth it projects exists (ADR §12;
 | **0M.2B** | Offer Capsule Projection Shape | **complete** — `cb4a96d` |
 | **0M.3A** | Authoritative Storefront Source Model | **complete** — `fe0f803` |
 | **0M.3B** | Storefront Capsule Projection Shape | **complete** |
+| **0M.3C** | **Storefront Persistence and Governance** | **complete** |
 | **0M.2C** | **Offer economics correction** — required before any Listing pricing, checkout, or settlement | **complete** |
+| **0M.2D** | **Offer Persistence** | **not started** |
 | **0M.N** | **Notification records** — durable admin-panel notices, deduplication, recipients, notice states | **not started** |
 | **0M.4A** | **Authoritative Listing Source Model** — seller-controlled vs promoted, promoter retail price, upstream blocking | **complete** |
 | **0M.4B** | Listing Capsule Projection Shape | **complete** |
+| **0M.4C** | **Listing Persistence** | **not started** |
 | **0M.5** | Participant persistence and draft onboarding | **complete** — draft-only |
 | **0M.R** | **Risk Management and Commercial Controls** — required before payment activation and checkout are production-capable | **not started** |
 | **0M.T** | **Tax, MoR and Transaction Accounting** — required before checkout/payment architecture is production-capable | **not started** |
 | 0M.6 | Payment-provider onboarding and activation | planned |
 | 0M.7 | Buyer checkout, Order, commission, payout, and review-submission foundation | planned |
 
-**Every publishable marketplace entity now has a source model and a capsule
-projection shape.** Notification records, risk management, tax and transaction
-accounting, checkout, and settlement are all **not started** — no contract, no
-persistence, no route, no orchestration.
+**Every publishable marketplace entity has a source model and a capsule
+projection shape; only the Storefront also has persistence.** Offer and Listing
+persistence (`0M.2D`, `0M.4C`) remain the open middle stage. Notification
+records, risk management, tax and transaction accounting, checkout, and
+settlement are all **not started** — no contract, no persistence, no route, no
+orchestration.
 
 **0M.5 was taken out of table order**, ahead of 0M.3B, because every completed
 0M contract terminates at a `mon:mpart:` identity that had no table: Offer
@@ -48,8 +68,9 @@ completed the Storefront source-model/projection pair. The remaining phases keep
 their numbers and their order.
 
 **No entity is published yet.** Product is the only entity with a publication
-path, and it stays gated off. Offer, Storefront, and Listing each have a
-projection shape and no publication, no persistence, and no Node.
+path, and it stays gated off. Storefront now has persistence but still no Node
+and no publication; Offer and Listing each have a projection shape and neither
+persistence nor a Node.
 
 **Monacado's commercial model is Merchant-of-Record.** Monacado is the retailer
 and buyer-facing counterparty, and acquires each item at the moment of sale under
@@ -234,6 +255,51 @@ decision.
 
 Full detail:
 [`STOREFRONT_CAPSULE_PROJECTION.md`](STOREFRONT_CAPSULE_PROJECTION.md).
+
+## 0M.3C — Storefront Persistence and Governance
+
+**Complete.** The authoritative Storefront record, its immutable source-record
+versions, and its governance assignments — the middle stage that was missing
+between `0M.3A` and `0M.3B`. A persisted source version now feeds the existing
+capsule projection without a synthetic fixture, producing a byte-identical
+capsule to the equivalent in-memory source.
+
+Three tables, all foreign keys `RESTRICT` and **no `CASCADE` anywhere**:
+`Storefront` (stable identity plus current-version pointer), 
+`StorefrontSourceRecordVersionRow` (immutable snapshots), and
+`StorefrontGovernanceAssignment`.
+
+**Must hold — and held:** history is immutable and a material change mints a new
+version rather than editing one; the pointer advances in the same transaction, so
+a stable record can never point at a version that does not exist; handle
+uniqueness applies to current Storefronts while history preserves the handle each
+version actually authorized; at most one active `SUPER_OWNER` per Storefront is
+enforced by a unique index, with the "at least one" half remaining a go-live
+readiness question; and **go-live approval is still a supplied decision input,
+with no column anywhere to store it**.
+
+Creating a Storefront deliberately confers **no** governance authority — the
+owner must appoint the first `SUPER_OWNER`, which they may do for themselves.
+
+**Not in scope:** Storefront Node issuance, publication, the go-live approval
+workflow, Offer or Listing persistence, routes, and UI.
+
+Full detail:
+[`STOREFRONT_PERSISTENCE.md`](STOREFRONT_PERSISTENCE.md).
+
+## 0M.2D — Offer Persistence
+
+**Not started.** The authoritative Offer record and its immutable source
+versions, so the committed `0M.2B` projection can consume a real Offer version.
+Must preserve the `0M.2C` wholesale economics exactly and mint no new commission
+algorithm.
+
+## 0M.4C — Listing Persistence
+
+**Not started.** The authoritative Listing record and its immutable source
+versions. Depends on both Storefront persistence (`0M.3C`, complete) and Offer
+persistence (`0M.2D`), since a promoted Listing binds an exact Offer source
+version.
 
 ## 0M.4A — Authoritative Listing Source Model
 

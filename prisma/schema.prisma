@@ -1,6 +1,7 @@
 // Monacado — Product persistence (Phases 0D, 0E.1–0E.5), publication-worker
-// operations (0E.7.3), identity and internal entitlement (0E.7.4.2A), and
-// marketplace participant persistence (0M.5).
+// operations (0E.7.3), identity and internal entitlement (0E.7.4.2A),
+// marketplace participant persistence (0M.5), and Storefront persistence and
+// governance (0M.3C).
 //
 // The database is the authoritative store for the enduring Product identity and
 // its IMMUTABLE source-record version history. Capsule CANDIDATES are never
@@ -799,6 +800,12 @@ model MarketplaceParticipant {
   /// RESTRICT on the far side — immutable Product history is never cascade-deleted.
   authoredProductSourceVersions ProductSourceRecordVersionRow[]
 
+  // — Storefront relations (Phase 0M.3C). All RESTRICT on the far side. —
+  ownedStorefronts                Storefront[]
+  ownedStorefrontSourceVersions   StorefrontSourceRecordVersionRow[] @relation("StorefrontVersionOwner")
+  authorizedStorefrontVersions    StorefrontSourceRecordVersionRow[] @relation("StorefrontVersionAuthorizer")
+  storefrontGovernanceAssignments StorefrontGovernanceAssignment[]
+
   @@index([status])
 }
 
@@ -940,4 +947,197 @@ model ParticipantActivation {
   participant MarketplaceParticipant @relation(fields: [participantId], references: [id], onDelete: Restrict)
 
   @@index([participantId, submittedAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Storefront persistence and governance (Phase 0M.3C).
+//
+// The missing stage between the Phase 0M.3A source model and the Phase 0M.3B
+// capsule projection: an *authoritative source version* that actually exists in
+// the database. Until now the projection could only ever be fed a synthetic
+// fixture, because nothing could persist or retrieve a Storefront source version.
+//
+// The shape follows the Product precedent exactly:
+//
+//   Storefront                          — stable identity + current-version pointer
+//   StorefrontSourceRecordVersionRow    — IMMUTABLE material snapshots
+//   StorefrontGovernanceAssignment      — who administers it, additively
+//
+// Three boundaries are load-bearing:
+//
+//   1. **Immutable history.** A material change mints a new version row; no
+//      historical row is ever updated. Only the stable record's pointer moves.
+//   2. **Go-live approval is NOT here.** Monacado's determination that a
+//      Storefront may go live is a supplied decision input (0M.3A), never a
+//      Storefront fact. There is deliberately no `approvedForGoLive` column —
+//      storing it would put the approver's decision inside the approved thing.
+//   3. **No capsule, Node, or publication field.** This table holds transactional
+//      truth; the projection derives from it one way and writes nothing back.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Stable Monacado Storefront identity (one row per enduring storefront).
+model Storefront {
+  /// Opaque internal Storefront identifier (mon:storefront:<opaque>). Immutable.
+  internalStorefrontId String @id @db.VarChar(191)
+
+  /// Opaque source-record identifier (mon:srec:<opaque>), constant across all
+  /// versions of this Storefront; distinct from internalStorefrontId.
+  storefrontSourceRecordId String @unique @db.VarChar(191)
+
+  /// Pointer to the current immutable version's sourceRecordVersion.
+  currentSourceRecordVersion String @db.VarChar(64)
+
+  /// The participant that owns this Storefront — the whole of ownership. No role
+  /// basis accompanies it, because ownership is not role-shaped (0M.3A).
+  ownerParticipantId String @db.VarChar(191)
+
+  /// The CURRENT public routing name.
+  ///
+  /// Unique here and nowhere else: 0M.3A states the handle's shape but leaves
+  /// uniqueness to persistence, and it is the *current* handles that must not
+  /// collide. Version rows deliberately carry no unique constraint, so history
+  /// preserves the handle actually authorized at each version even after the
+  /// name is reassigned.
+  publicHandle String @unique @db.VarChar(63)
+
+  /// Current business state, mirrored from the current version for querying.
+  /// The version row remains authoritative; this is a denormalized pointer-side
+  /// copy kept in the same transaction, never an independent truth.
+  lifecycle  String @db.VarChar(16)
+  visibility String @db.VarChar(16)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  // RESTRICT: a Storefront anchors commercial history; deleting the owning
+  // participant beneath it must be refused.
+  owner MarketplaceParticipant @relation(fields: [ownerParticipantId], references: [id], onDelete: Restrict)
+
+  versions              StorefrontSourceRecordVersionRow[]
+  governanceAssignments StorefrontGovernanceAssignment[]
+
+  @@index([ownerParticipantId])
+  @@index([lifecycle, visibility])
+}
+
+/// Immutable authoritative Storefront source-record version. Never updated in place.
+///
+/// A complete snapshot, not a delta — the same reasoning the Product, Offer, and
+/// Listing source models record: a version that had to be replayed through its
+/// predecessors would make reconstruction depend on an unbroken chain.
+///
+/// Every column here maps one-to-one onto a `StorefrontSourceVersion` field, so a
+/// row round-trips exactly into the contract the capsule projection consumes.
+model StorefrontSourceRecordVersionRow {
+  /// Surrogate ordering/PK; deterministic creation order for version listing.
+  seq BigInt @id @default(autoincrement())
+
+  // — Identity and lineage —
+  storefrontSourceRecordId      String  @db.VarChar(191)
+  sourceRecordVersion           String  @db.VarChar(64)
+  /// The version this one replaces; NULL for the first.
+  supersedesSourceRecordVersion String? @db.VarChar(64)
+  internalStorefrontId          String  @db.VarChar(191)
+
+  // — Source-system identity (the existing convention) —
+  sourceSystem     String @db.VarChar(64)
+  sourceRecordType String @db.VarChar(64)
+  sourceClass      String @db.VarChar(64)
+
+  // — The complete material snapshot —
+  ownerParticipantId String @db.VarChar(191)
+  lifecycle          String @db.VarChar(16)
+  visibility         String @db.VarChar(16)
+  /// The handle authorized AT THIS VERSION. Not unique: history is preserved.
+  publicHandle       String @db.VarChar(63)
+
+  /// Presentation, normalized to scalars. `tagline` and `summary` are nullable
+  /// rather than optional, exactly as the source contract holds them, so an
+  /// absent value has one representation and cannot mint a spurious version.
+  presentationDisplayName String  @db.VarChar(120)
+  presentationTagline     String? @db.VarChar(200)
+  presentationSummary     String? @db.Text
+
+  // — Authorization trace —
+  authorizedByParticipantId String   @db.VarChar(191)
+  /// Opaque actor identifier (mon:actor:<opaque>) — never an email address or a
+  /// display name, matching the remediation and activation patterns.
+  authorizedByActorId       String   @db.VarChar(191)
+  recordedAt                DateTime @db.DateTime(3)
+
+  /// DB row creation time (operational; not a domain field).
+  rowCreatedAt DateTime @default(now()) @db.DateTime(3)
+
+  // RESTRICT everywhere: immutable source history is never cascade-deleted, and
+  // neither the Storefront nor either referenced participant may be removed
+  // beneath it.
+  storefront Storefront             @relation(fields: [internalStorefrontId], references: [internalStorefrontId], onDelete: Restrict)
+  owner      MarketplaceParticipant @relation("StorefrontVersionOwner", fields: [ownerParticipantId], references: [id], onDelete: Restrict)
+  authorizer MarketplaceParticipant @relation("StorefrontVersionAuthorizer", fields: [authorizedByParticipantId], references: [id], onDelete: Restrict)
+
+  /// One row per (source record, version label) — a version label is minted once.
+  @@unique([storefrontSourceRecordId, sourceRecordVersion])
+  @@index([internalStorefrontId, seq])
+  @@index([ownerParticipantId])
+  @@index([authorizedByParticipantId])
+}
+
+/// One governance assignment on one Storefront (Phase 0M.3C).
+///
+/// Governance is the SECOND axis 0M.3A defines: marketplace roles
+/// (SELLER/PROMOTER) are the *owner's* commercial capabilities, while
+/// SUPER_OWNER/ADMIN are the authority of *humans acting for* that owner.
+/// Administrative authority never makes an assignee a co-owner, so this table
+/// never touches `Storefront.ownerParticipantId`.
+///
+/// Assignments are additive, and a participant may hold at most one per
+/// Storefront — appointing an already-appointed participant changes the existing
+/// row rather than duplicating the grant.
+model StorefrontGovernanceAssignment {
+  /// Opaque identity (mon:sgov:<opaque>).
+  id String @id @db.VarChar(191)
+
+  internalStorefrontId String @db.VarChar(191)
+  participantId        String @db.VarChar(191)
+
+  /// SUPER_OWNER | ADMIN, bounded by the Zod StorefrontGovernanceRole enum.
+  role String @db.VarChar(16)
+
+  /// ACTIVE | SUSPENDED | REVOKED, bounded by the Zod enum.
+  ///
+  /// `NONE` is a member of the contract vocabulary but is deliberately NOT
+  /// storable: it means "no assignment exists", which is the absence of a row.
+  /// Persisting it would make "never appointed" and "appointed then removed"
+  /// indistinguishable, which is exactly the distinction 0M.3A draws.
+  status String @db.VarChar(16)
+
+  assignedAt DateTime  @db.DateTime(3)
+  revokedAt  DateTime? @db.DateTime(3)
+
+  /// Set to internalStorefrontId when this row is an ACTIVE SUPER_OWNER, and
+  /// NULL otherwise, so the unique index enforces **at most one active
+  /// SUPER_OWNER per Storefront** while permitting many ADMINs and any number of
+  /// revoked or suspended rows. MySQL has no partial indexes; this is the same
+  /// technique `RegistrarReceipt.acceptedForPublicationId` and
+  /// `ParticipantActivation.undecidedForParticipantId` use.
+  ///
+  /// The database therefore guarantees the "at most one" half of 0M.3A's
+  /// exactly-one rule. The "at least one" half is a go-live readiness question,
+  /// answered by the supplied `activeSuperOwnerCardinality` the contract already
+  /// takes — a Storefront may legitimately exist with none while still in DRAFT.
+  activeSuperOwnerForStorefrontId String? @unique @db.VarChar(191)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  // RESTRICT: a governance assignment is an authorization record. Revocation is
+  // a state change, not a delete, so the appointment history survives — and a
+  // participant holding one cannot be deleted beneath it.
+  storefront  Storefront             @relation(fields: [internalStorefrontId], references: [internalStorefrontId], onDelete: Restrict)
+  participant MarketplaceParticipant @relation(fields: [participantId], references: [id], onDelete: Restrict)
+
+  /// One assignment per participant per Storefront.
+  @@unique([internalStorefrontId, participantId])
+  @@index([internalStorefrontId, role, status])
+  @@index([participantId])
 }
