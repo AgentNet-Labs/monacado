@@ -315,7 +315,7 @@ Offer would create a second, divergent answer to the seller's own terms.
 > spread between them **plus** the seller-funded commission, and the three-party
 > identity balances to the commercial price exactly. What remains deferred is
 > *settlement mechanics* — when and how each party is actually paid — which
-> belongs to `0M.T` and `0M.7`.
+> belongs to `0M.T` and `0M.9`.
 
 ## 12. Upstream review and reactivation
 

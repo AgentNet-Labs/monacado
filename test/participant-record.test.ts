@@ -134,7 +134,7 @@ describe("draft-only scope", () => {
 
   it("stores no payment-readiness column anywhere in the schema", () => {
     // Payment readiness has no storage in this phase, so nothing can report
-    // ENABLED. 0M.6 adds the provider axis.
+    // ENABLED. 0M.8 adds the provider axis.
     expect(SCHEMA_CODE).not.toMatch(/paymentReadiness/);
     expect(SCHEMA_CODE).not.toMatch(/model ParticipantPaymentAccount/);
   });

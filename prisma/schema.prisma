@@ -752,7 +752,7 @@ model AccountEntitlement {
 //   3. **Payment readiness has NO storage in this phase.** There is no
 //      `ParticipantPaymentAccount` table and no readiness column — so nothing
 //      here can report ENABLED, by construction rather than by discipline.
-//      Materialization reports the initial `NOT_STARTED` and 0M.6 adds the real
+//      Materialization reports the initial `NOT_STARTED` and 0M.8 adds the real
 //      provider axis.
 //   4. **Private profile CONTENT has no storage either.** `ParticipantProfile`
 //      holds completion markers and onboarding gates only — no legal name, no
@@ -909,7 +909,7 @@ model ParticipantProfile {
 /// One governed activation review and its decision (Phase 0M.5 — table only).
 ///
 /// **Phase 0M.5 creates no row here.** Submitting and deciding an activation is
-/// 0M.6; the table exists so the participant's admission axis has a real audit
+/// 0M.8; the table exists so the participant's admission axis has a real audit
 /// home from the start rather than an activation being invented as a status
 /// write with no record of who decided it.
 ///

@@ -121,7 +121,7 @@ export class InvalidRoleTransitionError extends ParticipantError {
  *
  * The distinction matters: `InvalidParticipantTransitionError` means the
  * transition is illegal forever, while this means it is legal but belongs to the
- * governed activation phase (0M.6), which records WHO decided it. Collapsing
+ * governed activation phase (0M.8), which records WHO decided it. Collapsing
  * them would make a phase boundary look like a domain rule.
  */
 export class ActivationNotPermittedInPhaseError extends ParticipantError {

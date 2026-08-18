@@ -11,7 +11,7 @@ because it appears here.
 
 ## Sequence
 
-Each publishable entity takes **three phases**, in this order:
+Each publishable entity takes **three stages**, in this order:
 
 1. **authoritative source model** — what the entity is, and who may change it;
 2. **authoritative persistence** — the immutable source *versions* that actually
@@ -27,45 +27,103 @@ cannot be designed before the truth it projects exists (ADR §12;
 > and Listing each received a source model and a projection shape with no
 > persistence phase between them, so their projections could only ever be fed
 > synthetic fixtures — the declared pipeline's `AUTHORITATIVE_SOURCE_VERSION`
-> stage had nothing behind it. `0M.3C` closes that gap for the Storefront;
-> `0M.2D` and `0M.4C` are reserved for the Offer and the Listing. Phase *2* may
-> legitimately run after phase *3* for an entity whose projection already exists,
-> as it did here.
+> stage had nothing behind it. `0M.3C` closed that gap for the Storefront; the
+> Offer and the Listing close theirs in `0M.6` and `0M.7`. Stage *2* may
+> legitimately run after stage *3* for an entity whose projection already exists,
+> as it did there.
+
+### How phases are numbered
+
+Two numbering conventions coexist, and neither supersedes the other.
+
+- **Numeric `0M.x` phases are the primary implementation sequence.** From this
+  point forward they increase monotonically: the next unstarted phase is always
+  the next number, never a lower entity-family number.
+- **Lettered `0M.N` / `0M.R` / `0M.T` phases are cross-cutting workstreams.**
+  Their letter is thematic and **implies no chronological position** — each is a
+  prerequisite that must land before the production capability it gates, and the
+  Dependency order below states where each one falls.
+- **Early entity-family phases used `A`/`B`/`C` suffixes** (`0M.2A`, `0M.3B`,
+  `0M.3C`…) to keep an entity's source model, persistence, and projection
+  visibly related. That convention is **retired for future work.** Entity lineage
+  is now carried in the phase *description*, not by reusing a lower number.
+
+**Completed phase labels are historical identifiers and are never reassigned.**
+`0M.2A` means exactly what it meant when it was committed. In particular,
+Storefront persistence stays `0M.3C` — the label under which it was actually
+implemented — rather than being renamed to sit at the end of the sequence.
+
+### Completed phases
+
+Listed in the order the work was actually completed, which is not the order the
+labels sort in.
+
+| # | Phase | Title | State |
+| --- | --- | --- | --- |
+| 1 | **0M.1** | Account, role, activation, and review-authority architecture | **complete** — `084b315` |
+| 2 | **0M.2A** | Authoritative Offer Source Model | **complete** — `4687772` |
+| 3 | **0M.2B** | Offer Capsule Projection Shape | **complete** — `cb4a96d` |
+| 4 | **0M.3A** | Authoritative Storefront Source Model | **complete** — `fe0f803` |
+| 5 | **0M.2C** | **Offer economics correction** — required before any Listing pricing, checkout, or settlement | **complete** — `2ac467e` |
+| 6 | **0M.5** | Participant persistence and draft onboarding | **complete** — `a316dd1`, draft-only |
+| 7 | **0M.3B** | Storefront Capsule Projection Shape | **complete** — `f67383e` |
+| 8 | **0M.4A** | **Authoritative Listing Source Model** — seller-controlled vs promoted, promoter retail price, upstream blocking | **complete** — `3d8dee7` |
+| 9 | **0M.4B** | Listing Capsule Projection Shape | **complete** — `e6e6885` |
+| 10 | **0M.3C** | **Storefront Persistence and Governance** | **complete** — `e93b9e9` |
+
+### Forward sequence
+
+Numeric phases resume at **0M.6**, after the highest completed number, `0M.5`.
+Nothing below has started.
 
 | Phase | Title | State |
 | --- | --- | --- |
-| **0M.1** | Account, role, activation, and review-authority architecture | **complete** — `084b315` |
-| **0M.2A** | Authoritative Offer Source Model | **complete** — `4687772` |
-| **0M.2B** | Offer Capsule Projection Shape | **complete** — `cb4a96d` |
-| **0M.3A** | Authoritative Storefront Source Model | **complete** — `fe0f803` |
-| **0M.3B** | Storefront Capsule Projection Shape | **complete** |
-| **0M.3C** | **Storefront Persistence and Governance** | **complete** |
-| **0M.2C** | **Offer economics correction** — required before any Listing pricing, checkout, or settlement | **complete** |
-| **0M.2D** | **Offer Persistence** | **not started** |
-| **0M.N** | **Notification records** — durable admin-panel notices, deduplication, recipients, notice states | **not started** |
-| **0M.4A** | **Authoritative Listing Source Model** — seller-controlled vs promoted, promoter retail price, upstream blocking | **complete** |
-| **0M.4B** | Listing Capsule Projection Shape | **complete** |
-| **0M.4C** | **Listing Persistence** | **not started** |
-| **0M.5** | Participant persistence and draft onboarding | **complete** — draft-only |
+| **0M.6** | **Offer Persistence** — was reserved as `0M.2D` | **not started** |
+| **0M.7** | **Listing Persistence** — was reserved as `0M.4C` | **not started** |
+| **0M.8** | **Payment-provider Onboarding and Activation** — was `0M.6` | **not started** |
+| **0M.9** | **Buyer Checkout, Order, Commission, Payout, and Review-Submission Foundation** — was `0M.7` | **not started** |
+
+| Cross-cutting phase | Title | State |
+| --- | --- | --- |
+| **0M.N** | **Notification Records** — durable admin-panel notices, deduplication, recipients, notice states | **not started** |
 | **0M.R** | **Risk Management and Commercial Controls** — required before payment activation and checkout are production-capable | **not started** |
 | **0M.T** | **Tax, MoR and Transaction Accounting** — required before checkout/payment architecture is production-capable | **not started** |
-| 0M.6 | Payment-provider onboarding and activation | planned |
-| 0M.7 | Buyer checkout, Order, commission, payout, and review-submission foundation | planned |
+
+### Dependency order
+
+The intended primary sequence, with the cross-cutting phases placed at the point
+they gate:
+
+1. **`0M.6` — Offer Persistence.**
+2. **`0M.7` — Listing Persistence.** Depends on `0M.3C` (complete) and `0M.6`,
+   because a promoted Listing binds an exact Offer source version.
+3. **`0M.R`, `0M.T`, and `0M.N` where required.** Risk, tax, and transaction
+   accounting must be complete before the production capabilities they govern
+   become active; notification records land before the first phase that must
+   actually deliver a notice.
+4. **`0M.8` — Payment-provider Onboarding and Activation.**
+5. **`0M.9` — Buyer Checkout, Order, Commission, Payout, and Review-Submission
+   Foundation.**
+
+**The binding rules are two.** Offer and Listing persistence must precede any
+payment or checkout implementation. Risk, tax, and transaction accounting must be
+complete before the production capabilities they govern become active. A
+cross-cutting phase may be scheduled earlier than shown; it may never be
+scheduled later than the capability it gates.
 
 **Every publishable marketplace entity has a source model and a capsule
 projection shape; only the Storefront also has persistence.** Offer and Listing
-persistence (`0M.2D`, `0M.4C`) remain the open middle stage. Notification
-records, risk management, tax and transaction accounting, checkout, and
-settlement are all **not started** — no contract, no persistence, no route, no
-orchestration.
+persistence (`0M.6`, `0M.7`) remain the open middle stage. Notification records,
+risk management, tax and transaction accounting, checkout, and settlement are all
+**not started** — no contract, no persistence, no route, no orchestration.
 
-**0M.5 was taken out of table order**, ahead of 0M.3B, because every completed
-0M contract terminates at a `mon:mpart:` identity that had no table: Offer
+**0M.5 ran ahead of 0M.3B**, out of label order, because every completed 0M
+contract terminates at a `mon:mpart:` identity that had no table: Offer
 authority, Storefront ownership, and all twelve capability decisions were
 unreachable from persisted state. It is **draft onboarding only** — no activation
 approval, no payment provider, no Node, no capsule, no route, no UI. 0M.3B then
-completed the Storefront source-model/projection pair. The remaining phases keep
-their numbers and their order.
+completed the Storefront source-model/projection pair, and 0M.3C supplied the
+persistence stage that pair had been missing.
 
 **No entity is published yet.** Product is the only entity with a publication
 path, and it stays gated off. Storefront now has persistence but still no Node
@@ -82,12 +140,29 @@ wholesale-acquisition formula, tax or shipping treatment, fulfillment
 responsibility, settlement, or risk-policy application must update that document
 before or with implementation.
 
-> **Renumbering note.** Splitting Storefront and Listing into their own
-> source-model/projection pairs consumed the numbers 0M.3 and 0M.4, so participant
-> persistence, payment onboarding, and checkout moved from 0M.4/0M.5/0M.6 to
-> 0M.5/0M.6/0M.7. **The order of the work is unchanged**; only the labels moved.
-> No committed phase number was altered — 0M.1 means exactly what it meant when it
-> was committed.
+> **Renumbering history.** Two renumberings have occurred, and neither altered a
+> committed phase number.
+>
+> 1. Splitting Storefront and Listing into their own source-model/projection
+>    pairs consumed the numbers 0M.3 and 0M.4, so participant persistence,
+>    payment onboarding, and checkout moved from 0M.4/0M.5/0M.6 to
+>    0M.5/0M.6/0M.7.
+> 2. The missing persistence stage was then reserved *backwards*, as `0M.2D` and
+>    `0M.4C`, which pointed the next phase at a number lower than completed work.
+>    Those two reservations are withdrawn and reissued as **`0M.6`** and
+>    **`0M.7`**, and payment onboarding and checkout move to **`0M.8`** and
+>    **`0M.9`**. Only unstarted work moved.
+>
+> **The order of the work is unchanged**; only the labels of unstarted phases
+> moved. No committed phase number was altered — 0M.1 means exactly what it meant
+> when it was committed, and the same holds for 0M.3C.
+>
+> **Committed comments were corrected with it.** Source, Prisma schema, and test
+> comments written before this normalization forward-referenced payment-provider
+> onboarding and the governed activation review as `0M.6`; all nine now read
+> `0M.8`. The edits were comment-text only — no Prisma model, contract, service,
+> or test logic changed. A bare `0M.6` anywhere in the repository now means
+> **Offer Persistence**, with no legacy reading to apply.
 
 ---
 
@@ -219,20 +294,6 @@ which have not started.
 [`AUTHORITATIVE_STOREFRONT_SOURCE_MODEL.md`](AUTHORITATIVE_STOREFRONT_SOURCE_MODEL.md)
 §3; no committed Offer file is modified there.
 
-## Notification records (required, not started)
-
-Must define: durable **admin-panel** notices as the canonical channel;
-deduplication as one obligation per **promoter participant × exact Offer source
-version × change category**; recipients (the promoter participant's active
-`SUPER_OWNER` and `ADMIN`); the unread / acknowledged / resolved / archived states;
-and optional supplemental delivery channels that can never replace the
-admin-panel notice.
-
-**None of this is implemented.** The rules are recorded in
-[`AUTHORITATIVE_STOREFRONT_SOURCE_MODEL.md`](AUTHORITATIVE_STOREFRONT_SOURCE_MODEL.md)
-§3/§3a and are binding on these phases; the Storefront source module contains no
-executable form of them.
-
 ## 0M.3B — Storefront Capsule Projection Shape
 
 **Complete.** The deterministic Storefront projection, on the same terms as
@@ -286,20 +347,6 @@ workflow, Offer or Listing persistence, routes, and UI.
 
 Full detail:
 [`STOREFRONT_PERSISTENCE.md`](STOREFRONT_PERSISTENCE.md).
-
-## 0M.2D — Offer Persistence
-
-**Not started.** The authoritative Offer record and its immutable source
-versions, so the committed `0M.2B` projection can consume a real Offer version.
-Must preserve the `0M.2C` wholesale economics exactly and mint no new commission
-algorithm.
-
-## 0M.4C — Listing Persistence
-
-**Not started.** The authoritative Listing record and its immutable source
-versions. Depends on both Storefront persistence (`0M.3C`, complete) and Offer
-persistence (`0M.2D`), since a promoted Listing binds an exact Offer source
-version.
 
 ## 0M.4A — Authoritative Listing Source Model
 
@@ -405,6 +452,34 @@ capsule, no publication, no route, no UI.
 Full detail:
 [`PARTICIPANT_PERSISTENCE.md`](PARTICIPANT_PERSISTENCE.md).
 
+## 0M.6 — Offer Persistence
+
+**Not started.** The authoritative Offer record and its immutable source
+versions, so the committed `0M.2B` projection can consume a real Offer version.
+Must preserve the `0M.2C` wholesale economics exactly and mint no new commission
+algorithm.
+
+## 0M.7 — Listing Persistence
+
+**Not started.** The authoritative Listing record and its immutable source
+versions. Depends on both Storefront persistence (`0M.3C`, complete) and Offer
+persistence (`0M.6`), since a promoted Listing binds an exact Offer source
+version.
+
+## 0M.N — Notification records (required, not started)
+
+Must define: durable **admin-panel** notices as the canonical channel;
+deduplication as one obligation per **promoter participant × exact Offer source
+version × change category**; recipients (the promoter participant's active
+`SUPER_OWNER` and `ADMIN`); the unread / acknowledged / resolved / archived states;
+and optional supplemental delivery channels that can never replace the
+admin-panel notice.
+
+**None of this is implemented.** The rules are recorded in
+[`AUTHORITATIVE_STOREFRONT_SOURCE_MODEL.md`](AUTHORITATIVE_STOREFRONT_SOURCE_MODEL.md)
+§3/§3a and are binding on these phases; the Storefront source module contains no
+executable form of them.
+
 ## 0M.R — Risk Management and Commercial Controls
 
 **Not started.** Platform-wide risk-adjusted commercial controls, and the phase
@@ -447,7 +522,7 @@ content.
 See [`MONACADO_MOR_BUSINESS_MODEL.md`](MONACADO_MOR_BUSINESS_MODEL.md) §G, §H,
 and §I.
 
-## 0M.6 — Payment-provider onboarding and activation
+## 0M.8 — Payment-provider Onboarding and Activation
 
 Stripe Connect onboarding, requirement and capability synchronisation, and the
 governed activation review that moves a participant to `ACTIVE`.
@@ -458,7 +533,7 @@ for it. **No raw participant provider credential is ever stored** (thesis §5.5)
 Marketplace activation and payment readiness remain two independent gates, both
 required for commerce.
 
-## 0M.7 — Buyer checkout, Order, commission, payout, and review-submission foundation
+## 0M.9 — Buyer Checkout, Order, Commission, Payout, and Review-Submission Foundation
 
 Guest and account checkout, Order persistence, attributed commissions, payouts,
 and the first real `ReviewSubmissionAuthority` rows.

@@ -120,13 +120,13 @@ actor as an opaque `mon:actor:` id — never an email or display name — and us
 the `undecidedForParticipantId` unique-index technique (as
 `RegistrarReceipt.acceptedForPublicationId` does) to enforce at most one
 undecided activation per participant, since MySQL has no partial indexes. The
-table exists from the start so 0M.6 records *who decided what* rather than
+table exists from the start so 0M.8 records *who decided what* rather than
 inventing an activation as a bare status write.
 
 **Payment readiness has no storage.** There is no `ParticipantPaymentAccount`
 table and no readiness column, so nothing in this phase can report `ENABLED` —
 by construction rather than by discipline. Materialization reports the initial
-`NOT_STARTED`; 0M.6 replaces the constant with the provider's real answer.
+`NOT_STARTED`; 0M.8 replaces the constant with the provider's real answer.
 
 ## 5. Capability materialization
 
@@ -249,7 +249,7 @@ around a shared node identity, never one flat capsule.
 ## 9. Deferred: payment provider
 
 Stripe Connect onboarding, requirement synchronisation, and the governed
-activation review are 0M.6. The generic `PaymentReadinessStatus` lifecycle stays
+activation review are 0M.8. The generic `PaymentReadinessStatus` lifecycle stays
 provider-neutral — Stripe's requirement model is mapped onto it, never
 substituted for it — and **no raw participant provider credential is ever
 stored** (thesis §5.5).

@@ -160,7 +160,7 @@ export function toStorefrontOwnerFacts(input: {
       status: r.status as StorefrontOwnerFacts["roles"][number]["status"],
     })),
     /**
-     * No payment record exists (0M.6 owns that axis), so readiness is the
+     * No payment record exists (0M.8 owns that axis), so readiness is the
      * initial value by construction. This cannot report ENABLED.
      */
     paymentReadiness: INITIAL_PAYMENT_READINESS,

@@ -136,7 +136,7 @@ export function activationRowToRecord(row: ActivationRow): ActivationRecord {
  *     structural, not a convention.
  *   - **It never reports payment readiness from storage.** No payment table
  *     exists in this phase, so readiness is the initial `NOT_STARTED` — this
- *     function cannot emit ENABLED, and 0M.6 replaces the constant with the
+ *     function cannot emit ENABLED, and 0M.8 replaces the constant with the
  *     provider's real answer.
  *   - **It never grants internal capabilities from a marketplace role.**
  *     `internalCapabilities` comes from `AccountEntitlement` and is passed

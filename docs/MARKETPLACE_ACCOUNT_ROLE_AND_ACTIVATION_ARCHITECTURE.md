@@ -384,7 +384,7 @@ Confirmed for this phase:
 ## 9. Proposed relational architecture (documented, not migrated)
 
 No Prisma model, migration, or database write is introduced by this phase. The
-following is the candidate design for Phase 0M.4.
+following is the candidate design for Phase 0M.5, which implemented it.
 
 ### `MarketplaceParticipant`
 
@@ -586,7 +586,7 @@ Each is recorded rather than assumed, and none blocks the roadmap's next phase.
    what policy, and with what audit trail. `INVALIDATED` exists; the operation
    that sets it does not.
 7. **Guest purchase-claim process.** §3 requires an explicit verified process; its
-   design belongs to 0M.6.
+   design belongs to 0M.9.
 8. **Retention and deletion policy** for participant profiles, activations, and
    purchase evidence, including any right-to-erasure obligation that would
    conflict with the RESTRICT deletion rules in §9.

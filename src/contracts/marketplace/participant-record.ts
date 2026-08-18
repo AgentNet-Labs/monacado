@@ -27,7 +27,7 @@
  *      `completeness` as a column; this refines it.)
  *
  *   4. **Payment readiness is absent.** There is no payment record, no readiness
- *      field, and no way to express ENABLED in this phase. 0M.6 adds the
+ *      field, and no way to express ENABLED in this phase. 0M.8 adds the
  *      provider axis; until then `NOT_STARTED` is true by construction.
  *
  *   5. **The public projection is an allow-list that nothing implements yet.**
@@ -230,7 +230,7 @@ export type ActivationDecision = z.infer<typeof ActivationDecision>;
 /**
  * One governed activation review.
  *
- * **Phase 0M.5 creates none.** The shape exists so 0M.6 records who decided what
+ * **Phase 0M.5 creates none.** The shape exists so 0M.8 records who decided what
  * rather than inventing an activation as a bare status write.
  */
 export const ParticipantActivationRecord = z.strictObject({

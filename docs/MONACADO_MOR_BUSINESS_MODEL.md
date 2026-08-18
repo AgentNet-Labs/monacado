@@ -206,7 +206,7 @@ report, or a settlement statement would misstate what the seller agreed to.
 
 Settlement mechanics — *when* and *how* each party is actually paid, in what
 order, on what schedule, and against what ledger — are **not established by the
-current contracts**. They belong to `0M.T` and `0M.7`. This document describes
+current contracts**. They belong to `0M.T` and `0M.9`. This document describes
 what each party is economically entitled to per sale, not the payment operation.
 
 ---

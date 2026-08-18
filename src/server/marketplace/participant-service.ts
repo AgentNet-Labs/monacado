@@ -125,7 +125,7 @@ export interface ParticipantSnapshot {
   roles: MarketplaceRoleAssignmentRecord[];
   /**
    * The most recent activation, or `null`. Always `null` in Phase 0M.5 — no
-   * activation is submitted or decided here. Present so 0M.6 has a read path
+   * activation is submitted or decided here. Present so 0M.8 has a read path
    * that already exists rather than one invented alongside the write path.
    */
   latestActivation: ParticipantActivationRecord | null;

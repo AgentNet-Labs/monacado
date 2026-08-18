@@ -183,7 +183,7 @@ Two facts are deliberately **not** derived from persisted state:
   INDIVIDUAL/ORGANIZATION kind, and 0M.3A is explicit that an unresolved kind is
   `null` and is **never silently treated as INDIVIDUAL**.
 
-`paymentReadiness` is the initial `NOT_STARTED`: no payment record exists (0M.6
+`paymentReadiness` is the initial `NOT_STARTED`: no payment record exists (0M.8
 owns that axis), so it cannot report `ENABLED`.
 
 Holding an Account grants nothing. Internal capabilities are carried only so the
@@ -257,9 +257,9 @@ rejected by the input contracts and absent from the schema.
   interaction.
 - **Go-live approval workflow** — approval stays a supplied input; the mechanism
   that produces it is a later operational concern.
-- **Offer and Listing persistence** — `0M.2D` and `0M.4C`, the remaining two
+- **Offer and Listing persistence** — `0M.6` and `0M.7`, the remaining two
   entities in the same position this phase just resolved for the Storefront.
-- **Payment onboarding, risk policy** — `0M.6` and `0M.R`.
+- **Payment onboarding, risk policy** — `0M.8` and `0M.R`.
 
 ## Reference
 
