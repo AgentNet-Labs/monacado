@@ -27,10 +27,10 @@ cannot be designed before the truth it projects exists (ADR §12;
 > and Listing each received a source model and a projection shape with no
 > persistence phase between them, so their projections could only ever be fed
 > synthetic fixtures — the declared pipeline's `AUTHORITATIVE_SOURCE_VERSION`
-> stage had nothing behind it. `0M.3C` closed that gap for the Storefront; the
-> Offer and the Listing close theirs in `0M.6` and `0M.7`. Stage *2* may
-> legitimately run after stage *3* for an entity whose projection already exists,
-> as it did there.
+> stage had nothing behind it. `0M.3C` closed that gap for the Storefront and
+> `0M.6` closed it for the Offer; the Listing closes its own in `0M.7`. Stage *2*
+> may legitimately run after stage *3* for an entity whose projection already
+> exists, as it did in both.
 
 ### How phases are numbered
 
@@ -70,15 +70,15 @@ labels sort in.
 | 8 | **0M.4A** | **Authoritative Listing Source Model** — seller-controlled vs promoted, promoter retail price, upstream blocking | **complete** — `3d8dee7` |
 | 9 | **0M.4B** | Listing Capsule Projection Shape | **complete** — `e6e6885` |
 | 10 | **0M.3C** | **Storefront Persistence and Governance** | **complete** — `e93b9e9` |
+| 11 | **0M.6** | **Offer Persistence** | **complete** — draft-only |
 
 ### Forward sequence
 
-Numeric phases resume at **0M.6**, after the highest completed number, `0M.5`.
-Nothing below has started.
+`0M.6` is complete, so the next unstarted numeric phase is **`0M.7`**. Nothing
+below has started.
 
 | Phase | Title | State |
 | --- | --- | --- |
-| **0M.6** | **Offer Persistence** — was reserved as `0M.2D` | **not started** |
 | **0M.7** | **Listing Persistence** — was reserved as `0M.4C` | **not started** |
 | **0M.8** | **Payment-provider Onboarding and Activation** — was `0M.6` | **not started** |
 | **0M.9** | **Buyer Checkout, Order, Commission, Payout, and Review-Submission Foundation** — was `0M.7` | **not started** |
@@ -94,9 +94,11 @@ Nothing below has started.
 The intended primary sequence, with the cross-cutting phases placed at the point
 they gate:
 
-1. **`0M.6` — Offer Persistence.**
-2. **`0M.7` — Listing Persistence.** Depends on `0M.3C` (complete) and `0M.6`,
-   because a promoted Listing binds an exact Offer source version.
+1. ~~**`0M.6` — Offer Persistence.**~~ **Complete.**
+2. **`0M.7` — Listing Persistence.** Both dependencies are now met: `0M.3C` and
+   `0M.6` are complete, and a promoted Listing binds an exact Offer source
+   version through the `(offerSourceRecordId, sourceRecordVersion)` key `0M.6`
+   established.
 3. **`0M.R`, `0M.T`, and `0M.N` where required.** Risk, tax, and transaction
    accounting must be complete before the production capabilities they govern
    become active; notification records land before the first phase that must
@@ -112,9 +114,9 @@ cross-cutting phase may be scheduled earlier than shown; it may never be
 scheduled later than the capability it gates.
 
 **Every publishable marketplace entity has a source model and a capsule
-projection shape; only the Storefront also has persistence.** Offer and Listing
-persistence (`0M.6`, `0M.7`) remain the open middle stage. Notification records,
-risk management, tax and transaction accounting, checkout, and settlement are all
+projection shape; the Storefront and the Offer also have persistence.** Listing
+persistence (`0M.7`) is the last open middle stage. Notification records, risk
+management, tax and transaction accounting, checkout, and settlement are all
 **not started** — no contract, no persistence, no route, no orchestration.
 
 **0M.5 ran ahead of 0M.3B**, out of label order, because every completed 0M
@@ -126,8 +128,8 @@ completed the Storefront source-model/projection pair, and 0M.3C supplied the
 persistence stage that pair had been missing.
 
 **No entity is published yet.** Product is the only entity with a publication
-path, and it stays gated off. Storefront now has persistence but still no Node
-and no publication; Offer and Listing each have a projection shape and neither
+path, and it stays gated off. Storefront and Offer now have persistence but still
+no Node and no publication; Listing has a projection shape and neither
 persistence nor a Node.
 
 **Monacado's commercial model is Merchant-of-Record.** Monacado is the retailer
@@ -454,17 +456,45 @@ Full detail:
 
 ## 0M.6 — Offer Persistence
 
-**Not started.** The authoritative Offer record and its immutable source
-versions, so the committed `0M.2B` projection can consume a real Offer version.
-Must preserve the `0M.2C` wholesale economics exactly and mint no new commission
-algorithm.
+**Complete.** The authoritative Offer record, its immutable source-record
+versions, and the narrow service over them — the middle stage that was missing
+between `0M.2A` and `0M.2B`. A persisted source version now feeds the existing
+capsule projection without a synthetic fixture, producing a byte-identical
+capsule to the equivalent in-memory source.
+
+Two tables, both foreign keys `RESTRICT` and **no `CASCADE` anywhere**: `Offer`
+(stable identity plus current-version pointer) and
+`OfferSourceRecordVersionRow` (immutable snapshots). Six FKs in total, to
+`Product` and `MarketplaceParticipant` as well as to the Offer itself.
+
+**Must hold — and held:** history is immutable and a material change mints a new
+version rather than editing one; the pointer advances in the same transaction, so
+a stable record can never point at a version that does not exist; the `0M.2C`
+wholesale economics are preserved exactly and **no new commission algorithm was
+minted** — `calculateOfferEconomics` computes, persistence stores, and the
+contract re-checks on the way out; and the
+`(offerSourceRecordId, sourceRecordVersion)` unique key gives `0M.7` the exact
+accepted version a promoted Listing must bind to, with no dependence on mutable
+state, a capsule hash, or publication.
+
+**Draft-only, structurally.** `0M.2A` gates activation behind the full commerce
+test, which this phase fails twice over — `PARTICIPANT_NOT_ACTIVATED` (activation
+is a governed decision `0M.5` does not make) and `PAYMENT_NOT_ENABLED` behind it
+(no payment record until `0M.8`). No override was added; weakening either gate
+would let an unactivated, unpayable seller sell.
+
+**Not in scope:** Offer Node issuance, publication, Listing persistence, routes,
+and UI. Monacado's retail retention and the promoter's retail price are
+deliberately **not** Offer facts and appear nowhere in the schema.
+
+Full detail: [`OFFER_PERSISTENCE.md`](OFFER_PERSISTENCE.md).
 
 ## 0M.7 — Listing Persistence
 
 **Not started.** The authoritative Listing record and its immutable source
-versions. Depends on both Storefront persistence (`0M.3C`, complete) and Offer
-persistence (`0M.6`), since a promoted Listing binds an exact Offer source
-version.
+versions. Depends on both Storefront persistence (`0M.3C`) and Offer persistence
+(`0M.6`) — **both now complete** — since a promoted Listing binds an exact Offer
+source version, which `0M.6` made durably addressable.
 
 ## 0M.N — Notification records (required, not started)
 

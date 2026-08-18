@@ -56,6 +56,12 @@ model Product {
   node         ProductNode?
   publications ProductPublication[]
 
+  // — Offer relations (Phase 0M.6). Both RESTRICT on the far side: an Offer is a
+  // commercial commitment against this Product, and its immutable history must
+  // not be erasable by deleting the Product beneath it.
+  offers              Offer[]
+  offerSourceVersions OfferSourceRecordVersionRow[]
+
   @@index([sourceRecordId])
 }
 
@@ -806,6 +812,12 @@ model MarketplaceParticipant {
   authorizedStorefrontVersions    StorefrontSourceRecordVersionRow[] @relation("StorefrontVersionAuthorizer")
   storefrontGovernanceAssignments StorefrontGovernanceAssignment[]
 
+  // — Offer relations (Phase 0M.6). All RESTRICT on the far side. Seller
+  // authority over an Offer is transactional identity, never a Creator Node.
+  sellerOffers              Offer[]                       @relation("OfferSeller")
+  sellerOfferSourceVersions OfferSourceRecordVersionRow[] @relation("OfferVersionSeller")
+  authorizedOfferVersions   OfferSourceRecordVersionRow[] @relation("OfferVersionAuthorizer")
+
   @@index([status])
 }
 
@@ -1140,4 +1152,189 @@ model StorefrontGovernanceAssignment {
   @@unique([internalStorefrontId, participantId])
   @@index([internalStorefrontId, role, status])
   @@index([participantId])
+}
+
+// ---------------------------------------------------------------------------
+// Offer persistence (Phase 0M.6)
+//
+// The middle stage that was missing between the 0M.2A source model and the
+// 0M.2B capsule projection: the immutable source *versions* that actually exist
+// in the database, so a projection can be fed a persisted `OfferSourceVersion`
+// rather than a synthetic fixture.
+//
+// The database is the sole source of truth (ADR §12). Nothing here is a capsule,
+// a Node, a publication record, or a projection control. There is deliberately
+// no mappingVersion, capsuleId, nodeId, contentHash, or publication state — a
+// capsulization-layer control inside transactional truth is exactly what the
+// 0M.2A model refuses.
+//
+// NOT here, and not by omission: promoter retail price, promoter spread,
+// Monacado retained amount, MoR wholesale-acquisition amount, checkout tax,
+// shipping, payment credentials, banking, underwriting, risk classification,
+// payout holds, settlement, and every buyer datum. Those are other layers'
+// facts; several are other phases' entirely.
+// ---------------------------------------------------------------------------
+
+/// Stable Offer identity and current-version pointer (Phase 0M.6).
+///
+/// The enduring record. Material commercial terms live on the immutable version
+/// rows; this row identifies the Offer across all of them and names which one is
+/// current. Business state is mirrored here for querying only — the version row
+/// stays authoritative, and both move in the same transaction.
+model Offer {
+  /// Opaque internal Offer identifier (mon:offer:<opaque>). Immutable, and never
+  /// an AgentNet Node: `mon:offer:` is internal and a Node is issued elsewhere.
+  internalOfferId String @id @db.VarChar(191)
+
+  /// Opaque source-record identifier (mon:srec:<opaque>), constant across every
+  /// version of this Offer; distinct from internalOfferId. The same convention
+  /// the Product and Storefront source records already use.
+  offerSourceRecordId String @unique @db.VarChar(191)
+
+  /// Pointer to the current immutable version's sourceRecordVersion.
+  currentSourceRecordVersion String @db.VarChar(64)
+
+  /// The Product these commercial terms are for. An Offer names a Product; it
+  /// restates no Product descriptive fact (ADR §2 authority partitioning).
+  internalProductId String @db.VarChar(191)
+
+  /// The participant holding Seller authority. A TRANSACTIONAL identity — never
+  /// a Creator Node and never any public semantic identity (0M.2A §3).
+  sellerParticipantId String @db.VarChar(191)
+
+  /// Current business state, mirrored from the current version for querying.
+  /// Denormalized pointer-side copies kept in the same transaction, never an
+  /// independent truth. `availability` needs 23 characters for
+  /// TEMPORARILY_UNAVAILABLE.
+  lifecycle    String @db.VarChar(16)
+  availability String @db.VarChar(32)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  // RESTRICT everywhere: an Offer is a standing commercial commitment. Deleting
+  // the Product it is for, or the participant that authored it, must be refused
+  // rather than silently erasing what a seller offered.
+  product Product                @relation(fields: [internalProductId], references: [internalProductId], onDelete: Restrict)
+  seller  MarketplaceParticipant @relation("OfferSeller", fields: [sellerParticipantId], references: [id], onDelete: Restrict)
+
+  versions OfferSourceRecordVersionRow[]
+
+  @@index([internalProductId])
+  @@index([sellerParticipantId])
+  @@index([lifecycle, availability])
+}
+
+/// Immutable authoritative Offer source-record version. Never updated in place.
+///
+/// A complete snapshot, not a delta — the same reasoning 0M.2A records: a
+/// version that had to be replayed through its predecessors would make
+/// deterministic reconstruction depend on an unbroken chain, and one missing
+/// link would lose every version after it.
+///
+/// Every column maps one-to-one onto an `OfferSourceVersion` field, so a row
+/// round-trips exactly into the contract `projectOfferCapsule` already consumes.
+///
+/// This is the durable identity a 0M.7 promoted Listing binds to: the
+/// `(offerSourceRecordId, sourceRecordVersion)` unique key names one exact
+/// accepted version, with no dependence on mutable current state, a capsule
+/// hash, external publication, or an in-memory fixture.
+model OfferSourceRecordVersionRow {
+  /// Surrogate ordering/PK; deterministic creation order for version listing.
+  seq BigInt @id @default(autoincrement())
+
+  // — Identity and lineage —
+  offerSourceRecordId           String  @db.VarChar(191)
+  sourceRecordVersion           String  @db.VarChar(64)
+  /// The version this one replaces; NULL for the first.
+  supersedesSourceRecordVersion String? @db.VarChar(64)
+  internalOfferId               String  @db.VarChar(191)
+
+  // — Source-system identity (the existing convention) —
+  sourceSystem     String @db.VarChar(64)
+  sourceRecordType String @db.VarChar(64)
+  sourceClass      String @db.VarChar(64)
+
+  // — The complete material snapshot —
+  internalProductId   String @db.VarChar(191)
+  sellerParticipantId String @db.VarChar(191)
+  lifecycle           String @db.VarChar(16)
+  availability        String @db.VarChar(32)
+
+  // — Commercial terms, normalized to scalars —
+  //
+  // `terms.price` and `terms.promotion` are discriminated unions, flattened here
+  // so every member is a typed column rather than a JSON blob. The discriminator
+  // columns are NOT NULL and the arms are nullable: a FREE Offer has NO
+  // wholesale amount and NO currency, which is absence by construction in the
+  // contract and NULL columns here. The mapper rebuilds the union from the
+  // discriminator, so an arm value can never be read under the wrong arm.
+
+  /// FREE | PAID.
+  priceType String @db.VarChar(8)
+
+  /// PAID only. What the CREATOR is owed before promoter commission — never what
+  /// a buyer pays. BIGINT because minor units are integers up to
+  /// Number.MAX_SAFE_INTEGER; the mapper refuses anything outside that range.
+  wholesalePriceMinorUnits BigInt?
+  /// PAID only. Three uppercase letters (structural; not an ISO 4217 registry).
+  wholesalePriceCurrency   String? @db.VarChar(3)
+
+  /// NOT_PROMOTABLE | PROMOTABLE.
+  promotionType String @db.VarChar(16)
+
+  /// PROMOTABLE only. PERCENT_OF_WHOLESALE | FIXED_AMOUNT. The commission basis
+  /// is ALWAYS the wholesale price: a retail-derived basis is refused by the
+  /// contract, because a promoter could otherwise change what the creator owes.
+  commissionMethod          String? @db.VarChar(24)
+  /// PERCENT_OF_WHOLESALE only. Basis points: 1 = 0.01%, 10000 = 100%.
+  commissionBasisPoints     Int?
+  /// FIXED_AMOUNT only.
+  fixedCommissionMinorUnits BigInt?
+  fixedCommissionCurrency   String? @db.VarChar(3)
+
+  // — Effective interval —
+  //
+  // Two nullable columns are EXACTLY sufficient, with no ambiguity: the contract
+  // refuses an interval whose bounds are both null, so both-NULL here means "no
+  // effective interval" and nothing else. There is one representation per fact,
+  // which is what stops a spurious material change.
+  effectiveStartsAt DateTime? @db.DateTime(3)
+  effectiveEndsAt   DateTime? @db.DateTime(3)
+
+  // — Accepted economics —
+  //
+  // Stored, not recomputed on read. 0M.2A requires the exact numbers the creator
+  // was shown to be reproducible rather than recalculated under whatever policy
+  // is current later. The contract re-checks them against the deterministic
+  // calculator on the way out, so a drifted row fails loudly.
+  calculatedCommissionMinorUnits           BigInt
+  calculatedCreatorGrossProceedsMinorUnits BigInt
+  commissionCalculationPolicyVersion       String @db.VarChar(48)
+
+  // — Authorization trace —
+  authorizedBySellerParticipantId String   @db.VarChar(191)
+  /// Opaque actor identifier (mon:actor:<opaque>) — never an email address or a
+  /// display name, matching the activation and Storefront patterns.
+  authorizedByActorId             String   @db.VarChar(191)
+  recordedAt                      DateTime @db.DateTime(3)
+
+  /// DB row creation time (operational; not a domain field).
+  rowCreatedAt DateTime @default(now()) @db.DateTime(3)
+
+  // RESTRICT everywhere: immutable source history is never cascade-deleted, and
+  // neither the Offer, the Product, nor either referenced participant may be
+  // removed beneath it.
+  offer      Offer                  @relation(fields: [internalOfferId], references: [internalOfferId], onDelete: Restrict)
+  product    Product                @relation(fields: [internalProductId], references: [internalProductId], onDelete: Restrict)
+  seller     MarketplaceParticipant @relation("OfferVersionSeller", fields: [sellerParticipantId], references: [id], onDelete: Restrict)
+  authorizer MarketplaceParticipant @relation("OfferVersionAuthorizer", fields: [authorizedBySellerParticipantId], references: [id], onDelete: Restrict)
+
+  /// One row per (source record, version label) — a version label is minted
+  /// once. This is the durable key a 0M.7 Listing binds an exact Offer version by.
+  @@unique([offerSourceRecordId, sourceRecordVersion])
+  @@index([internalOfferId, seq])
+  @@index([internalProductId])
+  @@index([sellerParticipantId])
+  @@index([authorizedBySellerParticipantId])
 }

@@ -144,12 +144,35 @@ describe("draft-only scope", () => {
     expect(SCHEMA_CODE).not.toMatch(/model MarketplaceParticipantCapsule/);
   });
 
-  it("adds no Offer, Listing, Review, or Order persistence", () => {
-    /* Storefront persistence arrived later, in Phase 0M.3C — this assertion was
-       narrowed then rather than deleted, because what 0M.5 actually claims is
-       that *it* added none, and the remaining four are still absent. */
-    for (const model of ["model Offer", "model Listing", "model Review", "model Order"]) {
+  it("adds no Listing, Review, or Order persistence", () => {
+    /* Storefront persistence arrived later, in Phase 0M.3C, and Offer
+       persistence in Phase 0M.6 — this assertion has been narrowed at each,
+       rather than deleted, because what 0M.5 actually claims is that *it* added
+       none. The remaining three are still absent. */
+    for (const model of ["model Listing", "model Review", "model Order"]) {
       expect(SCHEMA_CODE).not.toContain(model);
+    }
+  });
+
+  it("keeps the participant's own tables free of Offer facts", () => {
+    /* The boundary 0M.5 guards is not "no Offer table exists anywhere" — 0M.6
+       built one — but that a PARTICIPANT table never carries commercial terms.
+       An Offer references a participant; a participant restates no Offer fact. */
+    const participantTables = codeOnly(
+      SCHEMA.slice(
+        SCHEMA.indexOf("model MarketplaceParticipant {"),
+        SCHEMA.indexOf("model Storefront {"),
+      ),
+    );
+    for (const field of [
+      "wholesalePrice",
+      "commissionBasisPoints",
+      "fixedCommission",
+      "priceType",
+      "availability",
+      "calculatedCommission",
+    ]) {
+      expect(participantTables).not.toContain(field);
     }
   });
 });

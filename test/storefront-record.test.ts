@@ -141,15 +141,38 @@ describe("schema-level integrity", () => {
     expect(block).toMatch(/activeSuperOwnerForStorefrontId String\? @unique/);
   });
 
-  it("adds no Storefront Node, publication, Offer, or Listing table", () => {
+  it("adds no Storefront Node, publication, Listing, or Order table", () => {
+    /* `model Offer` was dropped from this list when Phase 0M.6 built it. The
+       list is narrowed rather than deleted, on the same reasoning 0M.5 used for
+       the Storefront: what 0M.3C claims is that *it* added none of these, and
+       the remaining four are still absent. The Offer boundary this phase
+       actually guards is asserted below. */
     for (const model of [
       "model StorefrontNode",
       "model StorefrontPublication",
-      "model Offer",
       "model Listing",
       "model Order",
     ]) {
       expect(SCHEMA_CODE).not.toContain(model);
+    }
+  });
+
+  it("keeps the Storefront's own tables free of Offer facts", () => {
+    /* A Storefront embeds no Product, Offer, or Listing array — 0M.3A is
+       explicit that Listings reference Storefronts and not the reverse. 0M.6
+       adding an Offer table must not have changed that. */
+    const storefrontTables = codeOnly(
+      SCHEMA.slice(SCHEMA.indexOf("model Storefront {"), SCHEMA.indexOf("model Offer {")),
+    );
+    for (const field of [
+      "wholesalePrice",
+      "commissionBasisPoints",
+      "priceType",
+      "offers",
+      "listings",
+      "internalOfferId",
+    ]) {
+      expect(storefrontTables).not.toContain(field);
     }
   });
 });
