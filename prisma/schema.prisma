@@ -62,6 +62,12 @@ model Product {
   offers              Offer[]
   offerSourceVersions OfferSourceRecordVersionRow[]
 
+  // — Listing relations (Phase 0M.7). Both RESTRICT on the far side: a Listing
+  // is a buyer-facing placement of this Product, and its immutable history must
+  // not be erasable by deleting the Product beneath it.
+  listings              Listing[]
+  listingSourceVersions ListingSourceRecordVersionRow[]
+
   @@index([sourceRecordId])
 }
 
@@ -818,6 +824,13 @@ model MarketplaceParticipant {
   sellerOfferSourceVersions OfferSourceRecordVersionRow[] @relation("OfferVersionSeller")
   authorizedOfferVersions   OfferSourceRecordVersionRow[] @relation("OfferVersionAuthorizer")
 
+  // — Listing relations (Phase 0M.7). All RESTRICT on the far side. The
+  // controller is a seller or a promoter depending on the Listing branch; roles
+  // stay additive assignments and no separate identity table exists for either.
+  controlledListings        Listing[]                       @relation("ListingController")
+  controlledListingVersions ListingSourceRecordVersionRow[] @relation("ListingVersionController")
+  authorizedListingVersions ListingSourceRecordVersionRow[] @relation("ListingVersionAuthorizer")
+
   @@index([status])
 }
 
@@ -1028,6 +1041,13 @@ model Storefront {
   versions              StorefrontSourceRecordVersionRow[]
   governanceAssignments StorefrontGovernanceAssignment[]
 
+  // — Listing relations (Phase 0M.7). RESTRICT on the far side. Listings
+  // reference Storefronts and never the reverse (0M.3A): these are Prisma's
+  // required back-relations, not an embedded Listing array, and no Listing
+  // column or presentation fact is added to the Storefront tables.
+  listings              Listing[]
+  listingSourceVersions ListingSourceRecordVersionRow[]
+
   @@index([ownerParticipantId])
   @@index([lifecycle, visibility])
 }
@@ -1220,6 +1240,9 @@ model Offer {
 
   versions OfferSourceRecordVersionRow[]
 
+  /// Promoted Listing versions that name this Offer (0M.7). RESTRICT.
+  promotedListingVersions ListingSourceRecordVersionRow[] @relation("ListingAcceptedOffer")
+
   @@index([internalProductId])
   @@index([sellerParticipantId])
   @@index([lifecycle, availability])
@@ -1330,6 +1353,11 @@ model OfferSourceRecordVersionRow {
   seller     MarketplaceParticipant @relation("OfferVersionSeller", fields: [sellerParticipantId], references: [id], onDelete: Restrict)
   authorizer MarketplaceParticipant @relation("OfferVersionAuthorizer", fields: [authorizedBySellerParticipantId], references: [id], onDelete: Restrict)
 
+  /// Promoted Listing versions that accepted THIS exact Offer version (0M.7).
+  /// RESTRICT on the far side: an accepted version is a term a promoter agreed
+  /// to, and it must not be deletable while a Listing still depends on it.
+  acceptingListingVersions ListingSourceRecordVersionRow[] @relation("ListingAcceptedOfferVersion")
+
   /// One row per (source record, version label) — a version label is minted
   /// once. This is the durable key a 0M.7 Listing binds an exact Offer version by.
   @@unique([offerSourceRecordId, sourceRecordVersion])
@@ -1337,4 +1365,207 @@ model OfferSourceRecordVersionRow {
   @@index([internalProductId])
   @@index([sellerParticipantId])
   @@index([authorizedBySellerParticipantId])
+}
+
+// ---------------------------------------------------------------------------
+// Listing persistence (Phase 0M.7)
+//
+// The last missing middle stage: the immutable source *versions* behind the
+// 0M.4A Listing source model, so the 0M.4B projection can be fed a persisted
+// `ListingSourceVersion` rather than a synthetic fixture.
+//
+// The database is the sole source of truth (ADR §12). Nothing here is a capsule,
+// a Node, a publication record, or a projection control.
+//
+// DERIVED VALUES ARE NOT STORED, and this is the rule that shapes the tables.
+// 0M.4A is explicit that effective seller price, sale-active status, Monacado's
+// retained amount, the MoR wholesale-acquisition amount, seller proceeds,
+// promoter spread, promoter net proceeds, promoter margin rate, minimum viable
+// retail, and buyer-active eligibility are all COMPUTED from authoritative
+// inputs plus a supplied instant and a supplied policy. A stored copy is a
+// second answer that can disagree with the first — and a stored effective price
+// would additionally mean a Listing needed a database write every time a sale
+// window opened or closed. There is no column for any of them.
+//
+// Tax, VAT, GST, shipping, freight, and delivery are outside every basis 0M.4A
+// defines, and there is no column for any of them either.
+// ---------------------------------------------------------------------------
+
+/// Stable Listing identity and current-version pointer (Phase 0M.7).
+///
+/// The buyer-facing placement of a Product in a Storefront, as either a
+/// seller-controlled direct sale or a promoter-controlled resale under an Offer.
+model Listing {
+  /// Opaque internal Listing identifier (mon:listing:<opaque>). Immutable, and
+  /// never an AgentNet Node.
+  internalListingId String @id @db.VarChar(191)
+
+  /// Opaque source-record identifier (mon:srec:<opaque>), constant across every
+  /// version of this Listing; distinct from internalListingId.
+  listingSourceRecordId String @unique @db.VarChar(191)
+
+  /// Pointer to the current immutable version's sourceRecordVersion.
+  currentSourceRecordVersion String @db.VarChar(64)
+
+  /// SELLER_DIRECT | PROMOTED. Denormalized from the current version for
+  /// querying; the version row stays authoritative.
+  listingType String @db.VarChar(16)
+
+  /// The placement's three authoritative references.
+  internalProductId        String @db.VarChar(191)
+  storefrontId             String @db.VarChar(191)
+  /// The participant who controls this Listing — the seller for SELLER_DIRECT,
+  /// the promoter for PROMOTED. One neutral participant identity with additive
+  /// roles (0M.5); there is no Seller table and no Promoter table.
+  controllingParticipantId String @db.VarChar(191)
+
+  /// Current lifecycle, mirrored from the current version for querying. Moves
+  /// with the pointer in the same transaction, never independently.
+  lifecycle String @db.VarChar(16)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  // RESTRICT everywhere: a Listing is a buyer-facing commercial placement.
+  // Deleting the Product, the Storefront, or the controlling participant
+  // beneath it must be refused rather than silently erasing the placement.
+  product    Product                @relation(fields: [internalProductId], references: [internalProductId], onDelete: Restrict)
+  storefront Storefront             @relation(fields: [storefrontId], references: [internalStorefrontId], onDelete: Restrict)
+  controller MarketplaceParticipant @relation("ListingController", fields: [controllingParticipantId], references: [id], onDelete: Restrict)
+
+  versions ListingSourceRecordVersionRow[]
+
+  @@index([internalProductId])
+  @@index([storefrontId])
+  @@index([controllingParticipantId])
+  @@index([listingType, lifecycle])
+}
+
+/// Immutable authoritative Listing source-record version. Never updated in place.
+///
+/// A complete snapshot, not a delta. Every column maps one-to-one onto a
+/// `ListingSourceVersion` field, so a row round-trips exactly into the contract
+/// `listingSourceRecordToCapsuleProjection` already consumes.
+///
+/// THE DISCRIMINATED UNION IS PRESERVED, NOT COLLAPSED. `listingType` is the
+/// discriminator; each branch's fields are nullable columns read only when the
+/// discriminator selects them. 0M.4A makes the two branches structurally
+/// impossible to confuse — a SELLER_DIRECT placement has no field for an Offer
+/// dependency and a PROMOTED placement has no field for a scheduled sale — and
+/// the mapper rebuilds the union from the discriminator so neither can acquire
+/// the other's fields on the way out.
+model ListingSourceRecordVersionRow {
+  /// Surrogate ordering/PK; deterministic creation order for version listing.
+  seq BigInt @id @default(autoincrement())
+
+  // — Identity and lineage —
+  listingSourceRecordId         String  @db.VarChar(191)
+  sourceRecordVersion           String  @db.VarChar(64)
+  /// The version this one replaces; NULL for the first.
+  supersedesSourceRecordVersion String? @db.VarChar(64)
+  internalListingId             String  @db.VarChar(191)
+
+  // — Source-system identity (the existing convention) —
+  sourceSystem     String @db.VarChar(64)
+  sourceRecordType String @db.VarChar(64)
+  sourceClass      String @db.VarChar(64)
+
+  // — The complete material snapshot —
+  storefrontId             String @db.VarChar(191)
+  internalProductId        String @db.VarChar(191)
+  controllingParticipantId String @db.VarChar(191)
+  lifecycle                String @db.VarChar(16)
+
+  /// The union discriminator. NOT NULL: every placement is one branch or the other.
+  listingType String @db.VarChar(16)
+
+  /// The ordinary commercial retail price — the merchandise price alone. Both
+  /// branches carry one. BIGINT because minor units are integers up to
+  /// Number.MAX_SAFE_INTEGER. Tax and shipping are NOT part of it and have no
+  /// column anywhere.
+  retailPriceMinorUnits BigInt
+  retailPriceCurrency   String @db.VarChar(3)
+
+  // — SELLER_DIRECT arm: the optional scheduled sale —
+  //
+  // All four columns are all-present or all-NULL, mirroring the contract's
+  // single nested object: there is no way to record a start without a price.
+  // The ordinary retail price above is never overwritten when a sale runs, so
+  // the price to return to still exists when the window closes.
+  //
+  // Timing is UTC, START INCLUSIVE and END EXCLUSIVE, stored as instants. No
+  // currentPrice, effectivePrice, pricedAt, or saleIsActive column exists: those
+  // are derived from these columns plus a supplied instant, which is why a sale
+  // starting or ending requires no database write.
+  salePriceMinorUnits BigInt?
+  salePriceCurrency   String?   @db.VarChar(3)
+  saleStartsAt        DateTime? @db.DateTime(3)
+  saleEndsAt          DateTime? @db.DateTime(3)
+
+  // — PROMOTED arm: the exact accepted Offer source version —
+  //
+  // Not a copy of the Offer. The identity, the EXACT version, and the economics
+  // actually accepted — enough to reconstruct what the promoter agreed to and to
+  // detect that the upstream Offer has moved past it. The Offer source version
+  // remains authoritative for wholesale economics; these are the terms accepted,
+  // not a second answer to them.
+  acceptedInternalOfferId                    String?   @db.VarChar(191)
+  acceptedOfferSourceRecordId                String?   @db.VarChar(191)
+  /// The EXACT version accepted — never "current", never "latest".
+  acceptedOfferSourceRecordVersion           String?   @db.VarChar(64)
+  acceptedWholesalePriceMinorUnits           BigInt?
+  acceptedWholesalePriceCurrency             String?   @db.VarChar(3)
+  acceptedCommissionCalculationPolicyVersion String?   @db.VarChar(64)
+  acceptedAt                                 DateTime? @db.DateTime(3)
+  /// NO_UPSTREAM_CHANGE | REVIEW_REQUIRED | ACCEPTED_CURRENT_VERSION.
+  upstreamReviewState                        String?   @db.VarChar(32)
+
+  // — Authorization trace —
+  authorizedByParticipantId String   @db.VarChar(191)
+  /// Opaque actor identifier (mon:actor:<opaque>) — never an email address or a
+  /// display name.
+  authorizedByActorId       String   @db.VarChar(191)
+  recordedAt                DateTime @db.DateTime(3)
+
+  /// DB row creation time (operational; not a domain field).
+  rowCreatedAt DateTime @default(now()) @db.DateTime(3)
+
+  // RESTRICT everywhere: immutable source history is never cascade-deleted.
+  listing    Listing                @relation(fields: [internalListingId], references: [internalListingId], onDelete: Restrict)
+  product    Product                @relation(fields: [internalProductId], references: [internalProductId], onDelete: Restrict)
+  storefront Storefront             @relation(fields: [storefrontId], references: [internalStorefrontId], onDelete: Restrict)
+  controller MarketplaceParticipant @relation("ListingVersionController", fields: [controllingParticipantId], references: [id], onDelete: Restrict)
+  authorizer MarketplaceParticipant @relation("ListingVersionAuthorizer", fields: [authorizedByParticipantId], references: [id], onDelete: Restrict)
+
+  /// The stable Offer named by a promoted placement. NULL for SELLER_DIRECT.
+  acceptedOffer Offer? @relation("ListingAcceptedOffer", fields: [acceptedInternalOfferId], references: [internalOfferId], onDelete: Restrict)
+
+  /// THE EXACT ACCEPTED OFFER SOURCE VERSION.
+  ///
+  /// A composite foreign key onto `OfferSourceRecordVersionRow`'s
+  /// (offerSourceRecordId, sourceRecordVersion) unique key — the durable
+  /// identity 0M.6 established. This is the requirement of the whole promoted
+  /// branch made structural:
+  ///
+  ///   - a promoted Listing CANNOT reference an Offer version that does not
+  ///     exist, because the database refuses the row;
+  ///   - the accepted version CANNOT be deleted while a Listing depends on it,
+  ///     because the rule is RESTRICT;
+  ///   - the binding NEVER follows the Offer's current-version pointer, because
+  ///     it names a version label rather than reading the stable Offer row.
+  ///
+  /// Both columns are NULL for SELLER_DIRECT, and MySQL's MATCH SIMPLE
+  /// semantics let a composite FK pass when any column is NULL — so the branch
+  /// that has no Offer is unconstrained by it.
+  acceptedOfferVersion OfferSourceRecordVersionRow? @relation("ListingAcceptedOfferVersion", fields: [acceptedOfferSourceRecordId, acceptedOfferSourceRecordVersion], references: [offerSourceRecordId, sourceRecordVersion], onDelete: Restrict)
+
+  /// One row per (source record, version label) — a version label is minted once.
+  @@unique([listingSourceRecordId, sourceRecordVersion])
+  @@index([internalListingId, seq])
+  @@index([internalProductId])
+  @@index([storefrontId])
+  @@index([controllingParticipantId])
+  @@index([authorizedByParticipantId])
+  @@index([acceptedInternalOfferId])
+  @@index([acceptedOfferSourceRecordId, acceptedOfferSourceRecordVersion])
 }

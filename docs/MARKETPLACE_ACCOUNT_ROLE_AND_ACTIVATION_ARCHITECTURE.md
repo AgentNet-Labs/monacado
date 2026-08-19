@@ -21,7 +21,7 @@ models in §9 are *proposed*, not migrated.
 | `src/contracts/marketplace/participant.ts` | Role, participant-status, role-status, and payment-readiness vocabularies; the participant and subject read views. |
 | `src/contracts/marketplace/lifecycle.ts` | Three explicit transition tables and their validators. |
 | `src/contracts/marketplace/review-authority.ts` | Review kinds, submission and authority views, the state→action authorization table, and the public attribution projection. |
-| `src/contracts/marketplace/capability.ts` | Twelve capability decisions, the review-capsule authority evaluator, and the internal/marketplace boundary functions. |
+| `src/contracts/marketplace/capability.ts` | Thirteen capability decisions, the review-capsule authority evaluator, and the internal/marketplace boundary functions. Twelve were defined here in 0M.1; `listing:seller_direct:create` was added in 0M.7, because this vocabulary predates 0M.4A splitting Listings into SELLER_DIRECT and PROMOTED and named only the promoted half. |
 | `test/marketplace-account-role-activation.test.ts` | 71 pure tests, one `describe` per required property. |
 
 ---

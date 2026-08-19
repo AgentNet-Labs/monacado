@@ -43,6 +43,7 @@ import {
   canCreateDraftProduct,
   canCreateDraftStorefront,
   canCreatePromotedListing,
+  canCreateSellerDirectListing,
   canPublishOffer,
   canPublishProductReviewCapsule,
   canPublishSellerReviewCapsule,
@@ -881,6 +882,111 @@ describe("20. invalid lifecycle transitions fail", () => {
   });
 });
 
+// — 20b (Phase 0M.7) —
+
+describe("20b. seller-direct Listing creation has its own capability", () => {
+  /* Phase 0M.7 correction. 0M.1's vocabulary named only `listing:promoted:create`
+     because it predates 0M.4A splitting Listings into SELLER_DIRECT and
+     PROMOTED. Placing a Product for sale and authoring the Product's own facts
+     are different authorization concerns, and one capability answering both
+     would mean a future change to either rule silently moved the other. */
+
+  it("an eligible SELLER is allowed, and the decision names the Listing capability", () => {
+    const decision = canCreateSellerDirectListing(bare("SELLER"));
+    expect(decision.decision).toBe("ALLOW");
+    expect(decision.capability).toBe("listing:seller_direct:create");
+    /* And specifically NOT the Product capability it used to borrow. */
+    expect(decision.capability).not.toBe("product:draft:create");
+  });
+
+  it("Product drafting stays a separate, independently-reported decision", () => {
+    const seller = bare("SELLER");
+    const productDecision = canCreateDraftProduct(seller);
+    expect(productDecision.decision).toBe("ALLOW");
+    expect(productDecision.capability).toBe("product:draft:create");
+    /* Both allow for a seller, but neither is an alias for the other: the two
+       capability strings are distinct and each decision reports its own. */
+    expect(productDecision.capability).not.toBe(
+      canCreateSellerDirectListing(seller).capability,
+    );
+  });
+
+  it("a PROMOTER-only participant is refused seller-direct creation", () => {
+    const decision = canCreateSellerDirectListing(bare("PROMOTER"));
+    expect(decision.decision).toBe("DENY");
+    expect(decision.reasonCodes).toEqual(["ROLE_NOT_HELD"]);
+  });
+
+  it("a SELLER-only participant is refused promoted creation", () => {
+    /* The converse, so adding the seller-direct capability cannot be read as
+       widening what a seller may do. */
+    const decision = canCreatePromotedListing(bare("SELLER"));
+    expect(decision.decision).toBe("DENY");
+    expect(decision.reasonCodes).toEqual(["ROLE_NOT_HELD"]);
+  });
+
+  it("a participant holding SELLER and PROMOTER may receive both", () => {
+    /* Roles are additive, so holding both legitimately grants both. */
+    const both = subject({
+      participant: participant({
+        status: "DRAFT",
+        roles: [
+          ["SELLER", "DRAFT"],
+          ["PROMOTER", "DRAFT"],
+        ],
+      }),
+    });
+    expect(canCreateSellerDirectListing(both).decision).toBe("ALLOW");
+    expect(canCreatePromotedListing(both).decision).toBe("ALLOW");
+  });
+
+  it("a BUYER-only participant is refused", () => {
+    const decision = canCreateSellerDirectListing(bare("BUYER"));
+    expect(decision.decision).toBe("DENY");
+    expect(decision.reasonCodes).toEqual(["ROLE_NOT_HELD"]);
+  });
+
+  it("a guest is refused", () => {
+    const decision = canCreateSellerDirectListing(GUEST_SUBJECT);
+    expect(decision.decision).toBe("DENY");
+    expect(decision.reasonCodes).toEqual(["ACCOUNT_REQUIRED"]);
+  });
+
+  it("a disabled account is refused even holding an active SELLER role", () => {
+    const decision = canCreateSellerDirectListing(
+      subject({
+        account: "DISABLED",
+        participant: participant({ status: "ACTIVE", roles: [["SELLER", "ACTIVE"]] }),
+      }),
+    );
+    expect(decision.decision).toBe("DENY");
+    expect(decision.reasonCodes).toEqual(["ACCOUNT_DISABLED"]);
+  });
+
+  it("an authenticated non-participant is refused", () => {
+    const decision = canCreateSellerDirectListing(subject({ participant: null }));
+    expect(decision.decision).toBe("DENY");
+    expect(decision.reasonCodes).toEqual(["PARTICIPANT_REQUIRED"]);
+  });
+
+  it("a SELLER role that is not usable in its status is refused", () => {
+    const decision = canCreateSellerDirectListing(
+      subject({
+        participant: participant({ status: "DRAFT", roles: [["SELLER", "REVOKED"]] }),
+      }),
+    );
+    expect(decision.decision).toBe("DENY");
+    expect(decision.reasonCodes).toEqual(["ROLE_NOT_ACTIVE"]);
+  });
+
+  it("holding an internal entitlement grants no Listing capability", () => {
+    /* The marketplace/internal boundary is unchanged by this addition. */
+    expect(marketplaceCapabilitiesGrantedByInternalEntitlement([
+      "publication-worker:status:read",
+    ])).toEqual([]);
+  });
+});
+
 // — 21 —
 
 describe("21. unknown enum values and unknown keys fail", () => {
@@ -890,7 +996,27 @@ describe("21. unknown enum values and unknown keys fail", () => {
     expect(RoleAssignmentStatus.safeParse("PENDING").success).toBe(false);
     expect(PaymentReadinessStatus.safeParse("STRIPE_PENDING").success).toBe(false);
     expect(MarketplaceCapability.safeParse("storefront:delete").success).toBe(false);
-    expect(MARKETPLACE_CAPABILITIES).toHaveLength(12);
+    /* The closed vocabulary, pinned exactly. Phase 0M.7 added the thirteenth,
+       `listing:seller_direct:create`. Unknown strings stay refused. */
+    expect(MARKETPLACE_CAPABILITIES).toHaveLength(13);
+    expect([...MARKETPLACE_CAPABILITIES]).toEqual([
+      "storefront:draft:create",
+      "product:draft:create",
+      "listing:seller_direct:create",
+      "listing:promoted:create",
+      "activation:submit",
+      "storefront:activate",
+      "offer:publish",
+      "payout:receive",
+      "commission:accrue",
+      "review:product:submit",
+      "review:seller:submit",
+      "review:product:capsule:publish",
+      "review:seller:capsule:publish",
+    ]);
+    expect(MarketplaceCapability.safeParse("listing:seller_direct:create").success).toBe(true);
+    expect(MarketplaceCapability.safeParse("listing:create").success).toBe(false);
+    expect(MarketplaceCapability.safeParse("listing:seller:create").success).toBe(false);
   });
 
   it("unknown keys are refused on every view", () => {

@@ -144,12 +144,12 @@ describe("draft-only scope", () => {
     expect(SCHEMA_CODE).not.toMatch(/model MarketplaceParticipantCapsule/);
   });
 
-  it("adds no Listing, Review, or Order persistence", () => {
-    /* Storefront persistence arrived later, in Phase 0M.3C, and Offer
-       persistence in Phase 0M.6 — this assertion has been narrowed at each,
+  it("adds no Review or Order persistence", () => {
+    /* Storefront persistence arrived in Phase 0M.3C, Offer persistence in 0M.6,
+       and Listing persistence in 0M.7 — this assertion has been narrowed at each,
        rather than deleted, because what 0M.5 actually claims is that *it* added
-       none. The remaining three are still absent. */
-    for (const model of ["model Listing", "model Review", "model Order"]) {
+       none. The remaining two are still absent. */
+    for (const model of ["model Review", "model Order"]) {
       expect(SCHEMA_CODE).not.toContain(model);
     }
   });
@@ -171,6 +171,8 @@ describe("draft-only scope", () => {
       "priceType",
       "availability",
       "calculatedCommission",
+      "retailPrice",
+      "salePrice",
     ]) {
       expect(participantTables).not.toContain(field);
     }
@@ -435,8 +437,12 @@ describe("vocabularies", () => {
     ]);
   });
 
-  it("still exposes exactly twelve marketplace capabilities", () => {
-    expect(MARKETPLACE_CAPABILITIES).toHaveLength(12);
+  it("still exposes exactly thirteen marketplace capabilities", () => {
+    /* Twelve until Phase 0M.7 added `listing:seller_direct:create`, which 0M.1's
+       vocabulary lacked because it predates 0M.4A splitting Listings into
+       SELLER_DIRECT and PROMOTED. The count is pinned rather than loosened. */
+    expect(MARKETPLACE_CAPABILITIES).toHaveLength(13);
+    expect(MARKETPLACE_CAPABILITIES).toContain("listing:seller_direct:create");
   });
 
   it("accepts at most three initial roles on a draft participant", () => {

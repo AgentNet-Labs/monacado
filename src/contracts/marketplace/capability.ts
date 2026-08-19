@@ -62,6 +62,7 @@ import {
 export const MARKETPLACE_CAPABILITIES = [
   "storefront:draft:create",
   "product:draft:create",
+  "listing:seller_direct:create",
   "listing:promoted:create",
   "activation:submit",
   "storefront:activate",
@@ -264,6 +265,24 @@ export function canCreateDraftStorefront(subject: MarketplaceSubject): Capabilit
  */
 export function canCreateDraftProduct(subject: MarketplaceSubject): CapabilityDecision {
   return evaluateDraft("product:draft:create", subject, "SELLER");
+}
+
+/**
+ * Drafting a **seller-direct** listing requires SELLER.
+ *
+ * A seller placing their own Product in their own Storefront: there is no
+ * wholesale counterparty and no Offer, so the gate is the seller's own drafting
+ * eligibility.
+ *
+ * Deliberately **separate from `product:draft:create`.** Authoring a Product's
+ * authoritative facts and placing a Product for sale are different acts, and one
+ * capability answering both would mean a future change to either rule silently
+ * moved the other. This capability was added in Phase 0M.7: 0M.1's vocabulary
+ * predates 0M.4A splitting Listings into SELLER_DIRECT and PROMOTED, so it named
+ * only the promoted half.
+ */
+export function canCreateSellerDirectListing(subject: MarketplaceSubject): CapabilityDecision {
+  return evaluateDraft("listing:seller_direct:create", subject, "SELLER");
 }
 
 /** Drafting a promoted listing requires PROMOTER. */

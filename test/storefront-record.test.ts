@@ -10,7 +10,7 @@
  * service does not set one" does not.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   DEFERRED_STOREFRONT_PERSISTENCE_EXTENSIONS,
@@ -141,7 +141,7 @@ describe("schema-level integrity", () => {
     expect(block).toMatch(/activeSuperOwnerForStorefrontId String\? @unique/);
   });
 
-  it("adds no Storefront Node, publication, Listing, or Order table", () => {
+  it("adds no Storefront Node, publication, or Order table", () => {
     /* `model Offer` was dropped from this list when Phase 0M.6 built it. The
        list is narrowed rather than deleted, on the same reasoning 0M.5 used for
        the Storefront: what 0M.3C claims is that *it* added none of these, and
@@ -150,17 +150,21 @@ describe("schema-level integrity", () => {
     for (const model of [
       "model StorefrontNode",
       "model StorefrontPublication",
-      "model Listing",
       "model Order",
     ]) {
       expect(SCHEMA_CODE).not.toContain(model);
     }
   });
 
-  it("keeps the Storefront's own tables free of Offer facts", () => {
-    /* A Storefront embeds no Product, Offer, or Listing array — 0M.3A is
-       explicit that Listings reference Storefronts and not the reverse. 0M.6
-       adding an Offer table must not have changed that. */
+  it("keeps the Storefront's own tables free of Offer and Listing facts", () => {
+    /* 0M.3A: a Storefront embeds no Product, Offer, or Listing array, and
+       Listings reference Storefronts rather than the reverse.
+       
+       The invariant is about COLUMNS, not about Prisma's navigation fields. A
+       back-relation like `listings Listing[]` is required for the relation to
+       exist at all and creates no column — 0M.7's migration issues no ALTER
+       TABLE against Storefront whatsoever, which is asserted separately below.
+       What must never appear is a scalar Offer or Listing fact. */
     const storefrontTables = codeOnly(
       SCHEMA.slice(SCHEMA.indexOf("model Storefront {"), SCHEMA.indexOf("model Offer {")),
     );
@@ -168,11 +172,29 @@ describe("schema-level integrity", () => {
       "wholesalePrice",
       "commissionBasisPoints",
       "priceType",
-      "offers",
-      "listings",
       "internalOfferId",
+      "internalListingId",
+      "retailPrice",
+      "salePrice",
+      "listingCount",
     ]) {
       expect(storefrontTables).not.toContain(field);
+    }
+  });
+
+  it("gains no Storefront column from later entity phases", () => {
+    /* The database-level statement of the same rule: neither the Offer phase nor
+       the Listing phase altered the Storefront table. Foreign keys live on the
+       referencing side, which is exactly what "Listings reference Storefronts,
+       not the reverse" means in SQL. */
+    const migrations = ["add_offer_persistence", "add_listing_persistence"];
+    for (const name of migrations) {
+      const dir = readdirSync(new URL("../prisma/migrations/", import.meta.url)).find((d) =>
+        d.endsWith(name),
+      );
+      expect(dir).toBeDefined();
+      const sql = source(`../prisma/migrations/${dir}/migration.sql`);
+      expect(sql).not.toMatch(/ALTER TABLE `Storefront`/);
     }
   });
 });

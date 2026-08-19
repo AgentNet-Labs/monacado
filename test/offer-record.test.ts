@@ -257,7 +257,10 @@ describe("privacy and scope", () => {
   });
 
   it("stores no payment, banking, risk, settlement, or buyer column in the schema", () => {
-    const offerTables = SCHEMA_CODE.slice(SCHEMA_CODE.indexOf("model Offer {"));
+    const offerTables = SCHEMA_CODE.slice(
+      SCHEMA_CODE.indexOf("model Offer {"),
+      SCHEMA_CODE.indexOf("model Listing {"),
+    );
     for (const forbidden of [
       "paymentProviderToken",
       "stripeAccountId",
@@ -277,7 +280,10 @@ describe("privacy and scope", () => {
   it("stores no capsule, Node, mapping, or publication column", () => {
     /* ADR §12.2: a projection-layer control inside transactional truth is
        exactly the coupling the source model refuses. */
-    const offerTables = SCHEMA_CODE.slice(SCHEMA_CODE.indexOf("model Offer {"));
+    const offerTables = SCHEMA_CODE.slice(
+      SCHEMA_CODE.indexOf("model Offer {"),
+      SCHEMA_CODE.indexOf("model Listing {"),
+    );
     for (const forbidden of [
       "capsuleId",
       "nodeId",
@@ -296,8 +302,11 @@ describe("privacy and scope", () => {
     }
   });
 
-  it("creates no Offer Node, publication, outbox, or Listing table", () => {
-    for (const model of ["model OfferNode", "model OfferPublication", "model Listing"]) {
+  it("creates no Offer Node, publication, or outbox table", () => {
+    /* `model Listing` left this list when Phase 0M.7 built it. What 0M.6 claims
+       is that *it* added no Listing persistence, and the Offer-side artifacts
+       below are still absent. */
+    for (const model of ["model OfferNode", "model OfferPublication"]) {
       expect(SCHEMA_CODE).not.toContain(model);
     }
   });
@@ -307,7 +316,12 @@ describe("privacy and scope", () => {
 
 describe("schema shape", () => {
   it("makes every Offer foreign key RESTRICT — history is never cascade-deleted", () => {
-    const offerTables = SCHEMA_CODE.slice(SCHEMA_CODE.indexOf("model Offer {"));
+    /* Bounded to the Offer models. Phase 0M.7 appended the Listing models after
+       them, and an unbounded slice would count that phase's relations too. */
+    const offerTables = SCHEMA_CODE.slice(
+      SCHEMA_CODE.indexOf("model Offer {"),
+      SCHEMA_CODE.indexOf("model Listing {"),
+    );
     const relations = offerTables.match(/@relation\([^)]*onDelete: \w+/g) ?? [];
     expect(relations.length).toBe(6);
     for (const relation of relations) expect(relation).toContain("onDelete: Restrict");
