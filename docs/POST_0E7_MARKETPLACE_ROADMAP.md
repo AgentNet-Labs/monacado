@@ -72,16 +72,17 @@ labels sort in.
 | 10 | **0M.3C** | **Storefront Persistence and Governance** | **complete** — `e93b9e9` |
 | 11 | **0M.6** | **Offer Persistence** | **complete** — `7fdf745`, draft-only |
 | 12 | **0M.7** | **Listing Persistence** | **complete** — draft-only |
-| 13 | **0M.8** | **Payment-provider Onboarding and Activation** | **complete** |
+| 13 | **0M.8** | **Payment-provider Onboarding and Activation** | **complete** — `d8424fa` |
+| 14 | **0M.R1** | **Versioned Commercial Policy and Activation Risk Records** | **complete** |
 
 ### Forward sequence
 
-`0M.8` is complete, so the next phases are the three cross-cutting foundations
-`0M.9` requires, then `0M.9` itself. Nothing below has started.
+`0M.8` and `0M.R1` are complete, so the next phases are the two remaining
+cross-cutting foundations `0M.9` requires, then `0M.9` itself. Nothing below has
+started.
 
 | Phase | Title | State |
 | --- | --- | --- |
-| **0M.R1** | **Versioned Commercial Policy and Activation Risk Records** | **not started** |
 | **0M.N1** | **Notification Obligation Records** | **not started** |
 | **0M.T1** | **MoR Transaction Accounting Foundation** | **not started** |
 | **0M.9** | **Buyer Checkout, Order, Commission, Payout, and Review-Submission Foundation** — was `0M.7` | **not started** |
@@ -89,7 +90,7 @@ labels sort in.
 | Cross-cutting phase | Title | State |
 | --- | --- | --- |
 | **0M.N** | **Notification Records** — durable admin-panel notices, deduplication, recipients, notice states | **not started** |
-| **0M.R** | **Risk Management and Commercial Controls** — required before the **production** payment and commerce capabilities it governs are enabled; **not** a prerequisite to `0M.8` | **not started** |
+| **0M.R** | **Risk Management and Commercial Controls** — required before the **production** payment and commerce capabilities it governs are enabled; **not** a prerequisite to `0M.8` | **`0M.R1` complete**; `0M.R2` not started |
 | **0M.T** | **Tax, MoR and Transaction Accounting** — required before checkout/payment architecture is production-capable; its `0M.T1` foundation is a prerequisite to `0M.9`, **not** to `0M.8` | **not started** |
 
 ### Dependency order
@@ -104,7 +105,11 @@ they gate:
 3. ~~**`0M.8` — Payment-provider Onboarding and Activation.**~~ **Complete.** It
    moved no money and created no transaction, so no part of `0M.R`, `0M.T`, or
    `0M.N` was a prerequisite to it — and none was implemented alongside it.
-4. **`0M.R1` — Versioned Commercial Policy and Activation Risk Records.**
+4. ~~**`0M.R1` — Versioned Commercial Policy and Activation Risk Records.**~~
+   **Complete.** The wholesale-acquisition policy now has an authoritative
+   versioned home, so `0M.T1` has an exact `(policyId, policyVersion)` to bind
+   an Order to; and `RESTRICTED` has machine-readable evidence, so the status
+   `0M.8` refused to write now means something a later reader can act on.
 5. **`0M.N1` — Notification Obligation Records.** Durable records; delivery is
    `0M.N2`.
 6. **`0M.T1` — MoR Transaction Accounting Foundation.**
@@ -553,11 +558,58 @@ admin-panel notice.
 §3/§3a and are binding on these phases; the Storefront source module contains no
 executable form of them.
 
+## 0M.R1 — Versioned Commercial Policy and Activation Risk Records
+
+**Complete.** The first half of `0M.R`, and the narrowest useful one: the
+versioned commercial policy `0M.T1` will bind transactions to, and the
+machine-readable restriction scope `0M.8` refused to invent.
+
+Three tables. `CommercialPolicy` (stable `mon:cpol:` identity) and
+`CommercialPolicyVersionRow` (immutable versions keyed by
+`(policyId, policyVersion)`, the same composite the Offer source versions use);
+`ParticipantRestriction` (the evidence behind a `RESTRICTED` status). All foreign
+keys `RESTRICT`.
+
+**Must hold — and held:** the database became authoritative for commercial policy
+while the committed `MonacadoWholesaleAcquisitionPolicy` stayed the shape, so
+**no second implementation of the economics was written** and the 0M.4A
+calculators consume a reconstructed version unchanged; policy history is immutable
+and a rate change mints a new version, with a retired version still bindable so a
+past transaction stays reproducible; **no derived economics are stored**, and no
+rate is compiled into any module; and "the effective policy" has exactly one
+answer, enforced by a unique index rather than by discipline.
+
+**`RESTRICTED` gained meaning.** A restriction names a member of the committed
+`MARKETPLACE_CAPABILITIES` vocabulary — narrowed to commerce, because a
+restriction withholds commerce and never the ability to correct the work that
+caused it — with a bounded reason code and no private provider or underwriting
+content. A participant is never `RESTRICTED` without active evidence, the two are
+written in one transaction, and lifting is a state change that preserves history
+rather than a delete.
+
+**`SUSPENDED` stayed phase-gated.** This phase's model expresses
+capability-scoped withholding, which is what `RESTRICTED` means; suspension is
+admission withdrawn wholesale — a different governed act needing its own decision
+path and evidence. The distinction was not invented here.
+
+**Authority is a new internal `AccountEntitlement`, `participant:restrict`** —
+separate from `activation:review`, which authorizes deciding one admission and
+would have been silently widened. No marketplace role or ownership confers it,
+and 0M.8's self-review prohibition extends to restriction in both directions.
+
+**No transaction-risk machinery**: no cap, velocity check, fraud score, payout
+hold, reserve, chargeback control, or manual-review queue. Those are `0M.R2`.
+
+Full detail:
+[`VERSIONED_COMMERCIAL_POLICY_AND_ACTIVATION_RISK.md`](VERSIONED_COMMERCIAL_POLICY_AND_ACTIVATION_RISK.md).
+
 ## 0M.R — Risk Management and Commercial Controls
 
-**Not started.** Platform-wide risk-adjusted commercial controls, and the phase
-that must land **before the production payment and commerce capabilities it
-governs are enabled**.
+**Partly complete.** Platform-wide risk-adjusted commercial controls, and the
+phase that must land **before the production payment and commerce capabilities it
+governs are enabled**. **`0M.R1` delivered the foundation half** — the versioned
+commercial policy and the activation restriction records, above. What remains is
+`0M.R2`: transaction and commercial risk enforcement.
 
 > **"Before payment activation" means production enablement, not `0M.8`.** The
 > earlier wording was ambiguous: *payment activation* could be misread as `0M.8`'s

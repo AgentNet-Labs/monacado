@@ -118,6 +118,7 @@ function suiteIds(): ParticipantIdProvider {
     nextProfileId: () => `mon:mprof:${nextSuffix()}`,
     nextActivationId: () => `mon:mact:${nextSuffix()}`,
     nextPaymentAccountId: () => `mon:mpay:${nextSuffix()}`,
+    nextRestrictionId: () => `mon:prst:${nextSuffix()}`,
   };
 }
 

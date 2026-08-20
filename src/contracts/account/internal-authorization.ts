@@ -44,6 +44,20 @@ import { ACCOUNT_CAPABILITIES, AccountCapability, AccountId, AccountStatus } fro
  */
 export const ACTIVATION_REVIEW_CAPABILITY = "activation:review" as const satisfies AccountCapability;
 
+/**
+ * The capability that authorizes imposing or lifting a governed participant
+ * restriction (Phase 0M.R1).
+ *
+ * **Separate from `activation:review`, not folded into it.** A restriction
+ * reaches capabilities an activation review never touches — taking a storefront
+ * live, publishing an Offer, receiving a payout, accruing commission, submitting
+ * reviews — so reusing the review grant would silently widen the authority of
+ * someone approved to decide one admission. Narrow by construction: not `admin`,
+ * not `risk:*`, not a wildcard.
+ */
+export const PARTICIPANT_RESTRICT_CAPABILITY =
+  "participant:restrict" as const satisfies AccountCapability;
+
 // — Reason codes —
 
 export const INTERNAL_AUTHORIZATION_REASON_CODES = [
@@ -137,6 +151,23 @@ export function canReviewParticipantActivation(
   subject: InternalAuthorizationSubject | null,
 ): InternalAuthorizationDecision {
   return evaluateInternalCapability(ACTIVATION_REVIEW_CAPABILITY, subject);
+}
+
+/**
+ * May this internal account impose or lift a governed participant restriction?
+ *
+ * Requires an explicit active `participant:restrict` entitlement, on exactly the
+ * terms `canReviewParticipantActivation` requires its own. **Holding
+ * `activation:review` is not enough** — the two are independent grants, and a
+ * reviewer of admissions is not automatically a restrictor of commerce.
+ *
+ * Marketplace roles, participant ownership, and account ownership confer nothing
+ * here either, and could not: the subject has no field capable of carrying one.
+ */
+export function canRestrictParticipant(
+  subject: InternalAuthorizationSubject | null,
+): InternalAuthorizationDecision {
+  return evaluateInternalCapability(PARTICIPANT_RESTRICT_CAPABILITY, subject);
 }
 
 /** May this internal account read publication-worker operational health? */

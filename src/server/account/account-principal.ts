@@ -38,19 +38,21 @@ type Db = ReturnType<typeof getPrisma>;
  * The capabilities that promote an authenticated account to `INTERNAL_OPERATOR`.
  *
  * An explicit set, as this module's own note anticipated when there was one
- * member: Phase 0M.8 introduced the second (`activation:review`), and holding
- * **any** internal operational capability is what makes an account an internal
- * operator.
+ * member: Phase 0M.8 introduced the second (`activation:review`) and 0M.R1 the
+ * third (`participant:restrict`), and holding **any** internal operational
+ * capability is what makes an account an internal operator.
  *
  * `actorType` is a classification, never an authorization. Every internal
  * surface checks the *specific* capability it requires — the publication-worker
- * status route checks `publication-worker:status:read`, and the activation
- * review checks `activation:review` — so appearing in this set grants no access
- * to anything but the capability actually held.
+ * status route checks `publication-worker:status:read`, the activation review
+ * checks `activation:review`, and the restriction service checks
+ * `participant:restrict` — so appearing in this set grants no access to anything
+ * but the capability actually held.
  */
 export const INTERNAL_OPERATOR_CAPABILITIES = [
   "publication-worker:status:read",
   "activation:review",
+  "participant:restrict",
 ] as const satisfies readonly AccountCapability[];
 
 /**

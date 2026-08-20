@@ -539,8 +539,13 @@ describe("0M.8 · the two capability vocabularies stay disjoint", () => {
   });
 
   it("the existing internal capability is preserved, not replaced", () => {
+    /* Narrowed at Phase 0M.R1, which added `participant:restrict` as the third
+       member. The claim this test actually makes is that 0M.8's addition was
+       additive — the 0E.7.4.1 capability is still there, and `activation:review`
+       joined it rather than replacing it. A fixed count was incidental to there
+       having been two. */
     expect(ACCOUNT_CAPABILITIES).toContain("publication-worker:status:read");
-    expect(ACCOUNT_CAPABILITIES).toHaveLength(2);
+    expect(ACCOUNT_CAPABILITIES).toContain("activation:review");
   });
 });
 

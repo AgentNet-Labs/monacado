@@ -814,6 +814,10 @@ model MarketplaceParticipant {
   /// linkage is evidence behind an activation decision.
   paymentAccounts ParticipantPaymentAccount[]
 
+  /// Governed restrictions (Phase 0M.R1). RESTRICT on the far side — a
+  /// restriction is the evidence behind a RESTRICTED status.
+  restrictions ParticipantRestriction[]
+
   /// Product source versions authored under this participant's creator authority.
   /// RESTRICT on the far side — immutable Product history is never cascade-deleted.
   authoredProductSourceVersions ProductSourceRecordVersionRow[]
@@ -1116,6 +1120,192 @@ model ParticipantPaymentRequirementRow {
 
   /// The same category twice is one outstanding thing.
   @@unique([paymentAccountId, requirementCode])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Versioned commercial policy and activation risk records (Phase 0M.R1).
+//
+// Two unrelated concerns, deliberately two model families rather than one
+// generic "policy" table. They are both cross-cutting and that is their ONLY
+// similarity: one describes Monacado's economics, the other describes a governed
+// decision about one participant. A polymorphic table serving both would make
+// every reader ask which kind of row they were holding.
+//
+// Four boundaries are load-bearing:
+//
+//   1. **The database becomes authoritative for commercial policy.** Until now
+//      `MonacadoWholesaleAcquisitionPolicy` was a supplied Zod value with no home,
+//      so a future Order could record a policyId/policyVersion pointing at
+//      nothing. A version row is what that pair will reference.
+//   2. **Policy history is immutable.** Changing economics mints a new version;
+//      superseded versions keep their numbers exactly as transactions ran under
+//      them. RETIRED is still bindable by historical reference — only DRAFT is not.
+//   3. **No derived economics are stored.** No acquisition percentage, no
+//      retained amount, no per-sale figure. They are deterministic functions of a
+//      price and a version, and a stored copy is a second answer.
+//   4. **RESTRICTED gains machine-readable evidence.** A restriction names a
+//      member of the committed MARKETPLACE_CAPABILITIES vocabulary and a bounded
+//      reason code, so the status 0M.8 refused to write now means something a
+//      later reader can act on.
+//
+// NOT here, and belonging to 0M.R2: risk scores, classifications, reserves,
+// payout holds, transaction caps, velocity windows, fraud rules, manual-review
+// queues, and per-transaction policy selection. No transaction, Order, payment,
+// tax, or notification model is created by this phase either.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The enduring identity of one Monacado wholesale-acquisition policy (0M.R1).
+///
+/// This id is exactly what `MonacadoWholesaleAcquisitionPolicy.policyId` carries.
+/// Its versions have no opaque identity of their own — they are keyed by
+/// (policyId, policyVersion), the same composite the Offer source versions use,
+/// so a future Order binds to a pair that cannot drift onto "whatever is current".
+model CommercialPolicy {
+  /// Opaque identity (mon:cpol:<opaque>). Immutable.
+  id String @id @db.VarChar(191)
+
+  /// Operational display label. NEVER an input to a calculation, never published.
+  /// Economics read the id and the version and nothing else.
+  label String @db.VarChar(191)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  versions CommercialPolicyVersionRow[]
+}
+
+/// One IMMUTABLE version of one commercial policy (0M.R1).
+///
+/// The economics columns mirror the committed
+/// `MonacadoWholesaleAcquisitionPolicy` exactly — basis points for the
+/// percentage, minor units for the fixed amount, an explicit currency, and the
+/// rounding rule carried on the policy rather than inherited from whichever
+/// calculator runs. No floating-point money anywhere.
+///
+/// Only `status`, `retiredAt`, and `retiredByAccountId` are ever updated, and
+/// only along the DRAFT -> ACTIVE -> RETIRED path. The economics themselves are
+/// never rewritten: a rate change is a new row.
+model CommercialPolicyVersionRow {
+  /// Surrogate key. The meaningful identity is (policyId, policyVersion).
+  seq BigInt @id @default(autoincrement())
+
+  policyId String @db.VarChar(191)
+
+  /// The exact version label. Opaque to every calculation.
+  policyVersion String @db.VarChar(64)
+
+  /// DRAFT | ACTIVE | RETIRED. RETIRED remains bindable by historical reference —
+  /// an Order that ran under it must stay reproducible. Only DRAFT is unbindable.
+  status String @db.VarChar(16)
+
+  // — Economics. Inputs only; nothing derived is stored. —
+  currency                      String @db.VarChar(3)
+  /// Percentage Monacado retains, in basis points (1 = 0.01%). 750 = 7.5%.
+  retainedPercentageBasisPoints Int
+  /// Fixed amount Monacado retains, in minor units. 100 = $1.00.
+  retainedFixedAmountMinorUnits BigInt
+  /// The policy carries its own rounding rule. HALF_UP_TO_MINOR_UNIT.
+  roundingPolicy                String @db.VarChar(32)
+
+  /// When this version's economics begin to apply. Supplied, never a clock read.
+  effectiveFrom DateTime @db.DateTime(3)
+
+  /// Who recorded it, as the durable internal Account id (0M.8's settled rule).
+  /// Never an email address and never a display name.
+  recordedByAccountId String   @db.VarChar(191)
+  recordedAt          DateTime @db.DateTime(3)
+
+  /// Set when the version leaves ACTIVE. NULL while it stands.
+  retiredAt          DateTime? @db.DateTime(3)
+  retiredByAccountId String?   @db.VarChar(191)
+
+  /// Set to `policyId` while this version is ACTIVE and NULL otherwise, so the
+  /// unique index below enforces AT MOST ONE ACTIVE VERSION PER POLICY while
+  /// permitting any number of DRAFT and RETIRED ones. MySQL has no partial
+  /// indexes; this is the same technique
+  /// `ParticipantActivation.undecidedForParticipantId` uses.
+  ///
+  /// It is what makes "the effective policy" a question with exactly one answer,
+  /// enforced by the database rather than by a service remembering to retire the
+  /// incumbent first.
+  activeForPolicyId String? @unique @db.VarChar(191)
+
+  rowCreatedAt DateTime @default(now()) @db.DateTime(3)
+
+  // RESTRICT: a policy version is the basis of historical economics. Deleting a
+  // policy that holds versions must be refused.
+  policy CommercialPolicy @relation(fields: [policyId], references: [id], onDelete: Restrict)
+
+  /// The composite a future Order binds to. Unique, so a version label names one
+  /// immutable set of numbers forever.
+  @@unique([policyId, policyVersion])
+  @@index([policyId, status])
+  @@index([policyId, effectiveFrom])
+}
+
+/// One governed restriction on one participant (0M.R1).
+///
+/// The machine-readable evidence behind `MarketplaceParticipant.status =
+/// RESTRICTED`, which 0M.8 refused to write for want of exactly this.
+///
+/// `scope` is a member of the committed MARKETPLACE_CAPABILITIES vocabulary,
+/// narrowed to the commerce subset — drafting capabilities and
+/// `activation:submit` are deliberately NOT restrictable, because a restriction
+/// withholds commerce and never the ability to correct the work that caused it
+/// (0M.1 §4.1) or to answer the restriction itself.
+///
+/// **A restriction is Monacado's governed decision, never an observation.** A
+/// provider reporting DISABLED creates no row here; that state lives on
+/// `ParticipantPaymentAccount` and stays an external fact.
+///
+/// There is deliberately NO column for a risk score, classification, reserve,
+/// payout hold, transaction cap, velocity window, order or payment reference,
+/// expiry, provider message, document, or free text. All of it is 0M.R2 or later.
+model ParticipantRestriction {
+  /// Opaque identity (mon:prst:<opaque>).
+  id String @id @db.VarChar(191)
+
+  participantId String @db.VarChar(191)
+
+  /// A restrictable MARKETPLACE_CAPABILITIES member: storefront:activate |
+  /// offer:publish | payout:receive | commission:accrue | review:product:submit |
+  /// review:seller:submit.
+  scope String @db.VarChar(48)
+
+  /// Bounded classification, never free text and never private content.
+  reasonCode String @db.VarChar(48)
+
+  /// ACTIVE | LIFTED. LIFTED is terminal — re-imposing is a NEW restriction with
+  /// its own instant and actor, so "restricted, cleared, restricted again" reads
+  /// as two events rather than one row that changed its mind.
+  status String @db.VarChar(16)
+
+  imposedAt          DateTime @db.DateTime(3)
+  /// The durable internal Account identity, per 0M.8's settled actor rule.
+  imposedByAccountId String   @db.VarChar(191)
+
+  liftedAt          DateTime? @db.DateTime(3)
+  liftedByAccountId String?   @db.VarChar(191)
+  liftedReasonCode  String?   @db.VarChar(48)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  // RESTRICT: a restriction is the evidence behind a status the participant
+  // held. Deleting a participant that holds one must be refused, and lifting is
+  // a state change rather than a delete, so history always survives.
+  participant MarketplaceParticipant @relation(fields: [participantId], references: [id], onDelete: Restrict)
+
+  /// At most ONE ACTIVE restriction per (participant, scope). Re-imposing the
+  /// same scope while it already stands is a duplicate, not a second withholding.
+  /// NULL-able marker column, set to the scope while ACTIVE and NULL once lifted:
+  /// MySQL has no partial indexes, and this is the technique
+  /// `ParticipantActivation.undecidedForParticipantId` already uses.
+  activeForScope String? @db.VarChar(48)
+
+  @@unique([participantId, activeForScope])
+  @@index([participantId, status])
+  @@index([status, scope])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

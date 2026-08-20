@@ -91,6 +91,29 @@ export const PARTICIPANT_ACTIVATION_ID_RE = new RegExp(`^mon:mact:${OPAQUE_BODY}
  */
 export const PARTICIPANT_PAYMENT_ACCOUNT_ID_RE = new RegExp(`^mon:mpay:${OPAQUE_BODY}$`);
 
+/**
+ * Stable commercial-policy identity (`mon:cpol:<opaque>`) — Phase 0M.R1.
+ *
+ * The enduring identity of one Monacado wholesale-acquisition policy, and
+ * exactly what `MonacadoWholesaleAcquisitionPolicy.policyId` carries. Its
+ * *versions* have no opaque identity of their own: they are keyed by
+ * `(policyId, policyVersion)`, the same composite the Offer source versions use,
+ * so a future transaction binds to a pair that cannot drift onto "whatever is
+ * current".
+ *
+ * Operational only. Not a Node, not a capsule identity, never published.
+ */
+export const COMMERCIAL_POLICY_ID_RE = new RegExp(`^mon:cpol:${OPAQUE_BODY}$`);
+
+/**
+ * One governed participant restriction (`mon:prst:<opaque>`) — Phase 0M.R1.
+ *
+ * The machine-readable evidence behind `MarketplaceParticipant.status =
+ * RESTRICTED`. Operational only, never published: which participant is
+ * restricted and why is nobody's business but the marketplace's.
+ */
+export const PARTICIPANT_RESTRICTION_ID_RE = new RegExp(`^mon:prst:${OPAQUE_BODY}$`);
+
 /** One buyer review submission (`mon:rsub:<opaque>`). */
 export const REVIEW_SUBMISSION_ID_RE = new RegExp(`^mon:rsub:${OPAQUE_BODY}$`);
 

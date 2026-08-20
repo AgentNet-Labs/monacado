@@ -159,6 +159,16 @@ export type AccountRecord = z.infer<typeof AccountRecord>;
  *     read publication-worker operational health?
  *   - `activation:review` (0M.8) — may this internal account make the governed
  *     participant-activation decision?
+ *   - `participant:restrict` (0M.R1) — may this internal account impose or lift a
+ *     governed participant restriction?
+
+ * `participant:restrict` is separate from `activation:review` rather than folded
+ * into it, because a restriction reaches capabilities an activation review never
+ * touches: taking a storefront live, publishing an Offer, receiving a payout,
+ * accruing commission, submitting reviews. Reusing `activation:review` would
+ * silently widen a grant whose holder was approved to decide one admission
+ * review — the same one-enum-two-questions drift 0M.1 §1 refuses. It is also
+ * deliberately narrow: not `admin`, not `risk:*`, not a wildcard.
  *
  * **This vocabulary and `MARKETPLACE_CAPABILITIES` are disjoint, permanently.**
  * `activation:review` is here and not there because activation review is
@@ -176,6 +186,7 @@ export type AccountRecord = z.infer<typeof AccountRecord>;
 export const ACCOUNT_CAPABILITIES = [
   "publication-worker:status:read",
   "activation:review",
+  "participant:restrict",
 ] as const;
 export const AccountCapability = z.enum(ACCOUNT_CAPABILITIES);
 export type AccountCapability = z.infer<typeof AccountCapability>;

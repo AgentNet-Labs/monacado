@@ -25,6 +25,7 @@ import {
   PARTICIPANT_ACTIVATION_ID_RE,
   PARTICIPANT_PAYMENT_ACCOUNT_ID_RE,
   PARTICIPANT_PROFILE_ID_RE,
+  PARTICIPANT_RESTRICTION_ID_RE,
 } from "../../contracts/marketplace/identity";
 
 /** Length of the opaque body shared by every Monacado identifier. */
@@ -54,6 +55,11 @@ export interface ParticipantIdProvider {
    * and an external reference can never be mistaken for each other.
    */
   nextPaymentAccountId(): string;
+  /**
+   * Phase 0M.R1. Names one governed restriction — the evidence behind a
+   * RESTRICTED status, never the participant and never the scope.
+   */
+  nextRestrictionId(): string;
 }
 
 export const cryptoParticipantIdProvider: ParticipantIdProvider = {
@@ -62,6 +68,7 @@ export const cryptoParticipantIdProvider: ParticipantIdProvider = {
   nextProfileId: () => `mon:mprof:${randomOpaqueBody()}`,
   nextActivationId: () => `mon:mact:${randomOpaqueBody()}`,
   nextPaymentAccountId: () => `mon:mpay:${randomOpaqueBody()}`,
+  nextRestrictionId: () => `mon:prst:${randomOpaqueBody()}`,
 };
 
 /** Shapes asserted by a test rather than guarded at runtime — they hold by construction. */
@@ -71,4 +78,5 @@ export const PARTICIPANT_ID_PATTERNS = {
   profile: PARTICIPANT_PROFILE_ID_RE,
   activation: PARTICIPANT_ACTIVATION_ID_RE,
   paymentAccount: PARTICIPANT_PAYMENT_ACCOUNT_ID_RE,
+  restriction: PARTICIPANT_RESTRICTION_ID_RE,
 } as const;

@@ -143,11 +143,27 @@ describe("create inputs", () => {
     ).toBe(false);
   });
 
-  it("requires the acquisition policy on the promoted branch, and never stores it", () => {
+  it("requires the acquisition policy on the promoted branch, and never stores it on a Listing", () => {
     const { acquisitionPolicy: _drop, ...without } = promotedInput();
     expect(CreatePromotedListingInput.safeParse(without).success).toBe(false);
-    /* Supplied per call so a commercial decision never becomes stored state. */
-    expect(SCHEMA_CODE).not.toContain("retainedPercentageBasisPoints");
+
+    /* Supplied per call so a commercial decision never becomes LISTING state.
+       Narrowed at Phase 0M.R1 rather than deleted, on the same reasoning as the
+       Order/Review assertion in participant-record: what 0M.4A actually claims
+       is that a Listing stores no policy, and that still holds. 0M.R1 gave the
+       policy its own authoritative home on `CommercialPolicyVersionRow`, which
+       is where an immutable versioned rate belongs — a future Order binds to
+       (policyId, policyVersion) there, never to a copy on a Listing. */
+    const listingModels = [...SCHEMA_CODE.matchAll(/model (Listing\w*) \{[\s\S]*?\n\}/g)].map(
+      (m) => m[0],
+    );
+    expect(listingModels.length).toBeGreaterThan(0);
+    for (const model of listingModels) {
+      expect(model).not.toContain("retainedPercentageBasisPoints");
+      expect(model).not.toContain("retainedFixedAmountMinorUnits");
+      expect(model).not.toContain("acquisitionPolicyId");
+      expect(model).not.toContain("roundingPolicy");
+    }
     expect(SCHEMA_CODE).not.toContain("acquisitionPolicyId");
   });
 
