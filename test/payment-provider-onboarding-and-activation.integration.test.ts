@@ -1359,10 +1359,14 @@ describeDb("Phase 0M.8 — payment-provider onboarding and governed activation",
       expect(names).toContain("readiness");
     });
 
-    /* Narrowed at Phase 0M.N1, which legitimately added `NotificationObligation`.
-       What this asserts is that *0M.8* added none of these, and every remaining
-       member still holds. */
-    it("no charge, order, payout, settlement, tax, or risk table exists", async () => {
+    /* Narrowed at Phase 0M.N1, which legitimately added `NotificationObligation`,
+       and again at Phase 0M.T1, which legitimately added `TransactionSettlement`
+       — the settlement standing of a recorded sale, which 0M.8 explicitly
+       deferred to `0M.T1`. What this asserts is that *0M.8* added none of these,
+       and every remaining member still holds: there is still no Order, charge,
+       payment-intent, payout, refund, chargeback, ledger, commission, tax, or
+       risk table anywhere. */
+    it("no charge, order, payout, tax, or risk table exists", async () => {
       const tables = await db.$queryRawUnsafe<Array<{ TABLE_NAME: string }>>(
         `SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()`,
       );
@@ -1373,7 +1377,6 @@ describeDb("Phase 0M.8 — payment-provider onboarding and governed activation",
         "charge",
         "paymentintent",
         "payout",
-        "settlement",
         "refund",
         "chargeback",
         "ledger",

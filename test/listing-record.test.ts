@@ -51,6 +51,21 @@ const SCHEMA_CODE = codeOnly(SCHEMA).replace(/^\s*\/\/\/.*$/gm, "");
 const RECORD_CODE = codeOnly(source("../src/contracts/marketplace/listing-record.ts"));
 const SERVICE_CODE = codeOnly(source("../src/server/marketplace/listing-service.ts"));
 
+/**
+ * The Listing models alone, extracted BY NAME rather than by slicing to the end
+ * of the schema.
+ *
+ * The earlier slice took everything after `model Listing {`, which quietly
+ * included whatever a later phase appended — 0M.T1's transaction accounting
+ * tables legitimately carry `monacadoRetained`, `sellerProceeds`, and
+ * `taxAmount` columns, and the slice would have read them as Listing columns.
+ * Extracting the two models by name makes every claim below about the Listing
+ * tables and nothing else, which is what it always meant.
+ */
+const LISTING_TABLES = [...SCHEMA_CODE.matchAll(/model (Listing\w*) \{[\s\S]*?\n\}/g)]
+  .map((m) => m[0])
+  .join("\n");
+
 const pad26 = (seed: string): string =>
   (seed.toUpperCase().replace(/[ILOU]/g, "0") + "0".repeat(26)).slice(0, 26);
 
@@ -244,7 +259,7 @@ describe("derived values are never stored", () => {
 
   it("stores no effective price, sale-active flag, or priced-at instant", () => {
     /* The reason a sale starting or ending needs no database write. */
-    const listingTables = SCHEMA_CODE.slice(SCHEMA_CODE.indexOf("model Listing {"));
+    const listingTables = LISTING_TABLES;
     for (const forbidden of [
       "currentPrice",
       "effectivePrice",
@@ -258,7 +273,7 @@ describe("derived values are never stored", () => {
   });
 
   it("stores no MoR or promoter economics", () => {
-    const listingTables = SCHEMA_CODE.slice(SCHEMA_CODE.indexOf("model Listing {"));
+    const listingTables = LISTING_TABLES;
     for (const forbidden of [
       "monacadoRetained",
       "morWholesaleAcquisition",
@@ -274,7 +289,7 @@ describe("derived values are never stored", () => {
 
   it("stores no tax, shipping, or checkout total", () => {
     /* Outside every basis 0M.4A defines — structurally, not as a rule to remember. */
-    const listingTables = SCHEMA_CODE.slice(SCHEMA_CODE.indexOf("model Listing {"));
+    const listingTables = LISTING_TABLES;
     for (const forbidden of [
       "taxAmount",
       "checkoutTax",
@@ -289,7 +304,7 @@ describe("derived values are never stored", () => {
   });
 
   it("stores no capsule, Node, mapping, or publication column", () => {
-    const listingTables = SCHEMA_CODE.slice(SCHEMA_CODE.indexOf("model Listing {"));
+    const listingTables = LISTING_TABLES;
     for (const forbidden of [
       "capsuleId",
       "nodeId",
@@ -314,7 +329,7 @@ describe("derived values are never stored", () => {
 
 describe("schema shape", () => {
   it("makes every Listing foreign key RESTRICT — history is never cascade-deleted", () => {
-    const listingTables = SCHEMA_CODE.slice(SCHEMA_CODE.indexOf("model Listing {"));
+    const listingTables = LISTING_TABLES;
     const relations = listingTables.match(/@relation\([^)]*onDelete: \w+/g) ?? [];
     expect(relations.length).toBe(10);
     for (const relation of relations) expect(relation).toContain("onDelete: Restrict");
@@ -325,7 +340,7 @@ describe("schema shape", () => {
     /* The requirement of the whole promoted branch, made structural: a Listing
        cannot name an Offer version that does not exist, and that version cannot
        be deleted while the Listing depends on it. */
-    const listingTables = SCHEMA_CODE.slice(SCHEMA_CODE.indexOf("model Listing {"));
+    const listingTables = LISTING_TABLES;
     expect(listingTables).toContain(
       "fields: [acceptedOfferSourceRecordId, acceptedOfferSourceRecordVersion]",
     );

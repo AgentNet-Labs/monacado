@@ -75,22 +75,23 @@ labels sort in.
 | 13 | **0M.8** | **Payment-provider Onboarding and Activation** | **complete** — `d8424fa` |
 | 14 | **0M.R1** | **Versioned Commercial Policy and Activation Risk Records** | **complete** — `4377fc1` |
 | 15 | **0M.N1** | **Notification Obligation Records** | **complete** |
+| 16 | **0M.T1** | **MoR Transaction Accounting Foundation** | **complete** |
 
 ### Forward sequence
 
-`0M.8`, `0M.R1`, and `0M.N1` are complete, so the last cross-cutting foundation
-`0M.9` requires is **`0M.T1`**, then `0M.9` itself. Nothing below has started.
+`0M.8`, `0M.R1`, `0M.N1`, and `0M.T1` are complete, so every cross-cutting
+foundation `0M.9` requires is in place. **`0M.9` is next.** Nothing below has
+started.
 
 | Phase | Title | State |
 | --- | --- | --- |
-| **0M.T1** | **MoR Transaction Accounting Foundation** | **not started** |
 | **0M.9** | **Buyer Checkout, Order, Commission, Payout, and Review-Submission Foundation** — was `0M.7` | **not started** |
 
 | Cross-cutting phase | Title | State |
 | --- | --- | --- |
 | **0M.N** | **Notification Records** — durable admin-panel notices, deduplication, recipients, notice states | **`0M.N1` complete**; `0M.N2` not started |
 | **0M.R** | **Risk Management and Commercial Controls** — required before the **production** payment and commerce capabilities it governs are enabled; **not** a prerequisite to `0M.8` | **`0M.R1` complete**; `0M.R2` not started |
-| **0M.T** | **Tax, MoR and Transaction Accounting** — required before checkout/payment architecture is production-capable; its `0M.T1` foundation is a prerequisite to `0M.9`, **not** to `0M.8` | **not started** |
+| **0M.T** | **Tax, MoR and Transaction Accounting** — required before checkout/payment architecture is production-capable; its `0M.T1` foundation is a prerequisite to `0M.9`, **not** to `0M.8` | **`0M.T1` complete**; `0M.T2` not started |
 
 ### Dependency order
 
@@ -113,10 +114,16 @@ they gate:
    records; delivery is `0M.N2`. The governed Offer-change notice obligation is
    now recorded and deduplicated, and the model takes `0M.9`'s categories
    without a schema change.
-6. **`0M.T1` — MoR Transaction Accounting Foundation.**
+6. ~~**`0M.T1` — MoR Transaction Accounting Foundation.**~~ **Complete.** The
+   immutable per-sale economic snapshot, bound by composite foreign key to the
+   exact Listing source version, the exact Offer source version where promoted,
+   and the exact `(policyId, policyVersion)` `0M.R1` established — so a recorded
+   sale's economics do not move when any of the three does. Settlement standing
+   and the provider transaction reference live on a separate row, so the economic
+   facts have no update path at all.
 7. **`0M.9` — Buyer Checkout, Order, Commission, Payout, and Review-Submission
-   Foundation.** `0M.R1`, `0M.N1`, and `0M.T1` must all be **complete before it
-   begins**.
+   Foundation.** `0M.R1`, `0M.N1`, and `0M.T1` are all **complete**, so it may
+   begin.
 
 Later, as production gates rather than sequence steps: **`0M.R2`** (transaction
 and commercial risk enforcement), **`0M.T2`** (tax execution, nexus, remittance,
@@ -675,27 +682,81 @@ belong to this phase and to no earlier one.
 **Must hold:** risk classifications are **private operational data** and must
 never become public capsule facts.
 
+## 0M.T1 — MoR Transaction Accounting Foundation
+
+**Complete.** The immutable per-sale economic snapshot `0M.9` writes its first
+real Order and payment against. Monacado must not create a transactional payment
+record it cannot account for, and this is the record.
+
+Two tables, and the split is the point. `TransactionEconomicSnapshot` holds
+economic facts and has **no update path at all** — no service operation writes to
+it after the insert, and it has no `updatedAt` column because nothing updates it.
+`TransactionSettlement` holds what legitimately moves: settlement standing and
+the provider transaction reference. Recording provider evidence therefore targets
+a different table from the one holding what the parties earned.
+
+**The binding is structural.** Three composite foreign keys onto the unique keys
+`0M.6`, `0M.7`, and `0M.R1` established — the exact Listing source version, the
+exact Offer source version where promoted, and the exact
+`(policyId, policyVersion)`. All `RESTRICT`. Every binding names a version
+*label*; no code path in the phase reads a current-version pointer, and the policy
+lookup is `getCommercialPolicyVersion` rather than the effective one. A seller
+reprices, a seller renegotiates, Monacado replaces the rate — the recorded sale
+reproduces exactly, and a `RETIRED` policy version stays bindable so that it can.
+
+**Must hold — and held:** the economics are 0M.4A's calculators consumed
+unchanged, so **no second implementation of the MoR, commission, or
+promoter-spread arithmetic was written**; the retail price is *read* from the
+bound version at the sale instant rather than supplied, so a scheduled sale
+window prices itself and no caller can invent a price the Listing never offered;
+the accounting identity is checked before the write and an imbalance is refused
+rather than recorded; and tax, shipping, and pass-through amounts are recorded
+but enter **no** basis — structurally, because `CommercialRetailBasis` has no
+field for any of them.
+
+**Seller-direct and promoted are a discriminated union.** A seller-direct
+snapshot has no field for an Offer binding, a wholesale price, a commission, a
+spread, or promoter proceeds — nowhere to go, rather than a zero that would
+describe a promoter who earned nothing.
+
+**Settlement is four provider-neutral states** — `PENDING`, `FUNDS_RECEIVED`,
+`SETTLED`, `REVERSED` — and `REVERSED` is a *state, not a workflow*: no reversal
+amount, no partial reversal, no recovery from seller or promoter economics, no
+refund-versus-chargeback distinction. It exists now so that provider reversal
+evidence arriving does not require rewriting a financial row's schema.
+
+**No checkout, payment execution, tax calculation, nexus determination,
+remittance, payout, refund, chargeback, or processor reconciliation.** No Order
+either — `0M.9` mints those and binds one with an additive nullable column.
+
+Full detail:
+[`MOR_TRANSACTION_ACCOUNTING_FOUNDATION.md`](MOR_TRANSACTION_ACCOUNTING_FOUNDATION.md).
+
 ## 0M.T — Tax, MoR and Transaction Accounting
 
-**Not started.** The phase that must land **before checkout and payment
+**Partly complete.** The phase that must land **before checkout and payment
 architecture become production-capable**, because Merchant-of-Record status
 places transaction-tax and transaction-accounting responsibility on Monacado
-rather than on the seller.
+rather than on the seller. **`0M.T1` delivered the foundation half**, above; what
+remains is `0M.T2`: tax execution and reversal accounting.
 
 > **`0M.T` is not a prerequisite to `0M.8`.** `0M.8` moves no money: no sale, no
 > order, no payment, no payout, no tax event, no ledger entry. Every part of this
 > phase presupposes a transaction that `0M.8` does not create.
 >
-> **`0M.T1` — MoR Transaction Accounting Foundation — is a structural
+> **`0M.T1` — MoR Transaction Accounting Foundation — was a structural
 > prerequisite to `0M.9`**, because `0M.9` writes the first real Order and payment
 > transaction and must be able to account for its economic components at the
 > moment it does. Monacado must not create a transactional payment record it
-> cannot account for. `0M.T1` is not designed here.
+> cannot account for. It is now **complete** — see the section above.
 
-Reserved for this phase, and designed in none of it yet: sales-tax nexus and
+Reserved for `0M.T2`, and designed in none of it yet: sales-tax nexus and
 registration; VAT and GST; product tax classification; sourcing; tax calculation;
-filing and remittance; tax refunds and reversals; shipping accounting; the MoR
-transaction ledger; refunds; chargebacks; and settlement audit evidence.
+filing and remittance; tax refunds and reversals; refund and chargeback
+accounting; double-entry ledger postings; processor reconciliation workflows; and
+settlement audit evidence. `0M.T1` recorded tax and shipping **amounts** and the
+settlement states that will carry provider evidence; it determined, calculated,
+and remitted nothing.
 
 **Must hold:** tax and shipping stay **outside** the wholesale-acquisition basis
 and outside commission and promoter-margin bases — `0M.4A` already enforces that

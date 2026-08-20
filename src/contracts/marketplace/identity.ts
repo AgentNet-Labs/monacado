@@ -142,3 +142,20 @@ export const REVIEW_SUBMISSION_AUTHORITY_ID_RE = new RegExp(`^mon:rauth:${OPAQUE
  * authority checks; never published (ADR §11.10).
  */
 export const PURCHASE_EVIDENCE_ID_RE = new RegExp(`^mon:pvev:${OPAQUE_BODY}$`);
+
+/**
+ * One immutable per-sale economic snapshot (`mon:txsnp:<opaque>`) — Phase 0M.T1.
+ *
+ * Names the authoritative record of **what one sale's economics were**, bound to
+ * the exact Listing source version, the exact Offer source version where the sale
+ * was promoted, and the exact commercial policy version it ran under.
+ *
+ * It is **not** an Order identity — `0M.9` mints those and binds one to a
+ * snapshot. It is not a provider transaction reference either: that is an
+ * external string on the separate settlement row, never a Monacado identity
+ * (ADR §11.5 keeps the two layers apart).
+ *
+ * Operational and financial. Not a Node, not a capsule identity, never published:
+ * what any party earned on a sale is nobody's business but the counterparties'.
+ */
+export const TRANSACTION_ECONOMIC_SNAPSHOT_ID_RE = new RegExp(`^mon:txsnp:${OPAQUE_BODY}$`);

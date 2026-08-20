@@ -1240,6 +1240,10 @@ model CommercialPolicyVersionRow {
   // policy that holds versions must be refused.
   policy CommercialPolicy @relation(fields: [policyId], references: [id], onDelete: Restrict)
 
+  /// Transaction economic snapshots recorded under THIS exact version (0M.T1).
+  /// RESTRICT on the far side: a version a sale ran under is not deletable.
+  transactionSnapshots TransactionEconomicSnapshot[]
+
   /// The composite a future Order binds to. Unique, so a version label names one
   /// immutable set of numbers forever.
   @@unique([policyId, policyVersion])
@@ -1677,6 +1681,9 @@ model Offer {
   /// Promoted Listing versions that name this Offer (0M.7). RESTRICT.
   promotedListingVersions ListingSourceRecordVersionRow[] @relation("ListingAcceptedOffer")
 
+  /// Transaction economic snapshots for promoted sales of this Offer (0M.T1). RESTRICT.
+  transactionSnapshots TransactionEconomicSnapshot[]
+
   @@index([internalProductId])
   @@index([sellerParticipantId])
   @@index([lifecycle, availability])
@@ -1792,6 +1799,10 @@ model OfferSourceRecordVersionRow {
   /// to, and it must not be deletable while a Listing still depends on it.
   acceptingListingVersions ListingSourceRecordVersionRow[] @relation("ListingAcceptedOfferVersion")
 
+  /// Transaction economic snapshots whose wholesale economics came from THIS
+  /// exact version (0M.T1). RESTRICT: a completed sale's basis is not deletable.
+  transactionSnapshots TransactionEconomicSnapshot[]
+
   /// One row per (source record, version label) — a version label is minted
   /// once. This is the durable key a 0M.7 Listing binds an exact Offer version by.
   @@unique([offerSourceRecordId, sourceRecordVersion])
@@ -1868,6 +1879,9 @@ model Listing {
   controller MarketplaceParticipant @relation("ListingController", fields: [controllingParticipantId], references: [id], onDelete: Restrict)
 
   versions ListingSourceRecordVersionRow[]
+
+  /// Transaction economic snapshots recorded against this Listing (0M.T1). RESTRICT.
+  transactionSnapshots TransactionEconomicSnapshot[]
 
   @@index([internalProductId])
   @@index([storefrontId])
@@ -1993,6 +2007,10 @@ model ListingSourceRecordVersionRow {
   /// that has no Offer is unconstrained by it.
   acceptedOfferVersion OfferSourceRecordVersionRow? @relation("ListingAcceptedOfferVersion", fields: [acceptedOfferSourceRecordId, acceptedOfferSourceRecordVersion], references: [offerSourceRecordId, sourceRecordVersion], onDelete: Restrict)
 
+  /// Transaction economic snapshots whose retail price came from THIS exact
+  /// version (0M.T1). RESTRICT: the terms a completed sale ran under endure.
+  transactionSnapshots TransactionEconomicSnapshot[]
+
   /// One row per (source record, version label) — a version label is minted once.
   @@unique([listingSourceRecordId, sourceRecordVersion])
   @@index([internalListingId, seq])
@@ -2002,4 +2020,186 @@ model ListingSourceRecordVersionRow {
   @@index([authorizedByParticipantId])
   @@index([acceptedInternalOfferId])
   @@index([acceptedOfferSourceRecordId, acceptedOfferSourceRecordVersion])
+}
+
+// ---------------------------------------------------------------------------
+// MoR transaction accounting foundation (Phase 0M.T1)
+//
+// The immutable per-sale economic snapshot `0M.9` writes its first real Order
+// and payment against. Monacado must not create a transactional payment record
+// it cannot account for.
+//
+// TWO TABLES, AND THE SPLIT IS THE POINT. `TransactionEconomicSnapshot` holds
+// economic facts and is NEVER updated in place — no service operation writes to
+// it after the insert. `TransactionSettlement` holds the things that
+// legitimately move: where the money got to, and what the provider called it.
+// Keeping them apart is what makes "economic facts are not editable" enforceable
+// rather than aspirational, because recording provider evidence targets a
+// different table from the one holding what the parties earned.
+//
+// THE BINDING IS STRUCTURAL. Three composite foreign keys onto the unique keys
+// 0M.6, 0M.7, and 0M.R1 already established:
+//   (listingSourceRecordId, listingSourceRecordVersion) -> ListingSourceRecordVersionRow
+//   (offerSourceRecordId,   offerSourceRecordVersion)   -> OfferSourceRecordVersionRow
+//   (policyId,              policyVersion)              -> CommercialPolicyVersionRow
+// A snapshot cannot name a version that does not exist, none of them can be
+// deleted beneath it (RESTRICT), and every binding names a version LABEL rather
+// than following a current-version pointer — so historical economics do not move
+// when a Listing, an Offer, or the current policy does.
+//
+// TAX AND SHIPPING ARE OUTSIDE THE COMMERCIAL BASIS. Their amounts are recorded
+// so a future checkout can state a buyer's total; they enter no retention, no
+// acquisition, no commission, and no promoter margin. There is deliberately NO
+// column for a tax rate, jurisdiction, nexus finding, taxability class, or
+// remittance state — 0M.T2 owns tax execution.
+//
+// NO ORDER, NO CHECKOUT, NO PAYMENT EXECUTION, NO PAYOUT, NO REFUND, AND NO
+// CHARGEBACK exists here. 0M.9 mints the Order and binds one to a snapshot with
+// an additive nullable column; 0M.T2 owns reversal accounting.
+// ---------------------------------------------------------------------------
+
+/// One IMMUTABLE per-sale economic snapshot (0M.T1).
+///
+/// Written once and never updated. The discriminated union is preserved rather
+/// than collapsed: `transactionType` is the discriminator, and the promoted arm's
+/// columns are NULL for SELLER_DIRECT — a seller selling their own product has no
+/// promoter counterparty, and a zero would imply one who earned nothing rather
+/// than one who does not exist.
+model TransactionEconomicSnapshot {
+  /// Opaque identity (mon:txsnp:<opaque>). Not a Node, not a capsule identity,
+  /// never published: what any party earned on a sale is nobody's business but
+  /// the counterparties'.
+  id String @id @db.VarChar(191)
+
+  /// SELLER_DIRECT | PROMOTED. Read from the bound Listing source version, never
+  /// supplied, so it cannot disagree with the placement that produced it.
+  transactionType String @db.VarChar(16)
+
+  // — Exact Listing binding —
+  internalListingId          String @db.VarChar(191)
+  listingSourceRecordId      String @db.VarChar(191)
+  /// The EXACT version label — never "current", never "latest".
+  listingSourceRecordVersion String @db.VarChar(64)
+
+  // — Exact Offer binding. PROMOTED only; NULL for SELLER_DIRECT. —
+  internalOfferId          String? @db.VarChar(191)
+  offerSourceRecordId      String? @db.VarChar(191)
+  /// The EXACT version label the wholesale economics came from.
+  offerSourceRecordVersion String? @db.VarChar(64)
+
+  // — Exact commercial policy binding —
+  policyId      String @db.VarChar(191)
+  /// The EXACT version — never the effective one. A RETIRED version resolves
+  /// normally, which is the whole point of 0M.R1's immutable version history.
+  policyVersion String @db.VarChar(64)
+
+  // — Commercial retail economics. BIGINT minor units; no floating-point money. —
+  //
+  // The effective price at `occurredAt`, so a seller-direct sale inside a
+  // scheduled window records the sale price. Tax and shipping are NOT in it.
+  currency                         String @db.VarChar(3)
+  commercialRetailAmountMinorUnits BigInt
+
+  monacadoRetainedAmountMinorUnits        BigInt
+  morWholesaleAcquisitionAmountMinorUnits BigInt
+  /// SELLER_DIRECT: the whole acquisition amount. PROMOTED: offer wholesale less
+  /// the seller-funded commission — the seller's own contracted proceeds.
+  sellerProceedsMinorUnits                BigInt
+
+  // — PROMOTED arm. NULL for SELLER_DIRECT. —
+  //
+  // `offerWholesalePriceMinorUnits` is what the SELLER contracted to be owed;
+  // `morWholesaleAcquisitionAmountMinorUnits` above is what MONACADO paid the
+  // supply side out of retail. Different economic layers, never the same name.
+  offerWholesalePriceMinorUnits    BigInt?
+  sellerFundedCommissionMinorUnits BigInt?
+  /// acquisition - offerWholesale. SIGNED: 0M.4A permits a negative spread so
+  /// long as promoter NET proceeds are not negative.
+  promoterRetailSpreadMinorUnits   BigInt?
+  /// spread + commission. The authoritative promoter figure.
+  promoterNetProceedsMinorUnits    BigInt?
+
+  // — Outside the commercial economics (business model §G/§H) —
+  //
+  // Amounts only. Recorded so a future checkout can state the buyer's total;
+  // they enter no basis. There is no tax rate, jurisdiction, nexus, taxability
+  // class, exemption, carrier, service level, or remittance column — 0M.T2.
+  taxAmountMinorUnits              BigInt
+  shippingAmountMinorUnits         BigInt
+  otherPassThroughAmountMinorUnits BigInt
+
+  /// The instant of sale the economics were computed at. Supplied, never a clock read.
+  occurredAt DateTime @db.DateTime(3)
+  recordedAt DateTime @db.DateTime(3)
+
+  /// DB row creation time (operational; not a domain field).
+  rowCreatedAt DateTime @default(now()) @db.DateTime(3)
+
+  // RESTRICT everywhere: a snapshot is the record every party's entitlement
+  // reconciles against. Nothing it binds to may be deleted beneath it.
+  listing          Listing                       @relation(fields: [internalListingId], references: [internalListingId], onDelete: Restrict)
+  listingVersion   ListingSourceRecordVersionRow @relation(fields: [listingSourceRecordId, listingSourceRecordVersion], references: [listingSourceRecordId, sourceRecordVersion], onDelete: Restrict)
+  offer            Offer?                        @relation(fields: [internalOfferId], references: [internalOfferId], onDelete: Restrict)
+  /// Both columns NULL for SELLER_DIRECT; MySQL MATCH SIMPLE lets a composite FK
+  /// pass when any column is NULL, so the branch with no Offer is unconstrained.
+  offerVersion     OfferSourceRecordVersionRow?  @relation(fields: [offerSourceRecordId, offerSourceRecordVersion], references: [offerSourceRecordId, sourceRecordVersion], onDelete: Restrict)
+  policyVersionRow CommercialPolicyVersionRow    @relation(fields: [policyId, policyVersion], references: [policyId, policyVersion], onDelete: Restrict)
+
+  settlement TransactionSettlement?
+
+  @@index([internalListingId, occurredAt])
+  @@index([listingSourceRecordId, listingSourceRecordVersion])
+  @@index([offerSourceRecordId, offerSourceRecordVersion])
+  @@index([policyId, policyVersion])
+  @@index([transactionType, occurredAt])
+}
+
+/// Where the money for one snapshot has got to (0M.T1).
+///
+/// THE MUTABLE HALF, kept deliberately apart from the immutable economics. Every
+/// legitimate update targets this table; the snapshot table has no update path
+/// at all, so provider evidence arriving can never rewrite what the parties
+/// earned.
+///
+/// Provider-neutral by construction. Four states and no more, none of them
+/// provider-shaped: no `charges_enabled`, no balance, no transfer, no payout, no
+/// schedule. REVERSED records only that the funds movement was undone — there is
+/// NO reversal amount, no partial reversal, no recovery from seller or promoter
+/// economics, and no refund/chargeback distinction. That accounting is 0M.T2 and
+/// will be its own entry rather than an edit to this one.
+model TransactionSettlement {
+  /// One settlement row per snapshot; the snapshot's identity IS the key.
+  snapshotId String @id @db.VarChar(191)
+
+  /// PENDING | FUNDS_RECEIVED | SETTLED | REVERSED.
+  state String @db.VarChar(24)
+
+  /// The provider counterparty, from the committed 0M.8 vocabulary. NULL until
+  /// provider evidence exists, and always set together with the reference below:
+  /// a reference without its counterparty is unreconcilable.
+  provider String? @db.VarChar(32)
+
+  /// An OPAQUE EXTERNAL identifier for the transaction at the provider. Not a
+  /// Node, not a capsule identity, not public identity, never published, and
+  /// never a credential — the contract refuses `mon:` forms and provider-secret
+  /// prefixes. Monacado's economics are never inferred from it.
+  providerTransactionRef      String?   @db.VarChar(191)
+  providerReferenceRecordedAt DateTime? @db.DateTime(3)
+
+  fundsReceivedAt DateTime? @db.DateTime(3)
+  settledAt       DateTime? @db.DateTime(3)
+  reversedAt      DateTime? @db.DateTime(3)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  // RESTRICT: settlement standing is evidence about a financial record. The
+  // snapshot beneath it is never deleted.
+  snapshot TransactionEconomicSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
+
+  /// One provider transaction maps to AT MOST ONE Monacado snapshot, so the same
+  /// provider charge cannot be recorded against two sales. MySQL treats each NULL
+  /// in a unique index as distinct, so unreferenced rows are unconstrained.
+  @@unique([provider, providerTransactionRef])
+  @@index([state])
 }
