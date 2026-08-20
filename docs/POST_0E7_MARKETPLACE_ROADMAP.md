@@ -86,8 +86,8 @@ labels sort in.
 | Cross-cutting phase | Title | State |
 | --- | --- | --- |
 | **0M.N** | **Notification Records** — durable admin-panel notices, deduplication, recipients, notice states | **not started** |
-| **0M.R** | **Risk Management and Commercial Controls** — required before payment activation and checkout are production-capable | **not started** |
-| **0M.T** | **Tax, MoR and Transaction Accounting** — required before checkout/payment architecture is production-capable | **not started** |
+| **0M.R** | **Risk Management and Commercial Controls** — required before the **production** payment and commerce capabilities it governs are enabled; **not** a prerequisite to `0M.8` | **not started** |
+| **0M.T** | **Tax, MoR and Transaction Accounting** — required before checkout/payment architecture is production-capable; its `0M.T1` foundation is a prerequisite to `0M.9`, **not** to `0M.8` | **not started** |
 
 ### Dependency order
 
@@ -98,19 +98,34 @@ they gate:
 2. ~~**`0M.7` — Listing Persistence.**~~ **Complete.** A promoted Listing binds
    an exact Offer source version through a composite foreign key onto the
    `(offerSourceRecordId, sourceRecordVersion)` key `0M.6` established.
-3. **`0M.R`, `0M.T`, and `0M.N` where required.** Risk, tax, and transaction
-   accounting must be complete before the production capabilities they govern
-   become active; notification records land before the first phase that must
-   actually deliver a notice.
-4. **`0M.8` — Payment-provider Onboarding and Activation.**
-5. **`0M.9` — Buyer Checkout, Order, Commission, Payout, and Review-Submission
-   Foundation.**
+3. **`0M.8` — Payment-provider Onboarding and Activation.** **May begin now.** It
+   moves no money and creates no transaction, so no part of `0M.R`, `0M.T`, or
+   `0M.N` is a prerequisite to it.
+4. **`0M.R1` — Versioned Commercial Policy and Activation Risk Records.**
+5. **`0M.N1` — Notification Obligation Records.** Durable records; delivery is
+   `0M.N2`.
+6. **`0M.T1` — MoR Transaction Accounting Foundation.**
+7. **`0M.9` — Buyer Checkout, Order, Commission, Payout, and Review-Submission
+   Foundation.** `0M.R1`, `0M.N1`, and `0M.T1` must all be **complete before it
+   begins**.
 
-**The binding rules are two.** Offer and Listing persistence must precede any
-payment or checkout implementation. Risk, tax, and transaction accounting must be
-complete before the production capabilities they govern become active. A
-cross-cutting phase may be scheduled earlier than shown; it may never be
-scheduled later than the capability it gates.
+Later, as production gates rather than sequence steps: **`0M.R2`** (transaction
+and commercial risk enforcement), **`0M.T2`** (tax execution, nexus, remittance,
+filing, refund/reversal operations), and **`0M.N2`** (notification delivery
+channels).
+
+**The binding rules are three.** Offer and Listing persistence must precede any
+payment or checkout implementation. A cross-cutting phase sits where its actual
+dependency requires it — never earlier merely because it appears in a list, and
+never later than the capability it gates. And the production halves of risk, tax,
+and notification must be complete before the production capabilities they govern
+are enabled, which is a later gate than the phases above.
+
+> **This list is chronological.** The earlier revision placed `0M.R`, `0M.T`, and
+> `0M.N` at step 3, ahead of `0M.8`, which read as requiring all three
+> cross-cutting phases before payment-provider onboarding. That was never the
+> intent and is corrected here. Only the ordering wording changed; no phase scope
+> moved.
 
 **Every publishable marketplace entity now has all three stages** — a source
 model, authoritative persistence, and a capsule projection shape. The middle
@@ -537,8 +552,25 @@ executable form of them.
 ## 0M.R — Risk Management and Commercial Controls
 
 **Not started.** Platform-wide risk-adjusted commercial controls, and the phase
-that must land **before payment activation and buyer checkout become
-production-capable**.
+that must land **before the production payment and commerce capabilities it
+governs are enabled**.
+
+> **"Before payment activation" means production enablement, not `0M.8`.** The
+> earlier wording was ambiguous: *payment activation* could be misread as `0M.8`'s
+> governed **participant**-activation decision, which would make all of `0M.R` a
+> `0M.8` blocker. It never was. `0M.8` is explicitly permitted to persist provider
+> onboarding and readiness state, record provider requirements, record provider
+> `ENABLED` / `DISABLED` readiness, conduct the governed activation review,
+> approve an eligible participant to `ACTIVE`, and record `REJECTED` or
+> `MORE_INFORMATION_REQUIRED` — with no part of `0M.R` in place.
+>
+> **`0M.8` must not write `RESTRICTED` or `SUSPENDED`.** Both mean *admitted, some
+> capability withheld* (`0M.1` §4.1), and nothing in the repository yet expresses
+> **which** capability — `capability.ts` only tests `status !== "ACTIVE"`. Writing
+> either would record a status with no machine-readable meaning. They require a
+> machine-readable restriction/risk scope, which belongs to **`0M.R1`**; `0M.8`
+> refuses them behind a phase gate, as `0M.5` did for `ACTIVE`. The restriction
+> model is not designed here.
 
 Its scope will include the versioned Monacado **wholesale-acquisition policy**
 that Listing economics already consume as a supplied input — policy lookup,
@@ -562,6 +594,16 @@ architecture become production-capable**, because Merchant-of-Record status
 places transaction-tax and transaction-accounting responsibility on Monacado
 rather than on the seller.
 
+> **`0M.T` is not a prerequisite to `0M.8`.** `0M.8` moves no money: no sale, no
+> order, no payment, no payout, no tax event, no ledger entry. Every part of this
+> phase presupposes a transaction that `0M.8` does not create.
+>
+> **`0M.T1` — MoR Transaction Accounting Foundation — is a structural
+> prerequisite to `0M.9`**, because `0M.9` writes the first real Order and payment
+> transaction and must be able to account for its economic components at the
+> moment it does. Monacado must not create a transactional payment record it
+> cannot account for. `0M.T1` is not designed here.
+
 Reserved for this phase, and designed in none of it yet: sales-tax nexus and
 registration; VAT and GST; product tax classification; sourcing; tax calculation;
 filing and remittance; tax refunds and reversals; shipping accounting; the MoR
@@ -581,11 +623,18 @@ and §I.
 Stripe Connect onboarding, requirement and capability synchronisation, and the
 governed activation review that moves a participant to `ACTIVE`.
 
+**May begin now.** No part of `0M.R`, `0M.T`, or `0M.N` is a prerequisite to it —
+see the Dependency order and the notes under `0M.R` and `0M.T`.
+
 **Must hold:** the generic `PaymentReadinessStatus` lifecycle stays
 provider-neutral — Stripe's requirement model is mapped onto it, never substituted
 for it. **No raw participant provider credential is ever stored** (thesis §5.5).
 Marketplace activation and payment readiness remain two independent gates, both
-required for commerce.
+required for commerce. **The participant statuses `RESTRICTED` and `SUSPENDED`
+stay unreachable** — this phase advances participant status no further than
+`UNDER_REVIEW` and `ACTIVE`, and records the activation decisions `APPROVED`,
+`MORE_INFORMATION_REQUIRED`, and `REJECTED`. The machine-readable restriction
+scope those two statuses require belongs to `0M.R1`.
 
 ## 0M.9 — Buyer Checkout, Order, Commission, Payout, and Review-Submission Foundation
 
