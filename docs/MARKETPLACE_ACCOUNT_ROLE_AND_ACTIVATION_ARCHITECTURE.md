@@ -45,8 +45,12 @@ suspending a seller would be the same operation — and an operator restoring on
 would silently restore the other.
 
 `AccountEntitlement` likewise stays what it is: an explicit grant of an **internal
-operational capability** (currently exactly one,
-`publication-worker:status:read`). **Marketplace roles are never stored as
+operational capability**. Two exist: `publication-worker:status:read` (0E.7.4.1)
+and **`activation:review`** (added by 0M.8 — the governed activation decision is
+Monacado's own operational act, so it is an internal entitlement and not a
+marketplace capability; `activation:submit` remains the participant's side of
+that pair, in `MARKETPLACE_CAPABILITIES`, and the two vocabularies share no
+member). **Marketplace roles are never stored as
 entitlements**, and the separation is enforced in both directions by
 `marketplaceCapabilitiesGrantedByInternalEntitlement` and
 `internalCapabilitiesGrantedByMarketplaceRoles` — two functions that return the
@@ -444,8 +448,13 @@ following is the candidate design for Phase 0M.5, which implemented it.
 - **Deletion** — **RESTRICT**. It is the audit trail for admission.
 - **Public/private** — private; only the resulting participant status is public.
 - **Classification** — operational-only.
-- **Note** — the deciding actor is an **opaque actor id**, never an email or a
-  display name, matching the existing remediation-decision pattern.
+- **Note** — the deciding actor is an **opaque identifier**, never an email or a
+  display name. **Resolved in 0M.8** to the reviewing *account* id rather than a
+  separate `mon:actor:` value: an activation reviewer has an account behind it
+  (a remediation decision does not), the identity foundation already rules that
+  the account id IS the actor id, and writing the same identity that
+  `activation:review` was evaluated against is what binds the audit actor to the
+  authorized reviewer.
 
 ### `ParticipantPaymentAccount`
 
@@ -520,6 +529,24 @@ the obligation rather than defer it. Paying it out still requires
 `canReceivePayout`. A provider *hold* (`RESTRICTED` or `DISABLED`) does stop
 accrual, because that is a signal about the participant rather than a timing
 problem.
+
+**`activation:submit` has no reviewing counterpart in this table, deliberately.**
+Deciding an activation is Monacado's internal operational act, so it is the
+`activation:review` `AccountEntitlement` and is evaluated by
+`canReviewParticipantActivation` (0M.8) against persisted entitlement state. No
+marketplace role, participant ownership, or account ownership confers it, and the
+decision function has no parameter through which one could.
+
+**Separation of duties narrows it further: an entitled reviewer may not decide
+the activation of a participant owned by the same Account.** The entitlement is
+necessary but not sufficient — it makes an account a reviewer generally, and
+never a reviewer of itself. The condition is read from the persisted
+`MarketplaceParticipant.accountId` foreign key, never inferred from an email, a
+name, a caller claim, or an identifier prefix, and it is independent of which
+marketplace roles the participant holds. **Submission is unaffected**: a
+participant submits its own activation request through `activation:submit`, which
+is the ordinary path. `ACTIVATION_SELF_REVIEW_NOT_PERMITTED` is its own bounded
+refusal, distinct from "this account may not review at all".
 
 Reason codes are **classifications, never values**: no name, address, email,
 provider message, evidence reference, or identifier can appear in one, so a

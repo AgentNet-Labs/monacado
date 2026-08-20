@@ -5,7 +5,9 @@
  * route adapter translates into the Phase 0E.7.4.1 caller context.
  *
  * The rule that matters: **`INTERNAL_OPERATOR` is reached only through an active
- * persisted entitlement.** An ordinary authenticated account resolves to
+ * persisted entitlement**, and it is a classification rather than an
+ * authorization — every internal surface still checks the specific capability it
+ * requires. An ordinary authenticated account resolves to
  * `ACCOUNT` — a valid principal that simply holds no internal capability. Keeping
  * the two apart is what stops "successfully logged in" from drifting into
  * "authorized to read operational data", which is the single most common way an
@@ -23,6 +25,7 @@
 import "../server-only";
 import {
   AuthenticatedPrincipal,
+  type AccountCapability,
   type AuthenticatedPrincipal as Principal,
 } from "../../contracts/account/account";
 import { getPrisma } from "../db/client";
@@ -32,10 +35,27 @@ import { resolveAccountSession } from "./account-session-service";
 type Db = ReturnType<typeof getPrisma>;
 
 /**
- * The capability that promotes an authenticated account to `INTERNAL_OPERATOR`.
+ * The capabilities that promote an authenticated account to `INTERNAL_OPERATOR`.
  *
- * One capability, named once. When a second internal capability is introduced,
- * this becomes an explicit set rather than a growing list of implicit checks.
+ * An explicit set, as this module's own note anticipated when there was one
+ * member: Phase 0M.8 introduced the second (`activation:review`), and holding
+ * **any** internal operational capability is what makes an account an internal
+ * operator.
+ *
+ * `actorType` is a classification, never an authorization. Every internal
+ * surface checks the *specific* capability it requires — the publication-worker
+ * status route checks `publication-worker:status:read`, and the activation
+ * review checks `activation:review` — so appearing in this set grants no access
+ * to anything but the capability actually held.
+ */
+export const INTERNAL_OPERATOR_CAPABILITIES = [
+  "publication-worker:status:read",
+  "activation:review",
+] as const satisfies readonly AccountCapability[];
+
+/**
+ * Retained under its original name for the 0E.7.4.2A callers that reference it.
+ * Prefer `INTERNAL_OPERATOR_CAPABILITIES` for new code.
  */
 export const INTERNAL_OPERATOR_CAPABILITY = "publication-worker:status:read" as const;
 
@@ -54,7 +74,9 @@ export async function resolveAuthenticatedPrincipal(
   if (resolved === undefined) return undefined;
 
   const capabilities = await listAccountCapabilities(resolved.accountId, { ...(options.db !== undefined ? { db: options.db } : {}) });
-  const isInternalOperator = capabilities.includes(INTERNAL_OPERATOR_CAPABILITY);
+  const isInternalOperator = capabilities.some((c) =>
+    (INTERNAL_OPERATOR_CAPABILITIES as readonly AccountCapability[]).includes(c),
+  );
 
   return AuthenticatedPrincipal.parse({
     // The account id IS the actor id: one stable, opaque, durable identity that

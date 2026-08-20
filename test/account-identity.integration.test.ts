@@ -416,7 +416,16 @@ describe.skipIf(!RUN)("account identity foundation (disposable MySQL)", () => {
       expect(await accountHasCapability(account.accountId, capability, { db })).toBe(false);
     }
     expect(await db.accountEntitlement.count()).toBe(0);
-    expect([...ACCOUNT_CAPABILITIES]).toEqual([CAPABILITY]);
+
+    /* The vocabulary stays CLOSED — narrowed at Phase 0M.8, which added the
+       second internal capability (`activation:review`), rather than deleted.
+       What this test actually asserts is that a value outside the enum grants
+       nothing; the original "exactly one member" form was incidental to there
+       having been one. `CAPABILITY` is still a member, and nothing above it is. */
+    expect([...ACCOUNT_CAPABILITIES]).toContain(CAPABILITY);
+    for (const outside of ["admin", "*", "publication-worker:status:write", ""]) {
+      expect([...ACCOUNT_CAPABILITIES] as string[]).not.toContain(outside);
+    }
   });
 
   it("refuses to grant to a non-existent account", async () => {

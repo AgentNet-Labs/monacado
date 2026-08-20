@@ -15,6 +15,12 @@
  *      row, and this phase writes none. A phase that could set ACTIVE without
  *      recording who decided it would make the audit table decorative.
  *
+ *      **Phase 0M.8 did not lift this gate.** It added `activation-service`,
+ *      which writes UNDER_REVIEW and ACTIVE *together with* the activation row,
+ *      in one transaction. The draft path stays exactly as narrow as it was, so
+ *      there remains no way to reach either status without the audit evidence —
+ *      which is stronger than widening this function would have been.
+ *
  *   2. **The 0M.1 logic is used, never restated.** Transitions come from
  *      `isValidParticipantTransition` / `isValidRoleAssignmentTransition`,
  *      initial role status from `initialRoleAssignmentStatus`, and capability
@@ -78,6 +84,8 @@ import {
   roleAssignmentRowToRecord,
   toMarketplaceSubject,
 } from "./participant-mapper";
+import { readReadinessIn } from "./payment-account-service";
+import { AmbiguousPaymentReadinessError } from "./payment-account-errors";
 
 type Db = ReturnType<typeof getPrisma>;
 
@@ -101,7 +109,11 @@ const isForeignKeyViolation = (error: unknown): boolean => prismaCode(error) ===
 function isDomainError(error: unknown): boolean {
   return (
     error instanceof ParticipantNotFoundError ||
-    error instanceof CorruptParticipantRecordError
+    error instanceof CorruptParticipantRecordError ||
+    // Phase 0M.8: two stored payment accounts and no reduction rule. Wrapping it
+    // as a persistence failure would report "the database call failed" when what
+    // happened is "the readiness feeding a money decision is ambiguous".
+    error instanceof AmbiguousPaymentReadinessError
   );
 }
 
@@ -372,10 +384,13 @@ export async function getParticipantProfile(
  *
  * Two gates, in this order, and the order is the point:
  *
- *   1. **Is the target writable in this phase at all?** UNDER_REVIEW, ACTIVE,
- *      RESTRICTED, and SUSPENDED are refused with
- *      `ActivationNotPermittedInPhaseError` — a phase boundary, not a domain
- *      rule, and named differently so nobody reads it as "impossible".
+ *   1. **Is the target writable through the DRAFT path at all?** UNDER_REVIEW,
+ *      ACTIVE, RESTRICTED, and SUSPENDED are refused with
+ *      `ActivationNotPermittedInPhaseError` — a boundary, not a domain rule, and
+ *      named differently so nobody reads it as "impossible". UNDER_REVIEW and
+ *      ACTIVE are reached through `activation-service` (0M.8), which records who
+ *      decided them; RESTRICTED and SUSPENDED are reachable from nowhere until
+ *      `0M.R1` gives them a restriction scope.
  *   2. **Does the 0M.1 transition table permit it?** Checked second, so an
  *      attempt to jump DRAFT → PROFILE_COMPLETE is reported as the illegal
  *      transition it is rather than being masked by the phase gate.
@@ -465,11 +480,19 @@ export async function materializeMarketplaceSubject(
       orderBy: { capability: "asc" },
     });
 
+    // Phase 0M.8: the provider's observed answer, read from storage rather than
+    // reported from the 0M.5 constant. A participant with no linked account
+    // still yields NOT_STARTED — now because nothing is stored, rather than
+    // because nothing could be.
+    const paymentReadiness =
+      participant === null ? undefined : await readReadinessIn(db, participant.id);
+
     return toMarketplaceSubject({
       account,
       participant,
       roles,
       internalCapabilities: entitlements.map((e) => e.capability),
+      paymentReadiness,
     });
   } catch (error) {
     if (isDomainError(error)) throw error;

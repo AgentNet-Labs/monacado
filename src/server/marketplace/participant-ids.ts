@@ -23,6 +23,7 @@ import {
   MARKETPLACE_PARTICIPANT_ID_RE,
   MARKETPLACE_ROLE_ASSIGNMENT_ID_RE,
   PARTICIPANT_ACTIVATION_ID_RE,
+  PARTICIPANT_PAYMENT_ACCOUNT_ID_RE,
   PARTICIPANT_PROFILE_ID_RE,
 } from "../../contracts/marketplace/identity";
 
@@ -47,6 +48,12 @@ export interface ParticipantIdProvider {
   nextRoleAssignmentId(): string;
   nextProfileId(): string;
   nextActivationId(): string;
+  /**
+   * Phase 0M.8. Names Monacado's own payment-account row, never the provider's
+   * account — the provider's identifier is a field on that row, so a Monacado id
+   * and an external reference can never be mistaken for each other.
+   */
+  nextPaymentAccountId(): string;
 }
 
 export const cryptoParticipantIdProvider: ParticipantIdProvider = {
@@ -54,6 +61,7 @@ export const cryptoParticipantIdProvider: ParticipantIdProvider = {
   nextRoleAssignmentId: () => `mon:mrole:${randomOpaqueBody()}`,
   nextProfileId: () => `mon:mprof:${randomOpaqueBody()}`,
   nextActivationId: () => `mon:mact:${randomOpaqueBody()}`,
+  nextPaymentAccountId: () => `mon:mpay:${randomOpaqueBody()}`,
 };
 
 /** Shapes asserted by a test rather than guarded at runtime — they hold by construction. */
@@ -62,4 +70,5 @@ export const PARTICIPANT_ID_PATTERNS = {
   roleAssignment: MARKETPLACE_ROLE_ASSIGNMENT_ID_RE,
   profile: PARTICIPANT_PROFILE_ID_RE,
   activation: PARTICIPANT_ACTIVATION_ID_RE,
+  paymentAccount: PARTICIPANT_PAYMENT_ACCOUNT_ID_RE,
 } as const;

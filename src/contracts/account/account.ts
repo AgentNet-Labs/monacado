@@ -146,14 +146,37 @@ export type AccountRecord = z.infer<typeof AccountRecord>;
 // — Capabilities —
 
 /**
- * The closed capability vocabulary. Exactly one member in this phase: the read
- * that Phase 0E.7.4.1's internal status service already requires.
+ * The closed **internal** capability vocabulary.
  *
  * A closed enum rather than a string means an unrecognised capability is a
  * validation failure at the boundary, so a typo grants nothing and an attacker
  * cannot invent one.
+ *
+ * Every member answers a question about **Monacado's own operations**, never
+ * about marketplace participation:
+ *
+ *   - `publication-worker:status:read` (0E.7.4.1) — may this internal account
+ *     read publication-worker operational health?
+ *   - `activation:review` (0M.8) — may this internal account make the governed
+ *     participant-activation decision?
+ *
+ * **This vocabulary and `MARKETPLACE_CAPABILITIES` are disjoint, permanently.**
+ * `activation:review` is here and not there because activation review is
+ * Monacado's operational act; `activation:submit` is there and not here because
+ * submitting is a participant's act. The two answer different questions about
+ * different subjects, and a single enum serving both is the drift 0M.1 §1 exists
+ * to prevent — `marketplaceCapabilitiesGrantedByInternalEntitlement` and
+ * `internalCapabilitiesGrantedByMarketplaceRoles` both return the empty array
+ * permanently, in both directions.
+ *
+ * Membership is granted **only** by an explicit active `AccountEntitlement`.
+ * Nothing about holding a marketplace role, owning a participant, or owning the
+ * account grants a member of this list.
  */
-export const ACCOUNT_CAPABILITIES = ["publication-worker:status:read"] as const;
+export const ACCOUNT_CAPABILITIES = [
+  "publication-worker:status:read",
+  "activation:review",
+] as const;
 export const AccountCapability = z.enum(ACCOUNT_CAPABILITIES);
 export type AccountCapability = z.infer<typeof AccountCapability>;
 

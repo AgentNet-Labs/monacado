@@ -1,7 +1,7 @@
 // Monacado — Product persistence (Phases 0D, 0E.1–0E.5), publication-worker
 // operations (0E.7.3), identity and internal entitlement (0E.7.4.2A),
-// marketplace participant persistence (0M.5), and Storefront persistence and
-// governance (0M.3C).
+// marketplace participant persistence (0M.5), Storefront persistence and
+// governance (0M.3C), and payment-provider onboarding and activation (0M.8).
 //
 // The database is the authoritative store for the enduring Product identity and
 // its IMMUTABLE source-record version history. Capsule CANDIDATES are never
@@ -761,11 +761,13 @@ model AccountEntitlement {
 //   2. **Participant status is not role status.** Admission is participant-wide;
 //      each role carries its own lifecycle, because a suspended PROMOTER role
 //      must not imply a suspended SELLER role on the same participant.
-//   3. **Payment readiness has NO storage in this phase.** There is no
+//   3. **Payment readiness had NO storage in this phase.** There was no
 //      `ParticipantPaymentAccount` table and no readiness column — so nothing
-//      here can report ENABLED, by construction rather than by discipline.
-//      Materialization reports the initial `NOT_STARTED` and 0M.8 adds the real
-//      provider axis.
+//      here could report ENABLED, by construction rather than by discipline.
+//      Materialization reported the initial `NOT_STARTED`. **Phase 0M.8 added
+//      the real provider axis** (see `ParticipantPaymentAccount` below); the
+//      separation itself is unchanged — readiness is still a table of its own,
+//      never a column on the participant.
 //   4. **Private profile CONTENT has no storage either.** `ParticipantProfile`
 //      holds completion markers and onboarding gates only — no legal name, no
 //      address, no date of birth, no tax id, no document, no provider
@@ -807,6 +809,10 @@ model MarketplaceParticipant {
   roles       MarketplaceRoleAssignment[]
   profile     ParticipantProfile?
   activations ParticipantActivation[]
+
+  /// Payment-provider linkage (Phase 0M.8). RESTRICT on the far side — provider
+  /// linkage is evidence behind an activation decision.
+  paymentAccounts ParticipantPaymentAccount[]
 
   /// Product source versions authored under this participant's creator authority.
   /// RESTRICT on the far side — immutable Product history is never cascade-deleted.
@@ -931,15 +937,18 @@ model ParticipantProfile {
   participant MarketplaceParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
 }
 
-/// One governed activation review and its decision (Phase 0M.5 — table only).
+/// One governed activation review and its decision (table 0M.5; written 0M.8).
 ///
-/// **Phase 0M.5 creates no row here.** Submitting and deciding an activation is
-/// 0M.8; the table exists so the participant's admission axis has a real audit
-/// home from the start rather than an activation being invented as a status
-/// write with no record of who decided it.
+/// Phase 0M.5 created this table and wrote no row into it, so the participant's
+/// admission axis had a real audit home from the start rather than an activation
+/// being invented as a status write with no record of who decided it. **Phase
+/// 0M.8 is the phase that writes it**: submission appends an undecided row, and
+/// the governed review fills the decision fields in once.
 ///
 /// Append-only: one row per submission, and the decision fields are filled in
-/// once. No capsule, no publication, no payment state.
+/// once — a decided row is never re-decided, and a second submission is a second
+/// row. No capsule, no publication, no payment state; the provider axis lives on
+/// `ParticipantPaymentAccount` and is read as evidence, never copied here.
 model ParticipantActivation {
   /// Opaque identity (mon:mact:<opaque>).
   id String @id @db.VarChar(191)
@@ -952,8 +961,18 @@ model ParticipantActivation {
   decision  String?   @db.VarChar(32)
   decidedAt DateTime? @db.DateTime(3)
 
-  /// Opaque actor identifier (mon:actor:<opaque>) — never an email address or a
-  /// display name, matching the existing remediation-decision pattern.
+  /// Who decided, as an opaque `mon:acct:` identity — never an email address or
+  /// a display name.
+  ///
+  /// Phase 0M.8 resolved this to the reviewing ACCOUNT id rather than the
+  /// separate `mon:actor:` form 0M.1 §9 anticipated. An activation reviewer has
+  /// an account behind it (a remediation decision does not), and the identity
+  /// foundation already rules that the account id IS the actor id. Writing the
+  /// same identity that `activation:review` was evaluated against is what binds
+  /// the audit actor to the authorized reviewer — two separate identities could
+  /// disagree, and this row would then name someone who was never checked.
+  ///
+  /// The column is unchanged: VARCHAR(191), nullable while undecided.
   decidedByActorId String? @db.VarChar(191)
 
   /// Bounded decision reason code. A classification, never free text and never
@@ -972,6 +991,131 @@ model ParticipantActivation {
   participant MarketplaceParticipant @relation(fields: [participantId], references: [id], onDelete: Restrict)
 
   @@index([participantId, submittedAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Payment-provider onboarding and readiness (Phase 0M.8).
+//
+// The provider axis 0M.5 deliberately left with no storage. Until now
+// materialization reported the initial `NOT_STARTED` from a constant, so nothing
+// could report ENABLED by construction; these two tables are the real answer.
+//
+// Four boundaries are load-bearing:
+//
+//   1. **Provider-neutral.** `readiness` is Monacado's own
+//      `PaymentReadinessStatus` — NOT_STARTED | DETAILS_REQUIRED |
+//      PENDING_PROVIDER | ENABLED | RESTRICTED | DISABLED — bounded by the 0M.1
+//      enum and its transition table. There is no `charges_enabled`, no
+//      `payouts_enabled`, no `capabilities`, and no `requirements` column. The
+//      provider's model is mapped onto this one, never substituted for it.
+//   2. **Observed, not assumed.** `readinessObservedAt` records WHEN the
+//      provider last answered. A row with a readiness and no observation instant
+//      would be Monacado's guess wearing the provider's clothes.
+//   3. **No credential and no dossier.** There is deliberately no column for an
+//      API key, bearer token, webhook secret, bank account or routing number,
+//      card number, tax identifier, SSN, date of birth, legal name, address,
+//      identity document, document URL, raw KYC/KYB payload, or provider error
+//      body. Outstanding requirements are bounded CATEGORY codes on a child
+//      table — enough to know onboarding is incomplete, never enough to be the
+//      provider's underwriting file.
+//   4. **No money.** No charge, payment intent, order, capture, refund,
+//      chargeback, settlement, payout, or ledger table is created by this phase,
+//      and none of these columns holds an amount.
+//
+// Payment readiness is ONE axis, matching the committed 0M.1 contract that
+// `canReceivePayout` reads. No payout-specific readiness is invented here.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Monacado's record of one participant's linkage to one payment provider.
+///
+/// Named `mon:mpay:` — Monacado's own row, not the provider's account. The
+/// provider's identifier is a FIELD on this row and never its identity, so the
+/// generic lifecycle never becomes provider-shaped.
+model ParticipantPaymentAccount {
+  /// Opaque identity (mon:mpay:<opaque>).
+  id String @id @db.VarChar(191)
+
+  participantId String @db.VarChar(191)
+
+  /// Which external party this account is with. A closed Zod enum. Naming the
+  /// counterparty is a Monacado fact; nothing provider-SHAPED appears anywhere
+  /// else in this model.
+  provider String @db.VarChar(32)
+
+  /// The provider's opaque account reference, persisted for reconciliation only.
+  ///
+  /// **Not an AgentNet Node, not a capsule identity, and never published.**
+  /// Participant identity is never inferred from it — the FK is the only
+  /// linkage. The contract refuses a `mon:` form and refuses provider-secret
+  /// prefixes, so a key pasted here is a validation failure, not a stored
+  /// credential.
+  providerAccountRef String @db.VarChar(191)
+
+  /// The provider's answer as Monacado last observed it. NOT_STARTED |
+  /// DETAILS_REQUIRED | PENDING_PROVIDER | ENABLED | RESTRICTED | DISABLED.
+  ///
+  /// Created NOT_STARTED and moved only through the 0M.1
+  /// PAYMENT_READINESS_TRANSITIONS table. NOT_STARTED -> ENABLED is not a
+  /// transition: readiness is always the provider's answer, never Monacado's.
+  readiness String @db.VarChar(24)
+
+  /// When that answer was observed. NULL until the first observation — a linked
+  /// account has been created, not yet asked.
+  readinessObservedAt DateTime? @db.DateTime(3)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  // RESTRICT: provider linkage is evidence behind an activation decision and,
+  // later, behind every payout attribution. Deleting a participant that holds
+  // one must be refused.
+  participant  MarketplaceParticipant             @relation(fields: [participantId], references: [id], onDelete: Restrict)
+  requirements ParticipantPaymentRequirementRow[]
+
+  /// One account per participant per provider (0M.1 §9).
+  @@unique([participantId, provider])
+  /// One provider account belongs to exactly one participant. Without this, the
+  /// same external account could be claimed by two participants and every payout
+  /// attribution built on it would be ambiguous.
+  @@unique([provider, providerAccountRef])
+  @@index([readiness])
+}
+
+/// One outstanding provider requirement CATEGORY on one payment account.
+///
+/// A child table rather than a delimited column so each outstanding category is
+/// a row that can be indexed, counted, and constrained. Every value is a member
+/// of the closed `PaymentRequirementCode` enum.
+///
+/// **It says WHERE onboarding is incomplete, never WHAT the provider asked
+/// for.** There is no column for a document reference, a field name, a rejection
+/// reason, a person, or a provider message — so this table cannot become the
+/// provider's underwriting dossier by accretion.
+model ParticipantPaymentRequirementRow {
+  /// Surrogate key. The meaningful uniqueness is the pair below.
+  seq BigInt @id @default(autoincrement())
+
+  paymentAccountId String @db.VarChar(191)
+
+  /// IDENTITY_DETAILS_REQUIRED | BUSINESS_DETAILS_REQUIRED |
+  /// REPRESENTATIVE_DETAILS_REQUIRED | PAYOUT_DETAILS_REQUIRED |
+  /// DOCUMENT_VERIFICATION_REQUIRED | ADDITIONAL_VERIFICATION_REQUIRED |
+  /// PROVIDER_TERMS_ACCEPTANCE_REQUIRED.
+  requirementCode String @db.VarChar(48)
+
+  /// The observation instant this requirement was reported at — the same instant
+  /// stamped on the account, so a requirement set is always attributable to one
+  /// observation.
+  observedAt DateTime @db.DateTime(3)
+
+  // CASCADE: a requirement describes its account's current outstanding set and
+  // is replaced wholesale on each observation. It is not history and must not
+  // outlive the account it qualifies. The account itself is RESTRICT-protected,
+  // so this never cascades from a participant delete.
+  paymentAccount ParticipantPaymentAccount @relation(fields: [paymentAccountId], references: [id], onDelete: Cascade)
+
+  /// The same category twice is one outstanding thing.
+  @@unique([paymentAccountId, requirementCode])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -24,6 +24,7 @@ import {
   MarketplaceParticipantView,
   MarketplaceSubject,
   type MarketplaceSubject as Subject,
+  type PaymentReadinessStatus,
 } from "../../contracts/marketplace/participant";
 import { INITIAL_PAYMENT_READINESS } from "../../contracts/marketplace/lifecycle";
 import {
@@ -134,10 +135,14 @@ export function activationRowToRecord(row: ActivationRow): ActivationRecord {
  *   - **It never reads `ParticipantProfile`.** The profile is not a parameter,
  *     so no capability decision can come to depend on a private value. That is
  *     structural, not a convention.
- *   - **It never reports payment readiness from storage.** No payment table
- *     exists in this phase, so readiness is the initial `NOT_STARTED` — this
- *     function cannot emit ENABLED, and 0M.8 replaces the constant with the
- *     provider's real answer.
+ *   - **It never infers payment readiness.** Phase 0M.5 had no payment table, so
+ *     readiness was the initial `NOT_STARTED` and this function could not emit
+ *     ENABLED at all. **Phase 0M.8 supplies the provider's real answer** through
+ *     the optional `paymentReadiness` parameter, which the caller reads from
+ *     `ParticipantPaymentAccount`. Omitting it still yields `NOT_STARTED` — the
+ *     honest answer for a participant with no linked account. What this function
+ *     never does is *derive* readiness: it has no branch that turns an admission
+ *     status, a role, or an approval into a provider state.
  *   - **It never grants internal capabilities from a marketplace role.**
  *     `internalCapabilities` comes from `AccountEntitlement` and is passed
  *     through untouched; every function in `capability.ts` ignores it.
@@ -150,6 +155,12 @@ export function toMarketplaceSubject(input: {
   participant: ParticipantRow | null;
   roles: readonly RoleAssignmentRow[];
   internalCapabilities: readonly string[];
+  /**
+   * The provider's observed answer (Phase 0M.8). Optional so every 0M.5 caller
+   * keeps compiling and keeps its meaning: absent means no linked provider
+   * account, which is exactly `NOT_STARTED`.
+   */
+  paymentReadiness?: PaymentReadinessStatus;
 }): Subject {
   const account =
     input.account === null
@@ -164,7 +175,7 @@ export function toMarketplaceSubject(input: {
           accountId: input.participant.accountId,
           status: input.participant.status,
           roles: input.roles.map((r) => ({ role: r.role, status: r.status })),
-          paymentReadiness: INITIAL_PAYMENT_READINESS,
+          paymentReadiness: input.paymentReadiness ?? INITIAL_PAYMENT_READINESS,
         };
 
   // Validate the participant half on its own first, so a corrupt stored role or

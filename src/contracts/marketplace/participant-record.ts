@@ -40,7 +40,6 @@
  */
 
 import { z } from "zod";
-import { ACTOR_ID_RE } from "../capsule/identity";
 import { AccountId } from "../account/account";
 import {
   MARKETPLACE_PARTICIPANT_ID_RE,
@@ -74,7 +73,27 @@ const RoleAssignmentId = z
   .string()
   .regex(MARKETPLACE_ROLE_ASSIGNMENT_ID_RE, "roleAssignmentId must be mon:mrole:<opaque>");
 
-const ActorId = z.string().regex(ACTOR_ID_RE, "actorId must be mon:actor:<opaque>");
+/**
+ * Who decided a governed activation.
+ *
+ * **An `AccountId`, resolved in Phase 0M.8.** 0M.1 §9 anticipated a
+ * `mon:actor:` form by analogy with the publication-remediation decision, which
+ * has no account behind it. An activation reviewer does: the identity foundation
+ * already rules that "the account id IS the actor id — one stable, opaque,
+ * durable identity that authorization keys on" (`account-principal.ts`), and
+ * `AuthenticatedPrincipal` types `actorId` as `AccountId` accordingly.
+ *
+ * Using that one identity is what binds the audit actor to the authorized
+ * reviewer by construction: `activation:review` is evaluated against this exact
+ * account, and this exact account is what the row records. A separate
+ * `mon:actor:` value would be a second identity nothing verifies against the
+ * first, and the audit trail could then name someone other than whoever was
+ * actually checked.
+ *
+ * Still opaque, still never an email address or a display name, and still never
+ * published — the activation record is private operational data (0M.1 §8).
+ */
+const ActorId = AccountId;
 
 // — Draft-writable participant statuses —
 

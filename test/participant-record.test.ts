@@ -132,11 +132,23 @@ describe("draft-only scope", () => {
     expect(DRAFT_WRITABLE_PARTICIPANT_STATUSES.length).toBeLessThan(PARTICIPANT_STATUSES.length);
   });
 
-  it("stores no payment-readiness column anywhere in the schema", () => {
-    // Payment readiness has no storage in this phase, so nothing can report
-    // ENABLED. 0M.8 adds the provider axis.
+  it("keeps payment readiness off every participant table", () => {
+    /* Phase 0M.5 had no payment storage at all, so nothing could report ENABLED.
+       Phase 0M.8 added `ParticipantPaymentAccount` — narrowed here rather than
+       deleted, on the same reasoning as the Order/Review assertion below: what
+       0M.5 actually claims is that *it* added none, and the separation it was
+       protecting is the one that still holds.
+
+       That separation is the axis boundary. Readiness lives on a table of its
+       own, never as a column on the participant, so disabling a provider account
+       and suspending a participant stay different writes. There is still no
+       `paymentReadiness` column anywhere. */
     expect(SCHEMA_CODE).not.toMatch(/paymentReadiness/);
-    expect(SCHEMA_CODE).not.toMatch(/model ParticipantPaymentAccount/);
+
+    const participantModel = SCHEMA_CODE.match(/model MarketplaceParticipant \{[\s\S]*?\n\}/)?.[0];
+    expect(participantModel).toBeDefined();
+    expect(participantModel).not.toMatch(/readiness/i);
+    expect(participantModel).not.toMatch(/providerAccountRef/);
   });
 
   it("creates no participant Node or participant capsule model", () => {

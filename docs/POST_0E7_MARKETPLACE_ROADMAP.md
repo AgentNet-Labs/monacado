@@ -72,15 +72,18 @@ labels sort in.
 | 10 | **0M.3C** | **Storefront Persistence and Governance** | **complete** — `e93b9e9` |
 | 11 | **0M.6** | **Offer Persistence** | **complete** — `7fdf745`, draft-only |
 | 12 | **0M.7** | **Listing Persistence** | **complete** — draft-only |
+| 13 | **0M.8** | **Payment-provider Onboarding and Activation** | **complete** |
 
 ### Forward sequence
 
-`0M.6` and `0M.7` are complete, so the next unstarted numeric phase is
-**`0M.8`**. Nothing below has started.
+`0M.8` is complete, so the next phases are the three cross-cutting foundations
+`0M.9` requires, then `0M.9` itself. Nothing below has started.
 
 | Phase | Title | State |
 | --- | --- | --- |
-| **0M.8** | **Payment-provider Onboarding and Activation** — was `0M.6` | **not started** |
+| **0M.R1** | **Versioned Commercial Policy and Activation Risk Records** | **not started** |
+| **0M.N1** | **Notification Obligation Records** | **not started** |
+| **0M.T1** | **MoR Transaction Accounting Foundation** | **not started** |
 | **0M.9** | **Buyer Checkout, Order, Commission, Payout, and Review-Submission Foundation** — was `0M.7` | **not started** |
 
 | Cross-cutting phase | Title | State |
@@ -98,9 +101,9 @@ they gate:
 2. ~~**`0M.7` — Listing Persistence.**~~ **Complete.** A promoted Listing binds
    an exact Offer source version through a composite foreign key onto the
    `(offerSourceRecordId, sourceRecordVersion)` key `0M.6` established.
-3. **`0M.8` — Payment-provider Onboarding and Activation.** **May begin now.** It
-   moves no money and creates no transaction, so no part of `0M.R`, `0M.T`, or
-   `0M.N` is a prerequisite to it.
+3. ~~**`0M.8` — Payment-provider Onboarding and Activation.**~~ **Complete.** It
+   moved no money and created no transaction, so no part of `0M.R`, `0M.T`, or
+   `0M.N` was a prerequisite to it — and none was implemented alongside it.
 4. **`0M.R1` — Versioned Commercial Policy and Activation Risk Records.**
 5. **`0M.N1` — Notification Obligation Records.** Durable records; delivery is
    `0M.N2`.
@@ -129,10 +132,11 @@ are enabled, which is a later gate than the phases above.
 
 **Every publishable marketplace entity now has all three stages** — a source
 model, authoritative persistence, and a capsule projection shape. The middle
-stage that was missing from the original plan is closed everywhere. Notification
-records, risk management, tax and transaction accounting, checkout, and
-settlement are all **not started** — no contract, no persistence, no route, no
-orchestration.
+stage that was missing from the original plan is closed everywhere, and `0M.8`
+has given the payment-provider axis real storage and written the first governed
+activation decisions. Notification records, risk management, tax and transaction
+accounting, checkout, and settlement remain **not started** — no contract, no
+persistence, no route, no orchestration.
 
 **0M.5 ran ahead of 0M.3B**, out of label order, because every completed 0M
 contract terminates at a `mon:mpart:` identity that had no table: Offer
@@ -620,21 +624,51 @@ and §I.
 
 ## 0M.8 — Payment-provider Onboarding and Activation
 
-Stripe Connect onboarding, requirement and capability synchronisation, and the
-governed activation review that moves a participant to `ACTIVE`.
+**Complete.** The provider axis 0M.5 deliberately left with no storage, and the
+governed activation review the `ParticipantActivation` table was created for and
+never written.
 
-**May begin now.** No part of `0M.R`, `0M.T`, or `0M.N` is a prerequisite to it —
-see the Dependency order and the notes under `0M.R` and `0M.T`.
+Two tables, both foreign keys deliberate and **no `CASCADE` from a participant**:
+`ParticipantPaymentAccount` (provider linkage and observed readiness, `RESTRICT`
+to the participant) and `ParticipantPaymentRequirementRow` (bounded outstanding
+requirement categories, `CASCADE` from its own account because it describes a
+current set rather than history).
 
-**Must hold:** the generic `PaymentReadinessStatus` lifecycle stays
-provider-neutral — Stripe's requirement model is mapped onto it, never substituted
-for it. **No raw participant provider credential is ever stored** (thesis §5.5).
-Marketplace activation and payment readiness remain two independent gates, both
-required for commerce. **The participant statuses `RESTRICTED` and `SUSPENDED`
-stay unreachable** — this phase advances participant status no further than
-`UNDER_REVIEW` and `ACTIVE`, and records the activation decisions `APPROVED`,
-`MORE_INFORMATION_REQUIRED`, and `REJECTED`. The machine-readable restriction
-scope those two statuses require belongs to `0M.R1`.
+**Must hold — and held:** the generic `PaymentReadinessStatus` lifecycle stays
+provider-neutral, reused from 0M.1 rather than restated, with no
+provider-*shaped* status, requirement, or column anywhere and no payment-provider
+dependency in `package.json`; **no raw participant provider credential, bank
+detail, tax identifier, document, or KYC/KYB payload is stored**, and none is
+admissible through a `strictObject` input; marketplace activation and payment
+readiness remain two independent gates, so an `ENABLED` observation activates
+nobody and an approval writes no provider state; and one provider account belongs
+to exactly one participant, so no payout attribution built on it is ambiguous.
+
+**`RESTRICTED` and `SUSPENDED` stayed unreachable** from every path. This phase
+advances participant status no further than `UNDER_REVIEW` and `ACTIVE`, and
+records the decisions `APPROVED`, `MORE_INFORMATION_REQUIRED`, and `REJECTED`.
+The machine-readable restriction scope those two statuses require belongs to
+`0M.R1`, and the 0M.5 draft gate was **not** lifted — the activation service
+writes the two statuses together with the audit row instead.
+
+**0M.8 moved no money**, and no charge, order, payout, settlement, tax, ledger,
+risk, or notification model was introduced.
+
+**The authorization split is settled.** Activation review is a Monacado internal
+operational authority, not a marketplace role: `activation:submit` stays a
+marketplace capability derived from participant and role state, and
+**`activation:review`** is a new internal `AccountEntitlement`, evaluated against
+persisted state on every decision. The two closed vocabularies share no member
+and neither accepts the other's strings. No marketplace role, participant
+ownership, or account ownership confers review authority. See
+[`PAYMENT_PROVIDER_ONBOARDING_AND_ACTIVATION.md`](PAYMENT_PROVIDER_ONBOARDING_AND_ACTIVATION.md) §9.
+
+**Not in scope:** the concrete provider adapter (`PaymentProviderPort` is an
+interface with no implementation), hosted onboarding, webhook ingestion, routes,
+and UI.
+
+Full detail:
+[`PAYMENT_PROVIDER_ONBOARDING_AND_ACTIVATION.md`](PAYMENT_PROVIDER_ONBOARDING_AND_ACTIVATION.md).
 
 ## 0M.9 — Buyer Checkout, Order, Commission, Payout, and Review-Submission Foundation
 

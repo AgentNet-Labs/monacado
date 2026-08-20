@@ -28,6 +28,13 @@ export type ParticipantErrorCode =
   | "INVALID_PARTICIPANT_TRANSITION"
   | "INVALID_ROLE_TRANSITION"
   | "ACTIVATION_NOT_PERMITTED_IN_PHASE"
+  | "RESTRICTION_SCOPE_NOT_AVAILABLE_IN_PHASE"
+  | "ACTIVATION_NOT_SUBMITTED"
+  | "ACTIVATION_ALREADY_DECIDED"
+  | "ACTIVATION_PREREQUISITES_NOT_MET"
+  | "ACTIVATION_REVIEWER_NOT_AUTHORIZED"
+  | "ACTIVATION_SELF_REVIEW_NOT_PERMITTED"
+  | "INCOHERENT_ACTIVATION_DECISION"
   | "CORRUPT_PARTICIPANT_RECORD"
   | "PARTICIPANT_PERSISTENCE_FAILURE";
 
@@ -133,6 +140,155 @@ export class ActivationNotPermittedInPhaseError extends ParticipantError {
     );
     this.name = "ActivationNotPermittedInPhaseError";
     this.attempted = attempted;
+  }
+}
+
+/**
+ * A status whose meaning does not exist yet (Phase 0M.8).
+ *
+ * The sibling of `ActivationNotPermittedInPhaseError`, and distinct from it for
+ * a reason worth stating. That one means "this phase does not make the decision
+ * that would justify the status". This one means something stronger: **the
+ * status has no machine-readable content to write.**
+ *
+ * `RESTRICTED` and `SUSPENDED` both mean "admitted, some capability withheld"
+ * (0M.1 §4.1), and nothing in the repository expresses *which* capability —
+ * `capability.ts` tests only `status !== "ACTIVE"`. Writing either would record a
+ * status a later reader cannot act on, and a restriction nobody can enumerate is
+ * indistinguishable from a suspension. The scope belongs to `0M.R1`.
+ *
+ * Fails closed and substitutes nothing: refusing is the only answer that does
+ * not fabricate restriction semantics.
+ */
+export class RestrictionScopeNotAvailableInPhaseError extends ParticipantError {
+  readonly attempted: string;
+  constructor(attempted: string) {
+    super(
+      "RESTRICTION_SCOPE_NOT_AVAILABLE_IN_PHASE",
+      "That status requires a machine-readable restriction scope, which this phase does not define",
+    );
+    this.name = "RestrictionScopeNotAvailableInPhaseError";
+    this.attempted = attempted;
+  }
+}
+
+/** There is no submitted activation to decide. */
+export class ActivationNotSubmittedError extends ParticipantError {
+  constructor() {
+    super("ACTIVATION_NOT_SUBMITTED", "No undecided activation exists for this participant");
+    this.name = "ActivationNotSubmittedError";
+  }
+}
+
+/**
+ * The activation has already been decided.
+ *
+ * The append-only guarantee, enforced rather than described: a decided row is
+ * never re-decided. A reviewer who wants a different outcome records a new
+ * submission and a new decision, so the first one survives in the audit trail
+ * instead of being overwritten by the second.
+ */
+export class ActivationAlreadyDecidedError extends ParticipantError {
+  constructor(cause?: unknown) {
+    super("ACTIVATION_ALREADY_DECIDED", "That activation has already been decided", cause);
+    this.name = "ActivationAlreadyDecidedError";
+  }
+}
+
+/**
+ * An approval was requested whose prerequisites do not hold.
+ *
+ * Carries every outstanding refusal, not the first — a reviewer told one
+ * requirement at a time discovers the list one round trip at a time. Each code
+ * is a member of the closed `ACTIVATION_APPROVAL_REFUSAL_CODES` vocabulary and
+ * carries no value.
+ */
+export class ActivationPrerequisitesNotMetError extends ParticipantError {
+  readonly refusalCodes: string[];
+  constructor(refusalCodes: string[]) {
+    super(
+      "ACTIVATION_PREREQUISITES_NOT_MET",
+      "This activation cannot be approved while prerequisites are outstanding",
+    );
+    this.name = "ActivationPrerequisitesNotMetError";
+    this.refusalCodes = refusalCodes;
+  }
+}
+
+/**
+ * The acting account holds no active `activation:review` entitlement.
+ *
+ * Reviewer authority is a **persisted internal capability**, evaluated against
+ * `AccountEntitlement` on every decision. This error is raised before any
+ * participant state is read, so an unauthorized caller learns nothing about the
+ * target — not whether it exists, not its status, not what is outstanding on it.
+ *
+ * `reasonCodes` are members of the closed `INTERNAL_AUTHORIZATION_REASON_CODES`
+ * vocabulary — `INTERNAL_ACCOUNT_REQUIRED`, `INTERNAL_ACCOUNT_DISABLED`, or
+ * `INTERNAL_CAPABILITY_NOT_GRANTED`. Each is a classification; none names the
+ * account, an entitlement row, or anything about the participant.
+ */
+export class ActivationReviewerNotAuthorizedError extends ParticipantError {
+  readonly reasonCodes: string[];
+  /** The internal capability that was required. Always reported. */
+  readonly requiredCapability = "activation:review";
+  constructor(reasonCodes: string[] = ["INTERNAL_CAPABILITY_NOT_GRANTED"]) {
+    super(
+      "ACTIVATION_REVIEWER_NOT_AUTHORIZED",
+      "This account is not authorized to decide activations",
+    );
+    this.name = "ActivationReviewerNotAuthorizedError";
+    this.reasonCodes = reasonCodes;
+  }
+}
+
+/**
+ * The reviewer holds the entitlement but may not decide **this** activation.
+ *
+ * **Separation of duties**, and deliberately a separate error from
+ * `ActivationReviewerNotAuthorizedError`. That one means "this account may not
+ * review activations at all"; this one means "this account may review
+ * activations, and not this one". Collapsing them would make a governance rule
+ * look like a missing grant, and an operator would go looking for an entitlement
+ * they already hold.
+ *
+ * The condition is exact and comes from persisted state: the target
+ * `MarketplaceParticipant.accountId` equals the authorized `reviewerAccountId`.
+ * Ownership is read from the foreign key, never inferred from an email, a name,
+ * or anything the caller supplied — and never from identifier-prefix
+ * incompatibility, which is not a security control.
+ *
+ * **An explicit `activation:review` grant is necessary but not sufficient.**
+ * Deciding one's own admission is the decision a governed review exists to
+ * prevent, and no entitlement makes it self-governed.
+ *
+ * Carries no identifier: naming either account would disclose the very linkage
+ * the refusal is about.
+ */
+export class ActivationSelfReviewNotPermittedError extends ParticipantError {
+  constructor() {
+    super(
+      "ACTIVATION_SELF_REVIEW_NOT_PERMITTED",
+      "An internal reviewer may not decide the activation of a participant owned by the same account",
+    );
+    this.name = "ActivationSelfReviewNotPermittedError";
+  }
+}
+
+/**
+ * The decision and its reason code contradict each other.
+ *
+ * An `APPROVED` row reading `PROVIDER_DECLINED` is an audit record that argues
+ * with itself, and the audit trail is the entire point of the table.
+ */
+export class IncoherentActivationDecisionError extends ParticipantError {
+  readonly decision: string;
+  readonly reasonCode: string;
+  constructor(decision: string, reasonCode: string) {
+    super("INCOHERENT_ACTIVATION_DECISION", "That reason code does not belong to that decision");
+    this.name = "IncoherentActivationDecisionError";
+    this.decision = decision;
+    this.reasonCode = reasonCode;
   }
 }
 
