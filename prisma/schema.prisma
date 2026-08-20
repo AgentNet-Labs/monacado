@@ -818,6 +818,10 @@ model MarketplaceParticipant {
   /// restriction is the evidence behind a RESTRICTED status.
   restrictions ParticipantRestriction[]
 
+  /// Notification obligations owed TO this participant (Phase 0M.N1). RESTRICT
+  /// on the far side — an obligation Monacado owes must not vanish with a delete.
+  notificationObligations NotificationObligation[]
+
   /// Product source versions authored under this participant's creator authority.
   /// RESTRICT on the far side — immutable Product history is never cascade-deleted.
   authoredProductSourceVersions ProductSourceRecordVersionRow[]
@@ -1306,6 +1310,102 @@ model ParticipantRestriction {
   @@unique([participantId, activeForScope])
   @@index([participantId, status])
   @@index([status, scope])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Notification obligation records (Phase 0M.N1).
+//
+// **An obligation is the record that Monacado OWES a notice. It is not a
+// message.** There is no channel, no address, no subject line, no body, no
+// template, no delivery attempt, and no provider message id anywhere in this
+// table — `0M.N2` owns delivery, and the separation is what makes the obligation
+// durable independently of whether any channel worked.
+//
+// Four boundaries are load-bearing:
+//
+//   1. **Deduplication is a database guarantee.** The governed rule is one
+//      obligation per promoter participant x exact Offer source version x change
+//      category (AUTHORITATIVE_STOREFRONT_SOURCE_MODEL.md §3a). A promoter
+//      carrying one Offer in five storefronts has ONE thing to decide, and five
+//      notices would be five chances to miss the one that mattered.
+//   2. **Recipients are participants, never addresses.** An email address is a
+//      delivery destination and a mutable contact detail; keying an obligation on
+//      one would hand a promoter's notices to whoever holds the address next.
+//   3. **Category and subject are separate axes**, which is what makes this model
+//      survive 0M.9. An order-confirmation obligation is a new category and a new
+//      subject kind — not a new table, and not a column added to an Offer-shaped
+//      schema.
+//   4. **History is never destroyed.** Acknowledging, resolving, and archiving
+//      are state changes with their own instants. ARCHIVED is not deleted.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One durable notification obligation (0M.N1).
+model NotificationObligation {
+  /// Opaque identity (mon:nobl:<opaque>).
+  id String @id @db.VarChar(191)
+
+  /// WHO is owed the notice — the authoritative participant, never an address.
+  recipientParticipantId String @db.VarChar(191)
+
+  /// WHAT KIND of notice. OFFER_CHANGE is the only category with a producer in
+  /// this phase; ORDER_CONFIRMATION, SALE_RECORDED, PAYMENT_FAILED,
+  /// PAYOUT_STATE_CHANGED, REFUND_OR_CHARGEBACK, REVIEW_ELIGIBILITY, and
+  /// OPERATIONAL_ACTION_REQUIRED are named so 0M.9 extends a vocabulary rather
+  /// than migrating a schema.
+  category String @db.VarChar(48)
+
+  /// WHAT IT IS ABOUT. OFFER | ORDER | PAYMENT | PAYOUT | REVIEW.
+  subjectKind String @db.VarChar(32)
+
+  /// The domain identifier. Opaque to this model — never parsed or interpreted.
+  subjectRef String @db.VarChar(191)
+
+  /// The EXACT version, where the obligation is version-specific. An Offer-change
+  /// notice is about one exact source version: a promoter who answered version 3
+  /// must still be told about version 4. NULL where the subject has no version
+  /// axis, which an order does not.
+  subjectVersionRef String? @db.VarChar(64)
+
+  /// Bounded sub-reason within the category. For OFFER_CHANGE this is the
+  /// OfferBusinessChangeCategory the committed classifier produced — reused, so
+  /// the notice and the classification can never disagree about what changed.
+  /// Never free text: a context that could hold a sentence would become where the
+  /// notice body lived, and then where private detail lived.
+  contextCode String? @db.VarChar(48)
+
+  /// UNREAD | ACKNOWLEDGED | RESOLVED | ARCHIVED — the four states the roadmap
+  /// already names. Forward-only; ARCHIVED is terminal and is NOT a delete.
+  ///
+  /// ACKNOWLEDGED is informational: Storefront §3a is explicit that
+  /// acknowledgement alone never reactivates a Listing, and nothing here confers
+  /// any commercial effect either.
+  status String @db.VarChar(16)
+
+  /// The instant the obligation arose. Supplied, never a clock read.
+  createdAt      DateTime  @db.DateTime(3)
+  acknowledgedAt DateTime? @db.DateTime(3)
+  resolvedAt     DateTime? @db.DateTime(3)
+  archivedAt     DateTime? @db.DateTime(3)
+
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  /// The deduplication identity, derived from
+  /// (recipient, category, subjectKind, subjectRef, subjectVersionRef, contextCode)
+  /// by `notificationObligationKey` and never supplied by a caller.
+  ///
+  /// A derived key rather than a composite unique index because TWO components
+  /// are nullable, and MySQL treats each NULL in a unique index as distinct — a
+  /// composite index over them would silently permit exactly the duplicates this
+  /// exists to prevent.
+  obligationKey String @unique @db.VarChar(700)
+
+  // RESTRICT: an obligation Monacado owes is evidence of a governed event.
+  // Deleting the participant it is owed to must be refused.
+  recipient MarketplaceParticipant @relation(fields: [recipientParticipantId], references: [id], onDelete: Restrict)
+
+  @@index([recipientParticipantId, status, createdAt])
+  @@index([category, status])
+  @@index([subjectKind, subjectRef])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

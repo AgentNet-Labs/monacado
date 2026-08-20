@@ -119,6 +119,7 @@ function suiteIds(): ParticipantIdProvider {
     nextActivationId: () => `mon:mact:${nextSuffix()}`,
     nextPaymentAccountId: () => `mon:mpay:${nextSuffix()}`,
     nextRestrictionId: () => `mon:prst:${nextSuffix()}`,
+  nextObligationId: () => `mon:nobl:${nextSuffix()}`,
   };
 }
 
@@ -1358,7 +1359,10 @@ describeDb("Phase 0M.8 — payment-provider onboarding and governed activation",
       expect(names).toContain("readiness");
     });
 
-    it("no charge, order, payout, settlement, tax, risk, or notification table exists", async () => {
+    /* Narrowed at Phase 0M.N1, which legitimately added `NotificationObligation`.
+       What this asserts is that *0M.8* added none of these, and every remaining
+       member still holds. */
+    it("no charge, order, payout, settlement, tax, or risk table exists", async () => {
       const tables = await db.$queryRawUnsafe<Array<{ TABLE_NAME: string }>>(
         `SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()`,
       );
@@ -1378,8 +1382,6 @@ describeDb("Phase 0M.8 — payment-provider onboarding and governed activation",
         "taxtransaction",
         "riskpolicy",
         "riskdecision",
-        "notification",
-        "notice",
       ]) {
         expect(names.some((n) => n.includes(forbidden)), `${forbidden} table must not exist`).toBe(
           false,

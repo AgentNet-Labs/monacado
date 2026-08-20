@@ -120,6 +120,7 @@ const participantIds: ParticipantIdProvider = {
   nextActivationId: () => `mon:mact:${nextSuffix()}`,
   nextPaymentAccountId: () => `mon:mpay:${nextSuffix()}`,
   nextRestrictionId: () => `mon:prst:${nextSuffix()}`,
+  nextObligationId: () => `mon:nobl:${nextSuffix()}`,
 };
 const policyIds: CommercialPolicyIdProvider = {
   nextPolicyId: () => `mon:cpol:${nextSuffix()}`,
@@ -597,7 +598,10 @@ describeDb("Phase 0M.R1 — versioned commercial policy and activation risk reco
   // — 4. Cross-system invariants —
 
   describe("4. policy persistence changes nothing that already exists", () => {
-    it("creates no transaction, Order, payout, tax, or notification row", async () => {
+    /* Narrowed at Phase 0M.N1, which legitimately added `NotificationObligation`.
+       The claim this makes is that *0M.R1* created none of these, and every
+       remaining member still holds. */
+    it("creates no transaction, Order, payout, or tax table", async () => {
       await seedStandardPolicy();
       const tables = await db.$queryRawUnsafe<Array<{ TABLE_NAME: string }>>(
         `SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()`,
@@ -614,8 +618,6 @@ describeDb("Phase 0M.R1 — versioned commercial policy and activation risk reco
         "ledger",
         "taxclass",
         "taxtransaction",
-        "notification",
-        "notice",
         "reserve",
         "velocity",
         "riskscore",

@@ -1603,7 +1603,13 @@ describe("14. documentation records the governance and pricing boundaries", () =
     expect(roadmap).not.toContain("0M.4A′");
     /* Risk management is now a named phase, and still not started. */
     expect(roadmap).toContain("0M.R — Risk Management and Commercial Controls");
-    expect(roadmap).toContain("Notification records (required, not started)");
+    /* Narrowed at Phase 0M.N1, which implemented the obligation half. What this
+       asserts is that notification work is a NAMED, scheduled phase rather than
+       an unowned intention — and that the deferred delivery half stays named
+       too. The "(required, not started)" wording was incidental to nothing
+       having been built yet. */
+    expect(roadmap).toContain("0M.N1 — Notification Obligation Records");
+    expect(roadmap).toContain("`0M.N2` remains deferred");
     /* Phase 0M.3B delivered the Storefront projection, so this pair is now
        complete. The source model itself is unchanged by that phase. */
     expect(roadmap).toContain("Storefront Capsule Projection Shape | **complete**");

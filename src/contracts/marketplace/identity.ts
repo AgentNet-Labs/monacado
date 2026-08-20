@@ -114,6 +114,15 @@ export const COMMERCIAL_POLICY_ID_RE = new RegExp(`^mon:cpol:${OPAQUE_BODY}$`);
  */
 export const PARTICIPANT_RESTRICTION_ID_RE = new RegExp(`^mon:prst:${OPAQUE_BODY}$`);
 
+/**
+ * One notification obligation (`mon:nobl:<opaque>`) — Phase 0M.N1.
+ *
+ * Names the durable record that **Monacado owes a notice**, not any message sent.
+ * Delivery — email, SMS, push, or anything else — is `0M.N2` and has no identity
+ * here. Operational only, never published.
+ */
+export const NOTIFICATION_OBLIGATION_ID_RE = new RegExp(`^mon:nobl:${OPAQUE_BODY}$`);
+
 /** One buyer review submission (`mon:rsub:<opaque>`). */
 export const REVIEW_SUBMISSION_ID_RE = new RegExp(`^mon:rsub:${OPAQUE_BODY}$`);
 

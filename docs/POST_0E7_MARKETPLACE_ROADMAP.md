@@ -73,23 +73,22 @@ labels sort in.
 | 11 | **0M.6** | **Offer Persistence** | **complete** — `7fdf745`, draft-only |
 | 12 | **0M.7** | **Listing Persistence** | **complete** — draft-only |
 | 13 | **0M.8** | **Payment-provider Onboarding and Activation** | **complete** — `d8424fa` |
-| 14 | **0M.R1** | **Versioned Commercial Policy and Activation Risk Records** | **complete** |
+| 14 | **0M.R1** | **Versioned Commercial Policy and Activation Risk Records** | **complete** — `4377fc1` |
+| 15 | **0M.N1** | **Notification Obligation Records** | **complete** |
 
 ### Forward sequence
 
-`0M.8` and `0M.R1` are complete, so the next phases are the two remaining
-cross-cutting foundations `0M.9` requires, then `0M.9` itself. Nothing below has
-started.
+`0M.8`, `0M.R1`, and `0M.N1` are complete, so the last cross-cutting foundation
+`0M.9` requires is **`0M.T1`**, then `0M.9` itself. Nothing below has started.
 
 | Phase | Title | State |
 | --- | --- | --- |
-| **0M.N1** | **Notification Obligation Records** | **not started** |
 | **0M.T1** | **MoR Transaction Accounting Foundation** | **not started** |
 | **0M.9** | **Buyer Checkout, Order, Commission, Payout, and Review-Submission Foundation** — was `0M.7` | **not started** |
 
 | Cross-cutting phase | Title | State |
 | --- | --- | --- |
-| **0M.N** | **Notification Records** — durable admin-panel notices, deduplication, recipients, notice states | **not started** |
+| **0M.N** | **Notification Records** — durable admin-panel notices, deduplication, recipients, notice states | **`0M.N1` complete**; `0M.N2` not started |
 | **0M.R** | **Risk Management and Commercial Controls** — required before the **production** payment and commerce capabilities it governs are enabled; **not** a prerequisite to `0M.8` | **`0M.R1` complete**; `0M.R2` not started |
 | **0M.T** | **Tax, MoR and Transaction Accounting** — required before checkout/payment architecture is production-capable; its `0M.T1` foundation is a prerequisite to `0M.9`, **not** to `0M.8` | **not started** |
 
@@ -110,8 +109,10 @@ they gate:
    versioned home, so `0M.T1` has an exact `(policyId, policyVersion)` to bind
    an Order to; and `RESTRICTED` has machine-readable evidence, so the status
    `0M.8` refused to write now means something a later reader can act on.
-5. **`0M.N1` — Notification Obligation Records.** Durable records; delivery is
-   `0M.N2`.
+5. ~~**`0M.N1` — Notification Obligation Records.**~~ **Complete.** Durable
+   records; delivery is `0M.N2`. The governed Offer-change notice obligation is
+   now recorded and deduplicated, and the model takes `0M.9`'s categories
+   without a schema change.
 6. **`0M.T1` — MoR Transaction Accounting Foundation.**
 7. **`0M.9` — Buyer Checkout, Order, Commission, Payout, and Review-Submission
    Foundation.** `0M.R1`, `0M.N1`, and `0M.T1` must all be **complete before it
@@ -544,19 +545,50 @@ nowhere in the schema.
 
 Full detail: [`LISTING_PERSISTENCE.md`](LISTING_PERSISTENCE.md).
 
-## 0M.N — Notification records (required, not started)
+## 0M.N1 — Notification Obligation Records
 
-Must define: durable **admin-panel** notices as the canonical channel;
+**Complete.** The first half of `0M.N`: the durable record that Monacado **owes**
+a notice, and its lifecycle. **It sends nothing** — there is no channel,
+template, body, address, or delivery attempt anywhere, and `0M.N2` owns all of
+it.
+
+One table, `NotificationObligation`, `RESTRICT` to its recipient participant.
+
+**Must hold — and held:** the governed §3a rule is enforced by a **unique index**
+rather than by discipline — one obligation per promoter participant × exact Offer
+source version × change category, so a promoter carrying one Offer in five
+storefronts receives one notice; the notice binds to the **exact** effective
+Offer source version, and recipients are derived from persisted promoted Listings
+rather than supplied, because a caller naming its own list could miss the
+promoter the notice exists for; the committed `classifyOfferBusinessChanges` is
+**reused, never restated**, so a notice cannot disagree with the classification
+about what changed; recording is **idempotent**, and a replay never returns an
+acknowledged obligation to unread; recipients are **participants, never
+addresses**; and archiving is not deletion.
+
+**`0M.9`-ready by construction.** Category and subject are separate axes, so an
+order confirmation is a new vocabulary member and a new subject kind — not a new
+table and not a column added to an Offer-shaped schema. Seven future categories
+are named with no producer, and a test keeps "named" and "implemented" distinct.
+
+Full detail:
+[`NOTIFICATION_OBLIGATION_RECORDS.md`](NOTIFICATION_OBLIGATION_RECORDS.md).
+
+## 0M.N — Notification records (`0M.N1` complete; `0M.N2` deferred)
+
+Defines: durable **admin-panel** notices as the canonical channel;
 deduplication as one obligation per **promoter participant × exact Offer source
 version × change category**; recipients (the promoter participant's active
 `SUPER_OWNER` and `ADMIN`); the unread / acknowledged / resolved / archived states;
 and optional supplemental delivery channels that can never replace the
 admin-panel notice.
 
-**None of this is implemented.** The rules are recorded in
+**`0M.N1` implemented the obligation half** — deduplication, recipients, and the
+four states, above. **`0M.N2` remains deferred**: rendering, the admin-panel
+view, the `SUPER_OWNER`/`ADMIN` visibility rule, and every supplemental delivery
+channel. The governing rules are recorded in
 [`AUTHORITATIVE_STOREFRONT_SOURCE_MODEL.md`](AUTHORITATIVE_STOREFRONT_SOURCE_MODEL.md)
-§3/§3a and are binding on these phases; the Storefront source module contains no
-executable form of them.
+§3/§3a and remain binding on both.
 
 ## 0M.R1 — Versioned Commercial Policy and Activation Risk Records
 
