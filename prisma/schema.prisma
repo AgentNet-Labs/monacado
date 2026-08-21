@@ -832,6 +832,7 @@ model MarketplaceParticipant {
   /// Notification obligations owed TO this participant (Phase 0M.N1). RESTRICT
   /// on the far side — an obligation Monacado owes must not vanish with a delete.
   notificationObligations NotificationObligation[]
+  notificationDeliveries  NotificationDelivery[]
 
   /// Product source versions authored under this participant's creator authority.
   /// RESTRICT on the far side — immutable Product history is never cascade-deleted.
@@ -1439,9 +1440,121 @@ model NotificationObligation {
   // Deleting the participant it is owed to must be refused.
   recipient MarketplaceParticipant @relation(fields: [recipientParticipantId], references: [id], onDelete: Restrict)
 
+  /// Supplemental delivery attempts. §3a: they may accompany the notice and can
+  /// never replace it, so nothing on this side reads them to decide status.
+  deliveries NotificationDelivery[]
+
   @@index([recipientParticipantId, status, createdAt])
   @@index([category, status])
   @@index([subjectKind, subjectRef])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Notification delivery (Phase 1.1) — the first concrete channel.
+//
+// 0M.N1 recorded what Monacado OWES. This records what Monacado ATTEMPTED, and
+// the two are kept strictly apart.
+//
+// AUTHORITATIVE_STOREFRONT_SOURCE_MODEL.md §3a is binding: "The canonical
+// channel is the Monacado admin panel. Email, SMS, and push may be added later
+// and are supplemental — they may accompany the notice and can never replace
+// it." So a row here is EVIDENCE OF AN ATTEMPT, never an obligation. Nothing in
+// the delivery path writes to NotificationObligation: a delivery neither
+// satisfies, closes, nor advances one, because being emailed is not the same as
+// having seen the notice in the panel.
+//
+// `obligationId` is NULLABLE, and that carries the phase's central decision. A
+// seller or promoter is a participant and has an obligation row; a buyer — guest
+// or account holder — has none, because 0M.N1 keys obligations on participants
+// BY DESIGN. No participant is fabricated to satisfy this foreign key: 0M.9
+// promised guest checkout creates none, and inventing one to make a notice fit
+// would break that promise for the convenience of a column.
+//
+// THE ADDRESS IS NOT STORED. Only a SHA-256 digest of the normalised
+// destination — the same construction, and the same reasoning, as 0M.9's guest
+// claim code. Monacado can prove it wrote to a given address, deduplicate, and
+// answer a support question, without becoming a store of buyer email addresses.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One attempt to reach one recipient about one thing (Phase 1.1).
+model NotificationDelivery {
+  /// Opaque identity (mon:ndlv:<opaque>). Distinct from mon:nobl:, which names
+  /// what is OWED. One obligation may have several attempts; a buyer delivery has
+  /// no obligation at all. Sharing an identifier space would make "was it owed?"
+  /// and "was it sent?" the same question.
+  id String @id @db.VarChar(191)
+
+  /// The 0M.N1 obligation this accompanies, where one exists.
+  ///
+  /// NULL for a buyer, who is not necessarily a participant and for whom no
+  /// obligation is owed. Supplemental only: this row never changes the
+  /// obligation's status.
+  obligationId String? @db.VarChar(191)
+
+  /// BUYER | SELLER | PROMOTER — which side of the transaction this is for.
+  /// Not a role and not a capability; part of the deduplication key, so a
+  /// promoter who is also a buyer receives both messages.
+  audience String @db.VarChar(16)
+
+  /// The participant addressed, or NULL for a buyer holding no participant.
+  recipientParticipantId String? @db.VarChar(191)
+
+  /// The 0M.N1 category vocabulary, reused rather than restated.
+  category String @db.VarChar(48)
+
+  /// WHAT IT IS ABOUT — mirrors the 0M.N1 subject axis so a buyer delivery,
+  /// which has no obligation to inherit it from, still says what it concerned.
+  subjectKind String @db.VarChar(32)
+  subjectRef  String @db.VarChar(191)
+
+  /// EMAIL. SMS and PUSH are named by §3a as future channels and are
+  /// deliberately absent rather than declared-and-unimplemented.
+  channel String @db.VarChar(16)
+
+  /// Hex SHA-256 of the normalised destination. THE ADDRESS ITSELF IS NEVER
+  /// STORED — there is no column for it, which is the cheapest way to keep the
+  /// promise. Sufficient to prove what was written to, and to answer support.
+  destinationDigest String @db.Char(64)
+
+  /// ATTEMPTED | ACCEPTED | FAILED.
+  ///
+  /// ACCEPTED means the PROVIDER took responsibility — not that an inbox
+  /// received it, which is the provider's to know and Monacado's to guess.
+  /// A row stuck at ATTEMPTED means the process died mid-send, which is exactly
+  /// what an operator should see rather than something silently retried.
+  status String @db.VarChar(16)
+
+  /// Bounded Monacado classification. NEVER a provider message, SMTP response,
+  /// bounce body, or exception text — a free-text failure is where a recipient's
+  /// address or a rendered body eventually lands.
+  failureCode String? @db.VarChar(32)
+
+  /// The provider's own message identifier, for correlation only. No decision is
+  /// made from it.
+  providerMessageRef String? @db.VarChar(191)
+
+  attemptedAt DateTime  @db.DateTime(3)
+  acceptedAt  DateTime? @db.DateTime(3)
+  updatedAt   DateTime  @updatedAt @db.DateTime(3)
+
+  /// The deduplication identity, derived from
+  /// (audience, recipientParticipantId, category, subjectKind, subjectRef, channel)
+  /// by `notificationDeliveryKey` and never supplied by a caller.
+  ///
+  /// THE DESTINATION IS DELIBERATELY NOT IN THE KEY: keying on the address would
+  /// send a second receipt to a buyer who corrected their email, and would let
+  /// anyone able to influence the address manufacture a duplicate send.
+  deliveryKey String @unique @db.VarChar(700)
+
+  // RESTRICT: a delivery attempt is evidence. Deleting the obligation it
+  // accompanied, or the participant it was addressed to, must be refused.
+  obligation NotificationObligation? @relation(fields: [obligationId], references: [id], onDelete: Restrict)
+  recipient  MarketplaceParticipant? @relation(fields: [recipientParticipantId], references: [id], onDelete: Restrict)
+
+  @@index([status, attemptedAt])
+  @@index([subjectKind, subjectRef])
+  @@index([audience, category])
+  @@index([recipientParticipantId, attemptedAt])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

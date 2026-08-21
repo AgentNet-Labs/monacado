@@ -45,11 +45,19 @@
  *      a payment Monacado took and refused to book. The authoritative failure
  *      signal for this flow is `checkout.session.async_payment_failed`, which
  *      fires only for a delayed-notification method that definitively failed.
+ *      Abandonment arrives separately, as `checkout.session.expired`.
+ *
+ *   6. **Expiry is Stripe's fact, not a Monacado timer** (Phase 1.1). Only the
+ *      provider knows whether a hosted session is still payable, so no sweeper,
+ *      cron, or `expiresAt` column exists here. A clock of Monacado's own
+ *      guessing at it would eventually cancel an Order a buyer was midway
+ *      through paying.
  */
 
 import "../server-only";
 import type Stripe from "stripe";
 import {
+  BuyerContact,
   BuyerPaymentConfirmation,
   BuyerPaymentInitiation,
   BuyerPaymentRequest,
@@ -135,6 +143,26 @@ function orderIdFromMetadata(metadata: Stripe.Metadata | null): string | null {
 function paymentIntentRef(value: string | Stripe.PaymentIntent | null): string | null {
   if (value === null) return null;
   return typeof value === "string" ? value : value.id;
+}
+
+/**
+ * The buyer's address, as Stripe collected it on its own hosted page.
+ *
+ * Read **inward only**, never sent: Monacado asks Stripe for no customer object
+ * and sets no `customer_email` on the session. Stripe collects an address because
+ * a hosted checkout must, and this reads it back so a buyer — a guest above all —
+ * can be sent their own receipt.
+ *
+ * `null` is ordinary: a buyer who abandoned before typing anything has none, and
+ * an expired session frequently carries no `customer_details` at all.
+ */
+function buyerContactFrom(session: Stripe.Checkout.Session): { email: string } | null {
+  const email = session.customer_details?.email;
+  if (typeof email !== "string" || email.trim() === "") return null;
+  const parsed = BuyerContact.safeParse({ email: email.trim() });
+  /* An address Monacado cannot validate is treated as absent rather than
+     forced through — a malformed address is not worth failing a sale over. */
+  return parsed.success ? parsed.data : null;
 }
 
 function buildReturnUrl(base: string, orderId: string): string {
@@ -233,6 +261,16 @@ export const HANDLED_EVENT_TYPES: readonly string[] = [
   "checkout.session.async_payment_succeeded",
   /** A delayed-notification method later failed, definitively. */
   "checkout.session.async_payment_failed",
+  /**
+   * The hosted session passed its expiry and can no longer be completed
+   * (Phase 1.1).
+   *
+   * **Stripe's own authoritative statement**, which is why no timer, sweeper, or
+   * scheduled job exists on Monacado's side. Only Stripe knows whether that
+   * session is still payable; a Monacado clock guessing at it would eventually
+   * cancel an Order a buyer was midway through paying.
+   */
+  "checkout.session.expired",
 ];
 
 /**
@@ -299,11 +337,28 @@ export function createStripeBuyerPaymentConfirmationPort(
       const orderId = orderIdFromMetadata(session.metadata);
       if (orderId === null) throw new StripeEventNotAttributableError(event.type);
       const intentRef = paymentIntentRef(session.payment_intent);
+      const buyerContact = buyerContactFrom(session);
+
+      /* The session is over and unpayable. Not a failure — nobody declined
+         anything — so it carries no result and no failure code, and it reaches
+         `cancelOrder` rather than the payment-failure path. */
+      if (event.type === "checkout.session.expired") {
+        return BuyerPaymentConfirmation.parse({
+          disposition: "ABANDONED",
+          orderId,
+          provider: "STRIPE",
+          buyerContact,
+          providerEventRef: event.id,
+          observedAt: args.observedAt,
+        });
+      }
 
       if (event.type === "checkout.session.async_payment_failed") {
         return BuyerPaymentConfirmation.parse({
+          disposition: "PAYMENT_RESULT",
           orderId,
           provider: "STRIPE",
+          buyerContact,
           result: { outcome: "FAILED", failureCode: await classifyFailure(client, intentRef) },
           providerEventRef: event.id,
           observedAt: args.observedAt,
@@ -319,8 +374,10 @@ export function createStripeBuyerPaymentConfirmationPort(
       if (intentRef === null) throw new StripeEventNotAttributableError(event.type);
 
       return BuyerPaymentConfirmation.parse({
+        disposition: "PAYMENT_RESULT",
         orderId,
         provider: "STRIPE",
+        buyerContact,
         /* The PaymentIntent id, not the session id: it is the reference that
            identifies the captured transaction, and the one `0M.T1`'s settlement
            row exists to reconcile against. */

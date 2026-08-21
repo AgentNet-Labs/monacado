@@ -48,6 +48,8 @@ import {
 import { PaymentResultConflictError } from "../src/server/marketplace/order-errors";
 import type { OrderIdProvider } from "../src/server/marketplace/order-ids";
 import type { GuestClaimCodeProvider } from "../src/server/marketplace/guest-claim-code";
+import type { NotificationDeliveryIdProvider } from "../src/server/notifications/notification-delivery-ids";
+import { createCapturingMailAdapter } from "../src/server/notifications/mail-port";
 import { hashGuestClaimCode } from "../src/server/marketplace/guest-claim-code";
 import type { ParticipantIdProvider } from "../src/server/marketplace/participant-ids";
 import type {
@@ -113,6 +115,10 @@ const claimCodes: GuestClaimCodeProvider = {
   nextGuestClaimCode: () => `${TAG}-guest-claim-${next()}`.padEnd(43, "x").slice(0, 43),
 };
 
+const deliveryIds: NotificationDeliveryIdProvider = {
+  nextDeliveryId: () => `mon:ndlv:${pad26(`${TAG}NDLV${next()}`)}`,
+};
+
 const policyIds: CommercialPolicyIdProvider = {
   nextPolicyId: () => `mon:cpol:${pad26(`${TAG}P0L${next()}`)}`,
 };
@@ -155,18 +161,42 @@ function initiationDouble(): BuyerPaymentInitiationPort & {
 }
 
 /** What a verified Stripe delivery becomes by the time it reaches the service. */
-const succeeded = (orderId: string, intentRef: string): BuyerPaymentConfirmation => ({
+const succeeded = (
+  orderId: string,
+  intentRef: string,
+  buyerEmail: string | null = null,
+): BuyerPaymentConfirmation => ({
+  disposition: "PAYMENT_RESULT",
   orderId,
   provider: "STRIPE",
+  buyerContact: buyerEmail === null ? null : { email: buyerEmail },
   result: { outcome: "SUCCEEDED", provider: "STRIPE", providerTransactionRef: intentRef },
   providerEventRef: `evt_${pad26(`${TAG}EVT${next()}`)}`,
   observedAt: CONFIRMED_AT,
 });
 
-const failed = (orderId: string): BuyerPaymentConfirmation => ({
+const failed = (
+  orderId: string,
+  buyerEmail: string | null = null,
+): BuyerPaymentConfirmation => ({
+  disposition: "PAYMENT_RESULT",
   orderId,
   provider: "STRIPE",
+  buyerContact: buyerEmail === null ? null : { email: buyerEmail },
   result: { outcome: "FAILED", failureCode: "DECLINED" },
+  providerEventRef: `evt_${pad26(`${TAG}EVT${next()}`)}`,
+  observedAt: CONFIRMED_AT,
+});
+
+/** Stripe's authoritative statement that a hosted session can no longer complete. */
+const abandoned = (
+  orderId: string,
+  buyerEmail: string | null = null,
+): BuyerPaymentConfirmation => ({
+  disposition: "ABANDONED",
+  orderId,
+  provider: "STRIPE",
+  buyerContact: buyerEmail === null ? null : { email: buyerEmail },
   providerEventRef: `evt_${pad26(`${TAG}EVT${next()}`)}`,
   observedAt: CONFIRMED_AT,
 });
@@ -225,6 +255,11 @@ async function cleanup(): Promise<void> {
   const orderIdList = orders.map((o) => o.id);
 
   if (orderIdList.length > 0) {
+    /* Delivery evidence first: it holds RESTRICT keys onto the obligation and
+       the participant that are deleted further down. */
+    await db.notificationDelivery.deleteMany({
+      where: { subjectKind: "ORDER", subjectRef: { in: orderIdList } },
+    });
     await db.reviewSubmissionAuthority.deleteMany({ where: { orderId: { in: orderIdList } } });
     await db.purchaseEvidence.deleteMany({ where: { orderId: { in: orderIdList } } });
 
@@ -243,6 +278,9 @@ async function cleanup(): Promise<void> {
   }
 
   if (participantIds.length > 0) {
+    await db.notificationDelivery.deleteMany({
+      where: { recipientParticipantId: { in: participantIds } },
+    });
     await db.notificationObligation.deleteMany({
       where: { recipientParticipantId: { in: participantIds } },
     });
@@ -497,11 +535,25 @@ async function begin(internalListingId: string, policyId: string, buyerAccountId
   return { begun, port };
 }
 
-/** Drive the real webhook route with a scripted confirmation. */
+/**
+ * Drive the real webhook route with a scripted confirmation.
+ *
+ * A capturing mail adapter is injected so Phase 1.1's notice dispatch runs
+ * without a provider and writes rows this suite can clean up. These 1.0 tests
+ * assert nothing about delivery — that is `order-expiry-and-notification`'s
+ * subject — but the dispatch must still execute, because a phase that broke it
+ * should fail here too.
+ */
 const webhook = (confirmation: BuyerPaymentConfirmation | null) =>
   handleStripeWebhookRequest(
     { rawBody: "{}", signatureHeader: "t=1,v1=irrelevant-the-port-is-injected" },
-    { db, port: confirmationDouble(confirmation), now: () => CONFIRMED_AT },
+    {
+      db,
+      port: confirmationDouble(confirmation),
+      mail: createCapturingMailAdapter(),
+      deliveryIds,
+      now: () => CONFIRMED_AT,
+    },
   );
 
 const describeDb = RUN ? describe : describe.skip;

@@ -46,6 +46,7 @@ import { OrderId, PaymentFailureCode } from "./order";
 import { CurrencyCode, MAX_MINOR_UNIT_AMOUNT } from "./offer-source";
 import { PaymentProvider } from "./payment-account";
 import { ProviderTransactionRef } from "./transaction-accounting";
+import { AccountEmail } from "../account/account";
 
 // — Request —
 
@@ -284,25 +285,106 @@ export const ProviderNotification = z.strictObject({
 export type ProviderNotification = z.infer<typeof ProviderNotification>;
 
 /**
- * The provider's authoritative statement about one Order's payment.
+ * How a payment attempt ended, as the provider tells it (Phase 1.1).
+ *
+ * Two members, because a provider can authoritatively say two different things
+ * about an attempt, and collapsing them would lose the distinction the Order
+ * lifecycle already draws:
+ *
+ *   - `PAYMENT_RESULT` — the attempt produced an answer. Carries a
+ *     `BuyerPaymentResult` and nothing else new.
+ *   - `ABANDONED` — the attempt **ended without one** and can no longer complete.
+ *     Carries no result and no failure code, because there was no failure: nobody
+ *     declined anything, the buyer simply never finished.
+ *
+ * `ABANDONED` is deliberately **not** modelled as a `FAILED` result with a new
+ * failure code. `0M.9` reserves `PAYMENT_FAILED` for "the provider reported
+ * failure" and `CANCELLED` for "abandoned before payment succeeded" — two states
+ * with different meanings and different terminal behaviour. Routing abandonment
+ * through a failure code would put the Order in the wrong one and would invent a
+ * decline nobody issued.
+ */
+export const BUYER_PAYMENT_DISPOSITIONS = ["PAYMENT_RESULT", "ABANDONED"] as const;
+export const BuyerPaymentDisposition = z.enum(BUYER_PAYMENT_DISPOSITIONS);
+export type BuyerPaymentDisposition = z.infer<typeof BuyerPaymentDisposition>;
+
+/**
+ * The buyer's contact details, as the provider collected them — **transient**.
+ *
+ * The one piece of buyer personal data that crosses this boundary, and it exists
+ * for exactly one reason: Monacado cannot send a buyer their own receipt without
+ * an address, and a guest has no account to read one from.
+ *
+ * Three rules make that safe, and all three are asserted by tests:
+ *
+ *   1. **Never persisted.** `NEVER_PERSISTED_FROM_CONFIRMATION` names it, no
+ *      column exists for it on any table, and the delivery layer stores only a
+ *      SHA-256 digest — the same construction `0M.9` uses for a guest claim code.
+ *   2. **Never on the request.** `BuyerPaymentRequest` has no field for it and
+ *      `NEVER_ON_BUYER_PAYMENT_REQUEST` already forbids one. It travels *inward*
+ *      from the provider only.
+ *   3. **Nullable, and absence is ordinary.** A buyer who abandoned before typing
+ *      an address simply has none, and no notice is owed to nobody.
+ */
+export const BuyerContact = z.strictObject({
+  email: AccountEmail,
+});
+export type BuyerContact = z.infer<typeof BuyerContact>;
+
+const confirmationBase = {
+  orderId: OrderId,
+  provider: PaymentProvider,
+  /** Transient. Digested at the delivery boundary and never stored raw. */
+  buyerContact: BuyerContact.nullable(),
+  /**
+   * The provider's own identifier for this notification, kept so an operator can
+   * correlate one delivery with one provider record. No decision is made from it.
+   */
+  providerEventRef: z.string().min(1).max(191),
+  observedAt: z.iso.datetime(),
+};
+
+/**
+ * The provider's authoritative statement of what happened to a payment.
  *
  * Carries a `BuyerPaymentResult` **unchanged**, so `recordPaymentResult` — the
  * whole `0M.9` finalization path, its replay rules, and its atomic write —
  * receives precisely what it already receives. No second finalization path
  * exists, and confirmation adds no economics, no amounts, and no split.
- *
- * `providerEventRef` is the provider's own identifier for the notification, kept
- * only so an operator can correlate one delivery with one provider record. It is
- * not persisted by this phase and no decision is made from it.
  */
-export const BuyerPaymentConfirmation = z.strictObject({
-  orderId: OrderId,
-  provider: PaymentProvider,
+export const BuyerPaymentResultReported = z.strictObject({
+  disposition: z.literal("PAYMENT_RESULT"),
+  ...confirmationBase,
   result: BuyerPaymentResult,
-  providerEventRef: z.string().min(1).max(191),
-  observedAt: z.iso.datetime(),
 });
+
+/**
+ * The provider's authoritative statement that the attempt is over, unpaid.
+ *
+ * **Has no `result` field at all**, so "abandoned but succeeded" is not a shape
+ * that exists. What Monacado does with it is cancel a still-pending Order —
+ * `0M.9`'s `CANCELLED`, reached through `cancelOrder`, which creates no economics.
+ */
+export const BuyerPaymentAbandoned = z.strictObject({
+  disposition: z.literal("ABANDONED"),
+  ...confirmationBase,
+});
+
+export const BuyerPaymentConfirmation = z.discriminatedUnion("disposition", [
+  BuyerPaymentResultReported,
+  BuyerPaymentAbandoned,
+]);
 export type BuyerPaymentConfirmation = z.infer<typeof BuyerPaymentConfirmation>;
+
+/**
+ * Carried on a confirmation and **never written to any table**.
+ *
+ * A short list with one member today, kept as a list because the pressure to add
+ * "just the buyer's name for the receipt" arrives the moment someone writes a
+ * template. A test walks it against the Prisma schema and asserts no column of
+ * that name exists anywhere.
+ */
+export const NEVER_PERSISTED_FROM_CONFIRMATION = ["buyerEmail", "buyerContact"] as const;
 
 /**
  * Verify one provider notification and translate it into Monacado's vocabulary.

@@ -123,6 +123,17 @@ export const PARTICIPANT_RESTRICTION_ID_RE = new RegExp(`^mon:prst:${OPAQUE_BODY
  */
 export const NOTIFICATION_OBLIGATION_ID_RE = new RegExp(`^mon:nobl:${OPAQUE_BODY}$`);
 
+/**
+ * Notification delivery attempt identity (`mon:ndlv:<opaque>`) — Phase 1.1.
+ *
+ * Distinct from `mon:nobl:`, and the distinction is the whole point: an
+ * obligation is what Monacado **owes**, a delivery is what Monacado **attempted**.
+ * One obligation may have several delivery attempts across channels, and a buyer
+ * delivery has no obligation behind it at all. Sharing an identifier space would
+ * make "was it owed?" and "was it sent?" the same question.
+ */
+export const NOTIFICATION_DELIVERY_ID_RE = new RegExp(`^mon:ndlv:${OPAQUE_BODY}$`);
+
 /** One buyer review submission (`mon:rsub:<opaque>`). */
 export const REVIEW_SUBMISSION_ID_RE = new RegExp(`^mon:rsub:${OPAQUE_BODY}$`);
 

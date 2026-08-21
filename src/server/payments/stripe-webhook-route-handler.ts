@@ -30,9 +30,18 @@
  *
  * ## What this is not
  *
- * Not an event bus. Three event types are acted on; every other verified delivery
+ * Not an event bus. Four event types are acted on; every other verified delivery
  * is acknowledged with `200` and ignored, because acknowledging is how Stripe is
  * told to stop retrying something Monacado has no opinion about.
+ *
+ * ## Notices (Phase 1.1)
+ *
+ * After finalization the handler dispatches buyer and participant notices, driven
+ * by **what the write path authoritatively did** rather than by the event type.
+ * A replayed event finalizes to `ALREADY_RECORDED` and therefore sends nothing —
+ * duplicate delivery is prevented by the outcome, before the delivery layer's own
+ * unique key is even consulted. Delivery never changes the response: a mail
+ * outage is not a reason to tell Stripe a booked sale failed.
  *
  * ## Status codes, and what Stripe does with them
  *
@@ -45,8 +54,20 @@
  */
 
 import "../server-only";
-import type { BuyerPaymentConfirmationPort } from "../../contracts/marketplace/buyer-payment";
+import type {
+  BuyerPaymentConfirmation,
+  BuyerPaymentConfirmationPort,
+} from "../../contracts/marketplace/buyer-payment";
+import type { MailPort } from "../../contracts/marketplace/notification-delivery";
+import type { OrderRecord } from "../../contracts/marketplace/order";
 import { getPrisma } from "../db/client";
+import { resolveMailPort } from "../notifications/mail-port";
+import type { NotificationDeliveryIdProvider } from "../notifications/notification-delivery-ids";
+import {
+  dispatchOrderExpiredNotice,
+  dispatchPaymentFailedNotice,
+  dispatchSaleNotices,
+} from "../notifications/transactional-notice-service";
 import { finalizeConfirmedPayment } from "./executable-checkout-service";
 import {
   StripeEventNotAttributableError,
@@ -96,6 +117,9 @@ export interface WebhookRouteDeps {
   env?: Env;
   /** Injected so a test drives the whole route without a Stripe account. */
   port?: BuyerPaymentConfirmationPort;
+  /** Injected so a test drives delivery without a mail provider. */
+  mail?: MailPort;
+  deliveryIds?: NotificationDeliveryIdProvider;
   now?: () => string;
 }
 
@@ -171,11 +195,32 @@ export async function handleStripeWebhookRequest(
 
   try {
     const finalized = await finalizeConfirmedPayment(confirmation, { db });
+
+    /* — Notice dispatch (Phase 1.1) —
+     *
+     * Driven from what the write path AUTHORITATIVELY DID, never from the event
+     * type. Stripe saying "completed" is not the trigger; Monacado having
+     * recorded a sale is. That is what makes duplicate delivery structurally
+     * impossible on a replay: a redelivered event finalizes to
+     * `ALREADY_RECORDED`, which falls through this switch and sends nothing —
+     * before the delivery layer's own unique key is even consulted.
+     *
+     * Delivery never affects the response. A refused message is recorded as
+     * evidence and the webhook still returns 200, because a mail outage is not a
+     * reason to tell Stripe the payment was not processed — that would earn a
+     * retry of a sale already booked. */
+    const notices = await dispatchNotices(finalized, confirmation, observedAt, {
+      db,
+      mail: deps.mail ?? resolveMailPort(deps.env),
+      ...(deps.deliveryIds === undefined ? {} : { ids: deps.deliveryIds }),
+    });
+
     return respond(200, {
       received: true,
       handled: true,
       disposition: finalized.disposition,
       lifecycle: finalized.order.lifecycle,
+      noticesAttempted: notices,
     });
   } catch (error) {
     if (error instanceof OrderNotFoundError) {
@@ -196,5 +241,41 @@ export async function handleStripeWebhookRequest(
        UNIQUE orderId index rolls back. Stripe retries; the retry finds the Order
        PAID and replays idempotently. */
     return respond(500, { error: WEBHOOK_ERROR_CODES.unavailable });
+  }
+}
+
+/**
+ * Send whatever this outcome owes, and never let sending change the outcome.
+ *
+ * Returns the number of attempts made, purely so the response is observable in a
+ * test and in Stripe's dashboard. Every failure is swallowed **after being
+ * recorded** by the delivery layer: the sale is already committed, and throwing
+ * here would turn a mail problem into a webhook retry of a booked sale.
+ */
+async function dispatchNotices(
+  finalized: { disposition: string; order: OrderRecord },
+  confirmation: BuyerPaymentConfirmation,
+  observedAt: string,
+  deps: { db: Db; mail: MailPort; ids?: NotificationDeliveryIdProvider },
+): Promise<number> {
+  const buyerAddress = confirmation.buyerContact?.email ?? null;
+  const noticeDeps = { db: deps.db, ...(deps.ids === undefined ? {} : { ids: deps.ids }) };
+  const args = { order: finalized.order, buyerAddress, at: observedAt };
+
+  try {
+    switch (finalized.disposition) {
+      case "SALE_RECORDED":
+        return (await dispatchSaleNotices(args, deps.mail, noticeDeps)).attempts.length;
+      case "FAILURE_RECORDED":
+        return (await dispatchPaymentFailedNotice(args, deps.mail, noticeDeps)).attempts.length;
+      case "ORDER_EXPIRED":
+        return (await dispatchOrderExpiredNotice(args, deps.mail, noticeDeps)).attempts.length;
+      default:
+        /* ALREADY_RECORDED — a replay. Nothing newly became true, so nobody is
+           newly owed a message. */
+        return 0;
+    }
+  } catch {
+    return 0;
   }
 }

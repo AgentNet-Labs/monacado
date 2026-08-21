@@ -102,7 +102,8 @@ labels sort in.
 | 15 | **0M.N1** | **Notification Obligation Records** | **complete** |
 | 16 | **0M.T1** | **MoR Transaction Accounting Foundation** | **complete** |
 | 17 | **0M.9** | **Buyer Checkout, Order, Commission, Payout, and Review-Submission Foundation** | **complete** — `6abc3ac`; **closes the `0M.x` sequence** |
-| 18 | **1.0** | **Executable Checkout and Payment Integration (Stripe test mode)** — the first operational phase | **complete** |
+| 18 | **1.0** | **Executable Checkout and Payment Integration (Stripe test mode)** — the first operational phase | **complete** — `cb5281f` |
+| 19 | **1.1** | **Order Expiry and Buyer Notification Delivery** — the first concrete notification channel | **complete** |
 
 ### Forward sequence
 
@@ -121,11 +122,23 @@ together with the live-mode gate itself, enumerated in
 [`EXECUTABLE_CHECKOUT_AND_STRIPE_TEST_MODE.md`](EXECUTABLE_CHECKOUT_AND_STRIPE_TEST_MODE.md).
 **No unstarted `1.x` phase is authorized by appearing here.**
 
-| Next operational candidate | Why it is next, not now |
+**`1.1` closed the operational gaps `1.0` left in the buyer's experience**: an
+abandoned checkout now resolves on Stripe's own `checkout.session.expired`, and
+buyers — guests included — are actually told what happened.
+
+**The next work is the production gates themselves**, not another feature:
+
+| Next | Why it is next |
 | --- | --- |
-| **Payout execution** — moving proceeds to sellers and promoters through Connect | `1.0` reads Connect readiness through `0M.8`'s port and creates no transfer. Payouts need `0M.R2`'s holds, reserves, and transaction caps first; paying out without them is paying out irreversibly |
+| **`0M.T2` — tax** | Checkout sends `taxAmountMinorUnits: 0` because nothing calculates tax. Charging a real buyer without nexus determination, product tax classification, sourcing, and remittance is a compliance failure, not a rough edge. **The hardest blocker to live mode.** |
+| **`0M.R2` — transaction risk** | No velocity limits, transaction caps, reserves, payout holds, or per-transaction policy selection exist. Required before payouts move irreversibly. |
+| **`0M.N2` — the canonical channel** | `1.1` built a *supplemental* channel. The admin-panel view, the `SUPER_OWNER`/`ADMIN` visibility rule, and notification preferences remain unbuilt. It also owns the **pre-live gate `1.1` recorded rather than solved**: delivery is at-most-once with no retry, and a guest's address cannot be recovered from a digest, so a failed guest receipt cannot be re-sent from Monacado's data alone. |
+
+| Later operational candidate | Why not now |
+| --- | --- |
+| **Payout execution** — proceeds to sellers and promoters through Connect | `1.0` reads Connect readiness through `0M.8`'s port and creates no transfer. Payouts need `0M.R2`'s holds, reserves, and caps first; paying out without them is paying out irreversibly |
 | **Seller/promoter Connect onboarding UI** | The test-mode adapter and the account-link call exist; nothing renders them. It needs the participant-facing surface `0M.8` deferred |
-| **Order expiry and abandonment** | An unfinished checkout stays `PENDING_PAYMENT`, which `0M.9` designed for. Resolving it needs a decision about when abandonment is certain |
+| **Refunds, chargebacks, and reversal accounting** | `0M.T2`'s subject. A live processor produces all three within days |
 
 | Cross-cutting phase | Title | State |
 | --- | --- | --- |
@@ -171,6 +184,13 @@ they gate:
    provider-neutral ports, hosted Checkout Sessions keyed on the Order id,
    webhook-confirmed payment results, three minimal routes, and a buyer UI with
    no client JavaScript. **Stripe test mode only**, and structurally so.
+9. ~~**`1.1` — Order Expiry and Buyer Notification Delivery.**~~ **Complete.**
+   Stripe's `checkout.session.expired` cancels a still-pending Order through
+   `0M.9`'s own `cancelOrder`, creating no economics and never downgrading a
+   `PAID` sale. The first concrete notification channel delivers buyer receipts,
+   failure notices, and expiry notices — **including to guests, with no
+   participant fabricated** — plus supplemental notices to sellers and promoters.
+   Delivery evidence is persisted; the address is not.
 
 Later, as production gates rather than sequence steps: **`0M.R2`** (transaction
 and commercial risk enforcement), **`0M.T2`** (tax execution, nexus, remittance,
@@ -987,6 +1007,76 @@ transfer, or application fee is executed**, and none is implemented.
 
 Detail, configuration, and the full live-mode gate:
 [`EXECUTABLE_CHECKOUT_AND_STRIPE_TEST_MODE.md`](EXECUTABLE_CHECKOUT_AND_STRIPE_TEST_MODE.md).
+
+---
+
+## 1.1 — Order Expiry and Buyer Notification Delivery
+
+**Complete.** The second operational phase, and the one that makes the buyer's
+experience honest: `1.0` could take money but could neither resolve an abandoned
+checkout nor tell anybody anything.
+
+**Order expiry.** Stripe's own `checkout.session.expired` is the trigger — there
+is **no sweeper, cron, `expiresAt` column, or timer** anywhere in the payment
+path, and a test greps for each. Only Stripe knows whether a hosted session is
+still payable; a Monacado clock guessing would eventually cancel an Order a buyer
+was midway through paying. A still-pending Order moves to `CANCELLED` through
+`0M.9`'s existing `cancelOrder`, which writes one lifecycle column and has no path
+to a snapshot, obligation, evidence, or review authority. **A `PAID` Order is
+never downgraded** — `PAID` is terminal in `0M.9`'s transition table — and
+repeated expiry events are idempotent.
+
+Abandonment got its **own disposition** rather than a new failure code:
+`BuyerPaymentConfirmation` is now a union whose `ABANDONED` arm has no `result`
+field at all. `PAYMENT_FAILED` asserts a provider reported a failure, and nobody
+declined an expired checkout.
+
+**Notification delivery.** The first concrete channel, and **supplemental by
+construction**. `AUTHORITATIVE_STOREFRONT_SOURCE_MODEL.md` §3a governs: the admin
+panel is canonical and email "can never replace it". Nothing in the delivery path
+writes to `NotificationObligation` — a test greps for every write method — so a
+delivery never satisfies, closes, or advances one.
+
+**Guest delivery, without a fabricated participant.** This closes the gap `0M.9`
+recorded in its own words: buyer-facing notice for guests "needs an addressing
+model that does not exist yet". `NotificationDelivery.obligationId` and
+`recipientParticipantId` are both nullable, so a buyer who is not a participant
+still gets a receipt. A test counts `Account` and `MarketplaceParticipant` across
+a guest purchase-and-notify and asserts neither moved.
+
+**The address is not stored.** Only a SHA-256 digest of the normalised
+destination — the same construction as `0M.9`'s guest claim code. Monacado can
+prove *that* it wrote to an address, deduplicate, and answer a support question
+without becoming a store of buyer email addresses. The operational cost is real
+and was accepted deliberately.
+
+**At-most-once, by claiming before sending.** The row is inserted (unique on a
+derived delivery key), then the message is sent, then evidence is recorded.
+Send-then-record would be at-least-once, and a second "your payment succeeded"
+reads as a second charge. Duplicate suppression sits *above* that too: a replayed
+webhook finalizes to `ALREADY_RECORDED`, so nothing newly became true and nobody
+is newly owed a message.
+
+**No email vendor was added.** The repository identified none, so this phase built
+the provider-neutral `MailPort`, a local logging adapter that redacts the
+destination and never logs a body, an in-memory test adapter, and a disabled
+adapter. Disabled is first-class: every message is refused with
+`CHANNEL_NOT_CONFIGURED` and the delivery row is **still written**, so an
+unconfigured deployment reports exactly what it did not send.
+
+One additive migration (`NotificationDelivery`) and one additive `0M.N1` category
+(`ORDER_CANCELLED`) — the change that vocabulary was explicitly built to take.
+
+**One pre-live gate is recorded rather than solved**: delivery is at-most-once
+with no retry, and because only a digest of a buyer's address is kept, a failed
+**guest** receipt cannot be re-sent from Monacado's data alone. Tolerable in test
+mode; a real decision — bounded retry, provider re-read, or encrypted retention —
+belongs with `0M.N2` alongside bounce handling.
+
+**No `0M.T2`, `0M.R2`, payout, refund, chargeback, or live-mode work was begun.**
+
+Detail:
+[`ORDER_EXPIRY_AND_BUYER_NOTIFICATION_DELIVERY.md`](ORDER_EXPIRY_AND_BUYER_NOTIFICATION_DELIVERY.md).
 
 ---
 

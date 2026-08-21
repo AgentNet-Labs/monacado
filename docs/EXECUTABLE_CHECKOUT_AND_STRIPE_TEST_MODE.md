@@ -171,7 +171,11 @@ A verification failure returns **400 and nothing else**. Stripe's own message
 distinguishes a malformed header from a stale timestamp from a wrong secret, and
 an endpoint that reports which is an oracle for forging one.
 
-### Three event types, and one conspicuous absence
+### Event types, and one conspicuous absence
+
+> **Extended by Phase `1.1`**, which added `checkout.session.expired` — Stripe's
+> authoritative statement that a session can no longer complete. See
+> [`ORDER_EXPIRY_AND_BUYER_NOTIFICATION_DELIVERY.md`](ORDER_EXPIRY_AND_BUYER_NOTIFICATION_DELIVERY.md).
 
 | Event | Effect |
 | --- | --- |
@@ -415,9 +419,13 @@ Everything below is a real gate, not a checklist item.
   edge.
 - **`0M.R2` — transaction risk.** No velocity limits, transaction caps, reserves,
   payout holds, or per-transaction policy selection exist.
-- **`0M.N2` — notification delivery.** Obligations are recorded; nothing is sent.
-  A buyer receives no confirmation of any kind, and a **guest gets no obligation
-  row at all** — `0M.N1` keys recipients on participants, and a guest has none.
+- **`0M.N2` — notification delivery.** *(Partly addressed by Phase `1.1`.)*
+  Buyers, guests included, now receive confirmation, failure, and expiry notices
+  through a **supplemental** email channel, and a guest still gets no obligation
+  row — `0M.N1` keys recipients on participants by design, and `1.1` did not
+  change that. What remains `0M.N2`'s: the **canonical** admin-panel view, the
+  `SUPER_OWNER`/`ADMIN` visibility rule, notification preferences, and a
+  production mail vendor.
 - **Refunds, chargebacks, and reversal accounting.** Unimplemented. A live
   processor will produce all three within days.
 - **Payout execution.** Obligations record what is owed. Nothing moves money.
@@ -429,9 +437,11 @@ Everything below is a real gate, not a checklist item.
   deliberately, in a reviewed commit.
 - **Webhook endpoint registration and secret rotation** for the live account.
 - **HTTPS return URLs.** `MONACADO_STRIPE_ALLOW_LOOPBACK_HTTP` must be false.
-- **Order expiry.** An abandoned checkout stays `PENDING_PAYMENT` forever.
-  `checkout.session.expired` is not handled — resolving it needs a decision about
-  when abandonment is certain, made in the open rather than assumed here.
+- ~~**Order expiry.**~~ **Resolved by Phase `1.1`.** `checkout.session.expired`
+  now cancels a still-pending Order through `0M.9`'s own `cancelOrder`, creating
+  no economics and never downgrading a `PAID` sale. The decision about when
+  abandonment is certain was made the only defensible way: Stripe's fact, not a
+  Monacado timer.
 - **The line-item description.** A buyer sees "Monacado order" on Stripe's page.
   Fixing it needs a decision about what Monacado is willing to disclose to a
   processor, not a default.

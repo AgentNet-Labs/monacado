@@ -44,19 +44,56 @@ function formatAmount(minorUnits: number, currency: string): string {
   );
 }
 
-const HEADLINE: Record<string, string> = {
-  PAID: "Payment received",
-  PENDING_PAYMENT: "Payment pending",
-  PAYMENT_FAILED: "Payment failed",
-  CANCELLED: "Order cancelled",
+/**
+ * The four states a buyer can land in, each said in the buyer's terms.
+ *
+ * The distinction that matters most is **pending versus terminal**. Pending is
+ * not a failure and must never read as one: the redirect routinely beats the
+ * webhook by a moment, and a buyer told "failed" who was in fact charged a second
+ * later will pay twice trying to fix it.
+ *
+ * The second distinction is **failed versus cancelled**. A decline and an expiry
+ * are different events with different next steps, and `0M.9`'s lifecycle already
+ * keeps them apart — the page would be throwing that away by merging them.
+ */
+const OUTCOME: Record<
+  string,
+  { headline: string; explanation: string; terminal: boolean; charged: boolean }
+> = {
+  PAID: {
+    headline: "Payment received",
+    explanation: "Your payment is confirmed and your order is complete.",
+    terminal: true,
+    charged: true,
+  },
+  PENDING_PAYMENT: {
+    headline: "Payment pending",
+    explanation:
+      "Stripe has not yet confirmed this payment to Monacado. This is normal for a few seconds after checkout — reload this page in a moment.",
+    terminal: false,
+    charged: false,
+  },
+  PAYMENT_FAILED: {
+    headline: "Payment failed",
+    explanation:
+      "Your payment was not completed. No money was taken and this order was not fulfilled. To try again, start a new checkout — each attempt is a separate order.",
+    terminal: true,
+    charged: false,
+  },
+  CANCELLED: {
+    headline: "Checkout expired",
+    explanation:
+      "This checkout was not completed in time and has been cancelled. No money was taken. You are welcome to start a new checkout.",
+    terminal: true,
+    charged: false,
+  },
 };
 
-const EXPLANATION: Record<string, string> = {
-  PAID: "Your order is complete.",
-  PENDING_PAYMENT:
-    "Stripe has not yet confirmed this payment to Monacado. Reload this page in a moment.",
-  PAYMENT_FAILED: "No payment was taken and no order was completed.",
-  CANCELLED: "This order was cancelled before payment completed.",
+const UNKNOWN_OUTCOME = {
+  headline: "Checkout",
+  explanation: "",
+  terminal: false,
+  charged: false,
 };
 
 export default async function CheckoutResultPage({
@@ -101,15 +138,16 @@ export default async function CheckoutResultPage({
   };
 
   const claimCode = (await cookies()).get(GUEST_CLAIM_COOKIE_NAME)?.value ?? null;
+  const outcome = OUTCOME[status.lifecycle] ?? UNKNOWN_OUTCOME;
 
   return (
     <main>
-      <h1>{HEADLINE[status.lifecycle] ?? "Checkout"}</h1>
-      <p>{EXPLANATION[status.lifecycle] ?? ""}</p>
+      <h1>{outcome.headline}</h1>
+      <p>{outcome.explanation}</p>
       <dl>
         <dt>Order</dt>
         <dd>{status.orderId}</dd>
-        <dt>Total</dt>
+        <dt>{outcome.charged ? "Total charged" : "Amount"}</dt>
         <dd>{formatAmount(status.buyerTotalMinorUnits, status.currency)}</dd>
         <dt>Status</dt>
         <dd>{status.lifecycle}</dd>
@@ -120,6 +158,16 @@ export default async function CheckoutResultPage({
           </>
         ) : null}
       </dl>
+      {/* A terminal outcome is not going to change on reload; a pending one is.
+          Saying so is the difference between a buyer waiting and a buyer paying
+          again. */}
+      {outcome.terminal ? null : <p>This page will update once Stripe confirms the payment.</p>}
+      {/* The receipt goes to the address Stripe collected. Said here because a
+          guest has no account to check, and would otherwise have no idea one was
+          sent — or that they should look for it. */}
+      {status.lifecycle === "PAID" ? (
+        <p>A confirmation has been emailed to the address you gave at checkout.</p>
+      ) : null}
       {claimCode !== null && claimCode !== "" ? (
         <section>
           <h2>Your claim code</h2>

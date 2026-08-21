@@ -90,6 +90,17 @@ export const NOTIFICATION_CATEGORIES = [
   // — Named for 0M.9; no producer exists yet —
   /** A buyer's order was accepted. */
   "ORDER_CONFIRMATION",
+  /**
+   * A buyer's order ended without payment — abandoned, expired, or cancelled.
+   *
+   * Added in Phase 1.1, as the additive change this vocabulary was designed to
+   * take: a new member, no new table, no new column. It is deliberately **not**
+   * `PAYMENT_FAILED`, which asserts that a provider reported a failure. Nobody
+   * declined an expired checkout; the buyer simply never finished, and the Order
+   * lifecycle draws exactly that distinction between `PAYMENT_FAILED` and
+   * `CANCELLED`.
+   */
+  "ORDER_CANCELLED",
   /** A seller or promoter has a sale to fulfil or account for. */
   "SALE_RECORDED",
   /** A payment attempt failed. */

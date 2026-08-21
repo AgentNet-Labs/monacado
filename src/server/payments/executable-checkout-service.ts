@@ -33,6 +33,7 @@
 
 import "../server-only";
 import {
+  cancelOrder,
   getOrder,
   initiateOrderPayment,
   placeOrder,
@@ -97,6 +98,8 @@ export async function beginCheckout(
 export const CONFIRMATION_DISPOSITIONS = [
   "SALE_RECORDED",
   "FAILURE_RECORDED",
+  /** The hosted session expired and a still-pending Order was cancelled (1.1). */
+  "ORDER_EXPIRED",
   "ALREADY_RECORDED",
 ] as const;
 export type ConfirmationDisposition = (typeof CONFIRMATION_DISPOSITIONS)[number];
@@ -119,6 +122,7 @@ export interface FinalizedPayment {
  * | a **different** success on a `PAID` Order | `PaymentResultConflictError`, deliberately not idempotent: the buyer may have been charged twice |
  * | a failure on a `PAYMENT_FAILED` Order | the pre-check below, which reports `ALREADY_RECORDED` rather than attempting an invalid transition |
  * | two deliveries racing concurrently | the `UNIQUE` index on `TransactionEconomicSnapshot.orderId` — the loser's whole transaction rolls back, and its retry finds the Order `PAID` and replays |
+ * | an expiry on a non-`PENDING_PAYMENT` Order | the abandonment pre-check — reported `ALREADY_RECORDED`, and a `PAID` sale is never downgraded |
  *
  * So: no snapshot, no settlement row, no proceeds obligation, no purchase
  * evidence, no notification obligation, and no `PAID` transition is ever created
@@ -135,6 +139,36 @@ export async function finalizeConfirmedPayment(
   deps: OrderServiceDeps = {},
 ): Promise<FinalizedPayment> {
   const existing = await getOrder(confirmation.orderId, deps);
+
+  /* — Abandonment (Phase 1.1) —
+   *
+   * The provider says this session can never complete. The Order is cancelled if
+   * it is still waiting, and **nothing commercial is created**: `cancelOrder`
+   * writes one lifecycle column and has no path to a snapshot, a settlement row,
+   * a proceeds obligation, purchase evidence, or a review authority.
+   *
+   * The three refusals below are each a real protection, not defensiveness:
+   *
+   *   - a `PAID` Order is left alone. `0M.9` makes `PAID` terminal and the
+   *     transition table has no `PAID → CANCELLED` edge, so a late or replayed
+   *     expiry event **cannot downgrade a completed sale** — this check reports
+   *     it cleanly rather than letting `cancelOrder` raise.
+   *   - an already-`CANCELLED` Order is idempotent. Stripe delivers at least
+   *     once, and a redelivery is not an invalid transition attempt.
+   *   - a `PAYMENT_FAILED` Order keeps its more specific state. It already says
+   *     what happened, and overwriting it with "abandoned" would lose the fact
+   *     that a provider actually declined something.
+   */
+  if (confirmation.disposition === "ABANDONED") {
+    if (existing.lifecycle !== "PENDING_PAYMENT") {
+      return { disposition: "ALREADY_RECORDED", order: existing, sale: null };
+    }
+    const cancelled = await cancelOrder(
+      { orderId: confirmation.orderId, at: confirmation.observedAt },
+      deps,
+    );
+    return { disposition: "ORDER_EXPIRED", order: cancelled, sale: null };
+  }
 
   /* A repeated failure delivery. `recordPaymentResult` would refuse the
      PAYMENT_FAILED → PAYMENT_FAILED transition, and rightly — but a provider

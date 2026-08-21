@@ -180,6 +180,16 @@ function stripeDouble(overrides: {
 
 const runtime = (client: Stripe) => ({ config: CONFIG, client });
 
+/** Narrow a confirmation to its payment-result arm, failing loudly otherwise. */
+function asResult(
+  confirmation: BuyerPaymentConfirmation | null,
+): Extract<BuyerPaymentConfirmation, { disposition: "PAYMENT_RESULT" }> {
+  if (confirmation === null || confirmation.disposition !== "PAYMENT_RESULT") {
+    throw new Error("expected a PAYMENT_RESULT confirmation");
+  }
+  return confirmation;
+}
+
 // — 1 —
 
 describe("1.0 · the payment SDK boundary", () => {
@@ -381,13 +391,16 @@ describe("1.0 · the initiation shape asserts no outcome", () => {
 
   it("carries a 0M.9 payment result on a confirmation, unaltered", () => {
     const parsed = BuyerPaymentConfirmation.parse({
+      disposition: "PAYMENT_RESULT",
       orderId: ORDER_ID,
       provider: "STRIPE",
+      buyerContact: null,
       result: { outcome: "SUCCEEDED", provider: "STRIPE", providerTransactionRef: INTENT_ID },
       providerEventRef: "evt_0m9test000000000001",
       observedAt: "2027-12-03T12:00:05.000Z",
     });
-    expect(parsed.result).toEqual({
+    expect(parsed.disposition).toBe("PAYMENT_RESULT");
+    expect(parsed.disposition === "PAYMENT_RESULT" ? parsed.result : null).toEqual({
       outcome: "SUCCEEDED",
       provider: "STRIPE",
       providerTransactionRef: INTENT_ID,
@@ -490,7 +503,8 @@ describe("1.0 · webhook verification refuses anything it cannot authenticate", 
     );
     expect(confirmation).not.toBeNull();
     expect(confirmation!.orderId).toBe(ORDER_ID);
-    expect(confirmation!.result).toEqual({
+    expect(confirmation!.disposition).toBe("PAYMENT_RESULT");
+    expect(asResult(confirmation).result).toEqual({
       outcome: "SUCCEEDED",
       provider: "STRIPE",
       /* The PaymentIntent, not the session: it is what 0M.T1's settlement row
@@ -545,18 +559,21 @@ describe("1.0 · webhook verification refuses anything it cannot authenticate", 
 
 // — 7 —
 
-describe("1.0 · the webhook has an opinion about three event types", () => {
+describe("1.0 · the webhook has an opinion about four event types", () => {
   const port = (client: Stripe) =>
     createStripeBuyerPaymentConfirmationPort(
       { observedAt: "2027-12-03T12:00:05.000Z" },
       { runtime: runtime(client), env: ENV },
     );
 
-  it("acts on three, and is deliberately silent about payment_intent.payment_failed", () => {
+  it("acts on four, and is deliberately silent about payment_intent.payment_failed", () => {
+    /* Three from 1.0; `checkout.session.expired` added by 1.1, which is Stripe's
+       authoritative statement that a session can no longer complete. */
     expect(HANDLED_EVENT_TYPES).toEqual([
       "checkout.session.completed",
       "checkout.session.async_payment_succeeded",
       "checkout.session.async_payment_failed",
+      "checkout.session.expired",
     ]);
     /* Acting on it would be the money-losing bug: a declined card inside a
        hosted session fires it, the buyer retries successfully moments later, and
@@ -592,7 +609,7 @@ describe("1.0 · the webhook has an opinion about three event types", () => {
     const result = await port(client).confirmPayment(
       signedDelivery(sessionEvent("checkout.session.async_payment_failed")),
     );
-    expect(result!.result).toEqual({ outcome: "FAILED", failureCode: "INSTRUMENT_REJECTED" });
+    expect(asResult(result).result).toEqual({ outcome: "FAILED", failureCode: "INSTRUMENT_REJECTED" });
     /* No Stripe string survives the translation. */
     expect(JSON.stringify(result)).not.toContain("card_declined");
   });
@@ -606,7 +623,7 @@ describe("1.0 · the webhook has an opinion about three event types", () => {
     const result = await port(client).confirmPayment(
       signedDelivery(sessionEvent("checkout.session.async_payment_failed")),
     );
-    expect(result!.result).toEqual({ outcome: "FAILED", failureCode: "UNSPECIFIED_FAILURE" });
+    expect(asResult(result).result).toEqual({ outcome: "FAILED", failureCode: "UNSPECIFIED_FAILURE" });
   });
 
   it("refuses a verified payment event carrying no Monacado Order", async () => {

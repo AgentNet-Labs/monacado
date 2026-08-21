@@ -293,6 +293,9 @@ describe("0M.N1 · the vocabulary stays closed and 0M.9-ready", () => {
   it("names future categories without implementing them", () => {
     for (const future of [
       "ORDER_CONFIRMATION",
+      /* Added in Phase 1.1 for the expiry notice. It creates no OBLIGATION —
+         only a delivery — so the implemented-producer list below is unchanged. */
+      "ORDER_CANCELLED",
       "SALE_RECORDED",
       "PAYMENT_FAILED",
       "PAYOUT_STATE_CHANGED",
