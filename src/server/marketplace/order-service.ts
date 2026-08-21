@@ -65,8 +65,10 @@ import {
   type OrderRecord,
 } from "../../contracts/marketplace/order";
 import {
+  BuyerPaymentInitiation,
   BuyerPaymentRequest,
   BuyerPaymentResult,
+  type BuyerPaymentInitiationPort,
   type BuyerPaymentPort,
 } from "../../contracts/marketplace/buyer-payment";
 import {
@@ -354,6 +356,39 @@ export async function executeOrderPayment(
     idempotencyKey: order.orderId,
   });
   return BuyerPaymentResult.parse(await port.executePayment(request));
+}
+
+/**
+ * Ask a provider to **start** a payment the buyer will complete elsewhere.
+ *
+ * The redirect-completed sibling of `executeOrderPayment`, added in Phase 1.0 for
+ * a provider whose real answer arrives out of band. It builds the identical
+ * `BuyerPaymentRequest` — same amount, same currency, same idempotency key, which
+ * is the **Order id** — so one charge carries one key no matter which port runs
+ * it, and a repeated begin-checkout starts no second payment.
+ *
+ * It **asserts nothing about the outcome**, and there is no shape in which it
+ * could: `BuyerPaymentInitiation` has no outcome field. The authoritative result
+ * reaches `recordPaymentResult` only from the provider's own confirmation.
+ *
+ * Like `executeOrderPayment`, this is I/O and sits outside any database
+ * transaction. A failure here leaves the Order `PENDING_PAYMENT` — durable,
+ * attributable, and retryable — which is exactly the arrangement `0M.9` chose so
+ * that a dead process never produces a payment nobody can attach to anything.
+ */
+export async function initiateOrderPayment(
+  order: OrderRecord,
+  provider: PaymentProvider,
+  port: BuyerPaymentInitiationPort,
+): Promise<BuyerPaymentInitiation> {
+  const request = BuyerPaymentRequest.parse({
+    orderId: order.orderId,
+    provider,
+    currency: order.quote.currency,
+    amountMinorUnits: quotedBuyerTotalMinorUnits(order.quote),
+    idempotencyKey: order.orderId,
+  });
+  return BuyerPaymentInitiation.parse(await port.initiatePayment(request));
 }
 
 // — Recording the result —

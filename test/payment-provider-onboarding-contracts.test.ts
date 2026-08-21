@@ -160,14 +160,40 @@ describe("0M.8 · provider neutrality", () => {
     }
   });
 
-  it("no payment-provider SDK is a dependency of this repository", () => {
+  it("no payment-provider SDK reaches these CONTRACTS, and no browser one exists at all", () => {
+    /* 0M.8 asserted the repository carried no payment SDK whatsoever, which was
+       true for as long as no payment could execute. Phase 1.0 added Stripe's
+       SERVER SDK, so this assertion is NARROWED rather than deleted — deleting
+       it would have quietly retired the guarantee along with the fact.
+     *
+     * What still holds, and is what 0M.8 actually cared about:
+     *   - no BROWSER payment SDK exists (the buyer flow is Stripe-hosted, so no
+     *     publishable key and no card field ever reaches a Monacado page);
+     *   - no provider SDK is imported by these contracts, which remain pure and
+     *     provider-neutral. The concrete adapter lives behind the port, under
+     *     src/server/payments/, exactly where 0M.8 said it would.
+     */
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
       dependencies: Record<string, string>;
       devDependencies: Record<string, string>;
     };
     const names = [...Object.keys(pkg.dependencies), ...Object.keys(pkg.devDependencies)];
-    for (const forbidden of ["stripe", "@stripe/stripe-js", "braintree", "adyen", "paypal"]) {
-      expect(names).not.toContain(forbidden);
+    for (const forbidden of [
+      "@stripe/stripe-js",
+      "@stripe/react-stripe-js",
+      "braintree",
+      "adyen",
+      "paypal",
+    ]) {
+      expect(names, forbidden).not.toContain(forbidden);
+    }
+
+    for (const file of [
+      "../src/contracts/marketplace/payment-account.ts",
+      "../src/contracts/marketplace/buyer-payment.ts",
+    ]) {
+      const source = readFileSync(new URL(file, import.meta.url), "utf8");
+      expect(source, file).not.toMatch(/^import .* from "stripe"/m);
     }
   });
 });

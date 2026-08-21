@@ -77,7 +77,10 @@ const ParticipantId = z
  *
  * `STRIPE` is present because the roadmap names Stripe Connect as the intended
  * provider. **No Stripe SDK, credential, endpoint, or API call exists in this
- * phase** — the concrete adapter is deferred (see `PaymentProviderPort`).
+ * module, or anywhere in `src/contracts`.** Phase 1.0 built the concrete adapter
+ * `0M.8` deferred; it lives under `src/server/payments/`, behind
+ * `PaymentProviderPort`, which is exactly where a provider integration is
+ * supposed to sit.
  */
 export const PAYMENT_PROVIDERS = ["STRIPE"] as const;
 export const PaymentProvider = z.enum(PAYMENT_PROVIDERS);
@@ -267,16 +270,20 @@ export type RecordObservedProviderStateInput = z.infer<typeof RecordObservedProv
 /**
  * The narrow boundary between Monacado's domain and any concrete provider.
  *
- * An injected interface, and in this phase **only** an interface: no
- * implementation, no SDK dependency, no credential, no endpoint, no network
- * call. `package.json` carries no payment-provider dependency, and a test
- * asserts it.
+ * An injected interface. **This module holds no implementation, imports no SDK,
+ * reads no credential, names no endpoint, and makes no network call** — and a
+ * test asserts the import absence rather than trusting the sentence.
+ *
+ * `0M.8` declared it with nothing behind it. **Phase 1.0 supplied a concrete
+ * Stripe test-mode implementation**, `createStripeConnectReadinessPort`, without
+ * changing one line of this file — which is the evidence that the boundary was
+ * drawn in the right place.
  *
  * The port returns Monacado's own vocabulary, not the provider's. Mapping a
  * provider's requirement model onto `PaymentReadinessStatus` and
  * `PaymentRequirementCode` is the adapter's job, so nothing provider-shaped
  * reaches a service, a record, or a column. That mapping is where the concrete
- * adapter's real work will be, and it is deferred with the adapter.
+ * adapter's real work turned out to be.
  */
 export interface ProviderReadinessObservation {
   provider: PaymentProvider;

@@ -48,6 +48,31 @@ Two numbering conventions coexist, and neither supersedes the other.
   visibly related. That convention is **retired for future work.** Entity lineage
   is now carried in the phase *description*, not by reusing a lower number.
 
+### The `0M.x` sequence is closed
+
+**The marketplace-foundation sequence ends at `0M.9`. There will be no `0M.10`.**
+
+The `0M` track had one job: establish the authoritative records, contracts, and
+governed decisions a marketplace needs before it can transact. `0M.9` finished
+it — Listing → checkout → Order → payment result → immutable economics →
+proceeds obligations → review eligibility all exist, all provider-neutral, all
+tested. What was left was not another foundation phase; it was **executing** the
+foundation against a real payment provider.
+
+**Operational work is numbered from `1.0`.** The leading `0` in `0M` always meant
+pre-operational, and continuing it past the point where real money moves would
+have made the label say the opposite of what the system does. Numbering restarts
+once, here, and increases monotonically from `1.0` onward.
+
+- **No historical phase is renumbered.** `0M.1` through `0M.9`, and the
+  cross-cutting `0M.N` / `0M.R` / `0M.T` workstreams, keep the labels they were
+  committed under. A completed phase label is a historical identifier, and this
+  document has said so since the `0M.6`/`0M.7` reservation was withdrawn.
+- **The cross-cutting `0M` workstreams keep their labels and stay open.**
+  `0M.T2`, `0M.R2`, and `0M.N2` are production gates on capabilities the `1.x`
+  sequence turns on. Their letters were never chronological, so they do not
+  become `1.x` merely because the numeric sequence moved.
+
 **Completed phase labels are historical identifiers and are never reassigned.**
 `0M.2A` means exactly what it meant when it was committed. In particular,
 Storefront persistence stays `0M.3C` — the label under which it was actually
@@ -76,18 +101,31 @@ labels sort in.
 | 14 | **0M.R1** | **Versioned Commercial Policy and Activation Risk Records** | **complete** — `4377fc1` |
 | 15 | **0M.N1** | **Notification Obligation Records** | **complete** |
 | 16 | **0M.T1** | **MoR Transaction Accounting Foundation** | **complete** |
-| 17 | **0M.9** | **Buyer Checkout, Order, Commission, Payout, and Review-Submission Foundation** | **complete** |
+| 17 | **0M.9** | **Buyer Checkout, Order, Commission, Payout, and Review-Submission Foundation** | **complete** — `6abc3ac`; **closes the `0M.x` sequence** |
+| 18 | **1.0** | **Executable Checkout and Payment Integration (Stripe test mode)** — the first operational phase | **complete** |
 
 ### Forward sequence
 
-`0M.9` is complete, and with it the first coherent buyer transaction flow:
-Listing → checkout → Order → payment result → immutable transaction economics →
-commission/payout obligations → review eligibility.
+`0M.9` completed the first coherent buyer transaction flow — Listing → checkout →
+Order → payment result → immutable transaction economics → commission/payout
+obligations → review eligibility — and closed the `0M.x` sequence with it.
 
-**The numeric `0M.x` sequence has no unstarted member.** What remains are the
-production halves of the cross-cutting workstreams below — `0M.T2`, `0M.R2`, and
-`0M.N2` — together with live payment integration, which is the gate between the
-implemented flow and a flow that moves real money.
+**`1.0` made that flow executable.** A buyer can now select a Listing, be quoted
+from authoritative state, be charged through Stripe **test mode**, and have the
+result confirmed by Stripe's own signed statement rather than by their browser.
+The `0M.9` write path finalizes the sale unchanged.
+
+What remains between here and money that is really Monacado's are the production
+halves of the cross-cutting workstreams below — `0M.T2`, `0M.R2`, and `0M.N2` —
+together with the live-mode gate itself, enumerated in
+[`EXECUTABLE_CHECKOUT_AND_STRIPE_TEST_MODE.md`](EXECUTABLE_CHECKOUT_AND_STRIPE_TEST_MODE.md).
+**No unstarted `1.x` phase is authorized by appearing here.**
+
+| Next operational candidate | Why it is next, not now |
+| --- | --- |
+| **Payout execution** — moving proceeds to sellers and promoters through Connect | `1.0` reads Connect readiness through `0M.8`'s port and creates no transfer. Payouts need `0M.R2`'s holds, reserves, and transaction caps first; paying out without them is paying out irreversibly |
+| **Seller/promoter Connect onboarding UI** | The test-mode adapter and the account-link call exist; nothing renders them. It needs the participant-facing surface `0M.8` deferred |
+| **Order expiry and abandonment** | An unfinished checkout stays `PENDING_PAYMENT`, which `0M.9` designed for. Resolving it needs a decision about when abandonment is certain |
 
 | Cross-cutting phase | Title | State |
 | --- | --- | --- |
@@ -128,6 +166,11 @@ they gate:
    provider-neutral payment port with no adapter behind it, the atomic
    successful-sale write, seller and promoter proceeds obligations, and the first
    real `ReviewSubmissionAuthority` rows.
+8. ~~**`1.0` — Executable Checkout and Payment Integration.**~~ **Complete.**
+   The first operational phase. Stripe's server SDK, concrete adapters behind the
+   provider-neutral ports, hosted Checkout Sessions keyed on the Order id,
+   webhook-confirmed payment results, three minimal routes, and a buyer UI with
+   no client JavaScript. **Stripe test mode only**, and structurally so.
 
 Later, as production gates rather than sequence steps: **`0M.R2`** (transaction
 and commercial risk enforcement), **`0M.T2`** (tax execution, nexus, remittance,
@@ -890,6 +933,60 @@ review content or capsule publication, routes, and UI.
 
 Full detail:
 [`BUYER_CHECKOUT_ORDER_AND_POST_SALE_FOUNDATION.md`](BUYER_CHECKOUT_ORDER_AND_POST_SALE_FOUNDATION.md).
+
+---
+
+## 1.0 — Executable Checkout and Payment Integration (Stripe test mode)
+
+**Complete.** The **first operational phase**, and the one that ends the
+pre-operational `0M` numbering: everything before it built the records a
+marketplace needs; this one executes a purchase against a real payment provider.
+
+`0M.9` deferred exactly one thing — "the concrete adapter behind
+`BuyerPaymentPort`, hosted checkout, 3-D Secure, webhook ingestion". `1.0`
+supplies it, in **Stripe test mode only**, and changes no economics doing so.
+
+**What it added.** Stripe's server SDK; concrete adapters behind the
+provider-neutral ports; hosted Checkout Sessions keyed on the Order id;
+signature-verified webhook confirmation; three minimal routes; and a buyer UI
+with no client JavaScript.
+
+**What it did not touch.** No pricing, no commercial policy, no retention, no
+seller or promoter proceeds, no transaction snapshot, and no post-sale write
+path. `recordPaymentResult` finalizes the sale exactly as `0M.9` wrote it, and
+**no second finalization path exists**.
+
+**The three properties that matter.**
+
+1. **Stripe never calculates Monacado's economics.** It is handed one amount —
+   the buyer's total, already derived by `prepareCheckout` from the bound Listing
+   version and the bound commercial policy — and returns payment evidence. There
+   is no application fee, no destination charge, and no `transfer_data` anywhere
+   in the repository.
+2. **A payment is true because Stripe signed it.** The webhook is the only path
+   that can reach `PAID`. The buyer's return page reads the database and asserts
+   nothing, and the begin-checkout request has exactly one field — which Listing
+   — so there is no shape in which a client could state an outcome.
+3. **Test mode is structural, not configured.** `STRIPE_MODES` has one member and
+   `resolveStripeApiKey` refuses a key that is not `sk_test_`-prefixed. Live mode
+   requires editing source in the open.
+
+**Idempotency, with no new machinery.** The Order id is the idempotency key from
+`prepareCheckout` through to Stripe's own `Idempotency-Key` header, so one Order
+has one Checkout Session and one PaymentIntent. A repeated webhook delivery
+creates no second snapshot, settlement row, proceeds obligation, purchase
+evidence, notification obligation, or `PAID` transition — each guarantee resting
+on a `0M.9` rule or the `UNIQUE` index on `TransactionEconomicSnapshot.orderId`.
+**No event-processing framework and no processed-event ledger was built.**
+
+**Connect, bounded deliberately.** `0M.8`'s `PaymentProviderPort` now has a real
+test-mode implementation, so readiness is read from Stripe rather than stubbed.
+Test-mode account creation and hosted onboarding links exist as two plain
+functions feeding the existing `registerParticipantPaymentAccount`. **No payout,
+transfer, or application fee is executed**, and none is implemented.
+
+Detail, configuration, and the full live-mode gate:
+[`EXECUTABLE_CHECKOUT_AND_STRIPE_TEST_MODE.md`](EXECUTABLE_CHECKOUT_AND_STRIPE_TEST_MODE.md).
 
 ---
 

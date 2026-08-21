@@ -12,6 +12,11 @@ economics → commission/payout obligations → review eligibility
 
 Provider-neutral throughout. **No live payment integration exists.**
 
+> Phase `1.0` made this flow executable against Stripe **test mode**, behind the
+> same provider-neutral boundary and without altering any economics below. Live
+> payments remain gated. See
+> [`EXECUTABLE_CHECKOUT_AND_STRIPE_TEST_MODE.md`](EXECUTABLE_CHECKOUT_AND_STRIPE_TEST_MODE.md).
+
 ---
 
 ## 1. The checkout flow
@@ -207,10 +212,15 @@ interface BuyerPaymentPort {
 }
 ```
 
-**An interface with no implementation.** No SDK, no HTTP client, no credential, no
-endpoint, no network call, and no payment dependency in `package.json`. A test
-supplies a scripted double; production supplies a real adapter when live payment
-integration lands.
+**An interface with no implementation *in this phase*.** No SDK, no HTTP client,
+no credential, no endpoint, no network call, and no payment dependency in
+`package.json`. A test supplies a scripted double.
+
+> **Phase `1.0` note.** Redirect-completed card acquiring got a **sibling** port,
+> `BuyerPaymentInitiationPort`, rather than a third member on this result union —
+> precisely to preserve property three below. This interface is unchanged, and
+> the concrete Stripe adapter lives behind the new one. See
+> [`EXECUTABLE_CHECKOUT_AND_STRIPE_TEST_MODE.md`](EXECUTABLE_CHECKOUT_AND_STRIPE_TEST_MODE.md).
 
 - **Provider-neutral.** Nothing Stripe-shaped: no payment intent, no client
   secret, no confirmation method, no webhook.
@@ -420,6 +430,13 @@ with `REVIEW_AUTHORITY_TARGET_MISMATCH`.
 hosted checkout, 3-D Secure, webhook ingestion, and processor reconciliation. No
 SDK, credential, endpoint, or network call exists.
 
+> **Superseded in part by Phase `1.0`.** The adapter, hosted checkout, 3-D Secure
+> (Stripe's own, on Stripe's page), and webhook ingestion now exist — in **Stripe
+> test mode only**, behind a new sibling port, with **no economics altered**.
+> Processor reconciliation and live mode remain deferred, and the full live-mode
+> gate is enumerated in
+> [`EXECUTABLE_CHECKOUT_AND_STRIPE_TEST_MODE.md`](EXECUTABLE_CHECKOUT_AND_STRIPE_TEST_MODE.md) §11.
+
 **`0M.T2`** — tax calculation, nexus determination, product tax classification,
 sourcing, remittance and filing; refund and chargeback accounting; reversal
 economics; double-entry ledger postings; settlement audit evidence. This phase
@@ -436,7 +453,8 @@ only.
 **Payout execution** — obligations record what is owed. Nothing moves money to a
 seller or promoter.
 
-**Routes and UI** — no HTTP route, page, or component was added.
+**Routes and UI** — no HTTP route, page, or component was added. *(Phase `1.0`
+added three routes and two buyer pages. None of them changed anything above.)*
 
 ### A recorded boundary: buyer-facing notices
 
