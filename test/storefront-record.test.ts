@@ -141,17 +141,13 @@ describe("schema-level integrity", () => {
     expect(block).toMatch(/activeSuperOwnerForStorefrontId String\? @unique/);
   });
 
-  it("adds no Storefront Node, publication, or Order table", () => {
-    /* `model Offer` was dropped from this list when Phase 0M.6 built it. The
-       list is narrowed rather than deleted, on the same reasoning 0M.5 used for
-       the Storefront: what 0M.3C claims is that *it* added none of these, and
-       the remaining four are still absent. The Offer boundary this phase
-       actually guards is asserted below. */
-    for (const model of [
-      "model StorefrontNode",
-      "model StorefrontPublication",
-      "model Order",
-    ]) {
+  it("adds no Storefront Node or publication table", () => {
+    /* `model Offer` was dropped from this list when Phase 0M.6 built it, and
+       `model Order` when 0M.9 did. The list is narrowed rather than deleted, on
+       the same reasoning 0M.5 used for the Storefront: what 0M.3C claims is that
+       *it* added none of these, and the remainder are still absent. The Offer
+       boundary this phase actually guards is asserted below. */
+    for (const model of ["model StorefrontNode", "model StorefrontPublication"]) {
       expect(SCHEMA_CODE).not.toContain(model);
     }
   });

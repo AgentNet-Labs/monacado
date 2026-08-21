@@ -76,16 +76,18 @@ labels sort in.
 | 14 | **0M.R1** | **Versioned Commercial Policy and Activation Risk Records** | **complete** — `4377fc1` |
 | 15 | **0M.N1** | **Notification Obligation Records** | **complete** |
 | 16 | **0M.T1** | **MoR Transaction Accounting Foundation** | **complete** |
+| 17 | **0M.9** | **Buyer Checkout, Order, Commission, Payout, and Review-Submission Foundation** | **complete** |
 
 ### Forward sequence
 
-`0M.8`, `0M.R1`, `0M.N1`, and `0M.T1` are complete, so every cross-cutting
-foundation `0M.9` requires is in place. **`0M.9` is next.** Nothing below has
-started.
+`0M.9` is complete, and with it the first coherent buyer transaction flow:
+Listing → checkout → Order → payment result → immutable transaction economics →
+commission/payout obligations → review eligibility.
 
-| Phase | Title | State |
-| --- | --- | --- |
-| **0M.9** | **Buyer Checkout, Order, Commission, Payout, and Review-Submission Foundation** — was `0M.7` | **not started** |
+**The numeric `0M.x` sequence has no unstarted member.** What remains are the
+production halves of the cross-cutting workstreams below — `0M.T2`, `0M.R2`, and
+`0M.N2` — together with live payment integration, which is the gate between the
+implemented flow and a flow that moves real money.
 
 | Cross-cutting phase | Title | State |
 | --- | --- | --- |
@@ -121,9 +123,11 @@ they gate:
    sale's economics do not move when any of the three does. Settlement standing
    and the provider transaction reference live on a separate row, so the economic
    facts have no update path at all.
-7. **`0M.9` — Buyer Checkout, Order, Commission, Payout, and Review-Submission
-   Foundation.** `0M.R1`, `0M.N1`, and `0M.T1` are all **complete**, so it may
-   begin.
+7. ~~**`0M.9` — Buyer Checkout, Order, Commission, Payout, and Review-Submission
+   Foundation.**~~ **Complete.** Guest and account checkout, Order persistence, a
+   provider-neutral payment port with no adapter behind it, the atomic
+   successful-sale write, seller and promoter proceeds obligations, and the first
+   real `ReviewSubmissionAuthority` rows.
 
 Later, as production gates rather than sequence steps: **`0M.R2`** (transaction
 and commercial risk enforcement), **`0M.T2`** (tax execution, nexus, remittance,
@@ -817,14 +821,75 @@ Full detail:
 
 ## 0M.9 — Buyer Checkout, Order, Commission, Payout, and Review-Submission Foundation
 
-Guest and account checkout, Order persistence, attributed commissions, payouts,
-and the first real `ReviewSubmissionAuthority` rows.
+**Complete.** The first phase that creates an actual commercial transaction, and
+the first coherent buyer flow: Listing → checkout → Order → payment result →
+immutable transaction economics → commission/payout obligations → review
+eligibility.
 
-**Must hold:** guest checkout creates no Account; financial records are
-relational-first and are not entity capsules (ADR §1); a review submission
-authorizes that review's capsule and nothing else; buyer identity is not published
-by default. Also the phase that must design the explicit verified process for
-claiming prior guest purchases.
+Four tables. `Order` (who bought, what they were quoted, where the payment got
+to), `ProceedsObligation` (what Monacado owes the seller and any promoter),
+`PurchaseEvidence` (the private record that a buyer transacted), and
+`ReviewSubmissionAuthority` (the stored grant ADR §11.6 requires) — plus the
+**additive nullable `orderId` column** on `TransactionEconomicSnapshot` that
+`0M.T1` anticipated, so binding an Order was a migration rather than a rewrite.
+
+**An Order is not an economic snapshot.** It records the **quote** — what the
+buyer was told they would be charged, which must exist before any payment runs
+and therefore before any snapshot can. What the sale *earned each party* stays on
+`0M.T1`'s snapshot, bound one-to-one, and the sale path **asserts the quote equals
+the snapshot** before writing. The overlap is a checked invariant rather than a
+second answer left to drift.
+
+**Must hold — and held:** guest checkout creates **no Account and no fabricated
+participant**, asserted by counting both tables across a guest purchase;
+financial records are relational-first and no capsule is projected or published
+anywhere in the phase; a review submission authorizes **that review's capsule and
+nothing else**, proved by feeding a persisted authority to `0M.1`'s own
+`canPublishProductReviewCapsule` and watching it deny the Product capsule and
+somebody else's review; and **buyer identity is not published by default** —
+there is no column for a buyer's email, name, address, IP, card, or device on any
+table this phase created.
+
+**Guest purchase claiming** is the minimum durable foundation, not a subproject: a
+256-bit code returned once, only its SHA-256 digest stored, verified by
+possession, with every refusal indistinguishable so it cannot become an oracle.
+`buyerKind` stays `GUEST_BUYER` after a claim — the sale was made by a guest.
+
+**A guest may review.** `0M.1` settled that a guest is "a real, supported case…
+and is not an account in disguise" and requires `VERIFIED` purchase provenance
+rather than an account. Requiring a claim first would have contradicted a
+committed contract, so the phase does not.
+
+**The successful-sale write is one transaction**: snapshot, settlement row,
+provider reference, proceeds obligations, purchase evidence, seller and promoter
+notices, and the Order's move to `PAID`. A `PAID` Order without economics,
+economics without an Order, and a promoted sale without its promoter obligation
+are each **impossible** rather than unlikely — asserted by forcing a mid-transaction
+failure and finding nothing survived.
+
+**The payment boundary is a port with no adapter.** `BuyerPaymentPort` is
+provider-neutral and has **no implementation**: no SDK, no credential, no
+endpoint, no network call, and no payment dependency in `package.json`. A test
+supplies a scripted double.
+
+**Go-live approval became a governed record.** `0M.3A` defined it as "a supplied
+decision input… Monacado's opinion about a participant, not a fact about a shop",
+and until this phase the supplier was a caller. Once a Listing being buyer-active
+meant real money moved, that was indefensible: a caller passing `APPROVED` would
+have been a caller making a Listing purchasable. `ParticipantCommerceApproval`
+records the decision **against the participant**, honouring the 0M.3A ruling —
+there is no `storefrontId` column — under a **new narrow internal capability,
+`participant:commerce-approve`**, which is deliberately neither `activation:review`
+(deciding an admission) nor `participant:restrict` (withholding, the inverse act).
+Absence means `NOT_APPROVED`, nothing is seeded, history supersedes rather than
+edits, and no checkout input can assert or override it.
+
+**Not in scope, and none of it started:** live payment integration, payout
+execution, tax calculation or remittance, refund and chargeback accounting,
+review content or capsule publication, routes, and UI.
+
+Full detail:
+[`BUYER_CHECKOUT_ORDER_AND_POST_SALE_FOUNDATION.md`](BUYER_CHECKOUT_ORDER_AND_POST_SALE_FOUNDATION.md).
 
 ---
 

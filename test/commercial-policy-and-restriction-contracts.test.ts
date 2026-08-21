@@ -683,7 +683,20 @@ describe("0M.R1 · restriction authority is its own internal capability", () => 
     for (const forbidden of ["admin", "risk:*", "*", "participant:*", "risk:manage"]) {
       expect(AccountCapability.safeParse(forbidden).success, forbidden).toBe(false);
     }
-    expect(ACCOUNT_CAPABILITIES).toHaveLength(3);
+
+    /* The exact count was asserted here until Phase 0M.9 added
+       `participant:commerce-approve` — a fourth narrow grant, minted for exactly
+       the reason this test guards: it was NOT folded into `activation:review` or
+       `participant:restrict` merely because those are already internal.
+       A count is a proxy that breaks on every legitimate addition while catching
+       nothing on its own, so what it stood for is asserted directly instead:
+       every member is narrowly scoped, and none is a wildcard or an `admin`. */
+    for (const capability of ACCOUNT_CAPABILITIES) {
+      expect(capability, capability).not.toContain("*");
+      expect(capability.toLowerCase(), capability).not.toContain("admin");
+      // `<domain>:<act>` — a scoped verb, never a bare grant of everything.
+      expect(capability, capability).toMatch(/^[a-z][a-z-]*(:[a-z][a-z-]*)+$/);
+    }
   });
 
   it("the input carries who is acting, never what they may do", () => {

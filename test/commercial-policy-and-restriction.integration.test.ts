@@ -598,21 +598,20 @@ describeDb("Phase 0M.R1 — versioned commercial policy and activation risk reco
   // — 4. Cross-system invariants —
 
   describe("4. policy persistence changes nothing that already exists", () => {
-    /* Narrowed at Phase 0M.N1, which legitimately added `NotificationObligation`,
-       and again at Phase 0M.T1, which legitimately added `TransactionSettlement`
-       — the settlement standing of a recorded sale, which 0M.T1 owns and this
-       phase deliberately deferred to it (§13). The claim this makes is that
-       *0M.R1* created none of these, and every remaining member still holds:
-       there is still no Order, charge, payout, refund, chargeback, ledger, tax,
-       reserve, velocity, or risk-score table anywhere. */
-    it("creates no transaction, Order, payout, or tax table", async () => {
+    /* Narrowed at Phase 0M.N1 (`NotificationObligation`), again at 0M.T1
+       (`TransactionSettlement`), and again at 0M.9 (`Order`) — each a table a
+       later phase legitimately owns and this one deliberately deferred to it
+       (§13). The claim this makes is that *0M.R1* created none of these, and
+       every remaining member still holds: there is still no charge, payout,
+       refund, chargeback, ledger, tax, reserve, velocity, or risk-score table
+       anywhere. */
+    it("creates no transaction, payout, or tax table", async () => {
       await seedStandardPolicy();
       const tables = await db.$queryRawUnsafe<Array<{ TABLE_NAME: string }>>(
         `SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()`,
       );
       const names = tables.map((t) => t.TABLE_NAME.toLowerCase());
       for (const forbidden of [
-        "order",
         "charge",
         "paymentintent",
         "payout",

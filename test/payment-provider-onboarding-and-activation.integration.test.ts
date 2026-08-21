@@ -621,20 +621,43 @@ describeDb("Phase 0M.8 — payment-provider onboarding and governed activation",
     /**
      * `canReceivePayout` becomes *evaluable* here. It performs no payout, and
      * this phase creates nothing that could.
+     *
+     * Rewritten at Phase 0M.9, which legitimately added `Order`,
+     * `ProceedsObligation`, and the rest of the sale path. The original assertion
+     * enumerated Prisma delegates and claimed none was money-shaped — a proxy that
+     * stops meaning anything the moment a later phase adds the tables on purpose.
+     * What it was always trying to say is that **reaching this decision writes
+     * nothing**, so it now says exactly that, by counting the money-bearing tables
+     * across the call. That claim is strictly stronger and does not expire.
      */
     it("canReceivePayout becomes evaluable and stays a decision, not a payout", async () => {
       const { accountId, participantId } = await seedReadyForApproval();
       await approve(participantId);
 
+      const before = {
+        orders: await db.order.count(),
+        obligations: await db.proceedsObligation.count(),
+        snapshots: await db.transactionEconomicSnapshot.count(),
+        settlements: await db.transactionSettlement.count(),
+      };
+
       const subject = await materializeMarketplaceSubject(accountId, deps());
       expect(canReceivePayout(subject).decision).toBe("ALLOW");
 
-      // Nothing that could move money was created by reaching that answer.
+      // Nothing that could move money was written by reaching that answer.
+      expect({
+        orders: await db.order.count(),
+        obligations: await db.proceedsObligation.count(),
+        snapshots: await db.transactionEconomicSnapshot.count(),
+        settlements: await db.transactionSettlement.count(),
+      }).toEqual(before);
+
+      // And there is still no delegate for a payout, a charge, or a ledger at all.
       const tables = Object.keys(db).filter(
         (k) => typeof k === "string" && !k.startsWith("$") && !k.startsWith("_"),
       );
-      for (const forbidden of ["order", "payment", "charge", "payout", "settlement", "ledger"]) {
-        expect(tables.some((t) => t.toLowerCase() === forbidden)).toBe(false);
+      for (const forbidden of ["payment", "charge", "payout", "ledger"]) {
+        expect(tables.some((t) => t.toLowerCase() === forbidden), forbidden).toBe(false);
       }
     });
 
@@ -1359,21 +1382,19 @@ describeDb("Phase 0M.8 — payment-provider onboarding and governed activation",
       expect(names).toContain("readiness");
     });
 
-    /* Narrowed at Phase 0M.N1, which legitimately added `NotificationObligation`,
-       and again at Phase 0M.T1, which legitimately added `TransactionSettlement`
-       — the settlement standing of a recorded sale, which 0M.8 explicitly
-       deferred to `0M.T1`. What this asserts is that *0M.8* added none of these,
-       and every remaining member still holds: there is still no Order, charge,
-       payment-intent, payout, refund, chargeback, ledger, commission, tax, or
-       risk table anywhere. */
-    it("no charge, order, payout, tax, or risk table exists", async () => {
+    /* Narrowed at Phase 0M.N1 (`NotificationObligation`), again at 0M.T1
+       (`TransactionSettlement`), and again at 0M.9 (`Order`) — each a table a
+       later phase legitimately owns and 0M.8 explicitly deferred to it. What this
+       asserts is that *0M.8* added none of these, and every remaining member still
+       holds: there is still no charge, payment-intent, payout, refund, chargeback,
+       ledger, commission, tax, or risk table anywhere. */
+    it("no charge, payout, tax, or risk table exists", async () => {
       const tables = await db.$queryRawUnsafe<Array<{ TABLE_NAME: string }>>(
         `SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()`,
       );
       const names = tables.map((t) => t.TABLE_NAME.toLowerCase());
 
       for (const forbidden of [
-        "order",
         "charge",
         "paymentintent",
         "payout",

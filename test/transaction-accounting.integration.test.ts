@@ -1111,12 +1111,18 @@ describeDb("0M.T1 — MoR transaction accounting foundation", () => {
       const operations = Object.keys(transactionAccountingService).filter(
         (k) => typeof (transactionAccountingService as Record<string, unknown>)[k] === "function",
       );
+      /* `recordTransactionEconomicSnapshotInTx` was added at 0M.9, which must
+         write a sale's economics inside its own transaction. It CREATES a
+         snapshot; it does not edit one, so the claim this test makes is
+         unchanged — there is still no operation anywhere that mutates a recorded
+         snapshot's economic facts. */
       expect(operations.sort()).toEqual([
         "advanceTransactionSettlement",
         "getTransactionEconomicSnapshot",
         "reconstructTransactionEconomics",
         "recordProviderTransactionReference",
         "recordTransactionEconomicSnapshot",
+        "recordTransactionEconomicSnapshotInTx",
       ]);
     });
 

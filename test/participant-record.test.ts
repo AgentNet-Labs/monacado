@@ -156,13 +156,34 @@ describe("draft-only scope", () => {
     expect(SCHEMA_CODE).not.toMatch(/model MarketplaceParticipantCapsule/);
   });
 
-  it("adds no Review or Order persistence", () => {
+  it("keeps the participant's own tables free of order and review facts", () => {
     /* Storefront persistence arrived in Phase 0M.3C, Offer persistence in 0M.6,
-       and Listing persistence in 0M.7 — this assertion has been narrowed at each,
-       rather than deleted, because what 0M.5 actually claims is that *it* added
-       none. The remaining two are still absent. */
-    for (const model of ["model Review", "model Order"]) {
-      expect(SCHEMA_CODE).not.toContain(model);
+       Listing persistence in 0M.7, and Order plus review-submission authority in
+       0M.9 — this assertion was narrowed at each rather than deleted. With 0M.9
+       every model it named now legitimately exists, so narrowing once more would
+       leave a loop over nothing. It is restated instead in the durable form the
+       neighbouring Offer assertion already uses: the boundary 0M.5 guards is not
+       "no Order table exists anywhere" but that a PARTICIPANT table never carries
+       a purchase or a review. An Order references a participant; a participant
+       restates no order fact. */
+    const participantTables = codeOnly(
+      SCHEMA.slice(
+        SCHEMA.indexOf("model MarketplaceParticipant {"),
+        SCHEMA.indexOf("model Storefront {"),
+      ),
+    );
+    for (const field of [
+      "orderId",
+      "purchasedAt",
+      "quotedCommercialRetailAmountMinorUnits",
+      "buyerKind",
+      "guestClaimCodeDigest",
+      "reviewSubmissionId",
+      "reviewKind",
+      "purchaseEvidenceId",
+      "amountMinorUnits",
+    ]) {
+      expect(participantTables, field).not.toContain(field);
     }
   });
 

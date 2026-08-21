@@ -58,6 +58,30 @@ export const ACTIVATION_REVIEW_CAPABILITY = "activation:review" as const satisfi
 export const PARTICIPANT_RESTRICT_CAPABILITY =
   "participant:restrict" as const satisfies AccountCapability;
 
+/**
+ * The capability that authorizes Monacado's governed **commerce approval** — the
+ * determination that a participant may transact (Phase 0M.9).
+ *
+ * **A third independent grant, deliberately neither of the other two.**
+ *
+ *   - Not `activation:review`. That authorizes deciding one *admission*: whether
+ *     a participant is admitted to the marketplace at all. A participant may be
+ *     admitted and still not cleared to take money — 0M.3A calls go-live approval
+ *     "Monacado's resolved determination that a Storefront satisfies every
+ *     go-live requirement", which is a later and different question. Folding the
+ *     two would mean everyone who could admit a participant could also clear them
+ *     to sell.
+ *   - Not `participant:restrict`. That authorizes **withholding** a capability
+ *     from someone who already has it. This authorizes **granting** the clearance
+ *     in the first place. They point in opposite directions, and "may take
+ *     commerce away" is not "may hand commerce out" — reusing the restrict grant
+ *     would widen it into exactly the authority nobody scoped.
+ *
+ * Narrow by construction: not `admin`, not `commerce:*`, not a wildcard.
+ */
+export const PARTICIPANT_COMMERCE_APPROVE_CAPABILITY =
+  "participant:commerce-approve" as const satisfies AccountCapability;
+
 // — Reason codes —
 
 export const INTERNAL_AUTHORIZATION_REASON_CODES = [
@@ -168,6 +192,26 @@ export function canRestrictParticipant(
   subject: InternalAuthorizationSubject | null,
 ): InternalAuthorizationDecision {
   return evaluateInternalCapability(PARTICIPANT_RESTRICT_CAPABILITY, subject);
+}
+
+/**
+ * May this internal account record Monacado's governed commerce approval?
+ *
+ * Requires an explicit active `participant:commerce-approve` entitlement, on
+ * exactly the terms the two decisions above require their own. **Holding
+ * `activation:review` or `participant:restrict` is not enough** — all three are
+ * independent grants, and the subject has no field capable of carrying a
+ * marketplace role, a participant, or an ownership relation, so none of those can
+ * confer it either.
+ *
+ * This is the authority behind the one determination that makes a Listing
+ * sellable. It is checked against persisted entitlement state on every call, so a
+ * revocation fails closed on the very next decision.
+ */
+export function canApproveParticipantCommerce(
+  subject: InternalAuthorizationSubject | null,
+): InternalAuthorizationDecision {
+  return evaluateInternalCapability(PARTICIPANT_COMMERCE_APPROVE_CAPABILITY, subject);
 }
 
 /** May this internal account read publication-worker operational health? */

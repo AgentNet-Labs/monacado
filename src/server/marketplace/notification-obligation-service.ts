@@ -379,8 +379,14 @@ function obligationData(fields: ObligationFields) {
  * if two callers race past the read, one create fails and this re-reads the
  * winner rather than surfacing a conflict for a governed event that is simply
  * already recorded.
+ *
+ * **Exported for `0M.9`**, which must write sale obligations inside the same
+ * transaction that records the sale — a seller told about a sale that rolled
+ * back, or a sale nobody was told about, are both worse than one insert more in
+ * the transaction. It takes a `Prisma.TransactionClient` precisely so a caller
+ * cannot use it to write outside one by accident.
  */
-async function upsertObligationInTx(
+export async function upsertObligationInTx(
   tx: Prisma.TransactionClient,
   fields: ObligationFields,
 ): Promise<NotificationObligationRecord> {

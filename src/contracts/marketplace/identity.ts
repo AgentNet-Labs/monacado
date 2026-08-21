@@ -159,3 +159,44 @@ export const PURCHASE_EVIDENCE_ID_RE = new RegExp(`^mon:pvev:${OPAQUE_BODY}$`);
  * what any party earned on a sale is nobody's business but the counterparties'.
  */
 export const TRANSACTION_ECONOMIC_SNAPSHOT_ID_RE = new RegExp(`^mon:txsnp:${OPAQUE_BODY}$`);
+
+/**
+ * One buyer Order (`mon:order:<opaque>`) — Phase 0M.9.
+ *
+ * The authoritative record of one buyer's purchase of one Listing: who bought,
+ * what they were quoted, and where the payment got to. It is **not** the record
+ * of what the sale earned each party — that is the `0M.T1` economic snapshot,
+ * which binds to an Order and is never merged into it.
+ *
+ * Operational and financial. Not a Node, not a capsule identity, never published:
+ * ADR §11.10 and the roadmap both require that buyer identity is not published by
+ * default, and an order identifier is the thread that leads to it.
+ */
+export const ORDER_ID_RE = new RegExp(`^mon:order:${OPAQUE_BODY}$`);
+
+/**
+ * One proceeds obligation (`mon:pobl:<opaque>`) — Phase 0M.9.
+ *
+ * Names what Monacado **owes one party for one sale** — the seller's proceeds, or
+ * a promoter's net proceeds. It is an accounting claim, never a payout: no
+ * transfer, batch, schedule, or provider payout identifier has a field on it.
+ *
+ * Distinct from `mon:nobl:`, which names an obligation to *tell someone
+ * something*. Money owed and a notice owed are different obligations and never
+ * share an identifier space.
+ */
+export const PROCEEDS_OBLIGATION_ID_RE = new RegExp(`^mon:pobl:${OPAQUE_BODY}$`);
+
+/**
+ * One governed commerce-approval decision (`mon:pcap:<opaque>`) — Phase 0M.9.
+ *
+ * Names Monacado's determination that a participant may **transact** — the
+ * go-live approval `0M.3A` defined as a supplied decision input and deliberately
+ * refused to store as a Storefront fact. It is a decision *about a participant*,
+ * recorded against the participant, so the approver's judgement never lives
+ * inside the approved thing.
+ *
+ * Operational only, never published: whether Monacado has cleared someone to sell
+ * is nobody's business but the marketplace's.
+ */
+export const PARTICIPANT_COMMERCE_APPROVAL_ID_RE = new RegExp(`^mon:pcap:${OPAQUE_BODY}$`);

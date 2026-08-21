@@ -100,6 +100,7 @@ import {
   NoMaterialListingChangeError,
   OfferProductMismatchError,
 } from "./listing-errors";
+import { resolveCommerceApproval } from "./participant-commerce-approval-service";
 import {
   listingRowToSourceRecord,
   placementToColumns,
@@ -472,6 +473,18 @@ export async function getEffectivePrice(
  * Product's availability is **supplied** rather than read: Product availability
  * is the Product model's question, and this phase adds no second answer to it.
  *
+ * **Go-live approval is READ, never supplied.** 0M.3A settled that it is
+ * *Monacado's resolved determination about a participant*, never a Storefront
+ * fact — "storing it would put the approver's decision inside the approved
+ * thing" — and 0M.9 gave that determination its own governed home on the
+ * participant. It is resolved here for the **Storefront's owner**, whose
+ * clearance `storefrontExposure` has always been about. There is deliberately no
+ * parameter for it: a caller able to pass `APPROVED` would be a caller able to
+ * make a Listing sellable, and no eligibility read may offer that.
+ *
+ * Absence of a governed decision yields `NOT_APPROVED`, so a participant nobody
+ * has assessed cannot sell.
+ *
  * Expect `buyerActive: false` through 0M.7 in the ordinary case — a drafting
  * participant is not `ACTIVE`, and the contract reports every blocking reason
  * rather than only the first.
@@ -527,7 +540,7 @@ export async function evaluateBuyerEligibility(
       storefrontExposure: {
         lifecycle: storefront.lifecycle as never,
         visibility: storefront.visibility as never,
-        goLiveApproval: "NOT_APPROVED",
+        goLiveApproval: await resolveCommerceApproval(db, storefront.ownerParticipantId),
       },
       controllingParticipantStatus: controller.status as never,
       controllingRoleStatus: (role?.status ?? "NONE") as never,

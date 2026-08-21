@@ -67,6 +67,11 @@ model Product {
   // not be erasable by deleting the Product beneath it.
   listings              Listing[]
   listingSourceVersions ListingSourceRecordVersionRow[]
+  /// Orders for this Product, and the private purchase evidence they
+  /// established (0M.9). Both RESTRICT: a Product that has been sold is not
+  /// deletable out from under the sale.
+  orders                Order[]
+  purchaseEvidences     PurchaseEvidence[]
 
   @@index([sourceRecordId])
 }
@@ -683,6 +688,12 @@ model Account {
   /// authentication identity; the participant is who transacts.
   participant MarketplaceParticipant?
 
+  /// Orders placed by this account, and guest Orders later claimed by it (0M.9).
+  /// Both RESTRICT: an account that has bought something is not deletable out
+  /// from under its own purchase history.
+  ordersPlaced  Order[] @relation("OrderBuyerAccount")
+  ordersClaimed Order[] @relation("OrderClaimedByAccount")
+
   @@index([status])
 }
 
@@ -844,6 +855,25 @@ model MarketplaceParticipant {
   controlledListings        Listing[]                       @relation("ListingController")
   controlledListingVersions ListingSourceRecordVersionRow[] @relation("ListingVersionController")
   authorizedListingVersions ListingSourceRecordVersionRow[] @relation("ListingVersionAuthorizer")
+
+  // — Order and post-sale relations (Phase 0M.9). All RESTRICT on the far side.
+  //
+  // `buyerOrders` exists only for an account holder who ALREADY held a
+  // participant record; buying requires no participant, and a guest never gets
+  // one fabricated. Selling and promoting are the roles that gate commerce.
+  buyerOrders    Order[] @relation("OrderBuyerParticipant")
+  soldOrders     Order[] @relation("OrderSeller")
+  promotedOrders Order[] @relation("OrderPromoter")
+
+  /// What Monacado owes this participant for completed sales.
+  proceedsObligations ProceedsObligation[]
+
+  /// Purchase evidence naming this participant as the seller reviewed.
+  purchaseEvidenceAsSeller PurchaseEvidence[]
+
+  /// Monacado's governed commerce-approval decisions about this participant
+  /// (0M.9). RESTRICT: the evidence behind every sale they made.
+  commerceApprovals ParticipantCommerceApproval[]
 
   @@index([status])
 }
@@ -1243,6 +1273,8 @@ model CommercialPolicyVersionRow {
   /// Transaction economic snapshots recorded under THIS exact version (0M.T1).
   /// RESTRICT on the far side: a version a sale ran under is not deletable.
   transactionSnapshots TransactionEconomicSnapshot[]
+  /// Orders quoted under THIS exact version (0M.9). RESTRICT.
+  orders               Order[]
 
   /// The composite a future Order binds to. Unique, so a version label names one
   /// immutable set of numbers forever.
@@ -1485,6 +1517,8 @@ model Storefront {
   // column or presentation fact is added to the Storefront tables.
   listings              Listing[]
   listingSourceVersions ListingSourceRecordVersionRow[]
+  /// Orders placed against Listings in this Storefront (0M.9). RESTRICT.
+  orders                Order[]
 
   @@index([ownerParticipantId])
   @@index([lifecycle, visibility])
@@ -1882,6 +1916,8 @@ model Listing {
 
   /// Transaction economic snapshots recorded against this Listing (0M.T1). RESTRICT.
   transactionSnapshots TransactionEconomicSnapshot[]
+  /// Orders placed against this Listing (0M.9). RESTRICT.
+  orders               Order[]
 
   @@index([internalProductId])
   @@index([storefrontId])
@@ -2010,6 +2046,9 @@ model ListingSourceRecordVersionRow {
   /// Transaction economic snapshots whose retail price came from THIS exact
   /// version (0M.T1). RESTRICT: the terms a completed sale ran under endure.
   transactionSnapshots TransactionEconomicSnapshot[]
+  /// Orders that bought THIS exact version's terms (0M.9). RESTRICT: the terms
+  /// a completed purchase ran under endure.
+  orders               Order[]
 
   /// One row per (source record, version label) — a version label is minted once.
   @@unique([listingSourceRecordId, sourceRecordVersion])
@@ -2145,7 +2184,18 @@ model TransactionEconomicSnapshot {
   offerVersion     OfferSourceRecordVersionRow?  @relation(fields: [offerSourceRecordId, offerSourceRecordVersion], references: [offerSourceRecordId, sourceRecordVersion], onDelete: Restrict)
   policyVersionRow CommercialPolicyVersionRow    @relation(fields: [policyId, policyVersion], references: [policyId, policyVersion], onDelete: Restrict)
 
-  settlement TransactionSettlement?
+  /// The Order this sale completed (0M.9) — the ADDITIVE NULLABLE COLUMN 0M.T1
+  /// anticipated, so binding an Order was a migration rather than a rewrite.
+  /// UNIQUE: one snapshot per Order and one Order per snapshot. Nullable because
+  /// the column is additive over rows written before 0M.9 existed; every snapshot
+  /// this phase writes sets it inside the same transaction that marks the Order PAID.
+  orderId String? @unique @db.VarChar(191)
+
+  /// RESTRICT: the Order a sale's economics belong to is never deleted.
+  order Order? @relation("OrderEconomics", fields: [orderId], references: [id], onDelete: Restrict)
+
+  settlement          TransactionSettlement?
+  proceedsObligations ProceedsObligation[]
 
   @@index([internalListingId, occurredAt])
   @@index([listingSourceRecordId, listingSourceRecordVersion])
@@ -2202,4 +2252,391 @@ model TransactionSettlement {
   /// in a unique index as distinct, so unreferenced rows are unconstrained.
   @@unique([provider, providerTransactionRef])
   @@index([state])
+}
+
+// ---------------------------------------------------------------------------
+// Buyer checkout, Order, and post-sale foundation (Phase 0M.9)
+//
+// The first phase that creates an actual commercial transaction. Four tables,
+// each answering one question a completed sale raises:
+//
+//   Order                    — who bought, what they were quoted, where the
+//                              payment got to.
+//   ProceedsObligation       — what Monacado owes the seller and any promoter.
+//   PurchaseEvidence         — the PRIVATE record that a buyer transacted.
+//   ReviewSubmissionAuthority— the stored grant ADR §11.6 requires before
+//                              Monacado publishes a review for anyone.
+//
+// AN ORDER IS NOT AN ECONOMIC SNAPSHOT. What the sale EARNED each party lives on
+// `TransactionEconomicSnapshot` (0M.T1) and nowhere else; the Order records the
+// QUOTE, which must exist before any payment runs and therefore before any
+// snapshot can. The two are bound one-to-one by the additive nullable
+// `orderId` column on the snapshot — exactly the migration 0M.T1 anticipated —
+// and the successful-sale path asserts the quote equals the snapshot's amounts.
+//
+// NO BUYER PERSONAL DATA ANYWHERE. There is no column for an email, a name, a
+// postal address, an IP address, a card detail, or a device on any table here. A
+// guest is bound to their purchase by a one-way claim-code DIGEST, on the same
+// terms as a session token: the raw code is returned once and never stored.
+// Guest checkout creates no Account and fabricates no MarketplaceParticipant.
+//
+// SETTLEMENT IS NOT RESTATED. Where the FUNDS got to — captured, settled,
+// reversed — is 0M.T1's `TransactionSettlement`. Two lifecycles over one sale
+// would be two answers to one question.
+//
+// NO PAYOUT EXECUTION, NO REFUND, NO CHARGEBACK, NO TAX CALCULATION, AND NO
+// PROVIDER INTEGRATION. Obligations record what is owed; 0M.T2 owns reversal
+// accounting; the payment adapter behind `BuyerPaymentPort` does not exist.
+// ---------------------------------------------------------------------------
+
+/// One buyer Order (0M.9).
+///
+/// The buyer branch is a discriminated union preserved rather than collapsed:
+/// `buyerKind` is the discriminator, an ACCOUNT_BUYER carries `buyerAccountId`
+/// and no claim digest, and a GUEST_BUYER carries a claim digest and no account.
+/// The mapper rebuilds the union from the discriminator, so neither branch can
+/// acquire the other's fields on the way out.
+model Order {
+  /// Opaque identity (mon:order:<opaque>). Not a Node, not a capsule identity,
+  /// never published — buyer identity is not published by default (ADR §11.10).
+  id String @id @db.VarChar(191)
+
+  /// ACCOUNT_BUYER | GUEST_BUYER. Guest is first-class, not a degraded account.
+  buyerKind String @db.VarChar(16)
+
+  /// NULL for a guest. RESTRICT: an account that has bought something is not
+  /// deletable out from under its own purchase history.
+  buyerAccountId String? @db.VarChar(191)
+
+  /// NULL unless this account already held a participant record at checkout.
+  /// Buying requires no participant, no role, and no activation — those gate
+  /// SELLING. A guest NEVER gets one fabricated.
+  buyerParticipantId String? @db.VarChar(191)
+
+  /// GUEST ONLY. Hex SHA-256 of the claim code handed to the buyer once, at
+  /// checkout. The raw code is never stored, so a database disclosure yields no
+  /// means of claiming anybody's purchase. UNIQUE so one code claims one Order.
+  guestClaimCodeDigest String? @unique @db.VarChar(64)
+
+  /// Set when a guest purchase is later attached to an account. `buyerKind`
+  /// stays GUEST_BUYER forever: the sale was made by a guest, and a record that
+  /// quietly became an account purchase would misstate what happened.
+  claimedByAccountId String?   @db.VarChar(191)
+  claimedAt          DateTime? @db.DateTime(3)
+
+  // — Exact Listing binding —
+  internalListingId          String @db.VarChar(191)
+  listingSourceRecordId      String @db.VarChar(191)
+  /// The EXACT version bought — never "current", never "latest". The snapshot
+  /// created from this Order binds the identical version.
+  listingSourceRecordVersion String @db.VarChar(64)
+
+  // — Exact commercial policy binding —
+  policyId      String @db.VarChar(191)
+  policyVersion String @db.VarChar(64)
+
+  // — Operational references —
+  storefrontId      String @db.VarChar(191)
+  internalProductId String @db.VarChar(191)
+
+  // — Counterparties —
+  /// SELLER_DIRECT | PROMOTED, read from the bound Listing source version.
+  transactionType       String  @db.VarChar(16)
+  /// The party owed seller proceeds. For a PROMOTED sale this is the OFFER's
+  /// seller, who is not the Listing's controller.
+  sellerParticipantId   String  @db.VarChar(191)
+  /// PROMOTED only; NULL for seller-direct, where no promoter exists.
+  promoterParticipantId String? @db.VarChar(191)
+
+  // — The quote. NOT economics. —
+  //
+  // What the buyer was TOLD they would be charged, named `quoted*` so nobody can
+  // mistake it for the settled split. The successful-sale path asserts each of
+  // these equals the corresponding snapshot figure, so the overlap is a CHECKED
+  // INVARIANT rather than a second answer left to drift.
+  //
+  // The buyer's TOTAL is derived from these four and is deliberately not stored.
+  currency                               String @db.VarChar(3)
+  /// The merchandise price alone — the effective price at checkout time, so a
+  /// scheduled sale window quotes the sale price. Tax and shipping are NOT in it.
+  quotedCommercialRetailAmountMinorUnits BigInt
+  /// Supplied by the caller and calculated by nothing here. 0M.T2 owns tax.
+  quotedTaxAmountMinorUnits              BigInt
+  quotedShippingAmountMinorUnits         BigInt
+  quotedOtherPassThroughAmountMinorUnits BigInt
+
+  // — Lifecycle —
+  /// PENDING_PAYMENT | PAID | PAYMENT_FAILED | CANCELLED. Where the FUNDS got to
+  /// afterwards is 0M.T1's settlement record, not restated here.
+  lifecycle          String  @db.VarChar(24)
+  /// Set only in PAYMENT_FAILED. A bounded Monacado classification — never a
+  /// provider decline message, issuer reason, or network code.
+  paymentFailureCode String? @db.VarChar(32)
+
+  placedAt    DateTime  @db.DateTime(3)
+  paidAt      DateTime? @db.DateTime(3)
+  failedAt    DateTime? @db.DateTime(3)
+  cancelledAt DateTime? @db.DateTime(3)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  // RESTRICT everywhere: an Order is a commercial transaction. Nothing it binds
+  // to may be deleted beneath it.
+  buyerAccount     Account?                      @relation("OrderBuyerAccount", fields: [buyerAccountId], references: [id], onDelete: Restrict)
+  claimedByAccount Account?                      @relation("OrderClaimedByAccount", fields: [claimedByAccountId], references: [id], onDelete: Restrict)
+  buyerParticipant MarketplaceParticipant?       @relation("OrderBuyerParticipant", fields: [buyerParticipantId], references: [id], onDelete: Restrict)
+  listing          Listing                       @relation(fields: [internalListingId], references: [internalListingId], onDelete: Restrict)
+  listingVersion   ListingSourceRecordVersionRow @relation(fields: [listingSourceRecordId, listingSourceRecordVersion], references: [listingSourceRecordId, sourceRecordVersion], onDelete: Restrict)
+  policyVersionRow CommercialPolicyVersionRow    @relation(fields: [policyId, policyVersion], references: [policyId, policyVersion], onDelete: Restrict)
+  storefront       Storefront                    @relation(fields: [storefrontId], references: [internalStorefrontId], onDelete: Restrict)
+  product          Product                       @relation(fields: [internalProductId], references: [internalProductId], onDelete: Restrict)
+  seller           MarketplaceParticipant        @relation("OrderSeller", fields: [sellerParticipantId], references: [id], onDelete: Restrict)
+  promoter         MarketplaceParticipant?       @relation("OrderPromoter", fields: [promoterParticipantId], references: [id], onDelete: Restrict)
+
+  /// The economics of this sale, when it completed. At most one (0M.T1).
+  ///
+  /// The foreign key lives on the SNAPSHOT, not here, and the relation is named
+  /// so it stays that way: an Order exists before any economics do, so a column
+  /// on this side would be a nullable pointer that is null for the entire window
+  /// in which the payment is actually running.
+  economicSnapshot  TransactionEconomicSnapshot? @relation("OrderEconomics")
+  purchaseEvidence  PurchaseEvidence?
+  reviewAuthorities ReviewSubmissionAuthority[]
+
+  @@index([buyerAccountId, placedAt])
+  @@index([sellerParticipantId, lifecycle])
+  @@index([promoterParticipantId, lifecycle])
+  @@index([internalListingId, placedAt])
+  @@index([lifecycle, placedAt])
+  @@index([listingSourceRecordId, listingSourceRecordVersion])
+  @@index([policyId, policyVersion])
+}
+
+/// What Monacado owes one party for one completed sale (0M.9).
+///
+/// AN ACCOUNTING CLAIM, NEVER A PAYMENT. There is no transfer, batch, schedule,
+/// bank detail, provider payout identifier, or reserve column. `PAID` records
+/// that Monacado has settled the claim; it does not settle it. Payout EXECUTION
+/// is not implemented in this phase.
+///
+/// The amount is COPIED FROM THE SNAPSHOT, never recomputed: a seller's claim is
+/// exactly `sellerProceedsMinorUnits`, a promoter's exactly
+/// `promoterNetProceedsMinorUnits` — spread PLUS seller-funded commission, since
+/// taking only the spread would silently withhold what the seller funded.
+///
+/// A seller-direct sale creates ONE row; a promoted sale creates TWO. Not "two,
+/// one of them zero" — a seller selling their own product has no promoter
+/// counterparty, and a zero row would describe one who earned nothing.
+model ProceedsObligation {
+  /// Opaque identity (mon:pobl:<opaque>). Distinct from mon:nobl:, which names
+  /// an obligation to TELL someone something. Money owed and a notice owed are
+  /// different obligations and never share an identifier space.
+  id String @id @db.VarChar(191)
+
+  /// The sale this claim arises from. The economics live there, not here.
+  snapshotId String @db.VarChar(191)
+
+  participantId String @db.VarChar(191)
+  /// SELLER | PROMOTER. Monacado is deliberately not a member: its retained
+  /// amount is what it KEPT, not something it owes itself.
+  party         String @db.VarChar(16)
+
+  /// Copied from the snapshot, never recalculated.
+  amountMinorUnits BigInt
+  currency         String @db.VarChar(3)
+
+  /// PENDING | ELIGIBLE | PAID. Forward-only; PAID is terminal. What MOVES an
+  /// obligation to ELIGIBLE is not decided here — funds settlement is 0M.T1,
+  /// return windows are unbuilt, and payout holds are explicitly 0M.R2.
+  state String @db.VarChar(16)
+
+  /// When the claim arose — the instant of sale. Supplied, never a clock read.
+  accruedAt        DateTime  @db.DateTime(3)
+  becameEligibleAt DateTime? @db.DateTime(3)
+  paidAt           DateTime? @db.DateTime(3)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  // RESTRICT: an obligation is a financial claim. Neither the sale beneath it
+  // nor the party it is owed to may be deleted.
+  snapshot    TransactionEconomicSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
+  participant MarketplaceParticipant      @relation(fields: [participantId], references: [id], onDelete: Restrict)
+
+  /// ONE obligation per party per sale, enforced by the database rather than by
+  /// a service remembering. Paying a party twice for one sale is the failure
+  /// this exists to prevent.
+  @@unique([snapshotId, party])
+  @@index([participantId, state])
+  @@index([state, accruedAt])
+}
+
+/// Monacado's PRIVATE record that one buyer transacted for one Product (0M.9).
+///
+/// Created only by a completed sale, one per Order. Referenced by id and NEVER
+/// published (ADR §11.10) — it is the provenance behind a review, not content.
+///
+/// It names what a later review needs to know — which Product, and which seller
+/// — and NOTHING about the person. There is deliberately no guest identifier: a
+/// stable per-guest identifier would be the tracking key this design exists
+/// without. A guest reaches their evidence through their Order, which they reach
+/// with their claim code.
+model PurchaseEvidence {
+  /// Opaque identity (mon:pvev:<opaque>).
+  id String @id @db.VarChar(191)
+
+  /// One per Order.
+  orderId String @unique @db.VarChar(191)
+
+  /// NONE | UNVERIFIED | VERIFIED. Always VERIFIED here: a completed sale is
+  /// exactly what verification means. 0M.1 requires VERIFIED for EVERY review,
+  /// guest or account holder — authority derives from a purchase, not a login.
+  purchaseProvenance String @db.VarChar(16)
+  /// ACCOUNT_BUYER | GUEST_BUYER, carried from the Order.
+  submitter          String @db.VarChar(16)
+
+  /// The two reviewable subjects.
+  internalProductId   String @db.VarChar(191)
+  sellerParticipantId String @db.VarChar(191)
+
+  /// The instant of the completed sale. Supplied, never a clock read.
+  establishedAt DateTime @db.DateTime(3)
+  createdAt     DateTime @default(now()) @db.DateTime(3)
+
+  // RESTRICT: evidence supports a published review's authority. Nothing beneath
+  // it may be deleted while it stands.
+  order   Order                  @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  product Product                @relation(fields: [internalProductId], references: [internalProductId], onDelete: Restrict)
+  seller  MarketplaceParticipant @relation(fields: [sellerParticipantId], references: [id], onDelete: Restrict)
+
+  authorities ReviewSubmissionAuthority[]
+
+  @@index([internalProductId])
+  @@index([sellerParticipantId])
+}
+
+/// The stored grant ADR §11.6 requires before Monacado publishes a review (0M.9).
+///
+/// Every column maps onto 0M.1's committed `ReviewSubmissionAuthorityView`, so a
+/// persisted row feeds `evaluateReviewCapsuleAuthority` unchanged and this phase
+/// adds NO second authority evaluator. `orderId` and `purchaseEvidenceId` are
+/// storage lineage and are deliberately ABSENT from that view: an authority
+/// decision has no business knowing an order id, and a view carrying one could
+/// leak it into a capsule projection.
+///
+/// NO REVIEW CONTENT. There is no column for text, a rating, a title, a photo, or
+/// a moderation decision, and no capsule is projected or published here. This
+/// phase establishes WHO MAY WRITE; the writing is a later phase.
+model ReviewSubmissionAuthority {
+  /// Opaque identity (mon:rauth:<opaque>).
+  id String @id @db.VarChar(191)
+
+  /// The submission this authority is for (mon:rsub:<opaque>). Minted with the
+  /// authority because 0M.1 binds them one-to-one: the submission IS the grant.
+  reviewSubmissionId String @unique @db.VarChar(191)
+
+  /// Storage lineage. Not part of the authority view.
+  orderId            String @db.VarChar(191)
+  purchaseEvidenceId String @db.VarChar(191)
+
+  /// PRODUCT_REVIEW | SELLER_REVIEW. Two separate capsule authorities, never one
+  /// "review" capsule with a type field (0M.1).
+  reviewKind       String @db.VarChar(24)
+  /// The Product id or the seller participant id — the node the review is about.
+  reviewSubjectRef String @db.VarChar(191)
+
+  /// ACCOUNT_BUYER | GUEST_BUYER. A guest MAY review: 0M.1 is explicit that a
+  /// guest is "a real, supported case… and is not an account in disguise".
+  submitter          String @db.VarChar(16)
+  purchaseProvenance String @db.VarChar(16)
+
+  /// SUBMITTED | EDITED | WITHDRAWN — the lifecycle that decides which capsule
+  /// actions are authorized (0M.1's action table).
+  submissionState String @db.VarChar(16)
+  /// ACTIVE | INVALIDATED. INVALIDATED still permits REVOKE, so a review
+  /// Monacado has decided must come down stays retractable.
+  status          String @db.VarChar(16)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  // RESTRICT: an authority is the evidence a publication rested on.
+  order            Order            @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  purchaseEvidence PurchaseEvidence @relation(fields: [purchaseEvidenceId], references: [id], onDelete: Restrict)
+
+  /// ONE authority per governed subject per Order. Buying once does not license
+  /// writing repeatedly.
+  @@unique([orderId, reviewKind])
+  @@index([reviewKind, reviewSubjectRef])
+  @@index([purchaseEvidenceId])
+}
+
+/// One governed commerce-approval decision (0M.9).
+///
+/// Monacado's determination that a participant may TRANSACT — the go-live
+/// approval 0M.3A defined as "a supplied decision input", "Monacado's opinion
+/// about a participant, not a fact about a shop", and deliberately refused to
+/// store on the Storefront because "storing it would put the approver's decision
+/// inside the approved thing".
+///
+/// That ruling is honoured, not overturned: the decision lives HERE, against the
+/// participant it is about. There is deliberately NO storefrontId column. What
+/// 0M.3A left open was where the supplied value comes from, and before 0M.9 the
+/// answer was "a caller" — tolerable while nothing could be bought, and not
+/// tolerable once a buyer-active Listing means real money moves.
+///
+/// ABSENCE MEANS NOT_APPROVED. No row is the default and the default is the safe
+/// one: nothing needs seeding, no migration grants anyone clearance, and a
+/// participant nobody has assessed cannot sell.
+///
+/// HISTORY IS NEVER REWRITTEN. A new decision supersedes the previous one and is
+/// a new row; withdrawing approval records a withdrawal rather than editing the
+/// grant that stood. Only `supersededAt` and the current marker are ever updated.
+///
+/// There is no risk score, reserve, cap, velocity window, payout hold, provider
+/// message, underwriting document, or free-text note column — 0M.R2 owns the
+/// first group and the rest is private operational data a governance record has
+/// no reason to carry.
+model ParticipantCommerceApproval {
+  /// Opaque identity (mon:pcap:<opaque>). Operational only, never published.
+  id String @id @db.VarChar(191)
+
+  participantId String @db.VarChar(191)
+
+  /// APPROVED | NOT_APPROVED — 0M.3A's committed GO_LIVE_APPROVAL_STATUSES,
+  /// reused rather than restated so the stored decision and the value
+  /// `isPubliclyAccessible` consumes can never come to mean different things.
+  decision String @db.VarChar(16)
+
+  /// Bounded classification, never free text and never private content.
+  reasonCode String @db.VarChar(48)
+
+  decidedAt DateTime @db.DateTime(3)
+
+  /// Who decided, as the durable internal Account identity (0M.8's settled actor
+  /// rule) — never an email address and never a display name. This is the SAME
+  /// identity `participant:commerce-approve` was evaluated against, so the audit
+  /// actor is by construction the authorized one.
+  decidedByAccountId String @db.VarChar(191)
+
+  /// Set when a later decision supersedes this one. NULL while it stands.
+  supersededAt DateTime? @db.DateTime(3)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+
+  /// Set to `participantId` while this decision is current and NULL once
+  /// superseded, so the unique index enforces AT MOST ONE CURRENT DECISION PER
+  /// PARTICIPANT while permitting any number of superseded ones. MySQL has no
+  /// partial indexes; this is the same technique
+  /// `ParticipantActivation.undecidedForParticipantId` uses.
+  currentForParticipantId String? @unique @db.VarChar(191)
+
+  // RESTRICT: an approval is the evidence behind every sale a participant made.
+  // Deleting the participant beneath it must be refused, and superseding is a
+  // state change rather than a delete, so history always survives.
+  participant MarketplaceParticipant @relation(fields: [participantId], references: [id], onDelete: Restrict)
+
+  @@index([participantId, decidedAt])
+  @@index([decision, decidedAt])
 }

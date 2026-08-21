@@ -187,6 +187,7 @@ export const ACCOUNT_CAPABILITIES = [
   "publication-worker:status:read",
   "activation:review",
   "participant:restrict",
+  "participant:commerce-approve",
 ] as const;
 export const AccountCapability = z.enum(ACCOUNT_CAPABILITIES);
 export type AccountCapability = z.infer<typeof AccountCapability>;

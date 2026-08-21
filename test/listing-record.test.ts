@@ -535,11 +535,14 @@ describe("the source model was not widened", () => {
     }
   });
 
-  it("creates no Listing Node, publication, or Order table", () => {
+  it("creates no Listing Node, publication, or Checkout table", () => {
+    /* `model Order` was dropped from this list when Phase 0M.9 built it, on the
+       same reasoning 0M.3C and 0M.5 used before: what 0M.7 claims is that *it*
+       added none of these, and the remaining three are still absent. An Order
+       references a Listing source version; the Listing restates no order fact. */
     for (const model of [
       "model ListingNode",
       "model ListingPublication",
-      "model Order",
       "model Checkout",
     ]) {
       expect(SCHEMA_CODE).not.toContain(model);

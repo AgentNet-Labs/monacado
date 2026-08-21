@@ -43,6 +43,7 @@
  */
 
 import "../server-only";
+import type { Prisma } from "@prisma/client";
 import {
   AdvanceTransactionSettlementInput,
   INITIAL_TRANSACTION_SETTLEMENT_STATE,
@@ -100,6 +101,16 @@ import {
 } from "./transaction-accounting-mapper";
 
 type Db = ReturnType<typeof getPrisma>;
+
+/**
+ * Anything that can read a row.
+ *
+ * The read helpers below use model delegates only — never `$transaction` — so a
+ * `Prisma.TransactionClient` satisfies them exactly as the client does. This is
+ * what lets `0M.9` compute and write a sale's economics inside its own
+ * transaction without a second implementation existing.
+ */
+type Reader = Db | Prisma.TransactionClient;
 
 export interface TransactionAccountingServiceDeps {
   db?: Db;
@@ -161,7 +172,7 @@ function inputError(error: {
  * ran under the terms named, not under whatever the Listing says today.
  */
 async function readExactListingVersion(
-  db: Db,
+  db: Reader,
   internalListingId: string,
   listingSourceRecordVersion: string,
 ): Promise<{ sourceVersion: ListingSourceVersion; listingSourceRecordId: string }> {
@@ -194,11 +205,18 @@ async function readExactListingVersion(
  * one, so it may not price a sale. A `RETIRED` version resolves normally.
  */
 async function readExactPolicy(
-  db: Db,
+  db: Reader,
   policyId: string,
   policyVersion: string,
 ): Promise<MonacadoWholesaleAcquisitionPolicy> {
-  const version = await getCommercialPolicyVersion(policyId, policyVersion, { db });
+  /* 0M.R1's exact-version read performs `findUnique` and nothing else, so a
+     transaction client satisfies it; the cast is narrow and deliberate rather
+     than a widening of that service's own dependency type, which would let a
+     caller hand a transaction client to `activateCommercialPolicyVersion` — a
+     function that genuinely does open one. */
+  const version = await getCommercialPolicyVersion(policyId, policyVersion, {
+    db: db as Db,
+  });
   try {
     return toWholesaleAcquisitionPolicy(version);
   } catch (error) {
@@ -221,7 +239,7 @@ async function readExactPolicy(
  * somebody a number nobody agreed to.
  */
 async function readAcceptedOfferCommission(
-  db: Db,
+  db: Reader,
   dependency: {
     offerSourceRecordId: string;
     acceptedOfferSourceRecordVersion: string;
@@ -270,7 +288,7 @@ async function readAcceptedOfferCommission(
  * code rather than rewritten.
  */
 async function computeEconomics(
-  db: Db,
+  db: Reader,
   input: {
     sourceVersion: ListingSourceVersion;
     policy: MonacadoWholesaleAcquisitionPolicy;
@@ -388,65 +406,12 @@ export async function recordTransactionEconomicSnapshot(
   input: unknown,
   deps: TransactionAccountingServiceDeps = {},
 ): Promise<TransactionSnapshotView> {
-  const parsed = RecordTransactionEconomicSnapshotInput.safeParse(input);
-  if (!parsed.success) throw inputError(parsed.error);
-  const v = parsed.data;
-
   const db = deps.db ?? getPrisma();
   const ids = deps.ids ?? cryptoTransactionSnapshotIdProvider;
-
   try {
-    const { sourceVersion, listingSourceRecordId } = await readExactListingVersion(
-      db,
-      v.internalListingId,
-      v.listingSourceRecordVersion,
+    return await db.$transaction((tx) =>
+      recordTransactionEconomicSnapshotInTx(tx, input, ids),
     );
-    const policy = await readExactPolicy(db, v.policyId, v.policyVersion);
-
-    const { commercialRetailAmountMinorUnits, economics } = await computeEconomics(db, {
-      sourceVersion,
-      policy,
-      currency: v.currency,
-      occurredAt: v.occurredAt,
-    });
-    requireReconciled({ commercialRetailAmountMinorUnits, economics });
-
-    const snapshotId = ids.nextSnapshotId();
-
-    return await db.$transaction(async (tx) => {
-      const snapshotRow = await tx.transactionEconomicSnapshot.create({
-        data: {
-          id: snapshotId,
-          internalListingId: v.internalListingId,
-          listingSourceRecordId,
-          listingSourceRecordVersion: v.listingSourceRecordVersion,
-          policyId: v.policyId,
-          policyVersion: v.policyVersion,
-          currency: v.currency,
-          commercialRetailAmountMinorUnits: BigInt(commercialRetailAmountMinorUnits),
-          ...economicsToColumns(economics),
-          taxAmountMinorUnits: BigInt(v.taxAmountMinorUnits),
-          shippingAmountMinorUnits: BigInt(v.shippingAmountMinorUnits),
-          otherPassThroughAmountMinorUnits: BigInt(v.otherPassThroughAmountMinorUnits),
-          occurredAt: new Date(v.occurredAt),
-          recordedAt: new Date(v.recordedAt),
-        },
-      });
-
-      const settlementRow = await tx.transactionSettlement.create({
-        data: {
-          snapshotId,
-          state: INITIAL_TRANSACTION_SETTLEMENT_STATE,
-          provider: null,
-          providerTransactionRef: null,
-        },
-      });
-
-      return {
-        snapshot: snapshotRowToRecord(snapshotRow),
-        settlement: settlementRowToRecord(settlementRow),
-      };
-    });
   } catch (error) {
     if (isDomainError(error)) throw error;
     if (isForeignKeyViolation(error)) throw new ListingSourceVersionNotFoundError(error);
@@ -455,6 +420,80 @@ export async function recordTransactionEconomicSnapshot(
       error,
     );
   }
+}
+
+/**
+ * The whole of the above, inside a transaction a caller already holds.
+ *
+ * **Exported for `0M.9`**, whose successful-sale path must write the snapshot,
+ * its settlement row, the proceeds obligations, the purchase evidence, and the
+ * Order's move to `PAID` as one atomic act. A `PAID` Order without economics, or
+ * economics without an Order, must be impossible rather than unlikely — and that
+ * requires one transaction, which requires this entry point.
+ *
+ * It takes a `Prisma.TransactionClient` precisely so a caller cannot use it to
+ * write outside a transaction by accident. Everything it does is identical to the
+ * public function: the same reads, the same committed calculators, the same
+ * reconciliation check before any row exists.
+ */
+export async function recordTransactionEconomicSnapshotInTx(
+  tx: Prisma.TransactionClient,
+  input: unknown,
+  ids: TransactionSnapshotIdProvider = cryptoTransactionSnapshotIdProvider,
+): Promise<TransactionSnapshotView> {
+  const parsed = RecordTransactionEconomicSnapshotInput.safeParse(input);
+  if (!parsed.success) throw inputError(parsed.error);
+  const v = parsed.data;
+
+  const { sourceVersion, listingSourceRecordId } = await readExactListingVersion(
+    tx,
+    v.internalListingId,
+    v.listingSourceRecordVersion,
+  );
+  const policy = await readExactPolicy(tx, v.policyId, v.policyVersion);
+
+  const { commercialRetailAmountMinorUnits, economics } = await computeEconomics(tx, {
+    sourceVersion,
+    policy,
+    currency: v.currency,
+    occurredAt: v.occurredAt,
+  });
+  requireReconciled({ commercialRetailAmountMinorUnits, economics });
+
+  const snapshotId = ids.nextSnapshotId();
+
+  const snapshotRow = await tx.transactionEconomicSnapshot.create({
+    data: {
+      id: snapshotId,
+      internalListingId: v.internalListingId,
+      listingSourceRecordId,
+      listingSourceRecordVersion: v.listingSourceRecordVersion,
+      policyId: v.policyId,
+      policyVersion: v.policyVersion,
+      currency: v.currency,
+      commercialRetailAmountMinorUnits: BigInt(commercialRetailAmountMinorUnits),
+      ...economicsToColumns(economics),
+      taxAmountMinorUnits: BigInt(v.taxAmountMinorUnits),
+      shippingAmountMinorUnits: BigInt(v.shippingAmountMinorUnits),
+      otherPassThroughAmountMinorUnits: BigInt(v.otherPassThroughAmountMinorUnits),
+      occurredAt: new Date(v.occurredAt),
+      recordedAt: new Date(v.recordedAt),
+    },
+  });
+
+  const settlementRow = await tx.transactionSettlement.create({
+    data: {
+      snapshotId,
+      state: INITIAL_TRANSACTION_SETTLEMENT_STATE,
+      provider: null,
+      providerTransactionRef: null,
+    },
+  });
+
+  return {
+    snapshot: snapshotRowToRecord(snapshotRow),
+    settlement: settlementRowToRecord(settlementRow),
+  };
 }
 
 /** Read one snapshot with its settlement standing. */
