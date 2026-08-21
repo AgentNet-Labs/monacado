@@ -31,11 +31,12 @@
  *      nothing. There is no parameter, anywhere, through which a client can state
  *      an outcome.
  *
- *   4. **No buyer personal data crosses the boundary in either direction.** The
- *      session carries no email, name, address, or phone, and nothing is read
- *      back off the completed session but the Order id and the PaymentIntent
- *      reference. `NEVER_ON_ORDER` promised there is no column for any of it; the
- *      adapter makes sure there is nothing to put in one.
+ *   4. **Buyer data travels INWARD only** (revised in the Phase 1.2 correction).
+ *      Monacado still sends Stripe no customer object, no `customer_email`, and
+ *      no address — it *asks Stripe to collect* a billing address and reads the
+ *      confirmed result back. That direction is the point: what returns is the
+ *      identity the payment actually authorized, which a browser cannot forge.
+ *      Card data never crosses at all, in either direction.
  *
  *   5. **`payment_intent.payment_failed` is deliberately NOT handled.** During a
  *      hosted Checkout Session a declined card fires that event and the buyer is
@@ -66,6 +67,7 @@ import {
   type BuyerPaymentInitiationPort,
 } from "../../contracts/marketplace/buyer-payment";
 import type { PaymentFailureCode } from "../../contracts/marketplace/order";
+import { PostalAddress } from "../../contracts/marketplace/order-buyer-snapshot";
 import { getStripeRuntime, type StripeRuntime } from "./stripe-client";
 import { resolveStripeWebhookSecret, type Env } from "./stripe-runtime-config";
 import { toPaymentFailureCodeFromDecline } from "./stripe-failure-mapping";
@@ -165,6 +167,58 @@ function buyerContactFrom(session: Stripe.Checkout.Session): { email: string } |
   return parsed.success ? parsed.data : null;
 }
 
+/**
+ * Translate a Stripe address into Monacado's structured shape (Phase 1.2).
+ *
+ * `null` for anything incomplete. A partial address is worse than none: it looks
+ * authoritative, sources tax to a jurisdiction nobody confirmed, and would
+ * silently supersede the complete one the buyer supplied.
+ */
+function addressFrom(address: Stripe.Address | null | undefined): PostalAddress | null {
+  if (address == null) return null;
+  const parsed = PostalAddress.safeParse({
+    line1: address.line1 ?? "",
+    line2: address.line2 === null || address.line2 === undefined ? null : address.line2,
+    city: address.city ?? "",
+    region: address.state === null || address.state === undefined ? null : address.state,
+    postalCode:
+      address.postal_code === null || address.postal_code === undefined
+        ? null
+        : address.postal_code,
+    countryCode: (address.country ?? "").toUpperCase(),
+  });
+  return parsed.success ? parsed.data : null;
+}
+
+/**
+ * The details the completed payment **actually authorized** (Phase 1.2).
+ *
+ * Read **inward only**, from the completed session. A browser can post anything;
+ * a completed payment cannot, so this is what supersedes the buyer-typed
+ * snapshot. Every field is independently nullable: Stripe reports what it
+ * collected, and a field it omits is one it has no opinion about — discarding
+ * the buyer's own answer because the provider stayed silent would lose
+ * information for no gain.
+ */
+export interface ConfirmedBuyerDetails {
+  name: string | null;
+  email: string | null;
+  billingAddress: PostalAddress | null;
+  shippingAddress: PostalAddress | null;
+}
+
+function confirmedDetailsFrom(session: Stripe.Checkout.Session): ConfirmedBuyerDetails {
+  const details = session.customer_details;
+  const shipping = (session as { shipping_details?: { address?: Stripe.Address | null } })
+    .shipping_details;
+  return {
+    name: details?.name ?? null,
+    email: details?.email ?? null,
+    billingAddress: addressFrom(details?.address),
+    shippingAddress: addressFrom(shipping?.address),
+  };
+}
+
 function buildReturnUrl(base: string, orderId: string): string {
   const url = new URL(base);
   url.searchParams.set("orderId", orderId);
@@ -218,6 +272,28 @@ export function createStripeBuyerPaymentAdapter(
             ],
             success_url: buildReturnUrl(config.successUrl, request.orderId),
             cancel_url: buildReturnUrl(config.cancelUrl, request.orderId),
+            /* Phase 1.2 correction — Stripe collects BOTH addresses the payment
+               is authorized against, so Monacado can supersede the buyer-typed
+               ones with what the payment actually confirmed.
+             *
+               Shipping is collected only when the basket contains something
+               physical — decided by Monacado from explicit Product delivery
+               modes, never by Stripe and never inferred. The allow-list is
+               deployment configuration: Stripe has no "anywhere" value, and a
+               list widened to whatever a client typed would be no list. */
+            billing_address_collection: "required",
+            /* Collected ONLY when the basket needs delivering. An all-digital
+               purchase is never asked for an address: demanding one for a
+               download is friction with no purpose, and it teaches buyers that
+               Monacado asks for data it does not need. */
+            ...(request.collectShippingAddress
+              ? {
+                  shipping_address_collection: {
+                    allowed_countries:
+                      config.shippingCountries as Stripe.Checkout.SessionCreateParams.ShippingAddressCollection.AllowedCountry[],
+                  },
+                }
+              : {}),
             metadata: { [ORDER_METADATA_KEY]: request.orderId },
             /* Repeated on the PaymentIntent so an event about the intent is
                attributable without a second lookup. */
@@ -338,6 +414,7 @@ export function createStripeBuyerPaymentConfirmationPort(
       if (orderId === null) throw new StripeEventNotAttributableError(event.type);
       const intentRef = paymentIntentRef(session.payment_intent);
       const buyerContact = buyerContactFrom(session);
+      const confirmedDetails = confirmedDetailsFrom(session);
 
       /* The session is over and unpayable. Not a failure — nobody declined
          anything — so it carries no result and no failure code, and it reaches
@@ -348,6 +425,7 @@ export function createStripeBuyerPaymentConfirmationPort(
           orderId,
           provider: "STRIPE",
           buyerContact,
+          confirmedDetails,
           providerEventRef: event.id,
           observedAt: args.observedAt,
         });
@@ -359,6 +437,7 @@ export function createStripeBuyerPaymentConfirmationPort(
           orderId,
           provider: "STRIPE",
           buyerContact,
+          confirmedDetails,
           result: { outcome: "FAILED", failureCode: await classifyFailure(client, intentRef) },
           providerEventRef: event.id,
           observedAt: args.observedAt,
@@ -378,6 +457,7 @@ export function createStripeBuyerPaymentConfirmationPort(
         orderId,
         provider: "STRIPE",
         buyerContact,
+        confirmedDetails,
         /* The PaymentIntent id, not the session id: it is the reference that
            identifies the captured transaction, and the one `0M.T1`'s settlement
            row exists to reconcile against. */

@@ -169,6 +169,18 @@ model ProductSourceRecordVersionRow {
   factProductVersion           Int
   factPromotable               Boolean
   factGeneralAvailabilityState String  @db.VarChar(32)
+
+  /// DIGITAL | PHYSICAL — how this Product reaches its buyer (Phase 1.2
+  /// correction). The ONLY authoritative delivery fact; never inferred from
+  /// specifications, capabilities, a name, or a category.
+  ///
+  /// NULLABLE FOR BACKWARD COMPATIBILITY ONLY. Source versions written before
+  /// this fact existed have none, and making it required would invalidate them
+  /// retroactively — a source-version model exists so history stays readable.
+  /// ABSENCE IS NOT A DEFAULT: checkout FAILS CLOSED on an unknown mode rather
+  /// than guessing, because guessing either demands an address nobody needs or
+  /// ships nothing to a buyer expecting a parcel.
+  factDeliveryMode String? @db.VarChar(16)
   /// Validated JSON: Record<string, string|number|boolean>. Validated by the
   /// ProductData Zod contract before write and after read.
   factSpecifications           Json?
@@ -2307,7 +2319,14 @@ model TransactionEconomicSnapshot {
   /// RESTRICT: the Order a sale's economics belong to is never deleted.
   order Order? @relation("OrderEconomics", fields: [orderId], references: [id], onDelete: Restrict)
 
-  settlement          TransactionSettlement?
+  settlement TransactionSettlement?
+
+  /// What was given back on this sale, if anything (Phase 1.2).
+  ///
+  /// At most one, and a SEPARATE immutable record — this snapshot is not edited,
+  /// gains no reversed-* column, and still has no update path. The net position
+  /// is snapshot MINUS reversal, derived and stored nowhere.
+  reversal            TransactionReversal?
   proceedsObligations ProceedsObligation[]
 
   @@index([internalListingId, occurredAt])
@@ -2517,6 +2536,12 @@ model Order {
   purchaseEvidence  PurchaseEvidence?
   reviewAuthorities ReviewSubmissionAuthority[]
 
+  /// Why this Order was charged the tax it was charged (Phase 1.2).
+  taxEvidence        OrderTaxEvidence?
+  /// What was given back, if anything (Phase 1.2). New evidence, not an edit.
+  reversals          TransactionReversal[]
+  orderBuyerSnapshot OrderBuyerSnapshot?
+
   @@index([buyerAccountId, placedAt])
   @@index([sellerParticipantId, lifecycle])
   @@index([promoterParticipantId, lifecycle])
@@ -2711,6 +2736,325 @@ model ReviewSubmissionAuthority {
 /// message, underwriting document, or free-text note column — 0M.R2 owns the
 /// first group and the rest is private operational data a governance record has
 /// no reason to carry.
+// ─────────────────────────────────────────────────────────────────────────────
+// Pre-live commerce controls (Phase 1.2).
+//
+// The minimum persistence three controls need before live money can EVER be
+// enabled. Every table here is additive; nothing existing is altered, and in
+// particular TransactionEconomicSnapshot gains no column and no update path.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// WHO bought one Order — private transactional data (Phase 1.2 correction).
+///
+/// Account creation stays optional; COMPLETING A PURCHASE IS NOT ANONYMOUS. A
+/// merchant of record cannot determine tax jurisdiction, answer a support
+/// question, or ship anything to a buyer it knows nothing about.
+///
+/// This narrowly reverses 0M.9's blanket prohibition on persisting buyer contact
+/// and address. That instinct was right for a phase that could not charge anyone
+/// and is wrong for one that can. Everything in NEVER_ON_BUYER_SNAPSHOT stays
+/// forbidden — card data belongs at the processor, identity dossiers nowhere.
+///
+/// NEVER_ON_ORDER STILL HOLDS LITERALLY: the Order row has no buyerEmail,
+/// buyerName, or buyerAddress column and gains none. This is a SEPARATE table
+/// joined one-to-one, so the commercial record and the personal record stay
+/// separable — which is what lets one be retained, exported, or erased on a
+/// different schedule from the other.
+///
+/// A GUEST IS STILL A GUEST. A guest Order carries a full snapshot without an
+/// Account, a MarketplaceParticipant, or any published Node or capsule. The
+/// snapshot is not an identity and is not reusable across orders.
+///
+/// PRIVATE, NEVER PUBLISHED. No capsule projects any field here (ADR §11.10).
+model OrderBuyerSnapshot {
+  /// Opaque identity (mon:obsn:<opaque>).
+  id String @id @db.VarChar(191)
+
+  /// One snapshot per Order. A second would be a second answer to "who bought
+  /// this", and no reader could tell which was authoritative.
+  orderId String @unique @db.VarChar(191)
+
+  name  String @db.VarChar(200)
+  email String @db.VarChar(320)
+
+  // — Billing address. STRUCTURED, never a blob. —
+  //
+  // A free-form field would be unusable for the two things an address is for
+  // here: deriving a tax jurisdiction, and handing a carrier something it can
+  // deliver to. Both need the parts named, and parsing them back out of a blob
+  // is a guess dressed as a field.
+  //
+  // line2/region/postalCode are NULLABLE because a great many valid addresses
+  // have none of them, and a required empty string is a lie that validates.
+  billingLine1       String  @db.VarChar(200)
+  billingLine2       String? @db.VarChar(200)
+  billingCity        String  @db.VarChar(120)
+  billingRegion      String? @db.VarChar(8)
+  billingPostalCode  String? @db.VarChar(32)
+  /// ISO 3166-1 alpha-2. REQUIRED — the one field tax sourcing cannot proceed
+  /// without.
+  billingCountryCode String  @db.Char(2)
+
+  // — Shipping address. CONDITIONAL on what the basket needs delivered. —
+  //
+  // Required when ANY purchased Product has deliveryMode PHYSICAL; absent for an
+  // all-digital basket, which is never asked for one. The decision comes from
+  // Product.factDeliveryMode — an explicit authoritative fact — and never from
+  // free-form metadata.
+  //
+  // NULL therefore means "this basket needed no delivery address", which is a
+  // fact worth being able to read back, not a gap.
+  //
+  // line2/region/postalCode stay nullable for the same reason they do on
+  // billing — a great many valid addresses have none of them.
+  shippingLine1       String? @db.VarChar(200)
+  shippingLine2       String? @db.VarChar(200)
+  shippingCity        String? @db.VarChar(120)
+  shippingRegion      String? @db.VarChar(8)
+  shippingPostalCode  String? @db.VarChar(32)
+  shippingCountryCode String? @db.Char(2)
+
+  /// DERIVED from the billing address at capture and stored beside it rather
+  /// than recomputed on read. A deliberate duplication: the jurisdiction a tax
+  /// amount was actually sourced under must stay answerable even if the
+  /// derivation rule changes, and re-deriving it years later would answer a
+  /// different question. NEVER derived from an IP address.
+  taxCountryCode String  @db.Char(2)
+  taxRegionCode  String? @db.VarChar(8)
+
+  /// BUYER_SUPPLIED (typed into Monacado's checkout, good enough to price tax on
+  /// because tax must be computed BEFORE a charge) | PROVIDER_CONFIRMED (read
+  /// back from the completed Checkout Session — THE IDENTITY THE PAYMENT ACTUALLY
+  /// AUTHORIZED, which supersedes anything a browser said and is never
+  /// overwritten by later buyer-supplied data).
+  detailSource String @db.VarChar(24)
+
+  capturedAt DateTime @db.DateTime(3)
+  updatedAt  DateTime @updatedAt @db.DateTime(3)
+  createdAt  DateTime @default(now()) @db.DateTime(3)
+
+  // RESTRICT: a snapshot is the record of who a commercial transaction was with.
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  taxEvidence OrderTaxEvidence[]
+
+  @@index([email])
+  @@index([taxCountryCode, taxRegionCode])
+  @@index([detailSource])
+}
+
+/// Why one Order was charged the tax it was charged (Phase 1.2).
+///
+/// The Order already stores the AMOUNT (`quotedTaxAmountMinorUnits`). This is the
+/// WHY: which engine answered, under which calculation reference, on what basis,
+/// with what treatment, at what instant. The amount is repeated deliberately and
+/// is a CHECKED INVARIANT against the Order rather than a second answer — if the
+/// two ever disagree, that is the fact worth surfacing.
+///
+/// THERE IS NO ADDRESS COLUMN. Monacado collects no buyer address (0M.9's
+/// NEVER_ON_ORDER), so a real tax engine's destination requirement is an open
+/// pre-live blocker rather than something quietly satisfied here.
+///
+/// Tax is NOT commercial revenue: it reaches the buyer's total and no commercial
+/// basis, structurally, because no calculator in this repository accepts it.
+model OrderTaxEvidence {
+  /// Opaque identity (mon:taxe:<opaque>). Names the EVIDENCE, not the
+  /// calculation — the engine's own reference is a separate external string.
+  id String @id @db.VarChar(191)
+
+  /// One evidence row per Order. A second would be a second explanation of one
+  /// charged amount, and no reader could tell which was authoritative.
+  orderId String @unique @db.VarChar(191)
+
+  /// TEST_ZERO_RATE | TEST_FLAT_RATE. Both are TEST adapters; no production tax
+  /// vendor is named, configured, or installed.
+  provider String @db.VarChar(32)
+
+  /// The engine's own identifier for this calculation. Opaque: never parsed,
+  /// never interpreted, and no decision is made from it. Kept so an auditor can
+  /// reach the engine's reasoning without Monacado storing it.
+  providerCalculationRef String @db.VarChar(191)
+
+  currency              String @db.VarChar(3)
+  /// What was charged. Checked equal to the Order's quoted tax before writing.
+  taxAmountMinorUnits   BigInt
+  /// What the tax was assessed ON — retail + shipping. Lets a later reader check
+  /// the quote against the Order rather than trust they concerned one sale.
+  basisAmountMinorUnits BigInt
+
+  /// TAXABLE | EXEMPT | OUT_OF_SCOPE. Coarse on purpose: a finer vocabulary
+  /// would be a claim about tax law Monacado is not the authority on.
+  treatment String @db.VarChar(24)
+
+  /// A bounded CODE (US-CA, GB) — the jurisdiction the amount was SOURCED under.
+  /// Derived from the buyer snapshot's billing address, never from an IP.
+  jurisdictionCode String? @db.VarChar(16)
+
+  /// The buyer snapshot whose billing address produced that jurisdiction.
+  ///
+  /// The linkage that makes "what address was this tax calculated from" answerable
+  /// years later. NULLABLE only because the column is additive over rows written
+  /// before buyer snapshots existed; every row this phase writes sets it.
+  buyerSnapshotId String? @db.VarChar(191)
+
+  calculatedAt DateTime @db.DateTime(3)
+  recordedAt   DateTime @db.DateTime(3)
+  createdAt    DateTime @default(now()) @db.DateTime(3)
+
+  // RESTRICT: tax evidence explains a charge. Deleting the Order beneath it
+  // would leave a charged amount nobody can account for.
+  order         Order               @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  buyerSnapshot OrderBuyerSnapshot? @relation(fields: [buyerSnapshotId], references: [id], onDelete: Restrict)
+
+  @@index([provider, calculatedAt])
+  @@index([treatment])
+}
+
+/// What was given back on a completed sale (Phase 1.2).
+///
+/// NEW EVIDENCE ABOUT a snapshot, never a correction OF one. 0M.T1 built
+/// TransactionEconomicSnapshot with no update path — "economic facts are not
+/// editable in place" — and this phase does not weaken that by one column. The
+/// net position is snapshot MINUS reversal, DERIVED and stored nowhere.
+///
+/// FULL REVERSALS ONLY. A partial refund forces a decision about whose money
+/// comes back first — Monacado's retention, the seller's proceeds, or the
+/// promoter's spread — and every allocation rule is a commercial policy decision
+/// with different winners. That ruling is MONACADO_MOR_BUSINESS_MODEL §I's, and
+/// inventing one inside an accounting table would be inventing commercial terms.
+///
+/// AMOUNTS ARE POSITIVE MAGNITUDES. A signed column invites a reader to add it to
+/// the snapshot and call the result truth, and the first sign error silently
+/// doubles somebody's money. The `kind` carries direction; these carry size.
+model TransactionReversal {
+  /// Opaque identity (mon:txrev:<opaque>). Distinct from mon:txsnp: — sharing an
+  /// identifier space would invite the in-place edit 0M.T1 forbids.
+  id String @id @db.VarChar(191)
+
+  /// The exact sale this reverses. UNIQUE: one reversal per snapshot, which is
+  /// what makes a repeated reversal a refusal rather than a double credit.
+  snapshotId String @unique @db.VarChar(191)
+
+  /// Storage lineage, so an operator reaches the Order without a join.
+  orderId String @db.VarChar(191)
+
+  /// REFUND (Monacado returned funds) | CHARGEBACK (a bank took them). Different
+  /// evidence and different disputes; 0M.T1 named this distinction as exactly
+  /// what its settlement state deliberately did not carry.
+  kind       String @db.VarChar(16)
+  /// FULL. PARTIAL is explicitly deferred — see the model comment.
+  scope      String @db.VarChar(16)
+  /// Bounded Monacado classification. NEVER provider text or a dispute narrative.
+  reasonCode String @db.VarChar(32)
+
+  currency String @db.VarChar(3)
+
+  // — What each party gives back. Mirrors the snapshot one-for-one, so a full
+  //   reversal is checkable by equality rather than by interpretation. —
+  reversedCommercialRetailAmountMinorUnits BigInt
+  reversedTaxAmountMinorUnits              BigInt
+  reversedShippingAmountMinorUnits         BigInt
+  reversedOtherPassThroughAmountMinorUnits BigInt
+  reversedMonacadoRetainedAmountMinorUnits BigInt
+  reversedSellerProceedsMinorUnits         BigInt
+  /// Promoted sales only. NULL on a seller-direct reversal, never zero — a zero
+  /// would describe a promoter who gave back nothing rather than one who does
+  /// not exist.
+  reversedPromoterNetProceedsMinorUnits    BigInt?
+
+  /// Provider evidence, on 0M.T1's terms. Both NULL until it exists.
+  provider            String? @db.VarChar(32)
+  providerReversalRef String? @db.VarChar(191)
+
+  /// When the money actually moved back. Supplied, never a clock read.
+  occurredAt DateTime @db.DateTime(3)
+  recordedAt DateTime @db.DateTime(3)
+  createdAt  DateTime @default(now()) @db.DateTime(3)
+
+  // RESTRICT everywhere: a reversal is financial evidence. Nothing it binds to
+  // may be deleted beneath it.
+  snapshot TransactionEconomicSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
+  order    Order                       @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+  @@index([kind, occurredAt])
+  @@index([occurredAt])
+}
+
+/// Stable transaction-risk policy identity (Phase 1.2).
+///
+/// Deliberately NOT a CommercialPolicy. A commercial policy decides what Monacado
+/// EARNS; a risk policy decides what Monacado PERMITS. Merging them would let a
+/// change to one silently move the other.
+model RiskPolicy {
+  /// Opaque identity (mon:rpol:<opaque>). Distinct from mon:cpol:.
+  id String @id @db.VarChar(191)
+
+  /// Operator-facing label. Never a rule and never a threshold.
+  label String @db.VarChar(120)
+
+  createdAt DateTime @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  versions RiskPolicyVersionRow[]
+}
+
+/// One IMMUTABLE version of the risk controls (Phase 1.2).
+///
+/// Mirrors CommercialPolicyVersionRow exactly, and for the same reason: a
+/// threshold hard-coded in source is a number that changes without a record of
+/// who changed it or what an Order was evaluated under. A limit change is a NEW
+/// ROW; no historical row is ever rewritten.
+model RiskPolicyVersionRow {
+  /// Surrogate key. The meaningful identity is (policyId, policyVersion).
+  seq BigInt @id @default(autoincrement())
+
+  policyId      String @db.VarChar(191)
+  policyVersion String @db.VarChar(64)
+
+  /// DRAFT | ACTIVE | RETIRED. RETIRED stays bindable by historical reference —
+  /// a decision taken under it must remain explicable.
+  status String @db.VarChar(16)
+
+  // — Controls. Inputs only; nothing derived is stored. —
+  currency                                 String  @db.VarChar(3)
+  /// The largest COMMERCIAL RETAIL amount one Order may carry. Retail rather
+  /// than buyer total, deliberately: tax and shipping are pass-through amounts
+  /// Monacado neither earns nor sets, and letting them push an Order over a
+  /// commercial limit would deny a sale for somebody else's rate.
+  maxSingleOrderCommercialAmountMinorUnits BigInt
+  /// Whether a seller must hold a current APPROVED commerce decision (0M.9).
+  requireSellerCommerceApproval            Boolean
+  /// Whether a seller's provider account must be ENABLED (0M.8) to sell.
+  requireSellerPaymentReadiness            Boolean
+
+  /// When this version's controls begin to apply. Supplied, never a clock read.
+  effectiveFrom DateTime @db.DateTime(3)
+
+  /// Who recorded it, as the durable internal Account id. Never an email.
+  recordedByAccountId String   @db.VarChar(191)
+  recordedAt          DateTime @db.DateTime(3)
+
+  retiredAt          DateTime? @db.DateTime(3)
+  retiredByAccountId String?   @db.VarChar(191)
+
+  /// Set to `policyId` while ACTIVE and NULL otherwise, so the unique index
+  /// enforces AT MOST ONE ACTIVE VERSION PER POLICY while permitting any number
+  /// of DRAFT and RETIRED ones. MySQL has no partial indexes; this is the same
+  /// technique CommercialPolicyVersionRow uses.
+  activeMarker String? @db.VarChar(191)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  policy RiskPolicy @relation(fields: [policyId], references: [id], onDelete: Restrict)
+
+  @@unique([policyId, policyVersion])
+  @@unique([activeMarker])
+  @@index([policyId, status])
+  @@index([effectiveFrom])
+}
+
 model ParticipantCommerceApproval {
   /// Opaque identity (mon:pcap:<opaque>). Operational only, never published.
   id String @id @db.VarChar(191)

@@ -158,6 +158,17 @@ There is no column on any table this phase created for an email, a name, a posta
 address, an IP address, a card detail, or a device. The cheapest way to keep a
 promise about data is to have no column for it.
 
+> **Narrowed by the Phase `1.2` correction.** Every statement above remains true
+> of the tables *this* phase created — the `Order` row still has no `buyerEmail`,
+> `buyerName`, or `buyerAddress` column, and `NEVER_ON_ORDER` still forbids one.
+>
+> A merchant of record cannot source tax, send a receipt, or answer a support
+> question about a buyer it knows nothing about, so `1.2` added a **separate**
+> `OrderBuyerSnapshot` table holding contact and billing address as private
+> transactional data. Card details, identity documents, and KYC dossiers remain
+> forbidden outright. See
+> [`PRE_LIVE_COMMERCE_CONTROLS.md`](PRE_LIVE_COMMERCE_CONTROLS.md) §6a.
+
 ### Claiming a guest purchase
 
 The **minimum durable foundation** the roadmap asks for:

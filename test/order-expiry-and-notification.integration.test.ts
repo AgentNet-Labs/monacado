@@ -54,6 +54,13 @@ import {
 } from "../src/server/notifications/mail-port";
 import type { NotificationDeliveryIdProvider } from "../src/server/notifications/notification-delivery-ids";
 import { destinationDigest } from "../src/server/notifications/notification-delivery-service";
+import { createZeroRateTaxAdapter } from "../src/server/tax/tax-adapters";
+import type { TaxEvidenceIdProvider } from "../src/server/tax/tax-calculation-ids";
+import {
+  activateRiskPolicyVersion,
+  createRiskPolicy,
+  recordRiskPolicyVersion,
+} from "../src/server/risk/risk-policy-service";
 
 const RUN = process.env.RUN_DB_TESTS === "1";
 const db = RUN ? getPrisma() : (undefined as unknown as ReturnType<typeof getPrisma>);
@@ -64,6 +71,8 @@ const PRODUCT_PREFIX = `mon:product:${PRODUCT_TAG}`;
 const ACCOUNT_EMAIL_PREFIX = "notify-checkout-";
 const PASSWORD = "correct-horse-battery-staple-1-1";
 const BUYER_EMAIL = "guest-buyer@example.test";
+/** What the Order buyer snapshot records — the durable, recoverable address. */
+const BUYER_SNAPSHOT_EMAIL = "guest-buyer@example.test";
 
 const NOW = "2028-03-01T09:00:00.000Z";
 const CHECKOUT_AT = "2028-03-05T12:00:00.000Z";
@@ -108,8 +117,41 @@ const claimCodes: GuestClaimCodeProvider = {
   nextGuestClaimCode: () => `${TAG}-guest-claim-${next()}`.padEnd(43, "x").slice(0, 43),
 };
 
+const taxIds: TaxEvidenceIdProvider = {
+  nextTaxEvidenceId: () => `mon:taxe:${pad26(`P11TTAXE${next()}`)}`,
+};
+
+const riskIds = {
+  nextRiskPolicyId: () => `mon:rpol:${pad26(`P11TRP0L${next()}`)}`,
+};
+
 const policyIds: CommercialPolicyIdProvider = {
   nextPolicyId: () => `mon:cpol:${pad26(`${TAG}P0L${next()}`)}`,
+};
+
+const BUYER_DETAILS = {
+  name: "Synthetic Buyer",
+  email: BUYER_EMAIL,
+  billingAddress: {
+    line1: "1 Test Street",
+    line2: null,
+    city: "Testville",
+    region: "CA",
+    postalCode: "94000",
+    countryCode: "US",
+  },
+  shippingAddress: {
+    line1: "9 Delivery Road",
+    line2: null,
+    city: "Shipton",
+    region: "NY",
+    postalCode: "10001",
+    countryCode: "US",
+  },
+} as const;
+
+const buyerSnapshotIds = {
+  nextBuyerSnapshotId: () => `mon:obsn:${pad26(`P11T0BSN${next()}`)}`,
 };
 
 const deps = () => ({ db, ids: orderIds, notificationIds, claimCodes });
@@ -155,6 +197,7 @@ const succeeded = (
     provider: "STRIPE",
     providerTransactionRef: `pi_${pad26(`${TAG}PI${next()}`)}`,
   },
+  confirmedDetails: null,
   providerEventRef: `evt_${pad26(`${TAG}EVT${next()}`)}`,
   observedAt: CONFIRMED_AT,
 });
@@ -170,6 +213,7 @@ const succeededWithRef = (
   provider: "STRIPE",
   buyerContact: buyerEmail === null ? null : { email: buyerEmail },
   result: { outcome: "SUCCEEDED", provider: "STRIPE", providerTransactionRef: intentRef },
+  confirmedDetails: null,
   providerEventRef: `evt_${pad26(`${TAG}EVT${next()}`)}`,
   observedAt: CONFIRMED_AT,
 });
@@ -183,6 +227,7 @@ const failed = (
   provider: "STRIPE",
   buyerContact: buyerEmail === null ? null : { email: buyerEmail },
   result: { outcome: "FAILED", failureCode: "DECLINED" },
+  confirmedDetails: null,
   providerEventRef: `evt_${pad26(`${TAG}EVT${next()}`)}`,
   observedAt: CONFIRMED_AT,
 });
@@ -195,6 +240,7 @@ const abandoned = (
   orderId,
   provider: "STRIPE",
   buyerContact: buyerEmail === null ? null : { email: buyerEmail },
+  confirmedDetails: null,
   providerEventRef: `evt_${pad26(`${TAG}EVT${next()}`)}`,
   observedAt: CONFIRMED_AT,
 });
@@ -241,6 +287,12 @@ async function cleanup(): Promise<void> {
     await db.notificationDelivery.deleteMany({
       where: { subjectKind: "ORDER", subjectRef: { in: orderIdList } },
     });
+    /* Phase 1.2 evidence holds RESTRICT keys onto the Order and the snapshot. */
+    await db.transactionReversal.deleteMany({ where: { orderId: { in: orderIdList } } });
+    /* Tax evidence points at the buyer snapshot, which points at the Order —
+       both RESTRICT, so they come off in that order. */
+    await db.orderTaxEvidence.deleteMany({ where: { orderId: { in: orderIdList } } });
+    await db.orderBuyerSnapshot.deleteMany({ where: { orderId: { in: orderIdList } } });
     await db.reviewSubmissionAuthority.deleteMany({ where: { orderId: { in: orderIdList } } });
     await db.purchaseEvidence.deleteMany({ where: { orderId: { in: orderIdList } } });
     const snapshots = await db.transactionEconomicSnapshot.findMany({
@@ -287,10 +339,61 @@ async function cleanup(): Promise<void> {
   const ownPolicies = { startsWith: `mon:cpol:${TAG}` };
   await db.commercialPolicyVersionRow.deleteMany({ where: { policyId: ownPolicies } });
   await db.commercialPolicy.deleteMany({ where: { id: ownPolicies } });
+
+  const ownRiskPolicies = { startsWith: `mon:rpol:${TAG}` };
+  await db.riskPolicyVersionRow.deleteMany({ where: { policyId: ownRiskPolicies } });
+  await db.riskPolicy.deleteMany({ where: { id: ownRiskPolicies } });
+  /* Product source versions carry the authoritative delivery mode and hold a
+     RESTRICT key onto the stable Product row, so they come off first. */
+  await db.productSourceRecordVersionRow.deleteMany({
+    where: { internalProductId: { startsWith: PRODUCT_PREFIX } },
+  });
   await db.product.deleteMany({ where: { internalProductId: { startsWith: PRODUCT_PREFIX } } });
 }
 
 // — Fixtures —
+
+/**
+ * A Product source version declaring how the Product is delivered.
+ *
+ * Phase 1.2 made `deliveryMode` an explicit authoritative Product fact, and
+ * checkout **fails closed** when it is unknown — so every fixture states it
+ * rather than relying on a default. That is the point: a Product that does not
+ * say how it reaches a buyer cannot be sold.
+ */
+async function seedProductVersion(
+  internalProductId: string,
+  sourceRecordId: string,
+  deliveryMode: "DIGITAL" | "PHYSICAL",
+): Promise<void> {
+  await db.productSourceRecordVersionRow.create({
+    data: {
+      internalProductId,
+      sourceRecordId,
+      sourceRecordVersion: "1",
+      sourceSystem: "monacado",
+      sourceRecordType: "Product",
+      sourceClass: "governed-database-record",
+      authorityCreatorId: `mon:creator:${pad26(`${TAG}CRE${next()}`)}`,
+      authorityScope: "product-facts",
+      authorityAuthorizationState: "authorized",
+      factName: "Synthetic Product",
+      factProductVersion: 1,
+      factPromotable: true,
+      factGeneralAvailabilityState: "available",
+      factDeliveryMode: deliveryMode,
+      factCreatorRef: `mon:creator:${pad26(`${TAG}CRF${next()}`)}`,
+      capsuleSemver: "1.0.0",
+      mappingVersion: "product-mapping/1.0.0",
+      capsuleGeneratedAt: new Date(NOW),
+      acquiredAt: new Date(NOW),
+      sourceCreatedAt: new Date(NOW),
+      sourceUpdatedAt: new Date(NOW),
+      recordStatus: "DRAFT",
+    },
+  });
+}
+
 
 async function seedAccount(): Promise<string> {
   const n = next();
@@ -355,18 +458,59 @@ async function seedPolicy(): Promise<string> {
   return policy.policyId;
 }
 
-async function seedSellerDirect() {
+/**
+ * A risk policy with one ACTIVE version, permissive enough not to interfere.
+ *
+ * Phase 1.2 made the gate mandatory, so every checkout in these suites needs one.
+ * The ceiling is deliberately far above any fixture amount and both participant
+ * requirements are off — this suite is not testing the gate, and a policy that
+ * denied here would be testing 1.2 by breaking 1.0 and 1.1.
+ */
+async function seedRiskPolicy(): Promise<string> {
+  const policy = await createRiskPolicy(
+    { label: `risk ${next()}`, now: NOW },
+    { db, ids: riskIds },
+  );
+  await recordRiskPolicyVersion(
+    {
+      policyId: policy.policyId,
+      policyVersion: "1",
+      currency: "USD",
+      maxSingleOrderCommercialAmountMinorUnits: 100_000_000,
+      requireSellerCommerceApproval: false,
+      requireSellerPaymentReadiness: false,
+      effectiveFrom: NOW,
+      recordedByAccountId: RECORDER,
+      recordedAt: NOW,
+    },
+    { db },
+  );
+  await activateRiskPolicyVersion(
+    {
+      policyId: policy.policyId,
+      policyVersion: "1",
+      activatedByAccountId: RECORDER,
+      activatedAt: NOW,
+    },
+    { db },
+  );
+  return policy.policyId;
+}
+
+async function seedSellerDirect(deliveryMode: "DIGITAL" | "PHYSICAL" = "DIGITAL") {
   const seller = await seedActiveParticipant();
   const n = next();
   const internalProductId = `${PRODUCT_PREFIX}${pad26(String(n)).slice(0, 26 - PRODUCT_TAG.length)}`;
+  const sourceRecordId = `mon:srec:${pad26(`P11TPSREC${n}`)}`;
   await db.product.create({
     data: {
       internalProductId,
-      sourceRecordId: `mon:srec:${pad26(`P11TPSREC${n}`)}`,
+      sourceRecordId,
       currentSourceRecordVersion: "1",
       recordStatus: "DRAFT",
     },
   });
+  await seedProductVersion(internalProductId, sourceRecordId, deliveryMode);
   const storefrontId = `mon:storefront:${pad26(`P11TST0RE${n}`)}`;
   await db.storefront.create({
     data: {
@@ -435,8 +579,14 @@ async function begin(internalListingId: string, policyId: string, buyerAccountId
       placedAt: CHECKOUT_AT,
     },
     policyId,
-    { provider: "STRIPE", port: initiationDouble() },
-    deps(),
+    {
+      provider: "STRIPE",
+      port: initiationDouble(),
+      taxPort: createZeroRateTaxAdapter(),
+      riskPolicyId: await seedRiskPolicy(),
+      buyerDetails: BUYER_DETAILS,
+    },
+    { ...deps(), taxIds, buyerSnapshotIds },
   );
 }
 
@@ -635,19 +785,28 @@ describeDb("1.1 — order expiry and buyer notification delivery", () => {
       expect(JSON.stringify(buyerRow)).not.toContain("@");
     });
 
-    it("records nothing and sends nothing when no address was collected", async () => {
+    it("recovers the address from the Order snapshot when the provider reports none", async () => {
       const { internalListingId } = await seedSellerDirect();
       const policyId = await seedPolicy();
       const begun = await begin(internalListingId, policyId, null);
 
+      /* Phase 1.2 SUPERSEDED this test's original premise. It used to assert
+         that a confirmation carrying no contact meant no notice could be sent —
+         true when the address was only ever transient.
+       *
+       * A completed Order now carries a buyer snapshot, so the receipt is sent
+       * from Monacado's own durable data. That is the improvement, and it also
+       * retires 1.1's recorded gate about irrecoverable guest addresses. */
       const w = webhook(succeeded(begun.order.orderId, null));
       await w.run();
 
-      /* A buyer who never gave an address gets no notice, and that is an
-         ordinary outcome rather than an error — the sale still completed. */
-      expect(w.mail.sent.filter((m) => m.to === BUYER_EMAIL)).toHaveLength(0);
+      const buyerMail = w.mail.sent.filter((m) => m.to === BUYER_SNAPSHOT_EMAIL);
+      expect(buyerMail).toHaveLength(1);
+
       const rows = await deliveriesFor(begun.order.orderId);
-      expect(rows.filter((r) => r.audience === "BUYER")).toHaveLength(0);
+      const buyerRow = rows.find((r) => r.audience === "BUYER");
+      expect(buyerRow).toBeDefined();
+      expect(buyerRow!.destinationDigest).toBe(destinationDigest(BUYER_SNAPSHOT_EMAIL));
       expect((await getOrder(begun.order.orderId, deps())).lifecycle).toBe("PAID");
     });
   });

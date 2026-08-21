@@ -117,6 +117,7 @@ import {
   OrderPersistenceFailureError,
   PaymentResultConflictError,
   ProceedsObligationNotFoundError,
+  ProceedsPayoutHeldError,
   QuoteSnapshotMismatchError,
   ReviewNotEligibleError,
   SellerNotResolvableError,
@@ -196,6 +197,7 @@ function isDomainError(error: unknown): boolean {
     error instanceof NotAGuestOrderError ||
     error instanceof InvalidProceedsObligationTransitionError ||
     error instanceof ProceedsObligationNotFoundError ||
+    error instanceof ProceedsPayoutHeldError ||
     error instanceof CorruptOrderRecordError
   );
 }
@@ -380,6 +382,7 @@ export async function initiateOrderPayment(
   order: OrderRecord,
   provider: PaymentProvider,
   port: BuyerPaymentInitiationPort,
+  options: { collectShippingAddress: boolean } = { collectShippingAddress: false },
 ): Promise<BuyerPaymentInitiation> {
   const request = BuyerPaymentRequest.parse({
     orderId: order.orderId,
@@ -387,6 +390,7 @@ export async function initiateOrderPayment(
     currency: order.quote.currency,
     amountMinorUnits: quotedBuyerTotalMinorUnits(order.quote),
     idempotencyKey: order.orderId,
+    collectShippingAddress: options.collectShippingAddress,
   });
   return BuyerPaymentInitiation.parse(await port.initiatePayment(request));
 }
@@ -821,6 +825,42 @@ export async function advanceProceedsObligation(
       const from = current.state as ProceedsObligationState;
       if (!isValidProceedsObligationTransition(from, to)) {
         throw new InvalidProceedsObligationTransitionError(from, to);
+      }
+
+      /* — Payout hold (Phase 1.2) —
+       *
+       * ELIGIBLE is the gate to being paid, so it is the one transition a hold
+       * must stop. Two conditions hold a claim, and each answers a different
+       * question:
+       *
+       *   - an active `payout:receive` RESTRICTION — 0M.R1's own record, reused
+       *     rather than duplicated. It already means exactly "this participant
+       *     may not be paid", and inventing a second flag would be a second
+       *     answer that can disagree with it.
+       *   - a REVERSED sale — the money went back, so there is nothing left to
+       *     become eligible. Paying out on a reversed sale is paying twice.
+       *
+       * Nothing here blocks PAID. A claim already settled is history, and
+       * refusing to record what was actually paid would make the ledger wrong
+       * rather than safe.
+       */
+      if (to === "ELIGIBLE") {
+        const held = await tx.participantRestriction.count({
+          where: {
+            participantId: current.participantId,
+            status: "ACTIVE",
+            scope: "payout:receive",
+          },
+        });
+        if (held > 0) {
+          throw new ProceedsPayoutHeldError(obligationId, "PARTICIPANT_PAYOUT_RESTRICTED");
+        }
+        const reversed = await tx.transactionReversal.count({
+          where: { snapshotId: current.snapshotId },
+        });
+        if (reversed > 0) {
+          throw new ProceedsPayoutHeldError(obligationId, "SALE_REVERSED");
+        }
       }
       const row = await tx.proceedsObligation.update({
         where: { id: obligationId },

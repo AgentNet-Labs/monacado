@@ -28,11 +28,22 @@
 import "../server-only";
 import { z } from "zod";
 import { CommercialPolicyId } from "../../contracts/marketplace/commercial-policy";
+import { RiskPolicyId } from "../../contracts/marketplace/transaction-risk";
 import { StripeConfigurationError, type Env } from "./stripe-runtime-config";
 
 export const CheckoutRuntimeConfig = z.strictObject({
   /** Which Monacado commercial policy governs checkouts here. Never a parameter. */
   policyId: CommercialPolicyId,
+  /**
+   * Which risk policy gates transactions here (Phase 1.2).
+   *
+   * Configuration, never a parameter — a client that could name the risk policy
+   * could name its own transaction ceiling. Filed beside the commercial policy
+   * and deliberately a **separate** identity: one decides what Monacado earns,
+   * the other what Monacado permits, and a change to either must not move the
+   * other.
+   */
+  riskPolicyId: RiskPolicyId,
   /** Normalised `scheme://host:port` this deployment answers on. */
   appOrigin: z.string().min(1).max(2_048),
 });
@@ -56,6 +67,7 @@ export function readCheckoutRuntimeConfig(env: Env = process.env): CheckoutRunti
   const appOrigin = normalizeOrigin(env.MONACADO_APP_ORIGIN ?? "");
   const parsed = CheckoutRuntimeConfig.safeParse({
     policyId: env.MONACADO_CHECKOUT_POLICY_ID ?? "",
+    riskPolicyId: env.MONACADO_RISK_POLICY_ID ?? "",
     appOrigin: appOrigin ?? "",
   });
   if (!parsed.success) {

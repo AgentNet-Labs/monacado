@@ -68,6 +68,8 @@ import {
   dispatchPaymentFailedNotice,
   dispatchSaleNotices,
 } from "../notifications/transactional-notice-service";
+import { PostalAddress } from "../../contracts/marketplace/order-buyer-snapshot";
+import { confirmBuyerSnapshot } from "../marketplace/order-buyer-snapshot-service";
 import { finalizeConfirmedPayment } from "./executable-checkout-service";
 import {
   StripeEventNotAttributableError,
@@ -196,6 +198,33 @@ export async function handleStripeWebhookRequest(
   try {
     const finalized = await finalizeConfirmedPayment(confirmation, { db });
 
+    /* — Supersede the buyer snapshot (Phase 1.2 correction) —
+     *
+     * The completed session carries the details the payment ACTUALLY
+     * authorized. A browser can post anything; a completed payment cannot. This
+     * runs after finalization and never affects it: knowing more precisely who
+     * paid must not change whether the sale was recorded. */
+    if (confirmation.confirmedDetails !== null) {
+      try {
+        await confirmBuyerSnapshot(
+          {
+            orderId: confirmation.orderId,
+            confirmed: {
+              name: confirmation.confirmedDetails.name,
+              email: confirmation.confirmedDetails.email,
+              billingAddress: asAddress(confirmation.confirmedDetails.billingAddress),
+              shippingAddress: asAddress(confirmation.confirmedDetails.shippingAddress),
+            },
+            confirmedAt: observedAt,
+          },
+          { db },
+        );
+      } catch {
+        /* Recorded-nowhere-else detail failing to land must not fail a booked
+           sale, and must not tell Stripe to retry one. */
+      }
+    }
+
     /* — Notice dispatch (Phase 1.1) —
      *
      * Driven from what the write path AUTHORITATIVELY DID, never from the event
@@ -278,4 +307,11 @@ async function dispatchNotices(
   } catch {
     return 0;
   }
+}
+
+/** Validate a provider-reported address, or treat it as absent. */
+function asAddress(value: unknown): PostalAddress | null {
+  if (value === null || value === undefined) return null;
+  const parsed = PostalAddress.safeParse(value);
+  return parsed.success ? parsed.data : null;
 }

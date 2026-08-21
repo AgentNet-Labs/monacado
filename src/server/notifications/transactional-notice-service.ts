@@ -52,6 +52,7 @@ import { quotedBuyerTotalMinorUnits } from "../../contracts/marketplace/order";
 import type { MailPort } from "../../contracts/marketplace/notification-delivery";
 import type { NotificationCategory } from "../../contracts/marketplace/notification-obligation";
 import { getPrisma } from "../db/client";
+import { getBuyerSnapshotIn } from "../marketplace/order-buyer-snapshot-service";
 import {
   attemptDelivery,
   type AttemptedDelivery,
@@ -192,6 +193,26 @@ export function renderParticipantSaleRecorded(order: OrderRecord): {
  * ordinary outcome and never an error: a notice nobody can be sent is a fact to
  * record, not an exception to raise in the middle of finalizing a sale.
  */
+/**
+ * The buyer's address, preferring the durable Order snapshot (Phase 1.2).
+ *
+ * `1.1` recorded that a guest's address was irrecoverable once the transient
+ * confirmation was gone. **That is no longer true**: a completed Order carries a
+ * buyer snapshot, so a receipt can be re-sent from Monacado's own data.
+ *
+ * The transient confirmation remains the fallback for the window before a
+ * snapshot exists, and for a provider that reports an address Monacado could not
+ * validate.
+ */
+async function buyerAddressFor(
+  db: Db,
+  orderId: string,
+  transient: string | null,
+): Promise<string | null> {
+  const snapshot = await getBuyerSnapshotIn(db, orderId);
+  return snapshot?.email ?? transient;
+}
+
 async function participantAddress(db: Db, participantId: string): Promise<string | null> {
   const participant = await db.marketplaceParticipant.findUnique({
     where: { id: participantId },
@@ -241,7 +262,8 @@ export async function dispatchSaleNotices(
   const attempts: AttemptedDelivery[] = [];
   let skipped = 0;
 
-  if (args.buyerAddress === null) {
+  const buyerAddress = await buyerAddressFor(db, args.order.orderId, args.buyerAddress);
+  if (buyerAddress === null) {
     skipped += 1;
   } else {
     const { subject, body } = renderBuyerConfirmation(args.order);
@@ -258,7 +280,7 @@ export async function dispatchSaleNotices(
           obligationId: null,
           category: "ORDER_CONFIRMATION",
           subject: { kind: "ORDER", ref: args.order.orderId, versionRef: null },
-          destination: args.buyerAddress,
+          destination: buyerAddress,
           subjectLine: subject,
           body,
           at: args.at,
@@ -323,7 +345,9 @@ export async function dispatchPaymentFailedNotice(
   port: MailPort,
   deps: NoticeDeps = {},
 ): Promise<DispatchedNotices> {
-  if (args.buyerAddress === null) return { attempts: [], skippedForNoAddress: 1 };
+  const db = deps.db ?? getPrisma();
+  const buyerAddress = await buyerAddressFor(db, args.order.orderId, args.buyerAddress);
+  if (buyerAddress === null) return { attempts: [], skippedForNoAddress: 1 };
   const { subject, body } = renderBuyerPaymentFailed(args.order);
   return {
     attempts: [
@@ -334,7 +358,7 @@ export async function dispatchPaymentFailedNotice(
           obligationId: null,
           category: "PAYMENT_FAILED",
           subject: { kind: "ORDER", ref: args.order.orderId, versionRef: null },
-          destination: args.buyerAddress,
+          destination: buyerAddress,
           subjectLine: subject,
           body,
           at: args.at,
@@ -364,7 +388,9 @@ export async function dispatchOrderExpiredNotice(
   port: MailPort,
   deps: NoticeDeps = {},
 ): Promise<DispatchedNotices> {
-  if (args.buyerAddress === null) return { attempts: [], skippedForNoAddress: 1 };
+  const db = deps.db ?? getPrisma();
+  const buyerAddress = await buyerAddressFor(db, args.order.orderId, args.buyerAddress);
+  if (buyerAddress === null) return { attempts: [], skippedForNoAddress: 1 };
   const { subject, body } = renderBuyerOrderExpired(args.order);
   return {
     attempts: [
@@ -375,7 +401,7 @@ export async function dispatchOrderExpiredNotice(
           obligationId: null,
           category: "ORDER_CANCELLED",
           subject: { kind: "ORDER", ref: args.order.orderId, versionRef: null },
-          destination: args.buyerAddress,
+          destination: buyerAddress,
           subjectLine: subject,
           body,
           at: args.at,

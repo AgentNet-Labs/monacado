@@ -1383,12 +1383,22 @@ describeDb("Phase 0M.8 — payment-provider onboarding and governed activation",
     });
 
     /* Narrowed at Phase 0M.N1 (`NotificationObligation`), again at 0M.T1
-       (`TransactionSettlement`), and again at 0M.9 (`Order`) — each a table a
-       later phase legitimately owns and 0M.8 explicitly deferred to it. What this
-       asserts is that *0M.8* added none of these, and every remaining member still
-       holds: there is still no charge, payment-intent, payout, refund, chargeback,
-       ledger, commission, tax, or risk table anywhere. */
-    it("no charge, payout, tax, or risk table exists", async () => {
+       (`TransactionSettlement`), again at 0M.9 (`Order`), and again at 1.2
+       (`RiskPolicy`) — each a table a later phase legitimately owns and 0M.8
+       explicitly deferred to it. What this asserts is that *0M.8* added none of
+       them.
+     *
+     * Every remaining member still holds, and each is worth keeping:
+     *   - no charge / paymentintent / payout / refund / chargeback table — 1.2
+     *     records a REVERSAL as accounting evidence and executes no payout and no
+     *     provider refund;
+     *   - no ledger or commission table — double-entry posting is still 0M.T2's;
+     *   - no taxclass / taxtransaction table — 1.2 stores EVIDENCE of one Order's
+     *     tax, and classifies, files, and remits nothing;
+     *   - no riskdecision table — the gate reads and returns, and deliberately
+     *     logs nothing, because a denial log is a manual-review workflow's
+     *     foundation. */
+    it("no charge, payout, tax-engine, or risk-decision table exists", async () => {
       const tables = await db.$queryRawUnsafe<Array<{ TABLE_NAME: string }>>(
         `SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()`,
       );
@@ -1404,7 +1414,6 @@ describeDb("Phase 0M.8 — payment-provider onboarding and governed activation",
         "commission",
         "taxclass",
         "taxtransaction",
-        "riskpolicy",
         "riskdecision",
       ]) {
         expect(names.some((n) => n.includes(forbidden)), `${forbidden} table must not exist`).toBe(

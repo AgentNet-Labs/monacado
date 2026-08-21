@@ -43,6 +43,8 @@ export type OrderErrorCode =
   | "NOT_A_GUEST_ORDER"
   | "INVALID_PROCEEDS_OBLIGATION_TRANSITION"
   | "PROCEEDS_OBLIGATION_NOT_FOUND"
+  | "PROCEEDS_PAYOUT_HELD"
+  | "BUYER_SNAPSHOT_REFUSED"
   | "CORRUPT_ORDER_RECORD"
   | "ORDER_PERSISTENCE_FAILURE";
 
@@ -308,5 +310,31 @@ export class OrderPersistenceFailureError extends OrderServiceError {
     super("ORDER_PERSISTENCE_FAILURE", "An order persistence operation failed", cause);
     this.name = "OrderPersistenceFailureError";
     this.stage = stage;
+  }
+}
+
+/**
+ * A proceeds obligation may not become payout-eligible (Phase 1.2).
+ *
+ * Distinct from `InvalidProceedsObligationTransitionError`, and the distinction
+ * matters operationally: an invalid transition means the claim is in the wrong
+ * *state*, while this means the claim is in the right state and something else is
+ * **holding** it. One is a caller bug; the other is a governed decision an
+ * operator can lift.
+ *
+ * `holdReason` is a bounded code, never free text — safe to log and safe to
+ * surface, on the same terms as every other reason vocabulary here.
+ */
+export class ProceedsPayoutHeldError extends OrderServiceError {
+  readonly obligationId: string;
+  readonly holdReason: "PARTICIPANT_PAYOUT_RESTRICTED" | "SALE_REVERSED";
+  constructor(
+    obligationId: string,
+    holdReason: "PARTICIPANT_PAYOUT_RESTRICTED" | "SALE_REVERSED",
+  ) {
+    super("PROCEEDS_PAYOUT_HELD", "This claim may not become payout-eligible");
+    this.name = "ProceedsPayoutHeldError";
+    this.obligationId = obligationId;
+    this.holdReason = holdReason;
   }
 }

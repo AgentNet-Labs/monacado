@@ -50,6 +50,26 @@ export type ProductRelationships = z.infer<typeof ProductRelationships>;
  * (price, currency, discount, commission, payout, territory, offer validity,
  * payment) are excluded and additionally rejected by the forbidden-field scan.
  */
+/**
+ * How a Product reaches its buyer — an **explicit, authoritative** fact.
+ *
+ * A closed two-member vocabulary, and deliberately the *only* place delivery is
+ * decided. It is never inferred from `specifications`, `capabilities`, a name, or
+ * a category: those are free-form and creator-supplied, and reading a checkout
+ * rule out of one would make whether a buyer is asked for an address depend on
+ * how somebody phrased a spec key.
+ *
+ * `DIGITAL` — delivered without shipping anything.
+ * `PHYSICAL` — requires delivery to an address.
+ *
+ * A finer vocabulary (`SERVICE`, `MIXED`, per-variant modes) is deliberately
+ * absent: the checkout question is binary — *does this need a shipping address* —
+ * and members with no producer are promises the code does not keep.
+ */
+export const DELIVERY_MODES = ["DIGITAL", "PHYSICAL"] as const;
+export const DeliveryMode = z.enum(DELIVERY_MODES);
+export type DeliveryMode = z.infer<typeof DeliveryMode>;
+
 export const ProductData = z.strictObject({
   name: z.string().min(1),
   description: z.string().min(1).optional(),
@@ -57,6 +77,18 @@ export const ProductData = z.strictObject({
   productVersion: z.int().min(1),
   promotable: z.boolean(),
   generalAvailabilityState: GeneralAvailabilityState,
+  /**
+   * How this Product is delivered. **Optional for backward compatibility only.**
+   *
+   * Every Product source version written before this fact existed has none, and
+   * making it required would invalidate them retroactively — a source-version
+   * model exists precisely so history stays readable.
+   *
+   * **Absence is not a default.** Checkout treats an unknown delivery mode as a
+   * refusal, never as "probably digital": guessing would either demand an address
+   * nobody needs or ship nothing to a buyer expecting a parcel.
+   */
+  deliveryMode: DeliveryMode.optional(),
   specifications: z
     .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
     .optional(),

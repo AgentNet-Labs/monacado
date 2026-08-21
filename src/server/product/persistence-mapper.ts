@@ -52,6 +52,7 @@ export function versionRowToDomain(row: ProductSourceRecordVersionRow): ProductS
       productVersion: row.factProductVersion,
       promotable: row.factPromotable,
       generalAvailabilityState: row.factGeneralAvailabilityState,
+      ...(row.factDeliveryMode !== null ? { deliveryMode: row.factDeliveryMode } : {}),
       ...(specifications !== null && specifications !== undefined ? { specifications } : {}),
       ...(capabilities !== null && capabilities !== undefined ? { capabilities } : {}),
       relationships: {
@@ -102,6 +103,7 @@ export function domainToVersionCreateInput(
     factProductVersion: record.facts.productVersion,
     factPromotable: record.facts.promotable,
     factGeneralAvailabilityState: record.facts.generalAvailabilityState,
+    factDeliveryMode: record.facts.deliveryMode ?? null,
     factSpecifications:
       record.facts.specifications === undefined
         ? undefined

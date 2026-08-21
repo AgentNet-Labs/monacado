@@ -84,6 +84,28 @@ const ORDER_ID = `mon:order:${opaque("P10RDER1")}`;
 const OTHER_ORDER_ID = `mon:order:${opaque("P10RDER2")}`;
 const LISTING_ID = `mon:listing:${opaque("P1LISTING")}`;
 const POLICY_ID = `mon:cpol:${opaque("P1POLICY")}`;
+const RISK_POLICY_ID = `mon:rpol:${opaque("P1RISK")}`;
+
+/**
+ * A complete, valid begin-checkout body (Phase 1.2).
+ *
+ * Everything a merchant of record genuinely requires, and nothing more.
+ */
+const VALID_CHECKOUT_BODY = {
+  internalListingId: LISTING_ID,
+  buyerName: "Synthetic Buyer",
+  buyerEmail: "buyer@example.test",
+  billingLine1: "1 Test Street",
+  billingCity: "Testville",
+  billingRegion: "CA",
+  billingPostalCode: "94000",
+  billingCountryCode: "US",
+  shippingLine1: "9 Delivery Road",
+  shippingCity: "Shipton",
+  shippingRegion: "NY",
+  shippingPostalCode: "10001",
+  shippingCountryCode: "US",
+} as const;
 const SESSION_ID = "cs_test_a1B2c3D4e5F6g7H8i9J0";
 const INTENT_ID = "pi_3QxYzAbCdEf12345";
 const WEBHOOK_SECRET = "whsec_0m9testsigningsecretvalue000000";
@@ -95,6 +117,7 @@ const CONFIG: StripeRuntimeConfig = {
   webhookSecretEnvVar: "MONACADO_STRIPE_WEBHOOK_SECRET",
   successUrl: "https://monacado.test/checkout/result",
   cancelUrl: "https://monacado.test/checkout/result",
+  shippingCountries: ["US", "CA"],
   allowLoopbackHttp: false,
 };
 
@@ -330,14 +353,22 @@ describe("1.0 · checkout configuration is Monacado's, not a request parameter",
     expect(() => readCheckoutRuntimeConfig({})).toThrow(StripeConfigurationError);
     const config = readCheckoutRuntimeConfig({
       MONACADO_CHECKOUT_POLICY_ID: POLICY_ID,
+      MONACADO_RISK_POLICY_ID: RISK_POLICY_ID,
       MONACADO_APP_ORIGIN: "https://monacado.test",
     });
     expect(config.policyId).toBe(POLICY_ID);
+    /* Phase 1.2 — a SEPARATE identity: one policy decides what Monacado earns,
+       the other what Monacado permits. */
+    expect(config.riskPolicyId).toBe(RISK_POLICY_ID);
     expect(config.appOrigin).toBe("https://monacado.test:443");
   });
 
   it("refuses a cross-site origin and permits an absent one", () => {
-    const config = { policyId: POLICY_ID, appOrigin: "https://monacado.test:443" };
+    const config = {
+      policyId: POLICY_ID,
+      riskPolicyId: RISK_POLICY_ID,
+      appOrigin: "https://monacado.test:443",
+    };
     expect(isAcceptableOrigin(null, config)).toBe(true);
     expect(isAcceptableOrigin("https://monacado.test", config)).toBe(true);
     expect(isAcceptableOrigin("https://evil.example", config)).toBe(false);
@@ -421,6 +452,7 @@ describe("1.0 · the Stripe adapter translates a checkout session", () => {
       currency: "USD",
       amountMinorUnits: 10_000,
       idempotencyKey: ORDER_ID,
+      collectShippingAddress: false,
     });
 
     expect(calls.sessions).toHaveLength(1);
@@ -457,13 +489,14 @@ describe("1.0 · the Stripe adapter translates a checkout session", () => {
       currency: "USD",
       amountMinorUnits: 500,
       idempotencyKey: ORDER_ID,
+      collectShippingAddress: false,
     });
     const params = calls.sessions[0]!.params as { success_url: string; cancel_url: string };
     expect(new URL(params.success_url).searchParams.get("orderId")).toBe(ORDER_ID);
     expect(new URL(params.cancel_url).searchParams.get("orderId")).toBe(ORDER_ID);
   });
 
-  it("sends no buyer personal data of any kind", async () => {
+  it("sends no buyer personal data, and asks Stripe to collect billing inward", async () => {
     const { client, calls } = stripeDouble();
     const port = createStripeBuyerPaymentAdapter({ runtime: runtime(client) });
     await port.initiatePayment({
@@ -472,18 +505,46 @@ describe("1.0 · the Stripe adapter translates a checkout session", () => {
       currency: "USD",
       amountMinorUnits: 500,
       idempotencyKey: ORDER_ID,
+      collectShippingAddress: false,
     });
     const params = calls.sessions[0]!.params as Record<string, unknown>;
+
+    /* Monacado still SENDS Stripe nothing about the buyer. Phase 1.2 changed the
+       direction, not the volume: it asks Stripe to COLLECT a billing address and
+       reads the confirmed result back inward, because what returns is the
+       identity the payment actually authorized and a browser cannot forge that. */
     for (const field of [
       "customer_email",
       "customer",
-      "shipping_address_collection",
-      "billing_address_collection",
-      "phone_number_collection",
       "customer_creation",
+      "phone_number_collection",
     ]) {
       expect(field in params, field).toBe(false);
     }
+    /* Billing is always collected inward. Shipping is NOT requested here,
+       because this request does not ask for it — an all-digital purchase must
+       never be asked for a delivery address. */
+    expect(params.billing_address_collection).toBe("required");
+    expect("shipping_address_collection" in params).toBe(false);
+  });
+
+  it("requests a shipping address only when the basket needs delivering", async () => {
+    const { client, calls } = stripeDouble();
+    const port = createStripeBuyerPaymentAdapter({ runtime: runtime(client) });
+    await port.initiatePayment({
+      orderId: ORDER_ID,
+      provider: "STRIPE",
+      currency: "USD",
+      amountMinorUnits: 500,
+      idempotencyKey: ORDER_ID,
+      collectShippingAddress: true,
+    });
+    const params = calls.sessions[0]!.params as Record<string, unknown>;
+    /* The allow-list is deployment configuration — Stripe has no "anywhere"
+       value, and a list widened to whatever a client typed would be no list. */
+    expect(params.shipping_address_collection).toEqual({
+      allowed_countries: CONFIG.shippingCountries,
+    });
   });
 });
 
@@ -755,15 +816,45 @@ describe("1.0 · the Connect readiness adapter speaks 0M.8's vocabulary", () => 
 // — 10 —
 
 describe("1.0 · a browser cannot assert anything commercial", () => {
-  it("accepts one field on a begin-checkout request", () => {
-    expect(BeginCheckoutRequest.safeParse({ internalListingId: LISTING_ID }).success).toBe(true);
-    expect(Object.keys(BeginCheckoutRequest.shape)).toEqual(["internalListingId"]);
+  it("accepts the Listing and the buyer's own details, and nothing else", () => {
+    /* Phase 1.2 widened this from one field, because completing a purchase is
+       not anonymous: a merchant of record cannot source tax, send a receipt, or
+       answer support without a contact and a billing address.
+     *
+     * What it accepts is exactly that — the Listing, and facts about the BUYER.
+     * Not a price, not a policy, not a party, and not an outcome. */
+    expect(BeginCheckoutRequest.safeParse({ internalListingId: LISTING_ID }).success).toBe(false);
+    expect(BeginCheckoutRequest.safeParse(VALID_CHECKOUT_BODY).success).toBe(true);
+
+    const accepted = Object.keys(BeginCheckoutRequest.shape);
+    expect(accepted).toContain("internalListingId");
+    /* Every other accepted field is buyer contact or address. */
+    for (const field of accepted) {
+      if (field === "internalListingId") continue;
+      expect(/^(buyerName|buyerEmail|billing|shipping)/.test(field), field).toBe(true);
+    }
+  });
+
+  it("always requires billing, and leaves shipping to the basket rule", () => {
+    /* Shipping is OPTIONAL on the request shape because the request cannot know
+       what the basket delivers — that is `evaluateBasketFulfillment`'s decision,
+       taken from explicit Product delivery modes. The service refuses a physical
+       basket without one. */
+    const { shippingLine1: _s1, shippingCity: _s2, shippingCountryCode: _s3, ...noShipping } =
+      VALID_CHECKOUT_BODY;
+    expect(BeginCheckoutRequest.safeParse(noShipping).success).toBe(true);
+
+    /* Billing country is the one field tax sourcing cannot proceed without. */
+    const { billingCountryCode: _c, ...noCountry } = VALID_CHECKOUT_BODY;
+    expect(BeginCheckoutRequest.safeParse(noCountry).success).toBe(false);
+    const { billingLine1: _l, ...noLine } = VALID_CHECKOUT_BODY;
+    expect(BeginCheckoutRequest.safeParse(noLine).success).toBe(false);
   });
 
   it("refuses every field through which a client could state or price a sale", () => {
     for (const forbidden of NEVER_ON_BEGIN_CHECKOUT_REQUEST) {
       const parsed = BeginCheckoutRequest.safeParse({
-        internalListingId: LISTING_ID,
+        ...VALID_CHECKOUT_BODY,
         [forbidden]: "anything at all",
       });
       expect(parsed.success, forbidden).toBe(false);
@@ -771,19 +862,15 @@ describe("1.0 · a browser cannot assert anything commercial", () => {
   });
 
   it("refuses them through the form body too, not only through JSON", () => {
-    expect(
-      parseCheckoutBody(
-        "application/x-www-form-urlencoded",
-        `internalListingId=${encodeURIComponent(LISTING_ID)}`,
-      ),
-    ).toEqual({ internalListingId: LISTING_ID });
+    const form = new URLSearchParams(VALID_CHECKOUT_BODY).toString();
+    expect(parseCheckoutBody("application/x-www-form-urlencoded", form)).toMatchObject({
+      internalListingId: LISTING_ID,
+      billingCountryCode: "US",
+    });
 
     /* The form is not a looser door than JSON. */
     expect(
-      parseCheckoutBody(
-        "application/x-www-form-urlencoded",
-        `internalListingId=${encodeURIComponent(LISTING_ID)}&paymentStatus=paid`,
-      ),
+      parseCheckoutBody("application/x-www-form-urlencoded", `${form}&paymentStatus=paid`),
     ).toBeNull();
     expect(parseCheckoutBody("application/json", '{"internalListingId":"nope"}')).toBeNull();
     expect(parseCheckoutBody("text/plain", "internalListingId=x")).toBeNull();

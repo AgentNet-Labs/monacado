@@ -134,6 +134,43 @@ export const NOTIFICATION_OBLIGATION_ID_RE = new RegExp(`^mon:nobl:${OPAQUE_BODY
  */
 export const NOTIFICATION_DELIVERY_ID_RE = new RegExp(`^mon:ndlv:${OPAQUE_BODY}$`);
 
+/**
+ * Order tax evidence identity (`mon:taxe:<opaque>`) — Phase 1.2.
+ *
+ * Names the *evidence*, not the calculation. A provider's own calculation
+ * reference is an external string recorded beside this one; conflating them
+ * would make Monacado's audit record depend on a vendor's identifier space.
+ */
+/**
+ * Order buyer snapshot identity (`mon:obsn:<opaque>`) — Phase 1.2 correction.
+ *
+ * Names the private transactional record of who bought one Order. Deliberately
+ * distinct from every account and participant identity: a snapshot is **not an
+ * identity**, not a profile, and not reusable — buying twice as a guest produces
+ * two snapshots, because each records who bought *that* order.
+ */
+export const ORDER_BUYER_SNAPSHOT_ID_RE = new RegExp(`^mon:obsn:${OPAQUE_BODY}$`);
+
+export const ORDER_TAX_EVIDENCE_ID_RE = new RegExp(`^mon:taxe:${OPAQUE_BODY}$`);
+
+/**
+ * Transaction reversal identity (`mon:txrev:${OPAQUE_BODY}`) — Phase 1.2.
+ *
+ * Distinct from `mon:txsnp:`, and necessarily so: a reversal is **new
+ * accounting evidence about** a snapshot, never a correction of one. Sharing an
+ * identifier space would invite exactly the in-place edit `0M.T1` forbids.
+ */
+export const TRANSACTION_REVERSAL_ID_RE = new RegExp(`^mon:txrev:${OPAQUE_BODY}$`);
+
+/**
+ * Risk policy identity (`mon:rpol:<opaque>`) — Phase 1.2.
+ *
+ * Deliberately **not** `mon:cpol:`. A commercial policy decides what Monacado
+ * *earns*; a risk policy decides what Monacado *permits*. Merging them would let
+ * a change to one silently move the other, and an Order binds both separately.
+ */
+export const RISK_POLICY_ID_RE = new RegExp(`^mon:rpol:${OPAQUE_BODY}$`);
+
 /** One buyer review submission (`mon:rsub:<opaque>`). */
 export const REVIEW_SUBMISSION_ID_RE = new RegExp(`^mon:rsub:${OPAQUE_BODY}$`);
 

@@ -29,6 +29,16 @@
 
 import "../server-only";
 import { z } from "zod";
+import { CountryCode } from "../../contracts/marketplace/order-buyer-snapshot";
+
+/**
+ * The starter shipping allow-list.
+ *
+ * Narrow on purpose. A deployment that ships further sets
+ * `MONACADO_STRIPE_SHIPPING_COUNTRIES`; one that has not thought about it should
+ * not be silently offering worldwide delivery.
+ */
+export const DEFAULT_SHIPPING_COUNTRIES = ["US", "CA", "GB", "IE", "AU", "NZ"] as const;
 
 /** Environment variable names: conventional, and never a value. */
 export const ENV_VAR_NAME_RE = /^[A-Z][A-Z0-9_]{2,63}$/;
@@ -93,6 +103,18 @@ export const StripeRuntimeConfig = z.strictObject({
   successUrl: z.string().min(1).max(2_048),
   /** Where Stripe returns a buyer who abandoned the attempt. */
   cancelUrl: z.string().min(1).max(2_048),
+  /**
+   * Countries Stripe may collect a shipping address for.
+   *
+   * Stripe requires an explicit allow-list — there is no "anywhere" value — so
+   * this is **configuration, and a deployment decision**, exactly like the
+   * commercial and risk policies. It is not derived from the buyer's own input:
+   * a list that widened itself to whatever a client typed would be no list.
+   *
+   * The default is a small starter set, deliberately narrow rather than
+   * speculatively broad. Widening it is one environment variable.
+   */
+  shippingCountries: z.array(CountryCode).min(1).max(250),
   /**
    * Permits plain `http:` return URLs to a loopback host. LOCAL ONLY — a
    * deployment reachable by a real buyer must use HTTPS.
@@ -165,8 +187,15 @@ export function readStripeRuntimeConfig(env: Env = process.env): StripeRuntimeCo
     env.MONACADO_STRIPE_ALLOW_LOOPBACK_HTTP !== undefined &&
     TRUTHY.has(env.MONACADO_STRIPE_ALLOW_LOOPBACK_HTTP.trim().toLowerCase());
 
+  const shippingCountries = (env.MONACADO_STRIPE_SHIPPING_COUNTRIES ?? "")
+    .split(",")
+    .map((c) => c.trim().toUpperCase())
+    .filter((c) => c !== "");
+
   const candidate = {
     mode: env.MONACADO_STRIPE_MODE ?? "TEST",
+    shippingCountries:
+      shippingCountries.length === 0 ? [...DEFAULT_SHIPPING_COUNTRIES] : shippingCountries,
     apiKeyEnvVar: env.MONACADO_STRIPE_API_KEY_ENV ?? "MONACADO_STRIPE_SECRET_KEY",
     webhookSecretEnvVar:
       env.MONACADO_STRIPE_WEBHOOK_SECRET_ENV ?? "MONACADO_STRIPE_WEBHOOK_SECRET",

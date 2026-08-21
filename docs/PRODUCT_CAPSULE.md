@@ -44,8 +44,9 @@ Top-level members are **exactly** `@context`, `@type`, `metadata`, `data`.
 Unexpected top-level fields are rejected.
 
 - **`data`** — the Product facts: `name`, `description?`, `image?`,
-  `productVersion`, `promotable`, `generalAvailabilityState`, `specifications?`,
-  `capabilities?`, and `relationships` (`creator`, optional `offer` reference).
+  `productVersion`, `promotable`, `generalAvailabilityState`, `deliveryMode?`,
+  `specifications?`, `capabilities?`, and `relationships` (`creator`, optional
+  `offer` reference).
 - **`metadata`** (published) — `capsuleId`, `bindsToNode`, `publishedBy`,
   `publishedAt`, `version`, `provenance`, `nodePolicy`, `capsulePolicy`,
   `supersedes?`, `revokes?`, `contentHash`.
@@ -75,6 +76,34 @@ rejected. ANS Node lifecycle (Active/Inactive/Retired/Revoked) is
 Registrar-managed and lives on the Node. Capsule change uses **semantic
 versioning** with `supersedes`/`revokes` (references to a prior **capsule ID**,
 never a Node ID). Internal publication-workflow status stays outside the capsule.
+
+## Delivery mode (Phase 1.2 correction)
+
+`deliveryMode` — `DIGITAL` | `PHYSICAL` — is an **explicit authoritative Product
+fact**, and the only place delivery is decided. It is never inferred from a name,
+a category, `specifications`, or `capabilities`: those are free-form and
+creator-supplied, and reading a rule out of one would make whether a buyer is
+asked for a delivery address depend on how somebody phrased a spec key.
+
+It is genuinely buyer-facing — "this is a download" versus "this ships to you" is
+information a buyer needs before purchasing — so it is projected like any other
+Product fact rather than held back as private data.
+
+**Optional, for backward compatibility only.** Source versions written before the
+fact existed have none, and making it required would invalidate them
+retroactively. Because it is optional, adding it is a **backward-compatible
+(additive) capsule change**: every existing capsule still validates unchanged, and
+a creator who declares a mode publishes it under their own record's next semver.
+No global capsule-version constant exists for Product (unlike Listing and Offer,
+which pin `SUPPORTED_*_CAPSULE_VERSION`), so nothing had to be bumped centrally.
+
+**Absence is never a default.** Checkout fails closed on an unknown mode.
+
+It drives two downstream decisions, both documented in
+[`PRE_LIVE_COMMERCE_CONTROLS.md`](PRE_LIVE_COMMERCE_CONTROLS.md): whether checkout
+asks for a **delivery address** (any `PHYSICAL` line requires one; an all-digital
+basket is never asked), and whether a completed sale creates a **digital delivery
+entitlement**.
 
 ## Semver capsule versions
 

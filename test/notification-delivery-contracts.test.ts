@@ -78,6 +78,7 @@ const CONFIG: StripeRuntimeConfig = {
   webhookSecretEnvVar: "MONACADO_STRIPE_WEBHOOK_SECRET",
   successUrl: "https://monacado.test/checkout/result",
   cancelUrl: "https://monacado.test/checkout/result",
+  shippingCountries: ["US"],
   allowLoopbackHttp: false,
 };
 

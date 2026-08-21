@@ -93,7 +93,7 @@ it is the only channel there has ever been.
 | Recipient | Obligation? | Address from |
 | --- | --- | --- |
 | seller / promoter | **yes** — `0M.9` wrote it in the sale transaction | the participant's `Account.email` |
-| buyer (account **or** guest) | **no** | the contact the provider collected at checkout |
+| buyer (account **or** guest) | **no** | the Order buyer snapshot (`1.2`), falling back to the provider's transient contact |
 
 `obligationId` is nullable, and that carries the phase's central decision.
 `0M.N1` keys obligations on participants **by design** — "keying an obligation on
@@ -307,6 +307,13 @@ ingestion, and suppression lists. None exists.
 
 ### Pre-live operational item: undelivered notices are not recoverable
 
+> **Half-resolved by the Phase `1.2` correction.** A completed Order now carries an
+> `OrderBuyerSnapshot`, so **a guest's address is recoverable** and a failed
+> receipt can be re-sent from Monacado's own data. Limitation (2) below no longer
+> holds. Limitation (1) — at-most-once delivery with no retry — stands, and
+> re-sending remains a manual act until `0M.N2` decides a retry policy alongside
+> bounce handling.
+
 **Recorded here as a known gate, and deliberately not solved in `1.1`.**
 
 Two limitations compound, and together they mean a notice that fails is a notice
@@ -316,10 +323,9 @@ that is gone:
    outage, an unconfigured channel, a refused message — is never re-attempted.
    Nothing sweeps, and the deduplication key would refuse a second attempt even
    if something did.
-2. **A guest's address cannot be recovered.** Only its digest is persisted, and a
-   digest is one-way by design. For a participant an operator can re-derive the
-   address from `Account.email`; **for a guest there is nowhere left to read it
-   from** except Stripe's own record of the session.
+2. ~~**A guest's address cannot be recovered.**~~ **Resolved by `1.2`.** The
+   delivery record still stores only a digest, but the Order's buyer snapshot
+   holds the address, so an operator can re-send from Monacado's own data.
 
 So a guest whose receipt failed to send cannot be re-sent one from Monacado's
 data alone. That is the accepted cost of not storing buyer addresses, and it is

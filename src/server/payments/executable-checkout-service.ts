@@ -33,6 +33,7 @@
 
 import "../server-only";
 import {
+  prepareCheckout,
   cancelOrder,
   getOrder,
   initiateOrderPayment,
@@ -46,8 +47,34 @@ import type {
   BuyerPaymentInitiation,
   BuyerPaymentInitiationPort,
 } from "../../contracts/marketplace/buyer-payment";
-import type { OrderRecord } from "../../contracts/marketplace/order";
+import { PlaceOrderInput, type OrderRecord } from "../../contracts/marketplace/order";
 import type { PaymentProvider } from "../../contracts/marketplace/payment-account";
+import type {
+  TaxCalculationPort,
+  TaxQuote,
+} from "../../contracts/marketplace/tax-calculation";
+import { riskAllowed, type RiskDecision } from "../../contracts/marketplace/transaction-risk";
+import { evaluateTransactionRisk } from "../risk/transaction-risk-service";
+import { TransactionDeniedByRiskError } from "../risk/risk-errors";
+import { recordOrderTaxEvidence } from "../tax/tax-evidence-service";
+import {
+  evaluateBasketFulfillment,
+  type BasketFulfillmentRequirement,
+} from "../../contracts/marketplace/basket-fulfillment";
+import { resolveBasketDeliveryLines } from "../product/product-delivery-mode-service";
+import { getPrisma } from "../db/client";
+import {
+  BuyerCheckoutDetailsInput,
+  taxJurisdictionCodeFor,
+  type OrderBuyerSnapshotRecord,
+} from "../../contracts/marketplace/order-buyer-snapshot";
+import {
+  BuyerSnapshotError,
+  captureBuyerSnapshot,
+  type BuyerSnapshotIdProvider,
+} from "../marketplace/order-buyer-snapshot-service";
+import type { TaxEvidenceIdProvider } from "../tax/tax-calculation-ids";
+import { InvalidOrderInputError } from "../marketplace/order-errors";
 
 /** An Order placed and a payment started, ready for the buyer to complete. */
 export interface BegunCheckout {
@@ -61,6 +88,14 @@ export interface BegunCheckout {
   guestClaimCode: string | null;
   buyerTotalMinorUnits: number;
   initiation: BuyerPaymentInitiation;
+  /** Phase 1.2 — the decision that permitted this, and the policy behind it. */
+  riskDecision: RiskDecision;
+  /** Phase 1.2 — the authoritative tax result the buyer total includes. */
+  taxQuote: TaxQuote;
+  /** Phase 1.2 — who is buying. Private transactional data, never published. */
+  buyerSnapshot: OrderBuyerSnapshotRecord;
+  /** Phase 1.2 — what this basket needed delivered, and why. */
+  fulfillment: BasketFulfillmentRequirement;
 }
 
 /**
@@ -73,16 +108,169 @@ export interface BegunCheckout {
 export async function beginCheckout(
   input: unknown,
   policyId: string,
-  args: { provider: PaymentProvider; port: BuyerPaymentInitiationPort },
-  deps: OrderServiceDeps = {},
+  args: {
+    provider: PaymentProvider;
+    port: BuyerPaymentInitiationPort;
+    /** Phase 1.2 — required. There is no untaxed path. */
+    taxPort: TaxCalculationPort;
+    /** Phase 1.2 — required. There is no ungated path. */
+    riskPolicyId: string;
+    /**
+     * Phase 1.2 correction — required. Completing a purchase is not anonymous.
+     *
+     * Account login stays optional; this does not make a buyer an account holder
+     * and creates neither an `Account` nor a `MarketplaceParticipant`.
+     */
+    buyerDetails: unknown;
+  },
+  deps: OrderServiceDeps & {
+    taxIds?: TaxEvidenceIdProvider;
+    buyerSnapshotIds?: BuyerSnapshotIdProvider;
+  } = {},
 ): Promise<BegunCheckout> {
-  const placed = await placeOrder(input, policyId, deps);
-  const initiation = await initiateOrderPayment(placed.order, args.provider, args.port);
+  const parsed = PlaceOrderInput.safeParse(input);
+  if (!parsed.success) throw new InvalidOrderInputError(["(root)"]);
+  const v = parsed.data;
+
+  /* Buyer details are validated BEFORE anything else runs. Completing a purchase
+     is not anonymous, and discovering that only after pricing and gating would
+     mean doing all that work for a checkout that cannot complete. */
+  const detailsParsed = BuyerCheckoutDetailsInput.safeParse(args.buyerDetails);
+  if (!detailsParsed.success) {
+    throw new BuyerSnapshotError(
+      "INVALID_DETAILS",
+      "Buyer checkout details are missing or malformed",
+    );
+  }
+  const details = detailsParsed.data;
+
+  /* — 1. Price, from authoritative state. Writes nothing. — */
+  const prepared = await prepareCheckout(v, policyId, deps);
+
+  /* — 2. Risk gate, BEFORE anything is written. —
+   *
+   * Denying here rather than after `placeOrder` is deliberate: a denied
+   * transaction leaves NO Order behind. A table of PENDING_PAYMENT rows that
+   * were never allowed to proceed is a table nobody can interpret later. */
+  const decision = await evaluateTransactionRisk(
+    {
+      currency: prepared.quote.currency,
+      commercialRetailAmountMinorUnits:
+        prepared.quote.quotedCommercialRetailAmountMinorUnits,
+      sellerParticipantId: prepared.sellerParticipantId,
+      promoterParticipantId: prepared.promoterParticipantId,
+      /* On a promoted placement the promoter owns the storefront, so the
+         promoter's clearance is the one exposure has always been about. */
+      storefrontOwnerParticipantId:
+        prepared.promoterParticipantId ?? prepared.sellerParticipantId,
+    },
+    args.riskPolicyId,
+    v.placedAt,
+    deps,
+  );
+  if (!riskAllowed(decision)) {
+    throw new TransactionDeniedByRiskError(decision.reasonCodes);
+  }
+
+  /* — 3. Tax, from an authoritative engine. —
+   *
+   * An adapter that cannot compute THROWS; it never returns a convenient zero.
+   * So a deployment with no tax engine cannot sell, which is the whole point of
+   * replacing the hard-coded zero `1.0` and `1.1` carried. */
+  const quote = await args.taxPort.calculate({
+    currency: prepared.quote.currency,
+    commercialRetailAmountMinorUnits: prepared.quote.quotedCommercialRetailAmountMinorUnits,
+    shippingAmountMinorUnits: v.shippingAmountMinorUnits,
+    internalProductId: prepared.internalProductId,
+    sellerParticipantId: prepared.sellerParticipantId,
+    /* The AUTHORITATIVE jurisdiction, derived from the buyer's billing address
+       and from nothing else. Never an IP: an IP locates a network interface,
+       not a buyer, and sourcing tax from one is guessing with a number that
+       looks authoritative. */
+    buyerJurisdictionCode: taxJurisdictionCodeFor(details.billingAddress),
+    at: v.placedAt,
+  });
+
+  /* — 4. Place the Order, carrying the calculated tax. — */
+  const placed = await placeOrder(
+    { ...v, taxAmountMinorUnits: quote.taxAmountMinorUnits },
+    policyId,
+    deps,
+  );
+
+  /* — 4b. Does this basket need a delivery address? —
+   *
+   * Read from EXPLICIT Product delivery modes, never inferred. Written as a
+   * basket rule because the policy is a property of a basket: encoding today's
+   * one-Listing limit into it would mean rewriting the POLICY, not just the
+   * plumbing, the day a second line exists.
+   *
+   * An unknown mode REFUSES. Guessing digital ships nothing to a buyer expecting
+   * a parcel; guessing physical demands an address nobody needs. */
+  const fulfillment = evaluateBasketFulfillment(
+    await resolveBasketDeliveryLines(deps.db ?? getPrisma(), [prepared.internalProductId]),
+  );
+
+  if (fulfillment.requiresShippingAddress && details.shippingAddress === null) {
+    throw new BuyerSnapshotError(
+      "SHIPPING_ADDRESS_REQUIRED",
+      "This purchase requires a delivery address",
+    );
+  }
+
+  /* — 5. Record WHO is buying. —
+   *
+   * Before any payment, so a charge is never taken from a buyer Monacado has no
+   * record of. `BUYER_SUPPLIED` — the confirmation path supersedes it with the
+   * identity the payment actually authorized. */
+  const snapshot = await captureBuyerSnapshot(
+    {
+      orderId: placed.order.orderId,
+      details: {
+        ...details,
+        /* An all-digital basket stores no shipping address even if a buyer
+           volunteered one: not asking is the policy, and quietly keeping what
+           was typed anyway would make the record disagree with it. */
+        shippingAddress: fulfillment.requiresShippingAddress ? details.shippingAddress : null,
+      },
+      capturedAt: v.placedAt,
+    },
+    {
+      ...(deps.db === undefined ? {} : { db: deps.db }),
+      ...(deps.buyerSnapshotIds === undefined ? {} : { ids: deps.buyerSnapshotIds }),
+    },
+  );
+
+  /* — 6. Record WHY that tax was charged. —
+   *
+   * After the Order because it points at one; before payment because an Order
+   * whose tax nobody can explain must never be charged. `requireTaxQuoteMatches
+   * Order` refuses if the Listing moved between pricing and placement. */
+  await recordOrderTaxEvidence(
+    {
+      order: placed.order,
+      quote,
+      recordedAt: v.placedAt,
+      /* The linkage that makes "what address was this tax calculated from"
+         answerable years later. */
+      buyerSnapshotId: snapshot.buyerSnapshotId,
+    },
+    { ...(deps.db === undefined ? {} : { db: deps.db }), ...(deps.taxIds === undefined ? {} : { ids: deps.taxIds }) },
+  );
+
+  /* — 7. Only now, a payment. — */
+  const initiation = await initiateOrderPayment(placed.order, args.provider, args.port, {
+    collectShippingAddress: fulfillment.requiresShippingAddress,
+  });
   return {
     order: placed.order,
     guestClaimCode: placed.guestClaimCode,
     buyerTotalMinorUnits: placed.buyerTotalMinorUnits,
     initiation,
+    riskDecision: decision,
+    taxQuote: quote,
+    buyerSnapshot: snapshot,
+    fulfillment,
   };
 }
 

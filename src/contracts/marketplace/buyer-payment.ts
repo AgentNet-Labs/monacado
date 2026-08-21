@@ -73,6 +73,19 @@ export const BuyerPaymentRequest = z.strictObject({
    * worth designing out rather than documenting.
    */
   idempotencyKey: z.string().min(1).max(191),
+  /**
+   * Whether the provider must collect a delivery address (Phase 1.2).
+   *
+   * **An instruction about collection, not a fact about the buyer.** It carries
+   * no address, no name, and no contact — every one of those is still forbidden
+   * by `NEVER_ON_BUYER_PAYMENT_REQUEST`. It exists because the decision belongs
+   * to Monacado's basket, not to a payment page: an all-digital purchase must
+   * not be asked for a delivery address, and only Monacado knows which this is.
+   *
+   * Defaults to `false`, so a caller that has not thought about it asks for
+   * nothing rather than demanding data it does not need.
+   */
+  collectShippingAddress: z.boolean().default(false),
 });
 export type BuyerPaymentRequest = z.infer<typeof BuyerPaymentRequest>;
 
@@ -317,9 +330,13 @@ export type BuyerPaymentDisposition = z.infer<typeof BuyerPaymentDisposition>;
  *
  * Three rules make that safe, and all three are asserted by tests:
  *
- *   1. **Never persisted.** `NEVER_PERSISTED_FROM_CONFIRMATION` names it, no
- *      column exists for it on any table, and the delivery layer stores only a
- *      SHA-256 digest — the same construction `0M.9` uses for a guest claim code.
+ *   1. **Never persisted *by this path*.** `NEVER_PERSISTED_FROM_CONFIRMATION`
+ *      names it, no column of that name exists on any table, and the delivery
+ *      layer stores only a SHA-256 digest. A completed Order does record the
+ *      buyer's contact — on `OrderBuyerSnapshot`, deliberately and separately,
+ *      because a merchant of record must be able to reach the person it charged.
+ *      That is one governed record, not a value scattered by whatever happened
+ *      to be in flight.
  *   2. **Never on the request.** `BuyerPaymentRequest` has no field for it and
  *      `NEVER_ON_BUYER_PAYMENT_REQUEST` already forbids one. It travels *inward*
  *      from the provider only.
@@ -336,6 +353,23 @@ const confirmationBase = {
   provider: PaymentProvider,
   /** Transient. Digested at the delivery boundary and never stored raw. */
   buyerContact: BuyerContact.nullable(),
+  /**
+   * The details the completed payment **actually authorized** (Phase 1.2).
+   *
+   * Read inward from the provider and used to supersede the buyer-typed
+   * snapshot, because a browser can post anything and a completed payment
+   * cannot. Typed loosely here so this contract stays free of provider shapes;
+   * the confirmation path validates it.
+   */
+  confirmedDetails: z
+    .object({
+      name: z.string().nullable(),
+      email: z.string().nullable(),
+      billingAddress: z.unknown().nullable(),
+      shippingAddress: z.unknown().nullable(),
+    })
+    .nullable()
+    .default(null),
   /**
    * The provider's own identifier for this notification, kept so an operator can
    * correlate one delivery with one provider record. No decision is made from it.

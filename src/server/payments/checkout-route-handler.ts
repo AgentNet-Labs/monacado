@@ -22,6 +22,8 @@
  * | go-live approval | the governed `ParticipantCommerceApproval` | a client passing `APPROVED` makes a Listing purchasable |
  * | payment outcome | **nowhere** — no such field exists | this is the whole point |
  * | `placedAt` | the injected clock | a client-chosen instant prices a sale window that has closed |
+ * | buyer name, email, billing address | **the client — required** (1.2) | a merchant of record cannot source tax, send a receipt, or answer support without them. An address is not a price, and none of the refusals below is weakened |
+ * | shipping address | the client, **required only for a physical basket** | whether it is needed is decided from explicit Product delivery modes, never from what the client sends |
  *
  * ## Guest by default
  *
@@ -42,6 +44,15 @@
 import "../server-only";
 import { z } from "zod";
 import { INTERNAL_LISTING_ID_RE } from "../../contracts/marketplace/identity";
+import { AccountEmail } from "../../contracts/account/account";
+import {
+  CountryCode,
+  RegionCode,
+} from "../../contracts/marketplace/order-buyer-snapshot";
+import {
+  BuyerSnapshotError,
+  type BuyerSnapshotIdProvider,
+} from "../marketplace/order-buyer-snapshot-service";
 import type { BuyerPaymentInitiationPort } from "../../contracts/marketplace/buyer-payment";
 import { readSessionCookie } from "../account/session-cookie";
 import { resolveAuthenticatedPrincipal } from "../account/account-principal";
@@ -49,6 +60,12 @@ import { getPrisma } from "../db/client";
 import type { OrderIdProvider } from "../marketplace/order-ids";
 import type { ParticipantIdProvider } from "../marketplace/participant-ids";
 import type { GuestClaimCodeProvider } from "../marketplace/guest-claim-code";
+import type { TaxCalculationPort } from "../../contracts/marketplace/tax-calculation";
+import { resolveTaxPort } from "../tax/tax-adapters";
+import type { TaxEvidenceIdProvider } from "../tax/tax-calculation-ids";
+import { TaxError } from "../tax/tax-errors";
+import { TransactionDeniedByRiskError, RiskError } from "../risk/risk-errors";
+import { BasketFulfillmentError } from "../../contracts/marketplace/basket-fulfillment";
 import { beginCheckout } from "./executable-checkout-service";
 import { createStripeBuyerPaymentAdapter } from "./stripe-buyer-payment-adapter";
 import { StripePaymentInitiationError } from "./stripe-buyer-payment-adapter";
@@ -85,7 +102,66 @@ export const BeginCheckoutRequest = z.strictObject({
   internalListingId: z
     .string()
     .regex(INTERNAL_LISTING_ID_RE, "internalListingId must be mon:listing:<opaque>"),
+
+  /* — Buyer details (Phase 1.2 correction) —
+   *
+   * Completing a purchase is not anonymous. These are the fields a merchant of
+   * record genuinely requires: without them Monacado cannot source tax, evaluate
+   * compliance, send a receipt, or answer a support question.
+   *
+   * Widening the request by exactly this much does NOT weaken what it refuses.
+   * Every entry in `NEVER_ON_BEGIN_CHECKOUT_REQUEST` is still rejected: an
+   * address is not a price, a policy, a party, or a payment outcome. */
+  buyerName: z.string().min(1).max(200),
+  buyerEmail: AccountEmail,
+
+  billingLine1: z.string().min(1).max(200),
+  billingLine2: z.string().min(1).max(200).optional(),
+  billingCity: z.string().min(1).max(120),
+  billingRegion: RegionCode.optional(),
+  billingPostalCode: z.string().min(1).max(32).optional(),
+  billingCountryCode: CountryCode,
+
+  /* Conditionally required: the service refuses a physical basket without one,
+     and an all-digital basket is never asked. Optional HERE because the request
+     shape cannot know what the basket delivers — that is `evaluateBasket
+     Fulfillment`'s decision, taken from explicit Product delivery modes. */
+  shippingLine1: z.string().min(1).max(200).optional(),
+  shippingLine2: z.string().min(1).max(200).optional(),
+  shippingCity: z.string().min(1).max(120).optional(),
+  shippingRegion: RegionCode.optional(),
+  shippingPostalCode: z.string().min(1).max(32).optional(),
+  shippingCountryCode: CountryCode.optional(),
 });
+
+/** Assemble the flat form fields into the structured details the service takes. */
+export function toBuyerDetails(request: BeginCheckoutRequest) {
+  return {
+    name: request.buyerName,
+    email: request.buyerEmail,
+    billingAddress: {
+      line1: request.billingLine1,
+      line2: request.billingLine2 ?? null,
+      city: request.billingCity,
+      region: request.billingRegion ?? null,
+      postalCode: request.billingPostalCode ?? null,
+      countryCode: request.billingCountryCode,
+    },
+    shippingAddress:
+      request.shippingLine1 === undefined ||
+      request.shippingCity === undefined ||
+      request.shippingCountryCode === undefined
+        ? null
+        : {
+            line1: request.shippingLine1,
+            line2: request.shippingLine2 ?? null,
+            city: request.shippingCity,
+            region: request.shippingRegion ?? null,
+            postalCode: request.shippingPostalCode ?? null,
+            countryCode: request.shippingCountryCode,
+          },
+  };
+}
 export type BeginCheckoutRequest = z.infer<typeof BeginCheckoutRequest>;
 
 /**
@@ -126,6 +202,9 @@ export const CHECKOUT_ERROR_CODES = {
   listingNotFound: "LISTING_NOT_FOUND",
   notPurchasable: "LISTING_NOT_PURCHASABLE",
   notConfigured: "CHECKOUT_NOT_CONFIGURED",
+  riskDenied: "TRANSACTION_DENIED_BY_RISK",
+  taxUnavailable: "TAX_CALCULATION_UNAVAILABLE",
+  deliveryModeUnknown: "PRODUCT_DELIVERY_MODE_UNKNOWN",
   providerUnavailable: "PAYMENT_PROVIDER_UNAVAILABLE",
   unavailable: "CHECKOUT_UNAVAILABLE",
 } as const;
@@ -196,6 +275,10 @@ export interface CheckoutRouteDeps {
   ids?: OrderIdProvider;
   notificationIds?: ParticipantIdProvider;
   claimCodes?: GuestClaimCodeProvider;
+  /** Phase 1.2 — injected so a test drives checkout without a tax engine. */
+  taxPort?: TaxCalculationPort;
+  taxIds?: TaxEvidenceIdProvider;
+  buyerSnapshotIds?: BuyerSnapshotIdProvider;
   now?: () => string;
 }
 
@@ -303,12 +386,25 @@ export async function handleBeginCheckoutRequest(
         placedAt: now,
       },
       config.policyId,
-      { provider: "STRIPE", port },
+      {
+        provider: "STRIPE",
+        port,
+        /* Phase 1.2 — both required. An unconfigured deployment's tax adapter
+           THROWS and its risk gate DENIES, so neither is a path to selling
+           untaxed or ungated. */
+        taxPort: deps.taxPort ?? resolveTaxPort(deps.env),
+        riskPolicyId: config.riskPolicyId,
+        buyerDetails: toBuyerDetails(parsed),
+      },
       {
         db,
         ...(deps.ids === undefined ? {} : { ids: deps.ids }),
         ...(deps.notificationIds === undefined ? {} : { notificationIds: deps.notificationIds }),
         ...(deps.claimCodes === undefined ? {} : { claimCodes: deps.claimCodes }),
+        ...(deps.taxIds === undefined ? {} : { taxIds: deps.taxIds }),
+        ...(deps.buyerSnapshotIds === undefined
+          ? {}
+          : { buyerSnapshotIds: deps.buyerSnapshotIds }),
       },
     );
 
@@ -342,11 +438,36 @@ export async function handleBeginCheckoutRequest(
     if (error instanceof ListingNotPurchasableError) {
       return refuse(409, CHECKOUT_ERROR_CODES.notPurchasable);
     }
+    /* Phase 1.2 — a governed refusal, not an outage. The bounded reason codes
+       are safe to return: they name a control, never an amount or a party. */
+    if (error instanceof TransactionDeniedByRiskError) {
+      return {
+        status: 409,
+        headers: { ...CHECKOUT_HEADERS },
+        body: { error: CHECKOUT_ERROR_CODES.riskDenied, reasonCodes: error.reasonCodes },
+        redirectTo: null,
+      };
+    }
+    /* Tax could not be established. Monacado refuses to sell rather than sell
+       untaxed — the difference is a liability nobody recorded. */
+    if (error instanceof TaxError) {
+      return refuse(503, CHECKOUT_ERROR_CODES.taxUnavailable);
+    }
+    if (error instanceof RiskError) {
+      return refuse(503, CHECKOUT_ERROR_CODES.notConfigured);
+    }
     if (
       error instanceof InvalidOrderInputError ||
-      error instanceof OrderCurrencyMismatchError
+      error instanceof OrderCurrencyMismatchError ||
+      error instanceof BuyerSnapshotError
     ) {
       return refuse(400, CHECKOUT_ERROR_CODES.invalidRequest);
+    }
+    /* A Product that does not declare how it is delivered. Fails closed: 409
+       rather than 400, because nothing the client sent is wrong — the catalogue
+       is incomplete. */
+    if (error instanceof BasketFulfillmentError) {
+      return refuse(409, CHECKOUT_ERROR_CODES.deliveryModeUnknown);
     }
     if (error instanceof NoEffectiveCommercialPolicyError) {
       return refuse(503, CHECKOUT_ERROR_CODES.notConfigured);

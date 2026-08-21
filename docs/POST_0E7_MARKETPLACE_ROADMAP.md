@@ -103,7 +103,8 @@ labels sort in.
 | 16 | **0M.T1** | **MoR Transaction Accounting Foundation** | **complete** |
 | 17 | **0M.9** | **Buyer Checkout, Order, Commission, Payout, and Review-Submission Foundation** | **complete** — `6abc3ac`; **closes the `0M.x` sequence** |
 | 18 | **1.0** | **Executable Checkout and Payment Integration (Stripe test mode)** — the first operational phase | **complete** — `cb5281f` |
-| 19 | **1.1** | **Order Expiry and Buyer Notification Delivery** — the first concrete notification channel | **complete** |
+| 19 | **1.1** | **Order Expiry and Buyer Notification Delivery** — the first concrete notification channel | **complete** — `a0dba2f` |
+| 20 | **1.2** | **Pre-Live Commerce Controls** — tax boundary, reversal accounting, risk gate, payout hold, live-readiness gate | **complete** |
 
 ### Forward sequence
 
@@ -126,16 +127,23 @@ together with the live-mode gate itself, enumerated in
 abandoned checkout now resolves on Stripe's own `checkout.session.expired`, and
 buyers — guests included — are actually told what happened.
 
-**The next work is the production gates themselves**, not another feature:
+**`1.2` built the minimum controls live money requires**, and deliberately did not
+enable it: a mandatory tax boundary, reversal accounting, a transaction risk gate,
+a payout hold, and a readiness evaluation that **fails closed and currently cannot
+pass**.
+
+**What remains is the operational half of each workstream**, not another feature:
 
 | Next | Why it is next |
 | --- | --- |
-| **`0M.T2` — tax** | Checkout sends `taxAmountMinorUnits: 0` because nothing calculates tax. Charging a real buyer without nexus determination, product tax classification, sourcing, and remittance is a compliance failure, not a rough edge. **The hardest blocker to live mode.** |
-| **`0M.R2` — transaction risk** | No velocity limits, transaction caps, reserves, payout holds, or per-transaction policy selection exist. Required before payouts move irreversibly. |
+| **`0M.T2` — tax operations** | `1.2` supplied the boundary and evidence; nexus determination, product tax classification, sourcing, exemption certificates, filing, and remittance remain. **And the destination problem**: a real engine needs to know where the buyer is, and Monacado collects no address. **The hardest blocker to live mode.** |
+| **`0M.R2` — risk operations** | `1.2` supplied a ceiling, restriction and approval checks, and a payout hold. Velocity limits, reserves, per-transaction policy selection, and a review function remain — and a scoring model without somebody to review its output would produce refusals nobody can explain. |
 | **`0M.N2` — the canonical channel** | `1.1` built a *supplemental* channel. The admin-panel view, the `SUPER_OWNER`/`ADMIN` visibility rule, and notification preferences remain unbuilt. It also owns the **pre-live gate `1.1` recorded rather than solved**: delivery is at-most-once with no retry, and a guest's address cannot be recovered from a digest, so a failed guest receipt cannot be re-sent from Monacado's data alone. |
+| **Live-mode Stripe support** | Does not exist. `STRIPE_MODES` has one member, so `LIVE_PROVIDER_NOT_ENABLED` is reported by construction and no configuration clears it. Building it is a deliberate, reviewed phase. |
 
 | Later operational candidate | Why not now |
 | --- | --- |
+| **Digital delivery** — entitlements, artifacts, grants, tokens, the download endpoint, seller re-download authorization | `1.2` declared the **policy** (durable entitlement vs transient token, five self-service successful downloads, seller-owned exceptions, no permanent secret URLs) and built none of the machinery. No persistence was needed: `PurchaseEvidence` and the Product's `deliveryMode` already anchor a future entitlement without rewriting Order or Product semantics |
 | **Payout execution** — proceeds to sellers and promoters through Connect | `1.0` reads Connect readiness through `0M.8`'s port and creates no transfer. Payouts need `0M.R2`'s holds, reserves, and caps first; paying out without them is paying out irreversibly |
 | **Seller/promoter Connect onboarding UI** | The test-mode adapter and the account-link call exist; nothing renders them. It needs the participant-facing surface `0M.8` deferred |
 | **Refunds, chargebacks, and reversal accounting** | `0M.T2`'s subject. A live processor produces all three within days |
@@ -191,6 +199,13 @@ they gate:
    failure notices, and expiry notices — **including to guests, with no
    participant fabricated** — plus supplemental notices to sellers and promoters.
    Delivery evidence is persisted; the address is not.
+10. ~~**`1.2` — Pre-Live Commerce Controls.**~~ **Complete.** A mandatory
+    provider-neutral tax boundary that **refuses rather than defaults**, tax
+    evidence explaining every charge, full reversal accounting recorded **beside**
+    the immutable snapshot rather than editing it, a narrow synchronous risk gate
+    on a versioned policy, a payout hold reusing `0M.R1`'s own restriction
+    records, and a live-commerce readiness evaluation that fails closed. **No
+    live-money operation was implemented**, and Stripe remains test-mode only.
 
 Later, as production gates rather than sequence steps: **`0M.R2`** (transaction
 and commercial risk enforcement), **`0M.T2`** (tax execution, nexus, remittance,
@@ -1077,6 +1092,79 @@ belongs with `0M.N2` alongside bounce handling.
 
 Detail:
 [`ORDER_EXPIRY_AND_BUYER_NOTIFICATION_DELIVERY.md`](ORDER_EXPIRY_AND_BUYER_NOTIFICATION_DELIVERY.md).
+
+---
+
+## 1.2 — Pre-Live Commerce Controls
+
+**Complete.** The third operational phase, and the one that builds what live money
+requires **without enabling it**. `1.0` made a purchase executable and `1.1` made
+its outcome communicable; both ran on assumptions that are fine in test mode and
+indefensible with real money.
+
+**Tax is no longer an assumption.** Checkout obtains an authoritative `TaxQuote`
+before it places an Order, and `taxPort` is a **required argument** — there is no
+untaxed path that compiles. With no engine configured the adapter **throws**: a
+zero returned because tax is unconfigured is indistinguishable from a zero that is
+genuinely correct, and the difference is an uncollected liability nobody can find
+later. `OrderTaxEvidence` records which engine answered, on what basis, under
+which treatment, and the amount is **checked** against the Order rather than
+copied. Tax reaches the buyer's total and **no commercial basis** — a $100.00 sale
+with $10.00 tax still retains $8.50, not $9.35. **No tax vendor was selected or
+installed.**
+
+**Reversals are new evidence, never a correction.** `0M.T1` built the snapshot
+with no update path and said a reversal "will be recorded as its own entry rather
+than by editing this one". `TransactionReversal` is that entry: a test reads the
+snapshot before and after and asserts the rows are **equal**. The settlement row —
+`0M.T1`'s mutable half — advances to the `REVERSED` state that phase created in
+anticipation. No amount is a parameter; every figure is derived from the snapshot
+and balanced before writing. **Full reversals only**: a partial forces a decision
+about *whose* money comes back first, and every allocation rule is a commercial
+policy decision with different winners. Proceeds obligations are untouched and
+reconcile to **zero** by derivation.
+
+**The risk gate is narrow and versioned.** Four controls — a maximum commercial
+order amount, active restrictions, commerce approval, and payment readiness — each
+justified by something that could actually go wrong at launch. Thresholds live in
+`RiskPolicyVersionRow`, mirroring `0M.R1` exactly, so every decision names the
+exact `(policyId, policyVersion)` that produced it, on an **`ALLOW`** as well as a
+`DENY`. It **fails closed**: no active policy is a denial, never a default limit.
+It runs **before an Order is written**, so a denial leaves nothing behind.
+**No fraud scoring, ML, velocity engine, reserve system, chargeback prediction, or
+review workflow was built** — a score with nobody to review it is a number that
+blocks buyers for reasons no one can explain.
+
+**Payout holds reuse what already exists.** `advanceProceedsObligation` refuses
+`ELIGIBLE` when an active `payout:receive` restriction stands or the sale was
+reversed. `0M.R1`'s record already means "may not be paid", and a second flag
+would be a second answer that can disagree with it. **No payout is executed.**
+
+**Live-commerce readiness fails closed and currently cannot pass.**
+`LIVE_PROVIDER_NOT_ENABLED` is reported by construction — `STRIPE_MODES` has one
+member, so no configuration clears it. A test configures every other control and
+asserts readiness is **still** `false`. It is a readiness *decision*, not a
+switch: a test greps the module for every write method and asserts none.
+
+**Checkout collects what a merchant of record needs.** Buyer name, email, and a
+structured billing address are always required; a **shipping address only when the
+basket contains something physical**, decided from an explicit `deliveryMode`
+Product fact and never inferred from free-form metadata. An unknown mode fails
+closed. Guests remain first-class throughout, with no `Account` or
+`MarketplaceParticipant` created.
+
+**Digital delivery policy is declared, not built.** A completed digital purchase
+creates a durable entitlement; a download token is a transient credential and
+never the right itself. Five self-service successful downloads by default, the
+seller owning exceptions beyond that, and no permanent reusable secret URLs for
+externally hosted products.
+
+Additive migrations only, touching no pre-existing table.
+
+**Stripe remains test-mode only, and no live-money operation exists.**
+
+Detail, and the full remaining list before real-money launch:
+[`PRE_LIVE_COMMERCE_CONTROLS.md`](PRE_LIVE_COMMERCE_CONTROLS.md).
 
 ---
 

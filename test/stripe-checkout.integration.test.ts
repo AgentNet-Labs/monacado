@@ -66,6 +66,13 @@ import { handleOrderStatusRequest } from "../src/server/payments/order-status-ro
 import { handleBeginCheckoutRequest } from "../src/server/payments/checkout-route-handler";
 import { GUEST_CLAIM_COOKIE_NAME } from "../src/server/payments/checkout-route-handler";
 import { readListingCheckoutView } from "../src/server/payments/listing-checkout-view";
+import { createZeroRateTaxAdapter } from "../src/server/tax/tax-adapters";
+import type { TaxEvidenceIdProvider } from "../src/server/tax/tax-calculation-ids";
+import {
+  activateRiskPolicyVersion,
+  createRiskPolicy,
+  recordRiskPolicyVersion,
+} from "../src/server/risk/risk-policy-service";
 
 const RUN = process.env.RUN_DB_TESTS === "1";
 const db = RUN ? getPrisma() : (undefined as unknown as ReturnType<typeof getPrisma>);
@@ -119,9 +126,61 @@ const deliveryIds: NotificationDeliveryIdProvider = {
   nextDeliveryId: () => `mon:ndlv:${pad26(`${TAG}NDLV${next()}`)}`,
 };
 
+const taxIds: TaxEvidenceIdProvider = {
+  nextTaxEvidenceId: () => `mon:taxe:${pad26(`P10TTAXE${next()}`)}`,
+};
+
+const riskIds = {
+  nextRiskPolicyId: () => `mon:rpol:${pad26(`P10TRP0L${next()}`)}`,
+};
+
 const policyIds: CommercialPolicyIdProvider = {
   nextPolicyId: () => `mon:cpol:${pad26(`${TAG}P0L${next()}`)}`,
 };
+
+const BUYER_DETAILS = {
+  name: "Synthetic Buyer",
+  email: "p10t-buyer@example.test",
+  billingAddress: {
+    line1: "1 Test Street",
+    line2: null,
+    city: "Testville",
+    region: "CA",
+    postalCode: "94000",
+    countryCode: "US",
+  },
+  shippingAddress: {
+    line1: "9 Delivery Road",
+    line2: null,
+    city: "Shipton",
+    region: "NY",
+    postalCode: "10001",
+    countryCode: "US",
+  },
+} as const;
+
+const buyerSnapshotIds = {
+  nextBuyerSnapshotId: () => `mon:obsn:${pad26(`P10T0BSN${next()}`)}`,
+};
+
+/**
+ * The buyer fields every checkout now requires (Phase 1.2 correction).
+ *
+ * Completing a purchase is not anonymous. These fixtures buy DIGITAL products,
+ * so no delivery address is sent — and none is asked for.
+ */
+const CHECKOUT_FORM_FIELDS = {
+  buyerName: "Synthetic Buyer",
+  buyerEmail: "p10t-buyer@example.test",
+  billingLine1: "1 Test Street",
+  billingCity: "Testville",
+  billingRegion: "CA",
+  billingPostalCode: "94000",
+  billingCountryCode: "US",
+} as const;
+
+const checkoutForm = (internalListingId: string): string =>
+  new URLSearchParams({ internalListingId, ...CHECKOUT_FORM_FIELDS }).toString();
 
 const deps = () => ({ db, ids: orderIds, notificationIds, claimCodes });
 
@@ -171,6 +230,7 @@ const succeeded = (
   provider: "STRIPE",
   buyerContact: buyerEmail === null ? null : { email: buyerEmail },
   result: { outcome: "SUCCEEDED", provider: "STRIPE", providerTransactionRef: intentRef },
+  confirmedDetails: null,
   providerEventRef: `evt_${pad26(`${TAG}EVT${next()}`)}`,
   observedAt: CONFIRMED_AT,
 });
@@ -184,6 +244,7 @@ const failed = (
   provider: "STRIPE",
   buyerContact: buyerEmail === null ? null : { email: buyerEmail },
   result: { outcome: "FAILED", failureCode: "DECLINED" },
+  confirmedDetails: null,
   providerEventRef: `evt_${pad26(`${TAG}EVT${next()}`)}`,
   observedAt: CONFIRMED_AT,
 });
@@ -197,6 +258,7 @@ const abandoned = (
   orderId,
   provider: "STRIPE",
   buyerContact: buyerEmail === null ? null : { email: buyerEmail },
+  confirmedDetails: null,
   providerEventRef: `evt_${pad26(`${TAG}EVT${next()}`)}`,
   observedAt: CONFIRMED_AT,
 });
@@ -260,6 +322,12 @@ async function cleanup(): Promise<void> {
     await db.notificationDelivery.deleteMany({
       where: { subjectKind: "ORDER", subjectRef: { in: orderIdList } },
     });
+    /* Phase 1.2 evidence holds RESTRICT keys onto the Order and the snapshot. */
+    await db.transactionReversal.deleteMany({ where: { orderId: { in: orderIdList } } });
+    /* Tax evidence points at the buyer snapshot, which points at the Order —
+       both RESTRICT, so they come off in that order. */
+    await db.orderTaxEvidence.deleteMany({ where: { orderId: { in: orderIdList } } });
+    await db.orderBuyerSnapshot.deleteMany({ where: { orderId: { in: orderIdList } } });
     await db.reviewSubmissionAuthority.deleteMany({ where: { orderId: { in: orderIdList } } });
     await db.purchaseEvidence.deleteMany({ where: { orderId: { in: orderIdList } } });
 
@@ -312,22 +380,77 @@ async function cleanup(): Promise<void> {
   await db.commercialPolicyVersionRow.deleteMany({ where: { policyId: ownPolicies } });
   await db.commercialPolicy.deleteMany({ where: { id: ownPolicies } });
 
+  const ownRiskPolicies = { startsWith: `mon:rpol:${TAG}` };
+  await db.riskPolicyVersionRow.deleteMany({ where: { policyId: ownRiskPolicies } });
+  await db.riskPolicy.deleteMany({ where: { id: ownRiskPolicies } });
+
+  /* Product source versions carry the authoritative delivery mode and hold a
+     RESTRICT key onto the stable Product row, so they come off first. */
+  await db.productSourceRecordVersionRow.deleteMany({
+    where: { internalProductId: { startsWith: PRODUCT_PREFIX } },
+  });
   await db.product.deleteMany({ where: { internalProductId: { startsWith: PRODUCT_PREFIX } } });
 }
 
 // — Fixtures —
 
-async function seedProduct(): Promise<string> {
+/**
+ * A Product source version declaring how the Product is delivered.
+ *
+ * Phase 1.2 made `deliveryMode` an explicit authoritative Product fact, and
+ * checkout **fails closed** when it is unknown — so every fixture states it
+ * rather than relying on a default. That is the point: a Product that does not
+ * say how it reaches a buyer cannot be sold.
+ */
+async function seedProductVersion(
+  internalProductId: string,
+  sourceRecordId: string,
+  deliveryMode: "DIGITAL" | "PHYSICAL",
+): Promise<void> {
+  await db.productSourceRecordVersionRow.create({
+    data: {
+      internalProductId,
+      sourceRecordId,
+      sourceRecordVersion: "1",
+      sourceSystem: "monacado",
+      sourceRecordType: "Product",
+      sourceClass: "governed-database-record",
+      authorityCreatorId: `mon:creator:${pad26(`${TAG}CRE${next()}`)}`,
+      authorityScope: "product-facts",
+      authorityAuthorizationState: "authorized",
+      factName: "Synthetic Product",
+      factProductVersion: 1,
+      factPromotable: true,
+      factGeneralAvailabilityState: "available",
+      factDeliveryMode: deliveryMode,
+      factCreatorRef: `mon:creator:${pad26(`${TAG}CRF${next()}`)}`,
+      capsuleSemver: "1.0.0",
+      mappingVersion: "product-mapping/1.0.0",
+      capsuleGeneratedAt: new Date(NOW),
+      acquiredAt: new Date(NOW),
+      sourceCreatedAt: new Date(NOW),
+      sourceUpdatedAt: new Date(NOW),
+      recordStatus: "DRAFT",
+    },
+  });
+}
+
+
+async function seedProduct(
+  deliveryMode: "DIGITAL" | "PHYSICAL" = "DIGITAL",
+): Promise<string> {
   const n = next();
   const internalProductId = `${PRODUCT_PREFIX}${pad26(String(n)).slice(0, 26 - PRODUCT_TAG.length)}`;
+  const sourceRecordId = `mon:srec:${pad26(`P10TPSREC${n}`)}`;
   await db.product.create({
     data: {
       internalProductId,
-      sourceRecordId: `mon:srec:${pad26(`P10TPSREC${n}`)}`,
+      sourceRecordId,
       currentSourceRecordVersion: "1",
       recordStatus: "DRAFT",
     },
   });
+  await seedProductVersion(internalProductId, sourceRecordId, deliveryMode);
   return internalProductId;
 }
 
@@ -410,6 +533,45 @@ async function seedPolicy(): Promise<string> {
     { db },
   );
   await activateCommercialPolicyVersion(
+    {
+      policyId: policy.policyId,
+      policyVersion: "1",
+      activatedByAccountId: RECORDER,
+      activatedAt: NOW,
+    },
+    { db },
+  );
+  return policy.policyId;
+}
+
+/**
+ * A risk policy with one ACTIVE version, permissive enough not to interfere.
+ *
+ * Phase 1.2 made the gate mandatory, so every checkout in these suites needs one.
+ * The ceiling is deliberately far above any fixture amount and both participant
+ * requirements are off — this suite is not testing the gate, and a policy that
+ * denied here would be testing 1.2 by breaking 1.0 and 1.1.
+ */
+async function seedRiskPolicy(): Promise<string> {
+  const policy = await createRiskPolicy(
+    { label: `risk ${next()}`, now: NOW },
+    { db, ids: riskIds },
+  );
+  await recordRiskPolicyVersion(
+    {
+      policyId: policy.policyId,
+      policyVersion: "1",
+      currency: "USD",
+      maxSingleOrderCommercialAmountMinorUnits: 100_000_000,
+      requireSellerCommerceApproval: false,
+      requireSellerPaymentReadiness: false,
+      effectiveFrom: NOW,
+      recordedByAccountId: RECORDER,
+      recordedAt: NOW,
+    },
+    { db },
+  );
+  await activateRiskPolicyVersion(
     {
       policyId: policy.policyId,
       policyVersion: "1",
@@ -529,8 +691,14 @@ async function begin(internalListingId: string, policyId: string, buyerAccountId
   const begun = await beginCheckout(
     CHECKOUT_INPUT(internalListingId, buyerAccountId),
     policyId,
-    { provider: "STRIPE", port },
-    deps(),
+    {
+      provider: "STRIPE",
+      port,
+      taxPort: createZeroRateTaxAdapter(),
+      riskPolicyId: await seedRiskPolicy(),
+      buyerDetails: BUYER_DETAILS,
+    },
+    { ...deps(), taxIds, buyerSnapshotIds },
   );
   return { begun, port };
 }
@@ -652,6 +820,11 @@ describeDb("1.0 — executable checkout, Stripe-confirmed", () => {
       expect(port.requests[0]!.amountMinorUnits).toBe(10_000);
       expect(Object.keys(port.requests[0]!).sort()).toEqual([
         "amountMinorUnits",
+        /* Phase 1.2 — an instruction about what the PROVIDER must collect, not a
+           fact about the buyer. It carries no address, name, or contact, and the
+           point of this assertion is unchanged: nothing about the commercial
+           split crosses this boundary. */
+        "collectShippingAddress",
         "currency",
         "idempotencyKey",
         "orderId",
@@ -887,7 +1060,7 @@ describeDb("1.0 — executable checkout, Stripe-confirmed", () => {
           contentType: "application/x-www-form-urlencoded",
           originHeader: "https://monacado.test",
           cookieHeader: null,
-          rawBody: `internalListingId=${encodeURIComponent(listing.record.internalListingId)}`,
+          rawBody: checkoutForm(listing.record.internalListingId),
         },
         {
           db,
@@ -895,7 +1068,10 @@ describeDb("1.0 — executable checkout, Stripe-confirmed", () => {
           ids: orderIds,
           notificationIds,
           claimCodes,
-          config: { policyId, appOrigin: "https://monacado.test:443" },
+          taxPort: createZeroRateTaxAdapter(),
+          taxIds,
+          buyerSnapshotIds,
+          config: { policyId, riskPolicyId: await seedRiskPolicy(), appOrigin: "https://monacado.test:443" },
           now: () => CHECKOUT_AT,
         },
       );
@@ -927,7 +1103,7 @@ describeDb("1.0 — executable checkout, Stripe-confirmed", () => {
           contentType: "application/x-www-form-urlencoded",
           originHeader: "https://evil.example",
           cookieHeader: null,
-          rawBody: `internalListingId=${encodeURIComponent(listing.record.internalListingId)}`,
+          rawBody: checkoutForm(listing.record.internalListingId),
         },
         {
           db,
@@ -935,7 +1111,10 @@ describeDb("1.0 — executable checkout, Stripe-confirmed", () => {
           ids: orderIds,
           notificationIds,
           claimCodes,
-          config: { policyId, appOrigin: "https://monacado.test:443" },
+          taxPort: createZeroRateTaxAdapter(),
+          taxIds,
+          buyerSnapshotIds,
+          config: { policyId, riskPolicyId: await seedRiskPolicy(), appOrigin: "https://monacado.test:443" },
           now: () => CHECKOUT_AT,
         },
       );
@@ -957,6 +1136,9 @@ describeDb("1.0 — executable checkout, Stripe-confirmed", () => {
           cookieHeader: null,
           rawBody: JSON.stringify({
             internalListingId: listing.record.internalListingId,
+            ...CHECKOUT_FORM_FIELDS,
+            /* The refusals are unchanged by 1.2's wider request: an address is
+               not a price, and these are still rejected. */
             amountMinorUnits: 1,
             policyId: "mon:cpol:ATTACKERSCH0ICE0000000000A",
           }),
@@ -967,7 +1149,10 @@ describeDb("1.0 — executable checkout, Stripe-confirmed", () => {
           ids: orderIds,
           notificationIds,
           claimCodes,
-          config: { policyId, appOrigin: "https://monacado.test:443" },
+          taxPort: createZeroRateTaxAdapter(),
+          taxIds,
+          buyerSnapshotIds,
+          config: { policyId, riskPolicyId: await seedRiskPolicy(), appOrigin: "https://monacado.test:443" },
           now: () => CHECKOUT_AT,
         },
       );
