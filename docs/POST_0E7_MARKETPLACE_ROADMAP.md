@@ -105,6 +105,8 @@ labels sort in.
 | 18 | **1.0** | **Executable Checkout and Payment Integration (Stripe test mode)** — the first operational phase | **complete** — `cb5281f` |
 | 19 | **1.1** | **Order Expiry and Buyer Notification Delivery** — the first concrete notification channel | **complete** — `a0dba2f` |
 | 20 | **1.2** | **Pre-Live Commerce Controls** — tax boundary, reversal accounting, risk gate, payout hold, live-readiness gate | **complete** |
+| 21 | **1.3** | **Marketplace Policy, Acceptance, Seller Support Contacts, and Email Verification** | **complete** — `c0b74e8` |
+| 22 | **1.4** | **Policy Bootstrap and Verification Email Delivery** — operational only; makes `1.3`'s two prerequisites satisfiable | **complete** |
 
 ### Forward sequence
 
@@ -131,6 +133,15 @@ buyers — guests included — are actually told what happened.
 enable it: a mandatory tax boundary, reversal accounting, a transaction risk gate,
 a payout hold, and a readiness evaluation that **fails closed and currently cannot
 pass**.
+
+**`1.3` wrote down what the marketplace is** — one versioned policy source, per-audience
+projection, acceptance evidence, seller support contacts, and email verification —
+and made an `ACTIVE` policy and a verified support contact prerequisites of both
+activation and checkout.
+
+**`1.4` made those two prerequisites satisfiable**: an idempotent, fail-closed
+policy bootstrap command, and verification-link delivery through `1.1`'s mail
+seam with a consumption endpoint. Operational only — no `1.3` semantic moved.
 
 **What remains is the operational half of each workstream**, not another feature:
 
@@ -1266,6 +1277,101 @@ Detail: [`MARKETPLACE_POLICY_ACCEPTANCE_AND_SUPPORT_CONTACTS.md`](MARKETPLACE_PO
 
 ---
 
+## 1.4 — Policy Bootstrap and Verification Email Delivery
+
+**Complete.** Operational, not architectural. `1.3` created two prerequisites and
+left both unreachable: no path outside a test fixture could put an `ACTIVE` policy
+version in a database, and `issueVerificationChallenge` returned a raw token to
+its caller with nothing to put it in front of the person who has to click it. A
+fresh deployment therefore refused every activation and every sale, correctly,
+forever. **No `1.3` semantic changed and no prerequisite was relaxed.**
+
+**A bootstrap that refuses rather than resolves.** `npm run policy:bootstrap`
+records the shipped version; `policy:bootstrap:activate` activates it;
+`policy:bootstrap:inspect` reports what it would do and writes nothing. Four
+situations are refusals with bounded codes rather than repairs: another version is
+`ACTIVE` (replacing it retires terms participants are live under, silently), the
+persisted hash disagrees with the source (the prose moved, and the row is the only
+evidence), the shipped version is `RETIRED` (`0M.R1`'s rule — a retired version
+never returns), and the named recorder does not exist. **No historical version is
+ever written to**, and there is no path here that retires anything.
+
+**Idempotent by observation, not by upsert.** The state is read and the action
+chosen from it, so a repeat writes no statement at all — the test asserts the row
+is byte-identical, not merely still active. An upsert would have quietly restamped
+`recordedAt`, `recordedByAccountId`, and `activatedAt` on exactly the row the
+table exists to keep immutable. The source hash is derived on every run, never
+read from a stored constant. The printed report is an allow-list built from the
+outcome alone — no connection string, no environment value, no account email, no
+prose.
+
+**Production writes are gated, not forbidden.** This command is eventually how a
+production deployment gets its governing policy, so refusing production
+permanently would be refusing the job. A **mutating** run against a
+production-classified target requires the argv flag `--confirm-production` and
+otherwise refuses before the database client is constructed and before any write;
+`--inspect` never needs it. The confirmation is deliberately not an environment
+variable — a variable is set once and then silently authorises every later
+invocation. `NODE_ENV` **classifies** the target and never authorises one, and
+nothing is inferred from `DATABASE_URL`, a CI variable, or a hostname. A preflight
+block naming the policy id, version, source hash, requested action, and
+environment classification is printed before any production-capable mutation,
+permitted or refused. **A production activation needs both words** —
+`policy:bootstrap:activate` *and* `--confirm-production` — because "write to
+production" and "start governing live sellers with these terms" are different
+answers. **No production execution has occurred**: the gate is exercised by
+classifying the environment, against the disposable local database.
+
+**Verification mail through `1.1`'s seam and no second one.** `MailPort`,
+`resolveMailPort`, and the same three adapters: no SMTP client, no vendor SDK, no
+template engine, no HTML part. Disabled stays first-class — the message is refused
+with `CHANNEL_NOT_CONFIGURED` and the challenge is still issued. **The origin is
+resolved before a challenge is minted**, so a misconfigured deployment refuses
+without having superseded a seller's working link. **The token is never returned**:
+`VerificationDispatch` has two fields, and the tests obtain the token the way a
+recipient does — out of the delivered body.
+
+**No `NotificationDelivery` row, deliberately.** `1.1`'s delivery table is evidence
+about notices accompanying marketplace *obligations*, and its three vocabularies
+are `0M.N1`'s. A verification link is an account-security credential owing nothing
+and confirming nothing; fitting it in meant widening all three and making "what
+does Monacado owe?" harder to answer for one row. Delivery evidence for
+non-obligation mail is `0M.N2`'s.
+
+**The link carries the token and nothing else.** Origin from `MONACADO_APP_ORIGIN`
+— the variable `1.0` already declared, validated by the same `normalizeOrigin`,
+imported rather than restated — and **never** from a request `Host` header, which
+would turn every verification email into a link to whatever host asked for it. No
+participant, contact, challenge, or account id appears in the URL or in the
+message; the message does not even name the address it verifies.
+
+**One endpoint, three answers, and no oracle.** `GET /verify-email?token=…`
+verifies, reports already-used, or reports not-valid. Expired, superseded, and
+unknown collapse into one answer — `1.3`'s rule, because distinguishing them makes
+the page a probe for which tokens exist — and a test asserts a never-issued token
+and a superseded one are indistinguishable. The result is one field: no address,
+no participant, no contact. A malformed token is refused without a lookup.
+
+**Reissue is supersession, and there is no public endpoint.** A new request
+supersedes the outstanding challenge, so only the newest link can verify. The
+acting account must own the participant, the destination is read from `Account` or
+the contact row and never chosen by the caller, and nomination stays a separate
+deliberate act. **Rate limiting is not implemented** and is recorded as a future
+operational control — safe to omit only because the traffic cannot be aimed.
+
+**Nothing is auto-approved.** Verification satisfies a *prerequisite*; a test
+asserts the participant is still `DRAFT` with zero activation rows afterwards.
+What changes is only that the canonical resolver now returns the address.
+Bootstrapping the policy activates nobody. Checkout's fail-closed behaviour is
+untouched.
+
+**No migration** — `1.3`'s tables carry everything. **Stripe remains test-mode
+only**, and no mail vendor was selected.
+
+Detail: [`POLICY_BOOTSTRAP_AND_VERIFICATION_EMAIL_DELIVERY.md`](POLICY_BOOTSTRAP_AND_VERIFICATION_EMAIL_DELIVERY.md).
+
+---
+
 ## Standing constraints across the track
 
 1. **Publication stays gated and asynchronous.** Creators and promoters never hold
@@ -1292,3 +1398,4 @@ Detail: [`MARKETPLACE_POLICY_ACCEPTANCE_AND_SUPPORT_CONTACTS.md`](MARKETPLACE_PO
 - [`CDD_ARCHITECTURE_DECISIONS.md`](CDD_ARCHITECTURE_DECISIONS.md)
 - [`IDENTITY_SESSION_AND_INTERNAL_ENTITLEMENT_FOUNDATION.md`](IDENTITY_SESSION_AND_INTERNAL_ENTITLEMENT_FOUNDATION.md)
 - [`PRODUCT_PUBLICATION_WORKER_OPERATIONS_TRACK.md`](PRODUCT_PUBLICATION_WORKER_OPERATIONS_TRACK.md)
+- [`POLICY_BOOTSTRAP_AND_VERIFICATION_EMAIL_DELIVERY.md`](POLICY_BOOTSTRAP_AND_VERIFICATION_EMAIL_DELIVERY.md)
