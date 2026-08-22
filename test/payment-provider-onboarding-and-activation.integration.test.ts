@@ -68,6 +68,11 @@ import {
   ParticipantNotFoundError,
   RestrictionScopeNotAvailableInPhaseError,
 } from "../src/server/marketplace/participant-errors";
+import {
+  deleteParticipantPolicyRows,
+  ensureShippedMarketplacePolicyActive,
+  satisfyActivationPolicyPrerequisites,
+} from "./support/marketplace-policy-fixture";
 import { PARTICIPANT_ID_PATTERNS } from "../src/server/marketplace/participant-ids";
 import type { ParticipantIdProvider } from "../src/server/marketplace/participant-ids";
 import type {
@@ -136,6 +141,10 @@ const deps = () => ({ db, ids });
 async function cleanup(): Promise<void> {
   const owned = { participantId: { startsWith: `mon:mpart:${TAG}` } };
 
+  /* Phase 1.3 rows first. The acceptance key is RESTRICT — evidence does not
+     vanish because a row above it did — so an acceptance left behind would block
+     the participant delete below. */
+  await deleteParticipantPolicyRows(db, `mon:mpart:${TAG}`);
   await db.participantPaymentRequirementRow.deleteMany({
     where: { paymentAccount: { is: owned } },
   });
@@ -241,6 +250,14 @@ async function seedReadyForApproval() {
     deps(),
   );
   await enableProvider(participantId, ref);
+  /* Phase 1.3 added two activation prerequisites — accepted policy and a verified
+     support contact. They are real requirements, so the fixture satisfies them
+     rather than routing around them, and these 0M.8 assertions keep testing what
+     they were written to test. Phase 1.3's own suite covers the refusals. */
+  await satisfyActivationPolicyPrerequisites(
+    db,
+    { participantId, accountId, roles: ["SELLER"], now: NOW },
+  );
   await submitParticipantForActivation({ participantId, submittedAt: NOW }, deps());
   return { accountId, participantId, ref };
 }
@@ -269,6 +286,10 @@ describeDb("Phase 0M.8 — payment-provider onboarding and governed activation",
   beforeEach(async () => {
     await cleanup();
     REVIEWER = await seedReviewerAccount();
+    await ensureShippedMarketplacePolicyActive(db, {
+      recordedByAccountId: REVIEWER,
+      now: NOW,
+    });
   });
   afterAll(async () => {
     await cleanup();
@@ -839,11 +860,17 @@ describeDb("Phase 0M.8 — payment-provider onboarding and governed activation",
     });
 
     it("refuses approval while the provider has not reported ENABLED", async () => {
-      const { participantId } = await seedParticipant();
+      const { accountId, participantId } = await seedParticipant();
       await completeProfile(participantId);
       await registerParticipantPaymentAccount(
         { participantId, provider: "STRIPE", providerAccountRef: providerRef(), now: NOW },
         deps(),
+      );
+      /* The Phase 1.3 prerequisites are satisfied so that the refusal below is
+         provider readiness alone — the thing this assertion is about. */
+      await satisfyActivationPolicyPrerequisites(
+        db,
+        { participantId, accountId, roles: ["SELLER"], now: NOW },
       );
       await submitParticipantForActivation({ participantId, submittedAt: NOW }, deps());
 

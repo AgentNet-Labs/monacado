@@ -24,6 +24,10 @@
 
 import "dotenv/config";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  ensureShippedMarketplacePolicyActive,
+  verifyPrimarySupportContact,
+} from "./support/marketplace-policy-fixture";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { createAccount } from "../src/server/account/account-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
@@ -424,6 +428,10 @@ async function seedActiveParticipant() {
     where: { participantId },
     data: { status: "ACTIVE" },
   });
+  /* Phase 1.3 correction — checkout refuses a sale for a seller nobody can
+     reach. Verified here through the real challenge flow, because these
+     participants are made ACTIVE by direct update rather than through review. */
+  await verifyPrimarySupportContact(db, { participantId, accountId, now: NOW });
   return { participantId, accountId };
 }
 
@@ -620,7 +628,16 @@ const deliveriesFor = (orderId: string) =>
 const describeDb = RUN ? describe : describe.skip;
 
 describeDb("1.1 — order expiry and buyer notification delivery", () => {
-  beforeEach(cleanup);
+  beforeEach(async () => {
+    await cleanup();
+    /* Phase 1.3 correction — checkout refuses a sale it cannot bind to a
+       governing policy version. Seeding is idempotent and shared, so the row
+       survives this suite's cleanup and is written once. */
+    await ensureShippedMarketplacePolicyActive(db, {
+      recordedByAccountId: await seedAccount(),
+      now: NOW,
+    });
+  });
   afterAll(async () => {
     await cleanup();
     await disconnectPrisma();

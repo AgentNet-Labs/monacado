@@ -1168,6 +1168,104 @@ Detail, and the full remaining list before real-money launch:
 
 ---
 
+## 1.3 — Marketplace Policy, Acceptance, Seller Support Contacts, and Email Verification
+
+**Complete.** The fourth operational phase, and the one that writes down what the
+marketplace *is*. `1.0`–`1.2` built a purchase, its outcome, and the controls live
+money requires — while Monacado took payment as merchant of record without ever
+having stated what that means, and activated sellers with no verified way for a
+buyer to reach them.
+
+**One policy source, three renderings.** A structured versioned document whose
+sections declare their audiences; `selectSectionsForAudience` is the only
+projection, so a seller's onboarding page and a printable seller document cannot
+disagree about what a seller was told. Order is the document's, never re-sorted.
+Paragraphs carry **no markup**, so every channel renders the same source rather
+than three files that agree today. The policy **references** the commercial policy
+instead of restating any rate — a copied figure is a second authority capable of
+disagreeing with the one that actually priced a sale — and states operating rules
+rather than **any jurisdiction-specific legal conclusion**.
+
+**Versions mirror `0M.R1` exactly.** `DRAFT → ACTIVE → RETIRED`, one transaction to
+activate, at most one `ACTIVE` through the same `activeMarker` unique-index trick,
+and a retired version never returns. `recordMarketplacePolicyVersion` has **no
+`status` parameter**, so a caller cannot record a version as already governing
+somebody. Every version carries a `sha256` **derived** from its source and
+recomputed on every read: a governance row asserting a version is worthless if the
+prose behind it can move, and the drift that check catches is silent otherwise.
+
+**Acceptance is evidence with no mutable half.** One participant × one **exact**
+version × one audience, pinned by content hash. Seller and promoter are separate
+undertakings, because one acceptance standing in for the other would record an
+agreement nobody made. A newer version **does not touch** an older acceptance;
+re-acceptance is a new row and both remain queryable. **Buyers accept nothing** —
+gating a purchase behind a click-through adds friction to the one flow that must
+not have it, and a guest has no durable identity to record it against, so
+buyer-facing sections are disclosed rather than accepted.
+
+**Activation gained two prerequisites, and fails closed.** An activatable role must
+have accepted the current version, and a verified support contact must resolve.
+Distinct refusal codes, because the remedies differ, and a reviewer is told both at
+once. With no `ACTIVE` policy every required audience is outstanding — an
+unconfigured control that permits activation is not a control. *A deployment must
+therefore activate the shipped policy version before any participant can be
+activated.*
+
+**One resolver decides a seller's support address.** Verified dedicated → verified
+primary → unavailable, with two distinct unavailable reasons so an operator knows
+whether to chase onboarding or an outage. **No `support@` local part is required.**
+An unverified dedicated address never displaces a working primary: switching
+optimistically would make every typo an outage on the one channel a buyer uses to
+complain about it. The primary address is **never copied** out of `Account`.
+
+**Verification proves control at one instant, and stores no token.** Signed
+single-use link; **SMTP mailbox probing explicitly not used**. 256-bit token
+returned once, only its SHA-256 digest written, `timingSafeEqual` compared,
+24h TTL, consumed inside the same transaction that verifies the contact, and any
+outstanding challenge superseded on reissue. No IP address, user agent, attempt
+counter, or bounce score is recorded. Every refusal looks the same, so the endpoint
+is not an oracle for which tokens exist. **No mail vendor was wired.**
+
+**Bounce posture is declared, not simulated.** `REVERIFY_REQUIRED` and
+`DELIVERY_FAILED` exist and are usable; nothing transitions into them
+automatically, the future signal is `0M.N2` provider feedback, and degrading keeps
+`verifiedAt` alongside `degradedAt` so an address can stop being trustworthy
+without rewriting when it was trusted.
+
+**Every new transaction binds the version that governed it.** Checkout resolves the
+`ACTIVE` version **before** an Order exists and binds it; **a missing `ACTIVE`
+policy refuses the sale** — `MARKETPLACE_POLICY_UNAVAILABLE`, raised before
+`placeOrder`, so nothing is left behind. Monacado is merchant of record, and
+selling under terms it cannot afterwards name is worse than not selling. That also
+closes the lifecycle hole: retiring a version with nothing to replace it stops new
+commerce rather than letting it continue silently ungoverned. The columns stay
+nullable only for pre-1.3 Orders, which are read as historical and unbound rather
+than shown today's terms; nothing is backfilled.
+
+**Seller reachability is checked at the till, not only at activation.** A mailbox
+can stop working the day after review, and the harm lands per transaction, so
+checkout asks the **canonical resolver** again before creating an Order —
+`SELLER_SUPPORT_CONTACT_UNAVAILABLE` when nothing is usable. A degraded dedicated
+address falls back to the verified primary and the seller keeps selling; a seller
+with neither stops until one is restored. Checkout asks a yes/no question and
+never learns the address. These supplement the activation gates rather than
+replacing them.
+
+**Receipts use two different clocks, deliberately.** The governing policy is the
+**historical** version stored on the Order; the seller support destination is the
+**current** effective contact, resolved at read time — support must route to a
+mailbox that works now. No support-address snapshot is added to `Order`.
+
+Additive migration only: five new tables, two nullable columns, no drop, no
+rewrite. Two existing suites now satisfy the new prerequisites through the real
+flows rather than routing around them.
+
+**Stripe remains test-mode only, and no live-money operation exists.**
+
+Detail: [`MARKETPLACE_POLICY_ACCEPTANCE_AND_SUPPORT_CONTACTS.md`](MARKETPLACE_POLICY_ACCEPTANCE_AND_SUPPORT_CONTACTS.md).
+
+---
+
 ## Standing constraints across the track
 
 1. **Publication stays gated and asynchronous.** Creators and promoters never hold

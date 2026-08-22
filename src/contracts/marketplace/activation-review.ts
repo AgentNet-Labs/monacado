@@ -179,6 +179,25 @@ export const ACTIVATION_APPROVAL_REFUSAL_CODES = [
   "PAYMENT_NOT_ENABLED",
   /** The provider has withheld capability on a previously enabled account. */
   "PAYMENT_RESTRICTED",
+  /**
+   * The current ACTIVE marketplace policy has not been accepted for every
+   * audience the participant's roles require (Phase 1.3).
+   *
+   * A participant may not be admitted to trade without having undertaken the
+   * terms that govern trading. Separate from `PROFILE_NOT_COMPLETE` because it
+   * is a different remedy: one is finishing a form, the other is agreeing to
+   * something.
+   */
+  "MARKETPLACE_POLICY_NOT_ACCEPTED",
+  /**
+   * No verified support address remains (Phase 1.3).
+   *
+   * An activated seller with no reachable support contact is a seller whose
+   * buyers have nowhere to go. Fails closed: an address that once verified and
+   * has since degraded counts as absent, because a bouncing address is not a
+   * support contact.
+   */
+  "NO_VERIFIED_SUPPORT_CONTACT",
 ] as const;
 
 /*
@@ -215,6 +234,22 @@ export const ActivationApprovalInput = z.strictObject({
     )
     .max(3),
   paymentReadiness: PaymentReadinessStatus,
+  /**
+   * Audiences whose acceptance of the ACTIVE policy is still outstanding
+   * (Phase 1.3).
+   *
+   * Supplied rather than looked up: this evaluator is pure, and reading the
+   * database from inside it would make the one function reviewers depend on
+   * untestable without one.
+   */
+  outstandingPolicyAudiences: z.array(z.enum(["SELLER", "PROMOTER"])).max(2),
+  /**
+   * Whether a usable, verified support contact exists (Phase 1.3).
+   *
+   * `resolveEffectiveSupportContact`'s answer, carried in. The precedence rule
+   * lives in exactly one place and this is not it.
+   */
+  hasVerifiedSupportContact: z.boolean(),
 });
 export type ActivationApprovalInput = z.infer<typeof ActivationApprovalInput>;
 
@@ -254,6 +289,9 @@ export type ActivationApprovalDecision = z.infer<typeof ActivationApprovalDecisi
  *     restriction scope is a parameter. Those are `0M.R1`, and a phase that
  *     accepted them "just as an optional input" would have implemented the
  *     boundary it was told not to cross.
+ *   - **It never reads the database.** Phase 1.3 added policy acceptance and
+ *     support-contact requirements as *supplied* inputs rather than lookups, so
+ *     the one function reviewers depend on stays pure and testable without one.
  */
 export function evaluateActivationApproval(input: ActivationApprovalInput): ActivationApprovalDecision {
   const parsed = ActivationApprovalInput.parse(input);
@@ -275,6 +313,18 @@ export function evaluateActivationApproval(input: ActivationApprovalInput): Acti
     refusalCodes.push("PAYMENT_RESTRICTED");
   } else if (parsed.paymentReadiness !== "ENABLED") {
     refusalCodes.push("PAYMENT_NOT_ENABLED");
+  }
+
+  /* Phase 1.3 — a participant may not be admitted to trade without having
+     undertaken the terms that govern trading. */
+  if (parsed.outstandingPolicyAudiences.length > 0) {
+    refusalCodes.push("MARKETPLACE_POLICY_NOT_ACCEPTED");
+  }
+
+  /* Phase 1.3 — an activated seller with no reachable support contact is a
+     seller whose buyers have nowhere to go. Fails closed. */
+  if (!parsed.hasVerifiedSupportContact) {
+    refusalCodes.push("NO_VERIFIED_SUPPORT_CONTACT");
   }
 
   return refusalCodes.length === 0

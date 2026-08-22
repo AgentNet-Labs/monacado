@@ -31,6 +31,8 @@ export type OrderErrorCode =
   | "LISTING_NOT_FOUND"
   | "ORDER_CURRENCY_MISMATCH"
   | "NO_EFFECTIVE_COMMERCIAL_POLICY"
+  | "MARKETPLACE_POLICY_UNAVAILABLE"
+  | "SELLER_SUPPORT_CONTACT_UNAVAILABLE"
   | "BUYER_ACCOUNT_NOT_FOUND"
   | "SELLER_NOT_RESOLVABLE"
   | "INVALID_ORDER_TRANSITION"
@@ -133,6 +135,51 @@ export class NoEffectiveCommercialPolicyError extends OrderServiceError {
       cause,
     );
     this.name = "NoEffectiveCommercialPolicyError";
+  }
+}
+
+/**
+ * No ACTIVE Marketplace Policy governs new transactions (Phase 1.3 correction).
+ *
+ * The same shape of refusal as `NoEffectiveCommercialPolicyError`, one level up:
+ * that one says the sale cannot be **priced**, this one says it cannot be
+ * **governed**. Monacado is merchant of record; selling under terms it cannot
+ * name afterwards is worse than not selling, because the Order would be an
+ * unanswerable question rather than a missing one.
+ *
+ * An **operator configuration failure, not a buyer fault**. Nothing the buyer
+ * sent is wrong, and no Order, payment, or evidence exists after it.
+ */
+export class MarketplacePolicyUnavailableError extends OrderServiceError {
+  constructor(cause?: unknown) {
+    super(
+      "MARKETPLACE_POLICY_UNAVAILABLE",
+      "No marketplace policy is currently active; no sale can be governed",
+      cause,
+    );
+    this.name = "MarketplacePolicyUnavailableError";
+  }
+}
+
+/**
+ * The seller has no usable support contact right now (Phase 1.3 correction).
+ *
+ * Activation checks this once; a mailbox can stop working the day after. Selling
+ * on behalf of a seller nobody can reach produces a buyer with a problem and no
+ * destination for it, so new sales stop until a verified address is restored.
+ *
+ * Carries **no address and no reason detail** — an error that echoed which
+ * mailbox failed would put a seller's private operational address into every log
+ * that captured the refusal.
+ */
+export class SellerSupportContactUnavailableError extends OrderServiceError {
+  constructor(cause?: unknown) {
+    super(
+      "SELLER_SUPPORT_CONTACT_UNAVAILABLE",
+      "This seller has no verified support contact; no new sale can be placed",
+      cause,
+    );
+    this.name = "SellerSupportContactUnavailableError";
   }
 }
 

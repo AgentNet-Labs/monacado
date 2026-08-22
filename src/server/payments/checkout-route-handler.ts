@@ -84,8 +84,10 @@ import {
   InvalidOrderInputError,
   ListingNotFoundError,
   ListingNotPurchasableError,
+  MarketplacePolicyUnavailableError,
   NoEffectiveCommercialPolicyError,
   OrderCurrencyMismatchError,
+  SellerSupportContactUnavailableError,
 } from "../marketplace/order-errors";
 
 type Db = ReturnType<typeof getPrisma>;
@@ -205,6 +207,8 @@ export const CHECKOUT_ERROR_CODES = {
   riskDenied: "TRANSACTION_DENIED_BY_RISK",
   taxUnavailable: "TAX_CALCULATION_UNAVAILABLE",
   deliveryModeUnknown: "PRODUCT_DELIVERY_MODE_UNKNOWN",
+  policyUnavailable: "MARKETPLACE_POLICY_UNAVAILABLE",
+  sellerSupportUnavailable: "SELLER_SUPPORT_CONTACT_UNAVAILABLE",
   providerUnavailable: "PAYMENT_PROVIDER_UNAVAILABLE",
   unavailable: "CHECKOUT_UNAVAILABLE",
 } as const;
@@ -471,6 +475,21 @@ export async function handleBeginCheckoutRequest(
     }
     if (error instanceof NoEffectiveCommercialPolicyError) {
       return refuse(503, CHECKOUT_ERROR_CODES.notConfigured);
+    }
+    /* Phase 1.3 — no ACTIVE marketplace policy. An OPERATOR failure: 503,
+       because nothing the buyer sent is wrong and the condition is repaired by
+       activating a version, not by the buyer doing anything differently. Its own
+       code rather than `notConfigured`, so an operator is sent to the policy
+       they have not activated instead of to their Stripe keys. */
+    if (error instanceof MarketplacePolicyUnavailableError) {
+      return refuse(503, CHECKOUT_ERROR_CODES.policyUnavailable);
+    }
+    /* Phase 1.3 — this seller cannot currently be reached. 409 rather than 503:
+       the marketplace is working, this one listing is not sellable right now,
+       which is the same shape of answer as LISTING_NOT_PURCHASABLE. The code
+       names the condition and never the address. */
+    if (error instanceof SellerSupportContactUnavailableError) {
+      return refuse(409, CHECKOUT_ERROR_CODES.sellerSupportUnavailable);
     }
     /* A missing or non-test credential is discovered here rather than above,
        because the adapter resolves its runtime lazily — nothing reads a secret

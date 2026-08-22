@@ -149,6 +149,37 @@ export const NOTIFICATION_DELIVERY_ID_RE = new RegExp(`^mon:ndlv:${OPAQUE_BODY}$
  * identity**, not a profile, and not reusable — buying twice as a guest produces
  * two snapshots, because each records who bought *that* order.
  */
+/**
+ * Marketplace policy identity (`mon:mpol:<opaque>`) — Phase 1.3.
+ *
+ * The **stable** policy, distinct from any one version of it. Deliberately not
+ * `mon:cpol:`: a commercial policy decides what Monacado *earns*, a marketplace
+ * policy states what every party *undertakes*, and an Order binds both
+ * separately so a fee change and a terms change can never move together.
+ */
+export const MARKETPLACE_POLICY_ID_RE = new RegExp(`^mon:mpol:${OPAQUE_BODY}$`);
+
+/**
+ * Participant policy acceptance identity (`mon:pacc:<opaque>`) — Phase 1.3.
+ *
+ * One accepted (participant × policy version × audience). Distinct from
+ * `mon:pcap:`, which records Monacado's *own* clearance decision about a
+ * participant — this records the participant's undertaking to Monacado, and the
+ * two travel in opposite directions.
+ */
+export const PARTICIPANT_POLICY_ACCEPTANCE_ID_RE = new RegExp(`^mon:pacc:${OPAQUE_BODY}$`);
+
+/** Participant email contact identity (`mon:pemc:<opaque>`) — Phase 1.3. */
+export const PARTICIPANT_EMAIL_CONTACT_ID_RE = new RegExp(`^mon:pemc:${OPAQUE_BODY}$`);
+
+/**
+ * Email verification challenge identity (`mon:evch:<opaque>`) — Phase 1.3.
+ *
+ * Names the **challenge**, never the credential. The token itself is never an
+ * identifier and never stored — only its digest.
+ */
+export const EMAIL_VERIFICATION_CHALLENGE_ID_RE = new RegExp(`^mon:evch:${OPAQUE_BODY}$`);
+
 export const ORDER_BUYER_SNAPSHOT_ID_RE = new RegExp(`^mon:obsn:${OPAQUE_BODY}$`);
 
 export const ORDER_TAX_EVIDENCE_ID_RE = new RegExp(`^mon:taxe:${OPAQUE_BODY}$`);

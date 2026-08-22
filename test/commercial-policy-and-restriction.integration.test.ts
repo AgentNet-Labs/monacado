@@ -18,6 +18,11 @@
 
 import "dotenv/config";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  deleteParticipantPolicyRows,
+  ensureShippedMarketplacePolicyActive,
+  satisfyActivationPolicyPrerequisites,
+} from "./support/marketplace-policy-fixture";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { createAccount } from "../src/server/account/account-service";
 import {
@@ -133,6 +138,10 @@ const policyDeps = () => ({ db, ids: policyIds });
 async function cleanup(): Promise<void> {
   const owned = { participantId: { startsWith: `mon:mpart:${TAG}` } };
 
+  /* Phase 1.3 rows first. The acceptance key is RESTRICT — evidence does not
+     vanish because a row above it did — so an acceptance left behind would block
+     the participant delete below. */
+  await deleteParticipantPolicyRows(db, `mon:mpart:${TAG}`);
   await db.participantRestriction.deleteMany({ where: owned });
   await db.participantPaymentRequirementRow.deleteMany({
     where: { paymentAccount: { is: owned } },
@@ -234,6 +243,14 @@ async function seedActivatedParticipant() {
     deps(),
   );
 
+  /* Phase 1.3 added two activation prerequisites — accepted policy and a verified
+     support contact. Satisfied here so the 0M.R1 assertions keep testing
+     restriction and policy governance rather than incidentally failing on a
+     requirement that arrived later. Phase 1.3's own suite covers the refusals. */
+  await satisfyActivationPolicyPrerequisites(
+    db,
+    { participantId, accountId, roles: ["SELLER"], now: NOW },
+  );
   await submitParticipantForActivation({ participantId, submittedAt: NOW }, deps());
   await decideParticipantActivation(
     {
@@ -294,6 +311,10 @@ describeDb("Phase 0M.R1 — versioned commercial policy and activation risk reco
     RESTRICTOR = await seedOperator("participant:restrict");
     REVIEWER = await seedOperator("activation:review");
     POLICY_ACTOR = await seedOperator("participant:restrict");
+    await ensureShippedMarketplacePolicyActive(db, {
+      recordedByAccountId: REVIEWER,
+      now: NOW,
+    });
   });
   afterAll(async () => {
     await cleanup();

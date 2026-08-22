@@ -63,6 +63,9 @@ import {
 } from "../../contracts/marketplace/basket-fulfillment";
 import { resolveBasketDeliveryLines } from "../product/product-delivery-mode-service";
 import { getPrisma } from "../db/client";
+import { getActiveMarketplacePolicyVersionIn } from "../policy/marketplace-policy-service";
+import { hasUsableSupportContactIn } from "../policy/support-contact-service";
+import { MONACADO_MARKETPLACE_POLICY_ID } from "../../contracts/marketplace/marketplace-policy-content";
 import {
   BuyerCheckoutDetailsInput,
   taxJurisdictionCodeFor,
@@ -74,7 +77,11 @@ import {
   type BuyerSnapshotIdProvider,
 } from "../marketplace/order-buyer-snapshot-service";
 import type { TaxEvidenceIdProvider } from "../tax/tax-calculation-ids";
-import { InvalidOrderInputError } from "../marketplace/order-errors";
+import {
+  InvalidOrderInputError,
+  MarketplacePolicyUnavailableError,
+  SellerSupportContactUnavailableError,
+} from "../marketplace/order-errors";
 
 /** An Order placed and a payment started, ready for the buyer to complete. */
 export interface BegunCheckout {
@@ -172,6 +179,50 @@ export async function beginCheckout(
     throw new TransactionDeniedByRiskError(decision.reasonCodes);
   }
 
+  /* — 2b. Commerce readiness, BEFORE tax and BEFORE anything is written. —
+   *
+   * Two conditions Monacado must be able to satisfy for the sale to be one it
+   * can stand behind afterwards. Both are checked here rather than after
+   * `placeOrder` for the reason the risk gate is: a refused transaction must
+   * leave NO Order behind, and neither condition is worth an external tax call.
+   *
+   * ## Governing terms
+   *
+   * WHICH TERMS govern this purchase, as distinct from which FEES do. Resolved
+   * before the Order exists and bound to it immediately after, so a receipt
+   * opened next year shows the disclosures that actually applied rather than
+   * whichever version happens to be current when it is opened.
+   *
+   * With no ACTIVE version the sale is **refused**. Monacado is merchant of
+   * record: selling under terms it cannot afterwards name is worse than not
+   * selling, because the resulting Order is an unanswerable question rather than
+   * a missing one. This is also what stops a retirement from silently leaving
+   * commerce ungoverned — there is no window in which sales continue unbound.
+   *
+   * ## A reachable seller
+   *
+   * Activation already requires a verified support contact, but a mailbox can
+   * stop working the day after. Checked again per transaction because the harm
+   * lands per transaction: a buyer with a problem and no destination for it.
+   *
+   * The precedence — verified dedicated, else verified primary, else nothing —
+   * is NOT restated here. Checkout asks the canonical resolver a yes/no question
+   * and never learns the address; a second copy of the rule would be a second
+   * chance to disclose the wrong mailbox. */
+  const db = deps.db ?? getPrisma();
+
+  const activePolicy = await getActiveMarketplacePolicyVersionIn(
+    db,
+    MONACADO_MARKETPLACE_POLICY_ID,
+  );
+  if (activePolicy === null) {
+    throw new MarketplacePolicyUnavailableError();
+  }
+
+  if (!(await hasUsableSupportContactIn(db, prepared.sellerParticipantId))) {
+    throw new SellerSupportContactUnavailableError();
+  }
+
   /* — 3. Tax, from an authoritative engine. —
    *
    * An adapter that cannot compute THROWS; it never returns a convenient zero.
@@ -191,12 +242,22 @@ export async function beginCheckout(
     at: v.placedAt,
   });
 
-  /* — 4. Place the Order, carrying the calculated tax. — */
+  /* — 4. Place the Order, carrying the calculated tax and the governing terms. — */
   const placed = await placeOrder(
     { ...v, taxAmountMinorUnits: quote.taxAmountMinorUnits },
     policyId,
     deps,
   );
+
+  /* A reference, never prose: the version is authoritative and a copied
+     paragraph would be a second answer able to disagree with it. */
+  await db.order.update({
+    where: { id: placed.order.orderId },
+    data: {
+      marketplacePolicyId: activePolicy.policyId,
+      marketplacePolicyVersion: activePolicy.policyVersion,
+    },
+  });
 
   /* — 4b. Does this basket need a delivery address? —
    *
@@ -208,7 +269,7 @@ export async function beginCheckout(
    * An unknown mode REFUSES. Guessing digital ships nothing to a buyer expecting
    * a parcel; guessing physical demands an address nobody needs. */
   const fulfillment = evaluateBasketFulfillment(
-    await resolveBasketDeliveryLines(deps.db ?? getPrisma(), [prepared.internalProductId]),
+    await resolveBasketDeliveryLines(db, [prepared.internalProductId]),
   );
 
   if (fulfillment.requiresShippingAddress && details.shippingAddress === null) {

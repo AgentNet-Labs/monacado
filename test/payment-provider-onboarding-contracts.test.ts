@@ -63,6 +63,12 @@ const approvalInput = (overrides: Record<string, unknown> = {}) => ({
   profileComplete: true,
   roles: [{ role: "SELLER" as const, status: "PENDING_ACTIVATION" as const }],
   paymentReadiness: "ENABLED" as const,
+  /* Phase 1.3 added two prerequisites. These fixtures satisfy both so the 0M.8
+     assertions below keep testing what they were written to test — provider
+     readiness and review state — rather than incidentally failing on a
+     requirement that arrived later. Phase 1.3's own tests cover them. */
+  outstandingPolicyAudiences: [] as Array<"SELLER" | "PROMOTER">,
+  hasVerifiedSupportContact: true,
   ...overrides,
 });
 

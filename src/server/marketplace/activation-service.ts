@@ -103,6 +103,13 @@ import {
 } from "./participant-errors";
 import { activationRowToRecord, toMarketplaceSubject } from "./participant-mapper";
 import { readReadinessIn } from "./payment-account-service";
+import { getActiveMarketplacePolicyVersionIn } from "../policy/marketplace-policy-service";
+import {
+  outstandingAcceptanceAudiences,
+  requiredAcceptanceAudiences,
+} from "../policy/policy-acceptance-service";
+import { hasUsableSupportContactIn } from "../policy/support-contact-service";
+import { MONACADO_MARKETPLACE_POLICY_ID } from "../../contracts/marketplace/marketplace-policy-content";
 import { AmbiguousPaymentReadinessError } from "./payment-account-errors";
 
 type Db = ReturnType<typeof getPrisma>;
@@ -478,6 +485,36 @@ async function assertApprovable(
 
   const paymentReadiness: PaymentReadinessStatus = await readReadinessIn(tx, participantId);
 
+  /* — Phase 1.3 prerequisites —
+   *
+   * Both are READ here and SUPPLIED to the evaluator, which stays pure. An
+   * activatable role that has not accepted the current terms, or a participant
+   * with no reachable support contact, is refused with its own bounded code.
+   *
+   * The acceptance requirement is derived from the roles actually held, so a
+   * seller-only participant is never asked to undertake promoter obligations.
+   * A deployment with no ACTIVE policy leaves every required audience
+   * outstanding — which fails closed, exactly as an unconfigured control should. */
+  const activatableRoles = roles
+    .filter((r) => r.status !== "REVOKED")
+    .map((r) => r.role);
+
+  const activePolicy = await getActiveMarketplacePolicyVersionIn(
+    tx,
+    MONACADO_MARKETPLACE_POLICY_ID,
+  );
+  const outstandingPolicyAudiences =
+    activePolicy === null
+      ? requiredAcceptanceAudiences(activatableRoles)
+      : await outstandingAcceptanceAudiences(tx, {
+          participantId,
+          policyId: activePolicy.policyId,
+          policyVersion: activePolicy.policyVersion,
+          roles: activatableRoles,
+        });
+
+  const hasVerifiedSupportContact = await hasUsableSupportContactIn(tx, participantId);
+
   const approval = evaluateActivationApproval({
     participantStatus,
     profileComplete,
@@ -486,6 +523,8 @@ async function assertApprovable(
       status: r.status as RoleAssignmentStatus,
     })),
     paymentReadiness,
+    outstandingPolicyAudiences,
+    hasVerifiedSupportContact,
   });
 
   if (approval.decision !== "ALLOW") {

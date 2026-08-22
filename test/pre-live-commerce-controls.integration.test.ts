@@ -23,6 +23,26 @@
 
 import "dotenv/config";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import {
+  MarketplacePolicyUnavailableError,
+  SellerSupportContactUnavailableError,
+} from "../src/server/marketplace/order-errors";
+import {
+  consumeVerificationChallenge,
+  degradeEmailContact,
+  issueVerificationChallenge,
+  upsertEmailContact,
+} from "../src/server/policy/email-verification-service";
+import { readOrderPolicyView } from "../src/server/policy/order-policy-view-service";
+import {
+  MARKETPLACE_POLICY_VERSION_1,
+  MONACADO_MARKETPLACE_POLICY_ID,
+} from "../src/contracts/marketplace/marketplace-policy-content";
+import {
+  ensureShippedMarketplacePolicyActive,
+  verifyPrimarySupportContact,
+} from "./support/marketplace-policy-fixture";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { createAccount } from "../src/server/account/account-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
@@ -375,6 +395,10 @@ async function seedSellerDirect(
     where: { participantId },
     data: { status: "ACTIVE" },
   });
+  /* Phase 1.3 correction — checkout refuses a sale for a seller nobody can
+     reach. Verified here through the real challenge flow, because these
+     participants are made ACTIVE by direct update rather than through review. */
+  await verifyPrimarySupportContact(db, { participantId, accountId, now: NOW });
 
   const n = next();
   const internalProductId = `${PRODUCT_PREFIX}${pad26(String(n)).slice(0, 26 - PRODUCT_TAG.length)}`;
@@ -529,7 +553,16 @@ const CHECKOUT_INPUT = (internalListingId: string) => ({
 const describeDb = RUN ? describe : describe.skip;
 
 describeDb("1.2 — pre-live commerce controls", () => {
-  beforeEach(cleanup);
+  beforeEach(async () => {
+    await cleanup();
+    /* Phase 1.3 correction — checkout refuses a sale it cannot bind to a
+       governing policy version. Seeding is idempotent and shared, so the row
+       survives this suite's cleanup and is written once. */
+    await ensureShippedMarketplacePolicyActive(db, {
+      recordedByAccountId: await seedAccount(),
+      now: NOW,
+    });
+  });
   afterAll(async () => {
     await cleanup();
     await disconnectPrisma();
@@ -1522,6 +1555,198 @@ describeDb("1.2 — pre-live commerce controls", () => {
          can pretend otherwise. That is the accurate answer, not a placeholder. */
       expect(readiness.blockers).toEqual(["LIVE_PROVIDER_NOT_ENABLED"]);
       expect(readiness.ready).toBe(false);
+    });
+  });
+
+  // — 7 · transaction-time commerce readiness (Phase 1.3 correction) —
+
+  /**
+   * Two conditions checked per transaction rather than only at activation.
+   *
+   * They live in this suite because the fixtures a checkout needs — Product,
+   * Storefront, Listing, commercial policy, risk policy, tax adapter — already
+   * do. Phase 1.3's own suite owns the policy, acceptance, and verification
+   * machinery; this owns what happens at the till.
+   */
+  describe("transaction-time commerce readiness", () => {
+    const begin = (internalListingId: string, policyId: string, riskPolicyId: string) =>
+      beginCheckout(
+        CHECKOUT_INPUT(internalListingId),
+        policyId,
+        {
+          provider: "STRIPE",
+          port: initiationDouble(),
+          taxPort: createZeroRateTaxAdapter(),
+          riskPolicyId,
+          buyerDetails: BUYER_DETAILS,
+        },
+        { ...deps(), taxIds, buyerSnapshotIds },
+      );
+
+    it("binds the exact ACTIVE policy version to the Order", async () => {
+      const seller = await seedSellerDirect();
+      const begun = await begin(
+        seller.internalListingId,
+        await seedCommercialPolicy(),
+        await seedRiskPolicy(),
+      );
+
+      const row = await db.order.findUniqueOrThrow({
+        where: { id: begun.order.orderId },
+      });
+      expect(row.marketplacePolicyId).toBe(MONACADO_MARKETPLACE_POLICY_ID);
+      expect(row.marketplacePolicyVersion).toBe(MARKETPLACE_POLICY_VERSION_1);
+
+      /* Which TERMS governed, alongside which FEES did. Two separate bindings,
+         because they are two separate authorities. */
+      expect(row.policyId).not.toBe(row.marketplacePolicyId);
+    });
+
+    it("refuses before an Order exists when no policy is ACTIVE", async () => {
+      const seller = await seedSellerDirect();
+      const policyId = await seedCommercialPolicy();
+      const riskPolicyId = await seedRiskPolicy();
+
+      /* Retirement with nothing to replace it. Commerce must stop rather than
+         continue silently ungoverned.
+
+         Restored in `finally` because retirement is one-way by design — a
+         retired version cannot be reactivated, and leaving the shared shipped
+         policy retired would break every later test in the file. */
+      await db.marketplacePolicyVersionRow.updateMany({
+        where: { policyId: MONACADO_MARKETPLACE_POLICY_ID, status: "ACTIVE" },
+        data: { status: "RETIRED", activeMarker: null },
+      });
+      const before = await db.order.count();
+
+      try {
+        await expect(
+          begin(seller.internalListingId, policyId, riskPolicyId),
+        ).rejects.toBeInstanceOf(MarketplacePolicyUnavailableError);
+
+        /* Nothing left behind: no Order, and no payment started. */
+        expect(await db.order.count()).toBe(before);
+      } finally {
+        await db.marketplacePolicyVersionRow.updateMany({
+          where: { policyId: MONACADO_MARKETPLACE_POLICY_ID, status: "RETIRED" },
+          data: {
+            status: "ACTIVE",
+            activeMarker: MONACADO_MARKETPLACE_POLICY_ID,
+            retiredAt: null,
+          },
+        });
+      }
+    });
+
+    it("refuses before an Order exists when the seller has no usable contact", async () => {
+      const seller = await seedSellerDirect();
+      const policyId = await seedCommercialPolicy();
+      const riskPolicyId = await seedRiskPolicy();
+
+      /* A mailbox that worked at activation and stopped working afterwards —
+         the case an activation-only check cannot catch. */
+      await degradeEmailContact(
+        {
+          participantId: seller.participantId,
+          purpose: "PRIMARY_PROFILE",
+          to: "DELIVERY_FAILED",
+          at: CHECKOUT_AT,
+        },
+        { db },
+      );
+      const before = await db.order.count();
+
+      await expect(
+        begin(seller.internalListingId, policyId, riskPolicyId),
+      ).rejects.toBeInstanceOf(SellerSupportContactUnavailableError);
+
+      expect(await db.order.count()).toBe(before);
+    });
+
+    it("sells through a verified dedicated address, and still sells when it degrades", async () => {
+      const seller = await seedSellerDirect();
+      const policyId = await seedCommercialPolicy();
+      const riskPolicyId = await seedRiskPolicy();
+
+      await upsertEmailContact(
+        {
+          participantId: seller.participantId,
+          purpose: "DEDICATED_SUPPORT",
+          address: `p12t-help-${next()}@example.invalid`,
+          now: NOW,
+        },
+        { db },
+      );
+      const issued = await issueVerificationChallenge(
+        {
+          participantId: seller.participantId,
+          purpose: "DEDICATED_SUPPORT",
+          address: (await db.participantEmailContact.findFirstOrThrow({
+            where: { participantId: seller.participantId, purpose: "DEDICATED_SUPPORT" },
+          })).address!,
+          issuedAt: NOW,
+        },
+        { db },
+      );
+      await consumeVerificationChallenge({ token: issued.token, at: NOW }, { db });
+
+      const first = await begin(seller.internalListingId, policyId, riskPolicyId);
+      expect(first.order.orderId).toBeTruthy();
+
+      /* The dedicated address fails; the verified primary is still there, so
+         sales continue. Falling back beats stopping a working seller. */
+      await degradeEmailContact(
+        {
+          participantId: seller.participantId,
+          purpose: "DEDICATED_SUPPORT",
+          to: "DELIVERY_FAILED",
+          at: CHECKOUT_AT,
+        },
+        { db },
+      );
+      const second = await begin(seller.internalListingId, policyId, riskPolicyId);
+      expect(second.order.orderId).not.toBe(first.order.orderId);
+    });
+
+    it("asks the canonical resolver rather than reimplementing precedence", () => {
+      const source = readFileSync(
+        new URL("../src/server/payments/executable-checkout-service.ts", import.meta.url),
+        "utf8",
+      ).replace(/\/\*[\s\S]*?\*\//g, "");
+
+      /* Checkout asks a yes/no question and never learns the address. A second
+         copy of the fallback rule would be a second chance to disclose the
+         wrong mailbox. */
+      expect(source).toContain("hasUsableSupportContactIn");
+      for (const leak of ["DEDICATED_SUPPORT", "PRIMARY_PROFILE", "resolveEffectiveSupportContact"]) {
+        expect(source, leak).not.toContain(leak);
+      }
+    });
+
+    it("reads a pre-1.3 Order as historical and unbound", async () => {
+      const seller = await seedSellerDirect();
+      const begun = await begin(
+        seller.internalListingId,
+        await seedCommercialPolicy(),
+        await seedRiskPolicy(),
+      );
+
+      /* An Order written before the columns existed. */
+      await db.order.update({
+        where: { id: begun.order.orderId },
+        data: { marketplacePolicyId: null, marketplacePolicyVersion: null },
+      });
+
+      const view = await readOrderPolicyView(begun.order.orderId, { db });
+      /* Reported as unbound rather than shown today's terms: a substituted
+         version would look authoritative and be wrong. */
+      expect(view.policyVersion).toBeNull();
+      expect(view.buyerSections).toEqual([]);
+      /* The commercial policy binding is untouched — this phase invented no
+         history and removed none. */
+      expect(view.commercialPolicy.policyId).toBe(begun.order.policyId);
+      /* And support still resolves, because that is a CURRENT question. */
+      expect(view.sellerSupportContact.available).toBe(true);
     });
   });
 });

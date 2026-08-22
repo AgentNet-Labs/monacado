@@ -845,6 +845,8 @@ model MarketplaceParticipant {
   /// on the far side — an obligation Monacado owes must not vanish with a delete.
   notificationObligations NotificationObligation[]
   notificationDeliveries  NotificationDelivery[]
+  policyAcceptances       ParticipantPolicyAcceptance[]
+  emailContacts           ParticipantEmailContact[]
 
   /// Product source versions authored under this participant's creator authority.
   /// RESTRICT on the far side — immutable Product history is never cascade-deleted.
@@ -2467,6 +2469,22 @@ model Order {
   policyId      String @db.VarChar(191)
   policyVersion String @db.VarChar(64)
 
+  // — Exact marketplace policy binding (Phase 1.3) —
+  //
+  // WHICH TERMS governed this purchase, as distinct from which FEES did. Bound
+  // at checkout so a receipt can show the buyer the disclosures that actually
+  // applied, rather than whichever version happens to be current when the
+  // receipt is opened.
+  //
+  // NULLABLE because the columns are additive over Orders written before the
+  // policy existed; every Order placed from now on binds one.
+  //
+  // A REFERENCE, NEVER PROSE. No policy text is copied onto an Order: the
+  // version is authoritative and a copy would be a second answer able to
+  // disagree with it.
+  marketplacePolicyId      String? @db.VarChar(191)
+  marketplacePolicyVersion String? @db.VarChar(64)
+
   // — Operational references —
   storefrontId      String @db.VarChar(191)
   internalProductId String @db.VarChar(191)
@@ -2521,6 +2539,7 @@ model Order {
   listing          Listing                       @relation(fields: [internalListingId], references: [internalListingId], onDelete: Restrict)
   listingVersion   ListingSourceRecordVersionRow @relation(fields: [listingSourceRecordId, listingSourceRecordVersion], references: [listingSourceRecordId, sourceRecordVersion], onDelete: Restrict)
   policyVersionRow CommercialPolicyVersionRow    @relation(fields: [policyId, policyVersion], references: [policyId, policyVersion], onDelete: Restrict)
+  marketplacePolicyVersionRow MarketplacePolicyVersionRow? @relation(fields: [marketplacePolicyId, marketplacePolicyVersion], references: [policyId, policyVersion], onDelete: Restrict)
   storefront       Storefront                    @relation(fields: [storefrontId], references: [internalStorefrontId], onDelete: Restrict)
   product          Product                       @relation(fields: [internalProductId], references: [internalProductId], onDelete: Restrict)
   seller           MarketplaceParticipant        @relation("OrderSeller", fields: [sellerParticipantId], references: [id], onDelete: Restrict)
@@ -2743,6 +2762,250 @@ model ReviewSubmissionAuthority {
 // enabled. Every table here is additive; nothing existing is altered, and in
 // particular TransactionEconomicSnapshot gains no column and no update path.
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Marketplace policy, acceptance, and participant email contacts (Phase 1.3).
+//
+// The rules every party undertakes, held ONCE and rendered many ways; durable
+// evidence of who accepted which exact version; and the verified support contact
+// an activated seller must maintain.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Stable Monacado Marketplace Policy identity (Phase 1.3).
+///
+/// Deliberately NOT a CommercialPolicy. A commercial policy decides what Monacado
+/// EARNS; a marketplace policy states what every party UNDERTAKES. An Order binds
+/// both separately, so a fee change and a terms change can never move together.
+model MarketplacePolicy {
+  /// Opaque identity (mon:mpol:<opaque>). One row: there is one marketplace
+  /// policy, and every deployment must agree on which one it is.
+  id String @id @db.VarChar(191)
+
+  /// Operator-facing label. Never a rule and never prose.
+  label String @db.VarChar(200)
+
+  createdAt DateTime @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  versions    MarketplacePolicyVersionRow[]
+  acceptances ParticipantPolicyAcceptance[]
+}
+
+/// One IMMUTABLE governed version of the marketplace policy (Phase 1.3).
+///
+/// Mirrors CommercialPolicyVersionRow, and for the same reason: a term that
+/// changed without a record of who changed it, when, or what a participant
+/// actually agreed to is not governance.
+///
+/// THE PROSE IS NOT IN A COLUMN. `contentRef` names the source module and
+/// `contentHash` pins its exact bytes. A text column would be editable in place,
+/// and an edited policy under an unchanged version number is the one thing this
+/// model exists to make impossible. It also keeps ONE authoritative rendering
+/// source, so seller onboarding, the public terms page, checkout, and a receipt
+/// cannot drift apart.
+model MarketplacePolicyVersionRow {
+  /// Surrogate key. The meaningful identity is (policyId, policyVersion).
+  seq BigInt @id @default(autoincrement())
+
+  policyId      String @db.VarChar(191)
+  policyVersion String @db.VarChar(64)
+
+  /// DRAFT | ACTIVE | RETIRED. RETIRED stays READABLE and bindable: a
+  /// participant who accepted version 1 must still be able to see version 1, and
+  /// an Order completed under it must stay explicable.
+  status String @db.VarChar(16)
+
+  title String @db.VarChar(200)
+
+  /// Stable identifier of the source content (marketplace-policy/1.0.0).
+  contentRef String @db.VarChar(191)
+  /// sha256:<hex> over the canonical JSON of the document. Detects prose moving
+  /// without a version bump.
+  contentHash String @db.VarChar(80)
+
+  /// Whether adopting this version requires participants to accept again.
+  /// A MATERIAL change does; a typographical correction does not. Recorded on
+  /// the version rather than judged at read time, so the decision is made once,
+  /// by whoever published it, and stays auditable.
+  requiresReacceptance Boolean
+
+  effectiveFrom DateTime @db.DateTime(3)
+
+  /// Who recorded it, as the durable internal Account id. Never an email.
+  recordedByAccountId String   @db.VarChar(191)
+  recordedAt          DateTime @db.DateTime(3)
+  activatedAt         DateTime? @db.DateTime(3)
+  retiredAt           DateTime? @db.DateTime(3)
+
+  /// Set to `policyId` while ACTIVE and NULL otherwise, so the unique index
+  /// enforces AT MOST ONE ACTIVE VERSION while permitting any number of DRAFT
+  /// and RETIRED ones. MySQL has no partial indexes; the same technique
+  /// CommercialPolicyVersionRow and RiskPolicyVersionRow use.
+  activeMarker String? @db.VarChar(191)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  policy      MarketplacePolicy             @relation(fields: [policyId], references: [id], onDelete: Restrict)
+  acceptances ParticipantPolicyAcceptance[]
+  orders      Order[]
+
+  @@unique([policyId, policyVersion])
+  @@unique([activeMarker])
+  @@index([policyId, status])
+  @@index([effectiveFrom])
+}
+
+/// One participant's acceptance of one EXACT policy version (Phase 1.3).
+///
+/// IMMUTABLE, and never superseded in place. A newer version becoming ACTIVE does
+/// not touch this row — "they accepted the terms" is worthless without "which
+/// terms, and when", and history must stay queryable after re-acceptance.
+///
+/// AUDIENCE IS PART OF THE IDENTITY, because the undertakings differ. A
+/// participant holding both roles accepts as each; one acceptance standing in for
+/// the other would record an agreement nobody made.
+///
+/// `contentHash` is copied here deliberately: it pins the exact bytes accepted,
+/// so the record survives any later reorganisation of where the source lives.
+model ParticipantPolicyAcceptance {
+  /// Opaque identity (mon:pacc:<opaque>). Distinct from mon:pcap:, which records
+  /// Monacado's own clearance decision ABOUT a participant — this records the
+  /// participant's undertaking TO Monacado, and the two point opposite ways.
+  id String @id @db.VarChar(191)
+
+  participantId String @db.VarChar(191)
+  policyId      String @db.VarChar(191)
+  policyVersion String @db.VarChar(64)
+
+  /// SELLER | PROMOTER. A buyer accepts nothing to buy — buyers are DISCLOSED to
+  /// at checkout and on the receipt, because gating a purchase behind a
+  /// click-through would add friction to the one flow that must not have it, and
+  /// a guest has no durable identity to record an acceptance against.
+  audience String @db.VarChar(16)
+
+  /// The exact bytes accepted.
+  contentHash String @db.VarChar(80)
+
+  /// ONBOARDING_AFFIRMATION | OPERATOR_RECORDED. Bounded, because "how did they
+  /// agree" is exactly the question a dispute turns on.
+  mechanism String @db.VarChar(32)
+
+  acceptedAt          DateTime @db.DateTime(3)
+  /// The account that performed the acceptance. Never a display name or email.
+  acceptedByAccountId String   @db.VarChar(191)
+  recordedAt          DateTime @db.DateTime(3)
+  createdAt           DateTime @default(now()) @db.DateTime(3)
+
+  // RESTRICT: an acceptance is evidence of an undertaking. Nothing it binds to
+  // may be deleted beneath it.
+  participant   MarketplaceParticipant      @relation(fields: [participantId], references: [id], onDelete: Restrict)
+  policy        MarketplacePolicy           @relation(fields: [policyId], references: [id], onDelete: Restrict)
+  policyVersionRow MarketplacePolicyVersionRow @relation(fields: [policyId, policyVersion], references: [policyId, policyVersion], onDelete: Restrict)
+
+  /// One acceptance per participant × version × audience. A repeat is the same
+  /// undertaking, not a second one.
+  @@unique([participantId, policyId, policyVersion, audience])
+  @@index([participantId, audience])
+  @@index([policyId, policyVersion])
+}
+
+/// An address a participant may be reached at, for one purpose (Phase 1.3).
+///
+/// THE PRIMARY ADDRESS IS NOT COPIED HERE. 0M.5 settled that "the address already
+/// lives on Account and a second copy here would be a second thing to leak", and
+/// that still holds: a PRIMARY_PROFILE row stores `address` NULL and records only
+/// the STATE of the address on Account. Only a DEDICATED_SUPPORT address is
+/// stored, because it exists nowhere else and is deliberately disclosed to
+/// customers.
+///
+/// A STATE, NOT A TIMESTAMP. ParticipantProfile.emailVerifiedAt records THAT
+/// verification happened and cannot express that an address which verified last
+/// year has been bouncing since. A state can degrade; an instant cannot.
+model ParticipantEmailContact {
+  /// Opaque identity (mon:pemc:<opaque>).
+  id String @id @db.VarChar(191)
+
+  participantId String @db.VarChar(191)
+
+  /// PRIMARY_PROFILE | DEDICATED_SUPPORT.
+  purpose String @db.VarChar(24)
+
+  /// NULL for PRIMARY_PROFILE — read from Account. Required for
+  /// DEDICATED_SUPPORT.
+  address String? @db.VarChar(320)
+
+  /// UNVERIFIED | VERIFIED | REVERIFY_REQUIRED | DELIVERY_FAILED.
+  ///
+  /// The last two exist so a previously verified address can become unusable
+  /// WITHOUT rewriting history. REVERIFY_REQUIRED is deliberately not
+  /// UNVERIFIED: the distinction records that the address was once good, which
+  /// tells an operator this is a regression rather than unfinished setup.
+  /// Nothing transitions into them automatically in this phase.
+  state String @db.VarChar(24)
+
+  verifiedAt DateTime? @db.DateTime(3)
+  /// When the state last degraded, so a regression is dateable.
+  degradedAt DateTime? @db.DateTime(3)
+
+  createdAt DateTime @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  participant MarketplaceParticipant          @relation(fields: [participantId], references: [id], onDelete: Cascade)
+  challenges  EmailVerificationChallenge[]
+
+  /// One contact per participant per purpose, so a seller can verify a new
+  /// support address without disturbing the primary anything else depends on.
+  @@unique([participantId, purpose])
+  @@index([state])
+}
+
+/// One attempt to prove control of an address (Phase 1.3).
+///
+/// THE TOKEN IS NEVER STORED. A verification link is a bearer credential; kept in
+/// plaintext, a table read is a set of working takeovers. Only a SHA-256 digest
+/// is held — the same construction 0M.9 uses for a guest claim code and 1.1 for a
+/// delivery destination — and the raw token is returned exactly once.
+///
+/// SINGLE-USE: consuming moves it to CONSUMED, and the unique digest index means
+/// a replayed link finds a challenge that is no longer pending. Issuing a new
+/// challenge SUPERSEDEs any outstanding one, so a token from an abandoned attempt
+/// cannot be used later.
+///
+/// Note what is absent: the token, an IP address, a user agent, and any attempt
+/// counter. A challenge records that a proof was issued and what became of it —
+/// nothing about the person.
+model EmailVerificationChallenge {
+  /// Opaque identity (mon:evch:<opaque>). Names the CHALLENGE, never the
+  /// credential.
+  id String @id @db.VarChar(191)
+
+  contactId     String @db.VarChar(191)
+  participantId String @db.VarChar(191)
+  purpose       String @db.VarChar(24)
+
+  /// Digest of the address being proved, so a challenge cannot be redirected to
+  /// a different address after issue.
+  addressDigest String @db.Char(64)
+
+  /// Hex SHA-256 of the issued token. UNIQUE, so a digest collision or a replay
+  /// is a constraint violation rather than a silent second verification.
+  tokenDigest String @unique @db.Char(64)
+
+  /// PENDING | CONSUMED | EXPIRED | SUPERSEDED.
+  state String @db.VarChar(16)
+
+  issuedAt   DateTime  @db.DateTime(3)
+  expiresAt  DateTime  @db.DateTime(3)
+  consumedAt DateTime? @db.DateTime(3)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+
+  contact ParticipantEmailContact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@index([participantId, purpose, state])
+  @@index([state, expiresAt])
+}
 
 /// WHO bought one Order — private transactional data (Phase 1.2 correction).
 ///

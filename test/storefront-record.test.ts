@@ -116,7 +116,17 @@ describe("stored governance status vocabulary", () => {
 });
 
 describe("schema-level integrity", () => {
-  const block = SCHEMA_CODE.slice(SCHEMA_CODE.indexOf("model Storefront {"));
+  /* The three Storefront tables and nothing after them.
+     This slice used to run to end-of-file, so it silently policed every model
+     any later phase appended. That was never what it asserted — the schema
+     already carried `onDelete: Cascade` on subordinate rows BEFORE Storefront
+     (`AccountSession`, `ParticipantProfile`, `ParticipantPaymentRequirementRow`),
+     which is the established treatment for a row with no meaning apart from its
+     parent. Bounded here so the assertion tests the tables it names. */
+  const block = SCHEMA_CODE.slice(
+    SCHEMA_CODE.indexOf("model Storefront {"),
+    SCHEMA_CODE.indexOf("model Offer {"),
+  );
 
   it("uses no CASCADE anywhere in the Storefront tables", () => {
     expect(block).not.toContain("onDelete: Cascade");
