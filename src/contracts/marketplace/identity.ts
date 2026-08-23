@@ -135,6 +135,21 @@ export const NOTIFICATION_OBLIGATION_ID_RE = new RegExp(`^mon:nobl:${OPAQUE_BODY
 export const NOTIFICATION_DELIVERY_ID_RE = new RegExp(`^mon:ndlv:${OPAQUE_BODY}$`);
 
 /**
+ * One durable outbound email delivery (Phase 1.5).
+ *
+ * Distinct from `mon:ndlv:`, which is `1.1`'s single-attempt evidence row. This
+ * names a message Monacado has **committed to sending** and will keep trying to
+ * send, which is a different thing with a different lifetime.
+ */
+export const OUTBOUND_EMAIL_DELIVERY_ID_RE = new RegExp(`^mon:oeml:${OPAQUE_BODY}$`);
+
+/** One suppressed destination (Phase 1.5). Never encodes the address. */
+export const EMAIL_SUPPRESSION_ID_RE = new RegExp(`^mon:esup:${OPAQUE_BODY}$`);
+
+/** One ingested provider email event (Phase 1.5). */
+export const PROVIDER_EMAIL_EVENT_ID_RE = new RegExp(`^mon:pevt:${OPAQUE_BODY}$`);
+
+/**
  * Order tax evidence identity (`mon:taxe:<opaque>`) — Phase 1.2.
  *
  * Names the *evidence*, not the calculation. A provider's own calculation

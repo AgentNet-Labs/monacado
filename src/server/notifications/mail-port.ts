@@ -2,21 +2,21 @@
  * The mail boundary and its local adapter (Phase 1.1) — SERVER ONLY.
  *
  * `MailPort` is declared in the contracts, provider-neutral. This module supplies
- * the two implementations this phase actually needs, and **no production email
- * vendor**:
+ * the local implementations and resolves which transport a deployment uses:
  *
  *   - `createLogMailAdapter` — writes a redacted line and accepts. The default
  *     for local development, and what `stripe listen` pairs with.
  *   - `createCapturingMailAdapter` — keeps messages in memory for a test.
+ *   - `createDisabledMailAdapter` — refuses, visibly. The default.
  *
- * ## Why no vendor
+ * ## The vendor, added in Phase 1.5
  *
- * The repository identifies none. Nothing in `package.json`, `.env.example`, or
- * any governing document names a mail provider, so picking one here would be
- * choosing a third party, a data-processing relationship, and a deliverability
- * story on Monacado's behalf in a phase about notifications. The seam is built
- * and one file implements it; adding SES, Postmark, or Resend later is a new
- * adapter beside these two and **no change to any caller**.
+ * `1.1` recorded that choosing a provider was "a third party, a data-processing
+ * relationship, and a deliverability story" and not a notification phase's
+ * decision. `1.5` makes it: **Postmark**, in `postmark-mail-adapter.ts`, behind
+ * this same unchanged interface. That file is the only one in the repository that
+ * knows what Postmark is, and **no caller above the port changed** to accommodate
+ * it — which is exactly what the seam was built to demonstrate.
  *
  * ## Disabled is a first-class state
  *
@@ -39,20 +39,21 @@ import {
   type MailPort,
   type MailResult,
 } from "../../contracts/marketplace/notification-delivery";
+import { createPostmarkMailAdapter } from "./postmark-mail-adapter";
+import {
+  isMailEnabled,
+  selectedMailTransport,
+  MAIL_TRANSPORTS,
+  type Env,
+  type MailProvider,
+  type MailTransport,
+} from "./mail-runtime-config";
 
-export type Env = Record<string, string | undefined>;
-
-const TRUTHY = new Set(["true", "1", "yes"]);
-
-/** The master switch. Anything other than true/1/yes means disabled. */
-export function isMailEnabled(env: Env = process.env): boolean {
-  const raw = env.MONACADO_MAIL_ENABLED;
-  return raw !== undefined && TRUTHY.has(raw.trim().toLowerCase());
-}
-
-/** The adapters this phase implements. No vendor is named. */
-export const MAIL_TRANSPORTS = ["LOG", "CAPTURE"] as const;
-export type MailTransport = (typeof MAIL_TRANSPORTS)[number];
+/* Re-exported so `1.1`'s callers keep their import site. The definitions moved
+   to `mail-runtime-config.ts` when a vendor arrived and configuration became
+   more than one boolean — two copies of "is mail on" is two answers. */
+export { isMailEnabled, MAIL_TRANSPORTS };
+export type { Env, MailProvider, MailTransport };
 
 /**
  * Redact an address for a log line: first character, then the domain.
@@ -135,9 +136,25 @@ export function createDisabledMailAdapter(): MailPort {
  */
 export function resolveMailPort(env: Env = process.env): MailPort {
   if (!isMailEnabled(env)) return createDisabledMailAdapter();
-  const transport = (env.MONACADO_MAIL_TRANSPORT ?? "LOG").trim().toUpperCase();
+  const transport = selectedMailTransport(env);
   if (transport === "LOG") return createLogMailAdapter();
+  if (transport === "POSTMARK") return createPostmarkMailAdapter({ env });
   /* An unrecognised transport is a misconfiguration, not a licence to fall back
      to something that silently accepts. */
   return createDisabledMailAdapter();
+}
+
+/**
+ * Which provider a delivery row should record as having answered.
+ *
+ * Derived from the same two variables `resolveMailPort` reads, so the name
+ * written down is always the adapter that actually ran. Never a credential and
+ * never an endpoint.
+ */
+export function resolvedMailProvider(env: Env = process.env): MailProvider {
+  if (!isMailEnabled(env)) return "DISABLED";
+  const transport = selectedMailTransport(env);
+  if (transport === "LOG") return "LOG";
+  if (transport === "POSTMARK") return "POSTMARK";
+  return "DISABLED";
 }

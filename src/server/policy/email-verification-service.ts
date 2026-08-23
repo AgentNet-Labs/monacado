@@ -47,6 +47,7 @@ import {
 } from "../../contracts/marketplace/participant-email-contact";
 import { AccountEmail, normalizeEmail } from "../../contracts/account/account";
 import { getPrisma } from "../db/client";
+import { liftEmailSuppressionIn } from "../notifications/email-suppression-service";
 import { cryptoPolicyIdProvider, type PolicyIdProvider } from "./policy-ids";
 import {
   PolicyError,
@@ -406,6 +407,21 @@ export async function consumeVerificationChallenge(
         where: { id: challenge.contactId },
         data: { state: "VERIFIED", verifiedAt: new Date(input.at), degradedAt: null },
       });
+
+      /* Phase 1.5 — REMEDIATION. A hard bounce or complaint suppresses an address
+         and Monacado stops writing to it; proving control of it again is what
+         lifts that, and this is the only place it is lifted. Never automatic,
+         never a consequence of time passing: nothing about a mailbox becomes true
+         because a month went by.
+       *
+         The challenge already carries the address digest, in exactly the form
+         the suppression list is keyed by, so nothing has to look an address up
+         to do this. */
+      await liftEmailSuppressionIn(tx, {
+        addressDigest: challenge.addressDigest,
+        at: input.at,
+      });
+
       return contactToRecord(contact);
     });
   } catch (error) {

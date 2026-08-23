@@ -56,7 +56,7 @@ import {
   createCapturingMailAdapter,
   createDisabledMailAdapter,
 } from "../src/server/notifications/mail-port";
-import type { NotificationDeliveryIdProvider } from "../src/server/notifications/notification-delivery-ids";
+import type { OutboundEmailIdProvider } from "../src/server/notifications/outbound-email-ids";
 import { destinationDigest } from "../src/server/notifications/notification-delivery-service";
 import { createZeroRateTaxAdapter } from "../src/server/tax/tax-adapters";
 import type { TaxEvidenceIdProvider } from "../src/server/tax/tax-calculation-ids";
@@ -109,8 +109,14 @@ const notificationIds = {
   nextObligationId: () => `mon:nobl:${pad26(`${TAG}N0BL${next()}`)}`,
 } satisfies ParticipantIdProvider;
 
-const deliveryIds: NotificationDeliveryIdProvider = {
-  nextDeliveryId: () => `mon:ndlv:${pad26(`${TAG}NDLV${next()}`)}`,
+/* Phase 1.5 — the webhook now commits durable OutboundEmailDelivery rows and
+   attempts them immediately, instead of sending once with no retry path. */
+const deliveryIds: OutboundEmailIdProvider = {
+  nextOutboundDeliveryId: () => `mon:oeml:${pad26(`${TAG}0EML${next()}`)}`,
+  nextSuppressionId: () => `mon:esup:${pad26(`${TAG}ESUP${next()}`)}`,
+  nextProviderEventId: () => `mon:pevt:${pad26(`${TAG}PEVT${next()}`)}`,
+  nextMessageDiscriminator: () => pad26(`${TAG}DISC${next()}`),
+  nextLockToken: () => `lock${next()}`.padEnd(32, "0"),
 };
 
 const approvalIds: CommerceApprovalIdProvider = {
@@ -291,6 +297,11 @@ async function cleanup(): Promise<void> {
     await db.notificationDelivery.deleteMany({
       where: { subjectKind: "ORDER", subjectRef: { in: orderIdList } },
     });
+    /* Phase 1.5 — durable outbound email holds a RESTRICT key onto the
+       obligation deleted further down. */
+    await db.outboundEmailDelivery.deleteMany({
+      where: { subjectKind: "ORDER", subjectRef: { in: orderIdList } },
+    });
     /* Phase 1.2 evidence holds RESTRICT keys onto the Order and the snapshot. */
     await db.transactionReversal.deleteMany({ where: { orderId: { in: orderIdList } } });
     /* Tax evidence points at the buyer snapshot, which points at the Order —
@@ -315,6 +326,9 @@ async function cleanup(): Promise<void> {
 
   if (participantIds.length > 0) {
     await db.notificationDelivery.deleteMany({
+      where: { recipientParticipantId: { in: participantIds } },
+    });
+    await db.outboundEmailDelivery.deleteMany({
       where: { recipientParticipantId: { in: participantIds } },
     });
     await db.notificationObligation.deleteMany({
@@ -619,8 +633,14 @@ function webhook(
   };
 }
 
+/**
+ * Phase 1.5 — the durable delivery table, which supersedes `1.1`'s single-attempt
+ * `NotificationDelivery` for email. The columns moved with the model: `category`
+ * became `purpose`, `acceptedAt` became `sentAt`, `failureCode` became
+ * `lastFailureCode`, and `ACCEPTED` became `DELIVERED`.
+ */
 const deliveriesFor = (orderId: string) =>
-  db.notificationDelivery.findMany({
+  db.outboundEmailDelivery.findMany({
     where: { subjectKind: "ORDER", subjectRef: orderId },
     orderBy: { id: "asc" },
   });
@@ -780,12 +800,15 @@ describeDb("1.1 — order expiry and buyer notification delivery", () => {
       const rows = await deliveriesFor(begun.order.orderId);
       const buyerRow = rows.find((r) => r.audience === "BUYER");
       expect(buyerRow).toBeDefined();
-      expect(buyerRow!.status).toBe("ACCEPTED");
+      expect(buyerRow!.status).toBe("DELIVERED");
       expect(buyerRow!.recipientParticipantId).toBeNull();
       /* No obligation exists for a guest, and none was invented. */
       expect(buyerRow!.obligationId).toBeNull();
-      expect(buyerRow!.acceptedAt?.toISOString()).toBe(CONFIRMED_AT);
+      expect(buyerRow!.sentAt?.toISOString()).toBe(CONFIRMED_AT);
       expect(buyerRow!.providerMessageRef).not.toBeNull();
+      /* Terminal on the first attempt: delivered is delivered. */
+      expect(buyerRow!.attemptCount).toBe(1);
+      expect(buyerRow!.nextAttemptAt).toBeNull();
     });
 
     it("stores a digest of the address and never the address", async () => {
@@ -848,7 +871,7 @@ describeDb("1.1 — order expiry and buyer notification delivery", () => {
       expect(sellerRow.recipientParticipantId).toBe(seller.participantId);
       /* Supplemental to the canonical admin-panel obligation 0M.9 wrote. */
       expect(sellerRow.obligationId).not.toBeNull();
-      expect(sellerRow.category).toBe("SALE_RECORDED");
+      expect(sellerRow.purpose).toBe("SALE_RECORDED");
 
       /* And the obligation it accompanies is UNTOUCHED — §3a: a supplemental
          channel can never replace the canonical notice. */
@@ -879,7 +902,7 @@ describeDb("1.1 — order expiry and buyer notification delivery", () => {
 
       const rows = await deliveriesFor(begun.order.orderId);
       expect(rows).toHaveLength(1);
-      expect(rows[0]!.category).toBe("PAYMENT_FAILED");
+      expect(rows[0]!.purpose).toBe("PAYMENT_FAILED");
       /* A failure is not a sale: nobody but the buyer hears about it. */
       expect(rows[0]!.audience).toBe("BUYER");
     });
@@ -896,7 +919,7 @@ describeDb("1.1 — order expiry and buyer notification delivery", () => {
       expect(w.mail.sent[0]!.subject).toContain("expired");
       const rows = await deliveriesFor(begun.order.orderId);
       /* ORDER_CANCELLED, not PAYMENT_FAILED — nobody declined anything. */
-      expect(rows[0]!.category).toBe("ORDER_CANCELLED");
+      expect(rows[0]!.purpose).toBe("ORDER_CANCELLED");
     });
   });
 
@@ -952,9 +975,16 @@ describeDb("1.1 — order expiry and buyer notification delivery", () => {
       const rows = await deliveriesFor(begun.order.orderId);
       expect(rows.length).toBeGreaterThan(0);
       for (const row of rows) {
-        expect(row.status).toBe("FAILED");
-        expect(row.failureCode).toBe("CHANNEL_NOT_CONFIGURED");
-        expect(row.acceptedAt).toBeNull();
+        /* Phase 1.5 — the notice is no longer LOST. An unconfigured channel is a
+           condition an operator fixes, so it is transient: the row is scheduled
+           for another attempt rather than written off, and only exhausting the
+           bounded policy makes it terminal. That is the whole correction. */
+        expect(row.status).toBe("RETRY_PENDING");
+        expect(row.lastFailureCode).toBe("CHANNEL_NOT_CONFIGURED");
+        expect(row.lastFailureClass).toBe("TRANSIENT");
+        expect(row.attemptCount).toBe(1);
+        expect(row.nextAttemptAt).not.toBeNull();
+        expect(row.sentAt).toBeNull();
         expect(row.providerMessageRef).toBeNull();
         /* Even a failure records WHERE it was going — as a digest. */
         expect(row.destinationDigest).toMatch(/^[0-9a-f]{64}$/);

@@ -253,6 +253,11 @@ async function cleanup(): Promise<void> {
     await db.notificationDelivery.deleteMany({
       where: { subjectKind: "ORDER", subjectRef: { in: orderIdList } },
     });
+    /* Phase 1.5 — durable outbound email holds a RESTRICT key onto the
+       obligation deleted further down. */
+    await db.outboundEmailDelivery.deleteMany({
+      where: { subjectKind: "ORDER", subjectRef: { in: orderIdList } },
+    });
     await db.reviewSubmissionAuthority.deleteMany({ where: { orderId: { in: orderIdList } } });
     await db.purchaseEvidence.deleteMany({ where: { orderId: { in: orderIdList } } });
     const snapshots = await db.transactionEconomicSnapshot.findMany({
@@ -271,6 +276,9 @@ async function cleanup(): Promise<void> {
 
   if (participantIds.length > 0) {
     await db.notificationDelivery.deleteMany({
+      where: { recipientParticipantId: { in: participantIds } },
+    });
+    await db.outboundEmailDelivery.deleteMany({
       where: { recipientParticipantId: { in: participantIds } },
     });
     await db.notificationObligation.deleteMany({

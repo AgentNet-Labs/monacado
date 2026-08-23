@@ -10,6 +10,18 @@
  * | an authoritative payment failure | buyer | `PAYMENT_FAILED` |
  * | the hosted session expired | buyer | `ORDER_CANCELLED` |
  *
+ * ## Phase 1.5: it commits, it no longer sends
+ *
+ * These functions **enqueue durable `OutboundEmailDelivery` rows** and return.
+ * Sending is the dispatcher's, and the two are deliberately separated: `1.1`
+ * sent inline and at-most-once, so a provider outage during a webhook lost a
+ * buyer's receipt permanently and silently — the pre-live gate `1.1` recorded
+ * against itself. A commitment survives the outage; an inline send did not.
+ *
+ * The renderers below are unchanged and are now called by the dispatcher's
+ * resolver, on **every attempt**, from the authoritative Order. That is what lets
+ * a delivery row store a source reference instead of a rendered body.
+ *
  * ## It consumes facts; it does not become the authority
  *
  * Every message is assembled from an `OrderRecord` and, for participants, an
@@ -49,27 +61,31 @@
 import "../server-only";
 import type { OrderRecord } from "../../contracts/marketplace/order";
 import { quotedBuyerTotalMinorUnits } from "../../contracts/marketplace/order";
-import type { MailPort } from "../../contracts/marketplace/notification-delivery";
 import type { NotificationCategory } from "../../contracts/marketplace/notification-obligation";
+import type { OutboundEmailDeliveryRecord } from "../../contracts/marketplace/outbound-email";
 import { getPrisma } from "../db/client";
-import { getBuyerSnapshotIn } from "../marketplace/order-buyer-snapshot-service";
 import {
-  attemptDelivery,
-  type AttemptedDelivery,
-  type NotificationDeliveryDeps,
-} from "./notification-delivery-service";
+  enqueueEmailDelivery,
+  type OutboundEmailDeps,
+} from "./outbound-email-service";
 
 type Db = ReturnType<typeof getPrisma>;
 
-export interface NoticeDeps extends NotificationDeliveryDeps {
+export interface NoticeDeps extends OutboundEmailDeps {
   db?: Db;
 }
 
-/** What one trigger produced. One entry per recipient actually addressed. */
-export interface DispatchedNotices {
-  attempts: AttemptedDelivery[];
-  /** Recipients skipped because Monacado holds no address for them. */
-  skippedForNoAddress: number;
+/**
+ * What one trigger committed to.
+ *
+ * There is no `skippedForNoAddress` any more, and its absence is the improvement:
+ * a recipient whose address cannot be resolved is no longer silently skipped at
+ * commit time. The commitment is made, the dispatcher resolves the address on
+ * every attempt, and an unresolvable one is recorded as
+ * `RECIPIENT_UNRESOLVABLE` against a row an operator can find.
+ */
+export interface EnqueuedNotices {
+  deliveries: OutboundEmailDeliveryRecord[];
 }
 
 // — Rendering —
@@ -184,49 +200,14 @@ export function renderParticipantSaleRecorded(order: OrderRecord): {
   };
 }
 
-// — Address resolution —
-
-/**
- * A participant's address, via the account that owns them.
- *
- * `null` when the participant or their account cannot be read. Absence is an
- * ordinary outcome and never an error: a notice nobody can be sent is a fact to
- * record, not an exception to raise in the middle of finalizing a sale.
- */
-/**
- * The buyer's address, preferring the durable Order snapshot (Phase 1.2).
- *
- * `1.1` recorded that a guest's address was irrecoverable once the transient
- * confirmation was gone. **That is no longer true**: a completed Order carries a
- * buyer snapshot, so a receipt can be re-sent from Monacado's own data.
- *
- * The transient confirmation remains the fallback for the window before a
- * snapshot exists, and for a provider that reports an address Monacado could not
- * validate.
- */
-async function buyerAddressFor(
-  db: Db,
-  orderId: string,
-  transient: string | null,
-): Promise<string | null> {
-  const snapshot = await getBuyerSnapshotIn(db, orderId);
-  return snapshot?.email ?? transient;
-}
-
-async function participantAddress(db: Db, participantId: string): Promise<string | null> {
-  const participant = await db.marketplaceParticipant.findUnique({
-    where: { id: participantId },
-    select: { account: { select: { email: true } } },
-  });
-  return participant?.account?.email ?? null;
-}
+// — Obligation linkage —
 
 /**
  * The `0M.N1` obligation this delivery accompanies, if one was written.
  *
- * Looked up so the evidence row can point at it; **never created, and never
- * modified**. A missing obligation does not stop the send — it only means the
- * delivery stands alone.
+ * Looked up so the delivery can point at it; **never created, and never
+ * modified**. A missing obligation does not stop the commitment — it only means
+ * the delivery stands alone, which is the ordinary case for a buyer.
  */
 async function obligationIdFor(
   db: Db,
@@ -247,49 +228,43 @@ async function obligationIdFor(
 // — Triggers —
 
 /**
- * A sale completed: tell the buyer, the seller, and any promoter.
+ * A sale completed: commit to telling the buyer, the seller, and any promoter.
  *
- * The buyer is addressed first and is the priority: they are the only party with
+ * The buyer is committed first and is the priority: they are the only party with
  * no other way to learn the outcome, since a guest has no account, no panel, and
  * no participant.
+ *
+ * **No address is resolved here.** `1.1` looked one up at this moment and skipped
+ * the recipient when it found none; the dispatcher now resolves it on every
+ * attempt from the durable `OrderBuyerSnapshot`, so a receipt is owed from the
+ * instant the sale is booked rather than from the instant an address happened to
+ * be readable.
  */
-export async function dispatchSaleNotices(
-  args: { order: OrderRecord; buyerAddress: string | null; at: string },
-  port: MailPort,
+export async function enqueueSaleNotices(
+  args: { order: OrderRecord; at: string },
   deps: NoticeDeps = {},
-): Promise<DispatchedNotices> {
+): Promise<EnqueuedNotices> {
   const db = deps.db ?? getPrisma();
-  const attempts: AttemptedDelivery[] = [];
-  let skipped = 0;
+  const deliveries: OutboundEmailDeliveryRecord[] = [];
 
-  const buyerAddress = await buyerAddressFor(db, args.order.orderId, args.buyerAddress);
-  if (buyerAddress === null) {
-    skipped += 1;
-  } else {
-    const { subject, body } = renderBuyerConfirmation(args.order);
-    attempts.push(
-      await attemptDelivery(
-        {
-          audience: "BUYER",
-          /* A guest has no participant and one is NOT invented for them. An
-             account buyer may hold one, but the notice is to them as a BUYER, so
-             it is keyed the same way — otherwise the same person buying twice,
-             once before and once after claiming a participant, would dedupe
-             inconsistently. */
-          recipientParticipantId: null,
-          obligationId: null,
-          category: "ORDER_CONFIRMATION",
-          subject: { kind: "ORDER", ref: args.order.orderId, versionRef: null },
-          destination: buyerAddress,
-          subjectLine: subject,
-          body,
-          at: args.at,
-        },
-        port,
-        deps,
-      ),
-    );
-  }
+  const buyer = await enqueueEmailDelivery(
+    {
+      purpose: "ORDER_CONFIRMATION",
+      audience: "BUYER",
+      /* A guest has no participant and one is NOT invented for them. An account
+         buyer may hold one, but the notice is to them as a BUYER, so it is keyed
+         the same way — otherwise the same person buying twice, once before and
+         once after claiming a participant, would dedupe inconsistently. */
+      recipientParticipantId: null,
+      obligationId: null,
+      subjectKind: "ORDER",
+      subjectRef: args.order.orderId,
+      discriminator: null,
+      now: args.at,
+    },
+    deps,
+  );
+  deliveries.push(buyer.delivery);
 
   const participants: Array<{ id: string; audience: "SELLER" | "PROMOTER" }> = [
     { id: args.order.sellerParticipantId, audience: "SELLER" },
@@ -299,117 +274,82 @@ export async function dispatchSaleNotices(
   }
 
   for (const participant of participants) {
-    const address = await participantAddress(db, participant.id);
-    if (address === null) {
-      skipped += 1;
-      continue;
-    }
-    const { subject, body } = renderParticipantSaleRecorded(args.order);
-    attempts.push(
-      await attemptDelivery(
-        {
-          audience: participant.audience,
+    const enqueued = await enqueueEmailDelivery(
+      {
+        purpose: "SALE_RECORDED",
+        audience: participant.audience,
+        recipientParticipantId: participant.id,
+        /* Points at the canonical obligation 0M.9 already wrote. Supplemental:
+           this row never changes that obligation's status, and five attempts at
+           it leave the obligation exactly as owed as one did. */
+        obligationId: await obligationIdFor(db, {
           recipientParticipantId: participant.id,
-          /* Points at the canonical obligation 0M.9 already wrote. Supplemental:
-             this row never changes that obligation's status. */
-          obligationId: await obligationIdFor(db, {
-            recipientParticipantId: participant.id,
-            category: "SALE_RECORDED",
-            orderId: args.order.orderId,
-          }),
           category: "SALE_RECORDED",
-          subject: { kind: "ORDER", ref: args.order.orderId, versionRef: null },
-          destination: address,
-          subjectLine: subject,
-          body,
-          at: args.at,
-        },
-        port,
-        deps,
-      ),
+          orderId: args.order.orderId,
+        }),
+        subjectKind: "ORDER",
+        subjectRef: args.order.orderId,
+        discriminator: null,
+        now: args.at,
+      },
+      deps,
     );
+    deliveries.push(enqueued.delivery);
   }
 
-  return { attempts, skippedForNoAddress: skipped };
+  return { deliveries };
 }
 
 /**
- * An authoritative payment failure: tell the buyer.
+ * An authoritative payment failure: commit to telling the buyer.
  *
  * Only the buyer. A seller has no sale to hear about, and telling them about
  * every failed attempt on their Listing would be telling them about traffic, not
  * commerce.
  */
-export async function dispatchPaymentFailedNotice(
-  args: { order: OrderRecord; buyerAddress: string | null; at: string },
-  port: MailPort,
+export async function enqueuePaymentFailedNotice(
+  args: { order: OrderRecord; at: string },
   deps: NoticeDeps = {},
-): Promise<DispatchedNotices> {
-  const db = deps.db ?? getPrisma();
-  const buyerAddress = await buyerAddressFor(db, args.order.orderId, args.buyerAddress);
-  if (buyerAddress === null) return { attempts: [], skippedForNoAddress: 1 };
-  const { subject, body } = renderBuyerPaymentFailed(args.order);
-  return {
-    attempts: [
-      await attemptDelivery(
-        {
-          audience: "BUYER",
-          recipientParticipantId: null,
-          obligationId: null,
-          category: "PAYMENT_FAILED",
-          subject: { kind: "ORDER", ref: args.order.orderId, versionRef: null },
-          destination: buyerAddress,
-          subjectLine: subject,
-          body,
-          at: args.at,
-        },
-        port,
-        deps,
-      ),
-    ],
-    skippedForNoAddress: 0,
-  };
+): Promise<EnqueuedNotices> {
+  const enqueued = await enqueueEmailDelivery(
+    {
+      purpose: "PAYMENT_FAILED",
+      audience: "BUYER",
+      recipientParticipantId: null,
+      obligationId: null,
+      subjectKind: "ORDER",
+      subjectRef: args.order.orderId,
+      discriminator: null,
+      now: args.at,
+    },
+    deps,
+  );
+  return { deliveries: [enqueued.delivery] };
 }
 
 /**
- * The checkout expired: tell the buyer.
+ * The checkout expired: commit to telling the buyer.
  *
- * Categorised `ORDER_CANCELLED` — a member added to `0M.N1`'s vocabulary in this
- * phase, as the additive change that vocabulary was explicitly designed to take.
- *
- * Reusing `PAYMENT_FAILED` would have been wrong, not merely loose: it asserts
- * that a provider reported a failure, and nobody declined an expired checkout.
- * Reusing `ORDER_CONFIRMATION` would have been worse still — it shares a
- * deduplication key with the receipt, so an expiry notice and a confirmation for
- * one order could never both be distinguished in the evidence table.
+ * Categorised `ORDER_CANCELLED` — reusing `PAYMENT_FAILED` would have been wrong,
+ * not merely loose: it asserts that a provider reported a failure, and nobody
+ * declined an expired checkout.
  */
-export async function dispatchOrderExpiredNotice(
-  args: { order: OrderRecord; buyerAddress: string | null; at: string },
-  port: MailPort,
+export async function enqueueOrderExpiredNotice(
+  args: { order: OrderRecord; at: string },
   deps: NoticeDeps = {},
-): Promise<DispatchedNotices> {
-  const db = deps.db ?? getPrisma();
-  const buyerAddress = await buyerAddressFor(db, args.order.orderId, args.buyerAddress);
-  if (buyerAddress === null) return { attempts: [], skippedForNoAddress: 1 };
-  const { subject, body } = renderBuyerOrderExpired(args.order);
-  return {
-    attempts: [
-      await attemptDelivery(
-        {
-          audience: "BUYER",
-          recipientParticipantId: null,
-          obligationId: null,
-          category: "ORDER_CANCELLED",
-          subject: { kind: "ORDER", ref: args.order.orderId, versionRef: null },
-          destination: buyerAddress,
-          subjectLine: subject,
-          body,
-          at: args.at,
-        },
-        port,
-        deps,
-      ),
-    ],
-    skippedForNoAddress: 0,
-  };
+): Promise<EnqueuedNotices> {
+  const enqueued = await enqueueEmailDelivery(
+    {
+      purpose: "ORDER_CANCELLED",
+      audience: "BUYER",
+      recipientParticipantId: null,
+      obligationId: null,
+      subjectKind: "ORDER",
+      subjectRef: args.order.orderId,
+      discriminator: null,
+      now: args.at,
+    },
+    deps,
+  );
+  return { deliveries: [enqueued.delivery] };
 }

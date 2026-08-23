@@ -138,6 +138,9 @@ let RECORDER = "";
 
 async function cleanup(): Promise<void> {
   const owned = { participantId: { startsWith: `mon:mpart:${TAG}` } };
+  await db.outboundEmailDelivery.deleteMany({
+    where: { recipientParticipantId: { startsWith: `mon:mpart:${TAG}` } },
+  });
   await db.emailVerificationChallenge.deleteMany({ where: owned });
   await db.participantEmailContact.deleteMany({ where: owned });
   await db.participantPolicyAcceptance.deleteMany({ where: owned });
@@ -551,15 +554,30 @@ describeIf("Phase 1.4 — verification email delivery", () => {
       vdeps(),
     );
 
-    expect(dispatch.delivery.outcome).toBe("ACCEPTED");
+    /* Phase 1.5 — the commitment is durable and the send is the dispatcher's,
+       attempted immediately so a seller does not wait for a scheduler. */
+    expect(dispatch.delivery.purpose).toBe("EMAIL_VERIFICATION");
+    expect(dispatch.delivery.status).toBe("DELIVERED");
+    expect(dispatch.delivery.subjectKind).toBe("EMAIL_CONTACT");
+    /* Owed to nobody: a verification link is a credential, not a notice. */
+    expect(dispatch.delivery.obligationId).toBeNull();
+
     expect(port.sent).toHaveLength(1);
     expect(port.sent[0]!.to).toBe(seller.email);
     expect(port.sent[0]!.text).toContain(`${ORIGIN}/verify-email?`);
-    expect(dispatch.challenge.state).toBe("PENDING");
 
-    /* The service returns no token. The recipient's copy of the link is the only
-       place one exists. */
-    expect(Object.keys(dispatch).sort()).toEqual(["challenge", "delivery"]);
+    /* The challenge was minted by the dispatcher at send time, not at request
+       time — which is what lets a retry mint a fresh one without a plaintext
+       token ever being stored. */
+    const challenges = await db.emailVerificationChallenge.findMany({
+      where: { participantId: seller.participantId },
+    });
+    expect(challenges).toHaveLength(1);
+    expect(challenges[0]!.state).toBe("PENDING");
+
+    /* The service returns no token and no challenge — there is no field a
+       credential could occupy. */
+    expect(Object.keys(dispatch)).toEqual(["delivery"]);
   });
 
   it("puts the opaque token on the configured public origin, and no identifier", async () => {
@@ -601,13 +619,18 @@ describeIf("Phase 1.4 — verification email delivery", () => {
     );
 
     const token = tokenFromBody(port.sent[0]!.text);
-    const row = await db.emailVerificationChallenge.findUnique({
-      where: { id: dispatch.challenge.challengeId },
+    const row = await db.emailVerificationChallenge.findFirst({
+      where: { participantId: seller.participantId },
     });
     expect(row).not.toBeNull();
     expect(row!.tokenDigest).toBe(hashVerificationToken(token));
     /* No column anywhere on the row holds the plaintext. */
     expect(JSON.stringify(row)).not.toContain(token);
+    /* Nor does the durable delivery row that caused it to be minted. */
+    const delivery = await db.outboundEmailDelivery.findUnique({
+      where: { id: dispatch.delivery.deliveryId },
+    });
+    expect(JSON.stringify(delivery)).not.toContain(token);
   });
 
   it("verifies the contact when a valid link is opened", async () => {
@@ -754,16 +777,20 @@ describeIf("Phase 1.4 — verification email delivery", () => {
     );
 
     expect(port.sent).toHaveLength(2);
-    expect(second.challenge.challengeId).not.toBe(first.challenge.challengeId);
+    /* Each request is its own logical message: a reissue is not a duplicate. */
+    expect(second.delivery.deliveryId).not.toBe(first.delivery.deliveryId);
 
     const supersededToken = tokenFromBody(port.sent[0]!.text);
     const newestToken = tokenFromBody(port.sent[1]!.text);
     expect(newestToken).not.toBe(supersededToken);
 
-    const superseded = await db.emailVerificationChallenge.findUnique({
-      where: { id: first.challenge.challengeId },
+    const challenges = await db.emailVerificationChallenge.findMany({
+      where: { participantId: seller.participantId },
+      orderBy: { issuedAt: "asc" },
     });
-    expect(superseded?.state).toBe("SUPERSEDED");
+    expect(challenges).toHaveLength(2);
+    expect(challenges[0]!.state).toBe("SUPERSEDED");
+    expect(challenges[1]!.state).toBe("PENDING");
 
     /* Only the newest link may verify — a superseded one is refused with the
        same answer an unknown token gets. */
@@ -875,11 +902,13 @@ describeIf("Phase 1.4 — verification email delivery", () => {
       vdeps(),
     );
 
-    expect(dispatch.delivery).toEqual({
-      outcome: "REFUSED",
-      failureCode: "CHANNEL_NOT_CONFIGURED",
-    });
-    expect(dispatch.challenge.state).toBe("PENDING");
+    /* Phase 1.5 — fail closed, but no longer fail FINAL. An unconfigured channel
+       is a condition an operator fixes, so the commitment survives and is
+       scheduled for another attempt instead of being written off. */
+    expect(dispatch.delivery.status).toBe("RETRY_PENDING");
+    expect(dispatch.delivery.lastFailureCode).toBe("CHANNEL_NOT_CONFIGURED");
+    expect(dispatch.delivery.lastFailureClass).toBe("TRANSIENT");
+    expect(dispatch.delivery.nextAttemptAt).not.toBeNull();
   });
 
   it("refuses before minting a challenge when no public origin is configured", async () => {

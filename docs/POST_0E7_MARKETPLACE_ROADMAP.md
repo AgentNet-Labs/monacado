@@ -107,6 +107,7 @@ labels sort in.
 | 20 | **1.2** | **Pre-Live Commerce Controls** — tax boundary, reversal accounting, risk gate, payout hold, live-readiness gate | **complete** |
 | 21 | **1.3** | **Marketplace Policy, Acceptance, Seller Support Contacts, and Email Verification** | **complete** — `c0b74e8` |
 | 22 | **1.4** | **Policy Bootstrap and Verification Email Delivery** — operational only; makes `1.3`'s two prerequisites satisfiable | **complete** |
+| 23 | **1.5** | **Production Communications and Notification Delivery** — durable retrying email, Postmark, bounce/complaint ingestion, suppression | **complete** |
 
 ### Forward sequence
 
@@ -143,13 +144,19 @@ activation and checkout.
 policy bootstrap command, and verification-link delivery through `1.1`'s mail
 seam with a consumption endpoint. Operational only — no `1.3` semantic moved.
 
+**`1.5` made transactional email production-capable**: a durable retrying delivery
+record, a bounded dispatcher, Postmark behind the unchanged `MailPort`, bounce and
+complaint ingestion, and digest-keyed suppression that degrades a seller's contact
+and lets `1.3`'s resolver fall back. It closed `0M.N2`'s **delivery** half; the
+canonical admin-panel channel remains.
+
 **What remains is the operational half of each workstream**, not another feature:
 
 | Next | Why it is next |
 | --- | --- |
 | **`0M.T2` — tax operations** | `1.2` supplied the boundary and evidence; nexus determination, product tax classification, sourcing, exemption certificates, filing, and remittance remain. **And the destination problem**: a real engine needs to know where the buyer is, and Monacado collects no address. **The hardest blocker to live mode.** |
 | **`0M.R2` — risk operations** | `1.2` supplied a ceiling, restriction and approval checks, and a payout hold. Velocity limits, reserves, per-transaction policy selection, and a review function remain — and a scoring model without somebody to review its output would produce refusals nobody can explain. |
-| **`0M.N2` — the canonical channel** | `1.1` built a *supplemental* channel. The admin-panel view, the `SUPER_OWNER`/`ADMIN` visibility rule, and notification preferences remain unbuilt. It also owns the **pre-live gate `1.1` recorded rather than solved**: delivery is at-most-once with no retry, and a guest's address cannot be recovered from a digest, so a failed guest receipt cannot be re-sent from Monacado's data alone. |
+| **`0M.N2` — the canonical channel** | **`1.5` closed the delivery half**: bounded durable retry, a production provider, bounce and complaint ingestion, and suppression — and `1.2`'s buyer snapshot had already retired the guest-address gate. What remains is the **canonical channel itself**: the admin-panel view, the `SUPER_OWNER`/`ADMIN` visibility rule, and notification preferences. |
 | **Live-mode Stripe support** | Does not exist. `STRIPE_MODES` has one member, so `LIVE_PROVIDER_NOT_ENABLED` is reported by construction and no configuration clears it. Building it is a deliberate, reviewed phase. |
 
 | Later operational candidate | Why not now |
@@ -161,7 +168,7 @@ seam with a consumption endpoint. Operational only — no `1.3` semantic moved.
 
 | Cross-cutting phase | Title | State |
 | --- | --- | --- |
-| **0M.N** | **Notification Records** — durable admin-panel notices, deduplication, recipients, notice states | **`0M.N1` complete**; `0M.N2` not started |
+| **0M.N** | **Notification Records** — durable admin-panel notices, deduplication, recipients, notice states | **`0M.N1` complete**; `0M.N2`'s **delivery half complete in `1.5`** (durable retrying email, Postmark, bounce/complaint ingestion, suppression); the canonical admin-panel view remains |
 | **0M.R** | **Risk Management and Commercial Controls** — required before the **production** payment and commerce capabilities it governs are enabled; **not** a prerequisite to `0M.8` | **`0M.R1` complete**; `0M.R2` not started |
 | **0M.T** | **Tax, MoR and Transaction Accounting** — required before checkout/payment architecture is production-capable; its `0M.T1` foundation is a prerequisite to `0M.9`, **not** to `0M.8` | **`0M.T1` complete**; `0M.T2` not started |
 
@@ -1372,6 +1379,114 @@ Detail: [`POLICY_BOOTSTRAP_AND_VERIFICATION_EMAIL_DELIVERY.md`](POLICY_BOOTSTRAP
 
 ---
 
+## 1.5 — Production Communications and Notification Delivery
+
+**Complete.** The `0M.N2` **delivery** gap, closed. `1.1` built the first concrete
+channel and recorded its own limitation as a pre-live gate — at-most-once, no
+retry, a guest address unrecoverable from a digest. `1.2` retired the second half
+with `OrderBuyerSnapshot`; this retires the first.
+
+**Three records, three questions — and the third is now permanently legacy.**
+`NotificationObligation` says what Monacado **owes** and is untouched;
+`OutboundEmailDelivery` says whether the communication **got out** and when it is
+tried again; `1.1`'s `NotificationDelivery` said what **one attempt** did and is
+now **legacy and read-only**. Its writer was removed: the `deliveryKey` unique
+index enforces at-most-once, which is the exact behaviour this phase corrects and
+could not be relaxed without losing the duplicate protection it existed for.
+**The table is retained indefinitely** for historical readability — evidence does
+not become disposable because a better mechanism arrived — with **no planned
+destructive cleanup migration**, no deletion, and no rename. New functionality
+must not depend on it. `obligationId` is
+**nullable**, and that nullability is why a new model exists rather than an
+extension of `0M.N1`'s: a verification link owes nothing and confirms nothing.
+**Retries never touch an obligation** — a test asserts a delivery that exhausts its
+attempts leaves its obligation `UNREAD`.
+
+**No body is stored, and it is load-bearing.** A delivery holds a *source
+reference* and every attempt re-renders from the authoritative record. A retry
+therefore states what is true now, the table never becomes a mail archive of every
+buyer address and amount, and — the one that matters — **a verification link is
+retryable without a plaintext token ever being written down**.
+
+**One message, five attempts.** The unique `dedupeKey` governs the **message** and
+the attempt counter governs the **attempts**; `1.1` conflated the two and got
+at-most-once. Policy stated once as constants: five attempts over ~4.5 hours,
+increasing backoff, a 300s claim lease. Claiming is the guarded `UPDATE`
+`PublicationOutbox` settled, so of two concurrent workers exactly one matches a
+row, and resolution re-asserts the token. **A crash costs an attempt, never the
+message**: an expired lease returns the row to the queue *and counts the attempt*,
+because the send may well have gone out. `CHANNEL_NOT_CONFIGURED` is transient —
+an operator fixes it — and still exhausts the bound, so an unconfigured deployment
+reports exactly how many notices it did not send.
+
+**A bounded dispatcher, and no cron.** `npm run email:dispatch:once` and a
+secret-gated `POST /api/internal/operations/email-dispatcher`, both one cycle with
+no loop, no daemon, no self-rescheduling. **No schedule is wired**: there is no
+deployment configuration file here to add one to, and inventing one is a
+deployment decision. The suppression check sits **immediately before the send**,
+never at enqueue — a receipt committed on Monday and retried on Tuesday must
+respect Monday night's bounce.
+
+**The vendor, finally chosen: Postmark**, behind the unchanged `MailPort`, in the
+one file that knows what Postmark is. **No caller above the port changed** — which
+is what the `1.1` seam was built to demonstrate. No SDK: one `fetch` to one
+documented endpoint. Responses are normalised **once**, at the boundary, into
+accepted / transient / permanent, because retrying a rejected address is how a
+sender's reputation dies and giving up on a five-minute outage is how a receipt is
+lost. Open and click tracking are **off**: a pixel in a receipt is surveillance,
+and a rewritten link in a verification message routes a credential through a third
+party. Configuration **fails closed** and holds the token's variable *name*, never
+its value.
+
+**Bounce and complaint ingestion, idempotent by construction.** Authenticate
+before parsing; normalise before acting; insert the provider event row **first**,
+so a redelivered webhook rolls back rather than suppressing twice. **Postmark does
+not sign its webhooks** — a constant-time shared secret is the strongest mechanism
+the provider supports, and that is recorded rather than left for somebody to hunt
+for a signature that does not exist. Almost everything answers `200`; `503` is
+reserved for a persistence failure, which must be retried. **No raw payload is
+persisted** — a bounce body quotes the original message, which for a verification
+email is a live credential.
+
+**Suppression holds no addresses**, only digests: otherwise it is a directory of
+every address that ever failed. A soft or unrecognised bounce suppresses
+**nothing** — the retry policy owns transient conditions, and silencing a customer
+on an unread vendor string is worse than one more attempt.
+
+**Seller reachability degrades and falls back, and never suspends.** A bounce moves
+the matching contact to `DELIVERY_FAILED` keeping `verifiedAt`; `1.3`'s resolver
+then falls back verified-dedicated → verified-primary, and only when nothing is
+usable does `hasUsableSupportContactIn` go false and `1.3`'s untouched checkout
+rule refuse new commerce. **An address failing is a fact about a mailbox, not a
+governed decision about a participant** — a test asserts the seller's status is
+unchanged after both addresses bounce.
+
+**Verification, made durable without weakening the token.** Issuing the challenge
+and scheduling its email are now one operation because neither happens at request
+time: the request commits a delivery naming the *contact*, and the dispatcher mints
+the challenge on each attempt. A retry **mints a fresh challenge**, superseding its
+predecessor exactly as `1.3` specified for reissue — and the superseded link was
+never delivered, which is *why* there is a retry. Still 256 bits, still opaque,
+still digest-only, still 24h, still single-use.
+
+**Guests stay first-class and stay uninvented.** The recipient is resolved from
+`1.2`'s durable `OrderBuyerSnapshot` on every attempt; no `Account` or
+`Participant` is fabricated, no address enters a capsule, and only a digest is
+stored. `RECIPIENT_UNRESOLVABLE` replaces `1.1`'s silent `skippedForNoAddress`.
+
+One additive migration: three tables, one foreign key, **no `ALTER`, no drop, no
+committed migration modified**. **Stripe remains test-mode only**, and **no
+production email was sent** — every test drives a capturing adapter or an injected
+`fetch`.
+
+Recorded plainly: **a hard-bounced address cannot receive a new verification
+email**, because the message that would prove control is itself suppressed. That is
+correct, and the remedy is `1.3`'s own — the seller supplies a *different* address.
+
+Detail: [`PRODUCTION_COMMUNICATIONS_AND_NOTIFICATION_DELIVERY.md`](PRODUCTION_COMMUNICATIONS_AND_NOTIFICATION_DELIVERY.md).
+
+---
+
 ## Standing constraints across the track
 
 1. **Publication stays gated and asynchronous.** Creators and promoters never hold
@@ -1399,3 +1514,4 @@ Detail: [`POLICY_BOOTSTRAP_AND_VERIFICATION_EMAIL_DELIVERY.md`](POLICY_BOOTSTRAP
 - [`IDENTITY_SESSION_AND_INTERNAL_ENTITLEMENT_FOUNDATION.md`](IDENTITY_SESSION_AND_INTERNAL_ENTITLEMENT_FOUNDATION.md)
 - [`PRODUCT_PUBLICATION_WORKER_OPERATIONS_TRACK.md`](PRODUCT_PUBLICATION_WORKER_OPERATIONS_TRACK.md)
 - [`POLICY_BOOTSTRAP_AND_VERIFICATION_EMAIL_DELIVERY.md`](POLICY_BOOTSTRAP_AND_VERIFICATION_EMAIL_DELIVERY.md)
+- [`PRODUCTION_COMMUNICATIONS_AND_NOTIFICATION_DELIVERY.md`](PRODUCTION_COMMUNICATIONS_AND_NOTIFICATION_DELIVERY.md)

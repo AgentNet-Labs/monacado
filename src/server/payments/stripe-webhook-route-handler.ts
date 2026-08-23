@@ -62,11 +62,12 @@ import type { MailPort } from "../../contracts/marketplace/notification-delivery
 import type { OrderRecord } from "../../contracts/marketplace/order";
 import { getPrisma } from "../db/client";
 import { resolveMailPort } from "../notifications/mail-port";
-import type { NotificationDeliveryIdProvider } from "../notifications/notification-delivery-ids";
+import type { OutboundEmailIdProvider } from "../notifications/outbound-email-ids";
+import { dispatchEmailDeliveriesNow } from "../notifications/email-dispatcher";
 import {
-  dispatchOrderExpiredNotice,
-  dispatchPaymentFailedNotice,
-  dispatchSaleNotices,
+  enqueueOrderExpiredNotice,
+  enqueuePaymentFailedNotice,
+  enqueueSaleNotices,
 } from "../notifications/transactional-notice-service";
 import { PostalAddress } from "../../contracts/marketplace/order-buyer-snapshot";
 import { confirmBuyerSnapshot } from "../marketplace/order-buyer-snapshot-service";
@@ -121,7 +122,7 @@ export interface WebhookRouteDeps {
   port?: BuyerPaymentConfirmationPort;
   /** Injected so a test drives delivery without a mail provider. */
   mail?: MailPort;
-  deliveryIds?: NotificationDeliveryIdProvider;
+  deliveryIds?: OutboundEmailIdProvider;
   now?: () => string;
 }
 
@@ -238,10 +239,11 @@ export async function handleStripeWebhookRequest(
      * evidence and the webhook still returns 200, because a mail outage is not a
      * reason to tell Stripe the payment was not processed — that would earn a
      * retry of a sale already booked. */
-    const notices = await dispatchNotices(finalized, confirmation, observedAt, {
+    const notices = await dispatchNotices(finalized, observedAt, {
       db,
       mail: deps.mail ?? resolveMailPort(deps.env),
       ...(deps.deliveryIds === undefined ? {} : { ids: deps.deliveryIds }),
+      ...(deps.env === undefined ? {} : { env: deps.env }),
     });
 
     return respond(200, {
@@ -249,7 +251,10 @@ export async function handleStripeWebhookRequest(
       handled: true,
       disposition: finalized.disposition,
       lifecycle: finalized.order.lifecycle,
-      noticesAttempted: notices,
+      /* What Monacado COMMITTED to sending, not what got out. Sending is the
+         dispatcher's, and a message that failed its first attempt is still owed
+         and still scheduled — which is precisely what `1.1` could not say. */
+      noticesScheduled: notices,
     });
   } catch (error) {
     if (error instanceof OrderNotFoundError) {
@@ -274,39 +279,77 @@ export async function handleStripeWebhookRequest(
 }
 
 /**
- * Send whatever this outcome owes, and never let sending change the outcome.
+ * Commit to whatever this outcome owes, then try immediately — and never let
+ * either change the outcome.
  *
- * Returns the number of attempts made, purely so the response is observable in a
- * test and in Stripe's dashboard. Every failure is swallowed **after being
- * recorded** by the delivery layer: the sale is already committed, and throwing
- * here would turn a mail problem into a webhook retry of a booked sale.
+ * Returns the number of messages **committed to**, purely so the response is
+ * observable in a test and in Stripe's dashboard. Two things happen here and the
+ * split is the whole Phase 1.5 correction:
+ *
+ *   1. **Enqueue.** Durable, idempotent on the logical message, and the part that
+ *      matters. Once this succeeds the receipt is owed and will be retried up to
+ *      the policy's limit even if every send now fails.
+ *   2. **Attempt now, best effort.** A buyer should not wait for a scheduler to
+ *      learn their payment succeeded. Restricted to the rows just committed, so a
+ *      backlog belonging to somebody else never becomes this response's latency.
+ *
+ * Every failure in either step is swallowed **after the commitment is durable**:
+ * the sale is already booked, and throwing here would turn a mail problem into a
+ * webhook retry of a booked sale. `1.1` swallowed failures too — but it had
+ * nothing left behind afterwards, which is exactly the gap this closes.
  */
 async function dispatchNotices(
   finalized: { disposition: string; order: OrderRecord },
-  confirmation: BuyerPaymentConfirmation,
   observedAt: string,
-  deps: { db: Db; mail: MailPort; ids?: NotificationDeliveryIdProvider },
+  deps: { db: Db; mail: MailPort; ids?: OutboundEmailIdProvider; env?: Env },
 ): Promise<number> {
-  const buyerAddress = confirmation.buyerContact?.email ?? null;
-  const noticeDeps = { db: deps.db, ...(deps.ids === undefined ? {} : { ids: deps.ids }) };
-  const args = { order: finalized.order, buyerAddress, at: observedAt };
+  const noticeDeps = {
+    db: deps.db,
+    ...(deps.ids === undefined ? {} : { ids: deps.ids }),
+    ...(deps.env === undefined ? {} : { env: deps.env }),
+  };
+  const args = { order: finalized.order, at: observedAt };
 
+  let deliveryIds: string[] = [];
   try {
     switch (finalized.disposition) {
       case "SALE_RECORDED":
-        return (await dispatchSaleNotices(args, deps.mail, noticeDeps)).attempts.length;
+        deliveryIds = (await enqueueSaleNotices(args, noticeDeps)).deliveries.map(
+          (d) => d.deliveryId,
+        );
+        break;
       case "FAILURE_RECORDED":
-        return (await dispatchPaymentFailedNotice(args, deps.mail, noticeDeps)).attempts.length;
+        deliveryIds = (await enqueuePaymentFailedNotice(args, noticeDeps)).deliveries.map(
+          (d) => d.deliveryId,
+        );
+        break;
       case "ORDER_EXPIRED":
-        return (await dispatchOrderExpiredNotice(args, deps.mail, noticeDeps)).attempts.length;
+        deliveryIds = (await enqueueOrderExpiredNotice(args, noticeDeps)).deliveries.map(
+          (d) => d.deliveryId,
+        );
+        break;
       default:
         /* ALREADY_RECORDED — a replay. Nothing newly became true, so nobody is
-           newly owed a message. */
+           newly owed a message. Decided by the OUTCOME, before the delivery key
+           is even consulted. */
         return 0;
     }
   } catch {
     return 0;
   }
+
+  try {
+    await dispatchEmailDeliveriesNow(
+      { deliveryIds, now: observedAt },
+      deps.mail,
+      noticeDeps,
+    );
+  } catch {
+    /* The commitment stands and the dispatcher will pick it up. A send that
+       failed here is a retry, not a lost receipt. */
+  }
+
+  return deliveryIds.length;
 }
 
 /** Validate a provider-reported address, or treat it as absent. */

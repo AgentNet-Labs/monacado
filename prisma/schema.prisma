@@ -1458,6 +1458,11 @@ model NotificationObligation {
   /// never replace it, so nothing on this side reads them to decide status.
   deliveries NotificationDelivery[]
 
+  /// Durable outbound email committed against this obligation (Phase 1.5).
+  /// RESTRICT on the far side — evidence that Monacado tried to send a notice
+  /// must not vanish with the obligation it accompanied.
+  outboundEmail OutboundEmailDelivery[]
+
   @@index([recipientParticipantId, status, createdAt])
   @@index([category, status])
   @@index([subjectKind, subjectRef])
@@ -1491,6 +1496,21 @@ model NotificationObligation {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// One attempt to reach one recipient about one thing (Phase 1.1).
+/// LEGACY / READ-ONLY as of Phase 1.5. NO NEW EMAIL DELIVERY WRITES.
+///
+/// Superseded by OutboundEmailDelivery, which is the canonical email execution
+/// and retry model. The Phase 1.1 writer was removed in 1.5: this row's
+/// `deliveryKey` unique index enforces AT-MOST-ONCE, which is exactly why a
+/// provider outage lost a buyer's receipt permanently and silently, and exactly
+/// what could not be relaxed without losing the duplicate protection it existed
+/// for. 1.5 separated the two ideas — a unique key over the MESSAGE, an attempt
+/// counter over the ATTEMPTS — and that needed a different table.
+///
+/// THIS TABLE IS RETAINED INDEFINITELY. Rows written before 1.5 are evidence of
+/// messages Monacado actually attempted, and evidence does not become disposable
+/// because a better mechanism arrived. There is NO planned destructive cleanup
+/// migration, no scheduled deletion, and no rename. New functionality must not
+/// depend on it.
 model NotificationDelivery {
   /// Opaque identity (mon:ndlv:<opaque>). Distinct from mon:nobl:, which names
   /// what is OWED. One obligation may have several attempts; a buyer delivery has
@@ -3359,4 +3379,206 @@ model ParticipantCommerceApproval {
 
   @@index([participantId, decidedAt])
   @@index([decision, decidedAt])
+}
+
+/// One outbound email Monacado has COMMITTED TO SENDING (Phase 1.5).
+///
+/// 0M.N1 recorded what Monacado OWES. 1.1 recorded what Monacado ATTEMPTED,
+/// once, with no retry — and named that limitation as a pre-live gate. This
+/// records the commitment, and survives until it is honoured or provably cannot
+/// be.
+///
+/// IT IS NEVER AN OBLIGATION. A permanently failed message leaves the
+/// NotificationObligation exactly as owed as it was, and a delivered one does
+/// too — being emailed is not having seen the notice in the panel
+/// (AUTHORITATIVE_STOREFRONT_SOURCE_MODEL.md §3a, unchanged). `obligationId` is
+/// NULLABLE, and that nullability is why this model exists rather than an
+/// extension of 1.1's: a verification link owes nothing and confirms nothing,
+/// and forcing it into the obligation vocabulary would make "what does Monacado
+/// owe?" a harder question for the convenience of one column.
+///
+/// NO BODY IS STORED. The row holds a SOURCE REFERENCE and every attempt
+/// re-renders from the authoritative record, so a retry states what is true NOW.
+/// Storing bodies would also make this a mail archive holding every buyer
+/// address, every amount, and — for a verification message — a live credential.
+model OutboundEmailDelivery {
+  /// Opaque identity (mon:oeml:<opaque>). Distinct from mon:ndlv:, which names
+  /// ONE ATTEMPT under 1.1's at-most-once rule. Sharing an identifier space
+  /// would make "was it committed?" and "what did one attempt do?" the same
+  /// question.
+  id String @id @db.VarChar(191)
+
+  /// THE LOGICAL IDENTITY OF ONE MESSAGE, derived and never supplied. UNIQUE, so
+  /// two webhook deliveries of one sale produce ONE row — which is what stops a
+  /// buyer receiving two receipts while still permitting five attempts at the one
+  /// they are owed. The destination is deliberately NOT a component.
+  dedupeKey String @unique @db.VarChar(255)
+
+  /// ORDER_CONFIRMATION | PAYMENT_FAILED | ORDER_CANCELLED | SALE_RECORDED |
+  /// EMAIL_VERIFICATION. Deliberately NOT NotificationCategory: that vocabulary
+  /// answers "what is owed" and this one answers "what is being sent".
+  purpose String @db.VarChar(48)
+
+  /// The 0M.N1 obligation this accompanies, where one exists. NULL for
+  /// obligation-free mail. Supplemental only: this row never changes its status.
+  obligationId String? @db.VarChar(191)
+
+  /// BUYER | SELLER | PROMOTER — who the message is for.
+  audience String @db.VarChar(16)
+
+  /// The participant addressed, or NULL for a buyer holding none. NO PARTICIPANT
+  /// IS EVER FABRICATED for a guest, which 0M.9 promised and 1.1 kept.
+  recipientParticipantId String? @db.VarChar(191)
+
+  /// THE AUTHORITATIVE RECORD THIS IS RE-RENDERED FROM. ORDER resolves the
+  /// buyer's address from the durable OrderBuyerSnapshot and a participant's from
+  /// their Account; EMAIL_CONTACT resolves the address being proved and mints the
+  /// challenge. Re-resolved on EVERY attempt.
+  subjectKind String @db.VarChar(32)
+  subjectRef  String @db.VarChar(191)
+
+  /// PENDING | IN_PROGRESS | DELIVERED | RETRY_PENDING | PERMANENTLY_FAILED.
+  ///
+  /// IN_PROGRESS is a CLAIMED state holding a lock token and a lease. A worker
+  /// that dies mid-send leaves a row here; the lease expires and the row becomes
+  /// eligible again, so a crash costs an ATTEMPT rather than the MESSAGE. That is
+  /// the deliberate reversal of 1.1 — at-most-once loses a receipt silently, and
+  /// a bounded at-least-once loses nothing and is visible.
+  status String @db.VarChar(24)
+
+  /// Provider attempts already made. Bounded by EMAIL_RETRY_POLICY.maxAttempts.
+  attemptCount Int @default(0)
+
+  /// When the next attempt becomes due. NULL once terminal.
+  nextAttemptAt DateTime? @db.DateTime(3)
+
+  /// The claim. Exactly the technique PublicationOutbox uses: a guarded UPDATE
+  /// that re-asserts eligibility, so of two concurrent workers exactly one wins.
+  /// A live (unexpired) claim is never stolen — this is lease EXPIRY, not lock
+  /// stealing.
+  lockToken       String?   @db.VarChar(64)
+  lockedAt        DateTime? @db.DateTime(3)
+  leaseExpiresAt  DateTime? @db.DateTime(3)
+
+  /// Which adapter answered (DISABLED | LOG | CAPTURE | POSTMARK). NULL until an
+  /// attempt has been made. NEVER a credential and never an endpoint.
+  provider String? @db.VarChar(24)
+
+  /// The provider's own identifier for the message, for correlation only — it is
+  /// what a bounce webhook arrives carrying.
+  providerMessageRef String? @db.VarChar(191)
+
+  /// Hex SHA-256 of the normalised destination, recorded once it is resolved.
+  /// THE ADDRESS ITSELF IS NEVER STORED — there is no column for it.
+  destinationDigest String? @db.Char(64)
+
+  /// The last normalised failure, from 1.1's closed vocabulary. NO PROVIDER TEXT,
+  /// SMTP response, bounce body, or exception message.
+  lastFailureCode  String? @db.VarChar(48)
+  /// ACCEPTED | TRANSIENT | PERMANENT — the classification that decides whether
+  /// another attempt happens.
+  lastFailureClass String? @db.VarChar(16)
+
+  createdAt DateTime  @db.DateTime(3)
+  /// When a PROVIDER accepted responsibility. Never an inbox-delivery claim.
+  sentAt    DateTime? @db.DateTime(3)
+  /// When it reached a terminal state, either way.
+  finalizedAt DateTime? @db.DateTime(3)
+  updatedAt DateTime  @updatedAt @db.DateTime(3)
+
+  // RESTRICT: a delivery points at the obligation it accompanies. An obligation
+  // Monacado owes must not vanish beneath the evidence that it tried to send it.
+  obligation NotificationObligation? @relation(fields: [obligationId], references: [id], onDelete: Restrict)
+
+  /// The dispatcher's working index: everything due, oldest first.
+  @@index([status, nextAttemptAt])
+  /// Lease recovery.
+  @@index([status, leaseExpiresAt])
+  /// "What happened to the mail about this Order / this contact?"
+  @@index([subjectKind, subjectRef])
+  @@index([obligationId])
+  @@index([providerMessageRef])
+}
+
+/// One address Monacado will NOT write to (Phase 1.5).
+///
+/// KEYED BY DIGEST, AND HOLDING NO ADDRESS. A suppression list is otherwise a
+/// directory of every address that ever failed — a more attractive table to read
+/// than the one it was protecting. Monacado can still answer "may I write to
+/// this address" for an address it already holds, which is the only question this
+/// list needs to answer.
+///
+/// A SOFT BOUNCE NEVER LANDS HERE. A full mailbox or a greylist is exactly what
+/// the retry policy exists for, and suppressing on one turns a transient
+/// condition into a permanent one.
+model EmailSuppression {
+  /// Opaque identity (mon:esup:<opaque>). Encodes nothing about the address.
+  id String @id @db.VarChar(191)
+
+  /// Hex SHA-256 of the normalised address. UNIQUE: one standing decision per
+  /// address, not a log of every bounce it ever produced.
+  addressDigest String @unique @db.Char(64)
+
+  /// HARD_BOUNCE | SPAM_COMPLAINT | MANUAL.
+  reason String @db.VarChar(32)
+
+  /// The provider event that caused it, where one did.
+  evidenceEventId String? @db.VarChar(191)
+
+  suppressedAt DateTime @db.DateTime(3)
+
+  /// When it stopped applying. NULL while it still does.
+  ///
+  /// Suppression is a STATE, NOT A VERDICT: an address that starts working again
+  /// is remediated by proving control of it, and the row remains as the evidence
+  /// of why it was ever suppressed.
+  liftedAt DateTime? @db.DateTime(3)
+
+  createdAt DateTime @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  @@index([reason, suppressedAt])
+}
+
+/// One provider email event, normalised (Phase 1.5).
+///
+/// The idempotency ledger for the webhook boundary. Every provider worth using
+/// retries its webhook, and an ingestion that acted twice would suppress,
+/// degrade, and re-degrade on every redelivery.
+///
+/// NO RAW PAYLOAD COLUMN. A bounce payload carries the recipient address, the
+/// subject line, and frequently a quoted copy of the message body — which for a
+/// verification message is a live bearer credential. The normalised facts are
+/// kept and the payload is not.
+model ProviderEmailEvent {
+  /// Opaque identity (mon:pevt:<opaque>).
+  id String @id @db.VarChar(191)
+
+  /// Which provider reported it (POSTMARK). Never a credential.
+  provider String @db.VarChar(24)
+
+  /// THE PROVIDER'S OWN IDENTITY FOR THE EVENT. Unique per provider, and what
+  /// makes replay idempotent.
+  providerEventId String @db.VarChar(191)
+
+  /// HARD_BOUNCE | SPAM_COMPLAINT | TRANSIENT_BOUNCE | DELIVERED. A closed
+  /// Monacado vocabulary, so nothing above the adapter reads a vendor's own
+  /// event names.
+  eventType String @db.VarChar(32)
+
+  /// Hex SHA-256 of the normalised address the event concerns.
+  addressDigest String @db.Char(64)
+
+  /// Correlates back to a delivery, where the provider reported one.
+  providerMessageRef String? @db.VarChar(191)
+
+  occurredAt DateTime @db.DateTime(3)
+  receivedAt DateTime @db.DateTime(3)
+  createdAt  DateTime @db.DateTime(3)
+
+  /// One row per provider event. A redelivered webhook is a constraint
+  /// violation, not a second suppression.
+  @@unique([provider, providerEventId])
+  @@index([addressDigest, occurredAt])
+  @@index([providerMessageRef])
 }

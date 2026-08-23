@@ -1,5 +1,14 @@
 /**
- * Delivery errors (Phase 1.1) — SERVER ONLY.
+ * `NotificationDelivery` errors — **LEGACY, READ-ONLY** (Phase 1.1; writer
+ * retired in Phase 1.5). SERVER ONLY.
+ *
+ * ```
+ *   LEGACY / READ-ONLY.  NO NEW EMAIL DELIVERY WRITES.
+ *   Use `outbound-email-errors.ts` and `OutboundEmailDelivery` instead.
+ * ```
+ *
+ * Only what the historical **reads** and the mapper still raise. The write-path
+ * error went with the writer.
  *
  * Bounded, and deliberately few. **No error here carries a destination address,
  * a rendered body, or a provider message** — an error object is the first place
@@ -15,15 +24,6 @@ export class NotificationDeliveryServiceError extends Error {
     super(message);
     this.name = "NotificationDeliveryServiceError";
     this.code = code;
-  }
-}
-
-export class InvalidDeliveryInputError extends NotificationDeliveryServiceError {
-  readonly fields: string[];
-  constructor(fields: string[]) {
-    super("INVALID_DELIVERY_INPUT", "Invalid notification delivery input");
-    this.name = "InvalidDeliveryInputError";
-    this.fields = fields;
   }
 }
 

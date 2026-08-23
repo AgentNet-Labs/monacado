@@ -52,7 +52,7 @@ import {
 import { PaymentResultConflictError } from "../src/server/marketplace/order-errors";
 import type { OrderIdProvider } from "../src/server/marketplace/order-ids";
 import type { GuestClaimCodeProvider } from "../src/server/marketplace/guest-claim-code";
-import type { NotificationDeliveryIdProvider } from "../src/server/notifications/notification-delivery-ids";
+import type { OutboundEmailIdProvider } from "../src/server/notifications/outbound-email-ids";
 import { createCapturingMailAdapter } from "../src/server/notifications/mail-port";
 import { hashGuestClaimCode } from "../src/server/marketplace/guest-claim-code";
 import type { ParticipantIdProvider } from "../src/server/marketplace/participant-ids";
@@ -126,8 +126,14 @@ const claimCodes: GuestClaimCodeProvider = {
   nextGuestClaimCode: () => `${TAG}-guest-claim-${next()}`.padEnd(43, "x").slice(0, 43),
 };
 
-const deliveryIds: NotificationDeliveryIdProvider = {
-  nextDeliveryId: () => `mon:ndlv:${pad26(`${TAG}NDLV${next()}`)}`,
+/* Phase 1.5 — the webhook now commits durable OutboundEmailDelivery rows and
+   attempts them immediately, instead of sending once with no retry path. */
+const deliveryIds: OutboundEmailIdProvider = {
+  nextOutboundDeliveryId: () => `mon:oeml:${pad26(`${TAG}0EML${next()}`)}`,
+  nextSuppressionId: () => `mon:esup:${pad26(`${TAG}ESUP${next()}`)}`,
+  nextProviderEventId: () => `mon:pevt:${pad26(`${TAG}PEVT${next()}`)}`,
+  nextMessageDiscriminator: () => pad26(`${TAG}DISC${next()}`),
+  nextLockToken: () => `lock${next()}`.padEnd(32, "0"),
 };
 
 const taxIds: TaxEvidenceIdProvider = {
@@ -326,6 +332,11 @@ async function cleanup(): Promise<void> {
     await db.notificationDelivery.deleteMany({
       where: { subjectKind: "ORDER", subjectRef: { in: orderIdList } },
     });
+    /* Phase 1.5 — durable outbound email holds a RESTRICT key onto the
+       obligation deleted further down. */
+    await db.outboundEmailDelivery.deleteMany({
+      where: { subjectKind: "ORDER", subjectRef: { in: orderIdList } },
+    });
     /* Phase 1.2 evidence holds RESTRICT keys onto the Order and the snapshot. */
     await db.transactionReversal.deleteMany({ where: { orderId: { in: orderIdList } } });
     /* Tax evidence points at the buyer snapshot, which points at the Order —
@@ -351,6 +362,9 @@ async function cleanup(): Promise<void> {
 
   if (participantIds.length > 0) {
     await db.notificationDelivery.deleteMany({
+      where: { recipientParticipantId: { in: participantIds } },
+    });
+    await db.outboundEmailDelivery.deleteMany({
       where: { recipientParticipantId: { in: participantIds } },
     });
     await db.notificationObligation.deleteMany({

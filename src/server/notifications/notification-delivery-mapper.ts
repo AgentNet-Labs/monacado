@@ -1,5 +1,15 @@
 /**
- * Prisma ⇄ domain mapping for delivery attempts (Phase 1.1) — SERVER ONLY.
+ * Prisma ⇄ domain mapping for `NotificationDelivery` — **LEGACY, READ-ONLY**
+ * (Phase 1.1; writer retired in Phase 1.5). SERVER ONLY.
+ *
+ * ```
+ *   LEGACY / READ-ONLY.  NO NEW EMAIL DELIVERY WRITES.
+ *   Use `outbound-email-mapper.ts` and `OutboundEmailDelivery` instead.
+ * ```
+ *
+ * Reached only by the historical reads in `notification-delivery-service.ts`.
+ * Kept so a pre-`1.5` row stays legible; the table is retained indefinitely and
+ * has no planned destructive cleanup migration.
  *
  * Follows `notification-obligation-mapper.ts` exactly: every row is reconstructed
  * into a validated domain record, malformed persisted data surfaces as a

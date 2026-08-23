@@ -1,6 +1,28 @@
 /**
  * Notification delivery (Phase 1.1) — the first concrete channel.
  *
+ * ## Read this first: the file is in two halves
+ *
+ * | Half | Status |
+ * | --- | --- |
+ * | **The mail boundary** — `MailMessage`, `MailPort`, `MailResult`, `DeliveryFailureCode`, `DeliveryAudience`, `DeliveryChannel` | **canonical and current.** Phase 1.5's dispatcher and its Postmark adapter are built on exactly these, unchanged |
+ * | **The `NotificationDelivery` record** — `NotificationDeliveryRecord`, `DELIVERY_STATUSES`, `notificationDeliveryKey`, `NEVER_ON_NOTIFICATION_DELIVERY` | **LEGACY, READ-ONLY.** No writer exists; see below |
+ *
+ * ```
+ *   NotificationDelivery:  LEGACY / READ-ONLY.  NO NEW EMAIL DELIVERY WRITES.
+ *   Use `OutboundEmailDelivery` (contracts/marketplace/outbound-email.ts).
+ * ```
+ *
+ * Phase 1.5 removed the writer. `DELIVERY_STATUSES` has no `RETRYING` and
+ * `notificationDeliveryKey` enforces at-most-once — the property that made a
+ * provider outage lose a buyer's receipt permanently and silently, and the one
+ * that could not be relaxed without losing the guarantee it existed for. The
+ * separation `1.5` needed — a unique key over the **message**, an attempt counter
+ * over the **attempts** — required a different record.
+ *
+ * The table is **retained indefinitely** for historical readability. There is no
+ * planned destructive cleanup migration. New functionality must not depend on it.
+ *
  * `0M.N1` recorded what Monacado **owes**. This records what Monacado
  * **attempted**, and keeps the two strictly apart.
  *
@@ -101,7 +123,7 @@ export type DestinationDigest = z.infer<typeof DestinationDigest>;
 // — Status —
 
 /**
- * Three states, and no more.
+ * Three states, and no more. **LEGACY** — `OutboundDeliveryStatus` is current.
  *
  *   - `ATTEMPTED` — the row was claimed and the provider has not yet answered.
  *     A row left here means the process died mid-send, which is exactly the state
@@ -141,6 +163,20 @@ export const DELIVERY_FAILURE_CODES = [
   "PROVIDER_UNAVAILABLE",
   /** Monacado is not configured to send on this channel. */
   "CHANNEL_NOT_CONFIGURED",
+  /**
+   * The destination is suppressed — a hard bounce or complaint against it
+   * stands. Added in Phase 1.5, as the additive change this vocabulary was
+   * designed to take. Nothing was sent, and nothing should be: the remedy is
+   * remediating the address, not resending to it.
+   */
+  "DESTINATION_SUPPRESSED",
+  /**
+   * Monacado holds no address for this recipient. Added in Phase 1.5.
+   *
+   * Distinct from a provider rejecting one: nothing left Monacado, and no
+   * number of retries will conjure an address that was never recorded.
+   */
+  "RECIPIENT_UNRESOLVABLE",
   /** The provider failed in a way Monacado does not classify further. */
   "UNSPECIFIED_FAILURE",
 ] as const;
@@ -162,7 +198,12 @@ export class NotificationDeliveryError extends Error {
 }
 
 /**
- * The deduplication identity of one delivery.
+ * The deduplication identity of one `1.1` delivery.
+ *
+ * **LEGACY.** Retained because a historical row's `deliveryKey` was derived this
+ * way and must stay explicable. It enforces **at-most-once**, which is precisely
+ * why `1.5` needed a different record: `outboundEmailDeliveryKey` keys the
+ * *message* and lets an attempt counter bound the *attempts*.
  *
  * Derived, never supplied, and enforced by a unique index — the same construction
  * `0M.N1` chose, for the same reason: two components are nullable and MySQL
@@ -205,6 +246,9 @@ export function notificationDeliveryKey(input: {
 
 /**
  * One attempt to reach one recipient about one thing.
+ *
+ * **LEGACY.** Reconstructed from pre-`1.5` rows only; nothing produces a new one.
+ * `OutboundEmailDeliveryRecord` is the current shape.
  *
  * Note what has no field: the destination address, a subject line, a rendered
  * body, an HTML part, a template name, a locale, a provider credential, an
