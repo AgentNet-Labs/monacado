@@ -40,6 +40,7 @@ import {
   BuyerCheckoutDetailsInput,
   OrderBuyerSnapshotRecord,
   deriveTaxJurisdiction,
+  resolveShipToAddress,
   type BuyerDetailSource,
   type PostalAddress,
 } from "../../contracts/marketplace/order-buyer-snapshot";
@@ -93,9 +94,10 @@ interface SnapshotRow {
 }
 
 function rowToRecord(row: SnapshotRow): OrderBuyerSnapshotRecord {
-  /* NULL means "this basket needed no delivery address" — a fact worth reading
-     back, not a gap. A partially-present address is treated as absent: an
-     address missing its line or country is not one anything could ship to. */
+  /* NULL means "this Order predates the two-address policy" — every Order
+     written now has a ship-to address. A partially-present address is treated as
+     absent: one missing its line or country is not somewhere anything could be
+     sent, and half an address must not become a tax jurisdiction. */
   const shipping: PostalAddress | null =
     row.shippingLine1 === null || row.shippingCity === null || row.shippingCountryCode === null
       ? null
@@ -146,7 +148,12 @@ function billingColumns(address: PostalAddress) {
   };
 }
 
-/** Shipping columns. Conditional — see `SHIPPING_ADDRESS_POLICY`. */
+/**
+ * Ship-to columns.
+ *
+ * `null` is reachable only for Orders that predate the two-address policy — see
+ * `BUYER_ADDRESS_POLICY`. Nothing written by checkout now passes one.
+ */
 function shippingColumns(address: PostalAddress | null) {
   if (address === null) {
     return {
@@ -196,7 +203,11 @@ export async function captureBuyerSnapshot(
     throw new BuyerSnapshotError("ID_PROVIDER_REQUIRED", "an id provider is required");
   }
 
-  const jurisdiction = deriveTaxJurisdiction(details.billingAddress);
+  /* The ship-to address, resolved once: "same as billing" is COPIED IN here, so
+     the stored snapshot holds a populated ship-to either way. */
+  const shipTo = resolveShipToAddress(details);
+  /* Derived from SHIP-TO, which is the one tax jurisdiction source. */
+  const jurisdiction = deriveTaxJurisdiction(shipTo);
 
   const row = await db.orderBuyerSnapshot.create({
     data: {
@@ -205,7 +216,7 @@ export async function captureBuyerSnapshot(
       name: details.name,
       email: normalizeEmail(details.email),
       ...billingColumns(details.billingAddress),
-      ...shippingColumns(details.shippingAddress),
+      ...shippingColumns(shipTo),
       taxCountryCode: jurisdiction.taxCountryCode,
       taxRegionCode: jurisdiction.taxRegionCode,
       detailSource: "BUYER_SUPPLIED" satisfies BuyerDetailSource,
@@ -251,7 +262,14 @@ export async function confirmBuyerSnapshot(
   if (existing.detailSource === "PROVIDER_CONFIRMED") return rowToRecord(existing);
 
   const billing = args.confirmed.billingAddress;
-  const jurisdiction = billing === null ? null : deriveTaxJurisdiction(billing);
+  /* The tax jurisdiction follows SHIP-TO, so only a confirmed ship-to address may
+     move it — a confirmed BILLING address updates the payment record and leaves
+     the jurisdiction alone. Stripe reports a shipping address only where it was
+     asked to collect one (a physical basket), so on a digital sale this is
+     ordinarily null and the buyer-supplied ship-to captured before payment
+     rightly stands. */
+  const confirmedShipTo = args.confirmed.shippingAddress;
+  const jurisdiction = confirmedShipTo === null ? null : deriveTaxJurisdiction(confirmedShipTo);
 
   const row = await db.orderBuyerSnapshot.update({
     where: { orderId: args.orderId },

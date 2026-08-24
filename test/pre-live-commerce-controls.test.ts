@@ -79,13 +79,18 @@ const REVERSAL_ID = `mon:txrev:${opaque("P12REV")}`;
 const RISK_POLICY_ID = `mon:rpol:${opaque("P12RP0L")}`;
 const AT = "2028-05-01T10:00:00.000Z";
 
+/* Phase 1.6 widened the request with a bounded destination, the exact Product
+   basis, and an idempotency key. The `1.2` behaviours below are unchanged; these
+   defaults keep them expressible. */
 const request = (over: Record<string, unknown> = {}) => ({
   currency: "USD" as const,
   commercialRetailAmountMinorUnits: 10_000,
   shippingAmountMinorUnits: 0,
   internalProductId: `mon:product:${opaque("P12PR0D")}`,
   sellerParticipantId: `mon:mpart:${opaque("P12SELLER")}`,
-  buyerJurisdictionCode: null,
+  destination: null,
+  product: null,
+  idempotencyKey: null,
   at: AT,
   ...over,
 });
@@ -112,8 +117,12 @@ describe("1.2 · the tax boundary refuses rather than defaults", () => {
     ).rejects.toBeInstanceOf(TaxCalculationUnavailableError);
   });
 
-  it("names only test adapters, and installs no tax vendor", () => {
-    expect(TAX_PROVIDERS).toEqual(["TEST_ZERO_RATE", "TEST_FLAT_RATE"]);
+  it("names the selected provider and installs no separate tax vendor SDK", () => {
+    /* Phase 1.6 selected Stripe Tax. It is the ONE production member, and it
+       adds no dependency: the tax calls go through the Stripe SDK the payment
+       integration already installed, on the same account and the same
+       test-mode-only credential. */
+    expect(TAX_PROVIDERS).toEqual(["TEST_ZERO_RATE", "TEST_FLAT_RATE", "STRIPE_TAX"]);
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
       dependencies: Record<string, string>;
       devDependencies: Record<string, string>;
@@ -144,11 +153,16 @@ describe("1.2 · the tax boundary refuses rather than defaults", () => {
   it("refuses an engine that contradicts itself", () => {
     const base = {
       provider: "TEST_FLAT_RATE" as const,
+      providerMode: "TEST" as const,
       providerCalculationRef: "flat-1",
       currency: "USD" as const,
       basisAmountMinorUnits: 10_000,
       jurisdictionCode: null,
+      productTaxBasis: null,
+      providerTaxCode: null,
+      providerConfigVersion: null,
       calculatedAt: AT,
+      expiresAt: null,
     };
     /* Not-taxable with a non-zero amount is an engine contradicting itself, and
        charging it would charge tax nobody said was due. */
@@ -178,13 +192,18 @@ describe("1.2 · the tax boundary refuses rather than defaults", () => {
       async calculate() {
         return {
           provider: "TEST_FLAT_RATE" as const,
+          providerMode: "TEST" as const,
           providerCalculationRef: "x",
           currency: "USD" as const,
           taxAmountMinorUnits: 0,
           basisAmountMinorUnits: 999_999,
           treatment: "EXEMPT" as const,
           jurisdictionCode: null,
+          productTaxBasis: null,
+          providerTaxCode: null,
+          providerConfigVersion: null,
           calculatedAt: AT,
+          expiresAt: null,
         };
       },
     };

@@ -63,6 +63,11 @@ export function versionRowToDomain(row: ProductSourceRecordVersionRow): ProductS
     capsuleSemver: row.capsuleSemver,
     mappingVersion: row.mappingVersion,
     recordStatus: row.recordStatus,
+    /* Phase 1.6 — a source-record field, not a Product fact, so it sits beside
+       recordStatus rather than inside `facts`. Omitted rather than nulled when
+       absent: the contract makes it optional, and an explicit null would not
+       parse. */
+    ...(row.taxClassification !== null ? { taxClassification: row.taxClassification } : {}),
     createdAt: iso(row.sourceCreatedAt),
     updatedAt: iso(row.sourceUpdatedAt),
     acquiredAt: iso(row.acquiredAt),
@@ -121,5 +126,6 @@ export function domainToVersionCreateInput(
     sourceCreatedAt: new Date(record.createdAt),
     sourceUpdatedAt: new Date(record.updatedAt),
     recordStatus: record.recordStatus,
+    taxClassification: record.taxClassification ?? null,
   };
 }

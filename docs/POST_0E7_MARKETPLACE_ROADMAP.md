@@ -108,6 +108,7 @@ labels sort in.
 | 21 | **1.3** | **Marketplace Policy, Acceptance, Seller Support Contacts, and Email Verification** | **complete** — `c0b74e8` |
 | 22 | **1.4** | **Policy Bootstrap and Verification Email Delivery** — operational only; makes `1.3`'s two prerequisites satisfiable | **complete** |
 | 23 | **1.5** | **Production Communications and Notification Delivery** — durable retrying email, Postmark, bounce/complaint ingestion, suppression | **complete** |
+| 24 | **1.6** | **Production Tax Integration** — Stripe Tax behind the unchanged tax port, Product tax classification, strengthened evidence, registration/filing posture, operator readiness | **complete** |
 
 ### Forward sequence
 
@@ -150,11 +151,34 @@ complaint ingestion, and digest-keyed suppression that degrades a seller's conta
 and lets `1.3`'s resolver fall back. It closed `0M.N2`'s **delivery** half; the
 canonical admin-panel channel remains.
 
+**`1.6` put a real engine behind `1.2`'s tax boundary**: Stripe Tax in test mode,
+selected because Stripe is already the payment platform and Monacado is merchant
+of record on those charges. It adds the authoritative Product fact a real
+calculation needs — a **provider-neutral** `taxClassification`, on the source
+record and deliberately **outside** the published capsule — pins the exact Product
+source version, classification, provider code, and mapping version onto every
+sale's tax evidence, derives a stable idempotency key from the checkout's own
+facts, models quote expiry explicitly, and sources every sale to its ship-to address.
+
+It **closed `0M.T2`'s calculation half**. Product tax classification, sourcing,
+and calculation now exist; **nexus determination, registration, filing, and
+remittance remain outside the software by design** — the readiness boundary
+records that an operator configured them and refuses to infer any of it.
+
+Two things changed elsewhere, both deliberately. The live-readiness check no
+longer *performs* a calculation to prove the adapter works — with a real provider
+that would have made an API call from a command documented as read-only — and a
+**test tax adapter no longer counts as a satisfied control** for live commerce: a
+stub returning a plausible number is more dangerous than no engine, because its
+answers look calculated.
+
+Detail: [`PRODUCTION_TAX_INTEGRATION.md`](PRODUCTION_TAX_INTEGRATION.md).
+
 **What remains is the operational half of each workstream**, not another feature:
 
 | Next | Why it is next |
 | --- | --- |
-| **`0M.T2` — tax operations** | `1.2` supplied the boundary and evidence; nexus determination, product tax classification, sourcing, exemption certificates, filing, and remittance remain. **And the destination problem**: a real engine needs to know where the buyer is, and Monacado collects no address. **The hardest blocker to live mode.** |
+| **`0M.T2` — tax operations** | **`1.6` closed the calculation half**: Stripe Tax behind the port, Product tax classification, sourcing from the buyer's billing address, evidence that pins the version it was priced from. The destination problem is solved — `1.2`'s buyer snapshot supplies a bounded country/subdivision/postal destination. What remains is genuinely operational: nexus determination, provider-side **Tax Transactions** (without which Stripe Tax's reports do not contain Monacado's sales, and no reversal can name a transaction), exemption certificates, filing, and remittance. |
 | **`0M.R2` — risk operations** | `1.2` supplied a ceiling, restriction and approval checks, and a payout hold. Velocity limits, reserves, per-transaction policy selection, and a review function remain — and a scoring model without somebody to review its output would produce refusals nobody can explain. |
 | **`0M.N2` — the canonical channel** | **`1.5` closed the delivery half**: bounded durable retry, a production provider, bounce and complaint ingestion, and suppression — and `1.2`'s buyer snapshot had already retired the guest-address gate. What remains is the **canonical channel itself**: the admin-panel view, the `SUPER_OWNER`/`ADMIN` visibility rule, and notification preferences. |
 | **Live-mode Stripe support** | Does not exist. `STRIPE_MODES` has one member, so `LIVE_PROVIDER_NOT_ENABLED` is reported by construction and no configuration clears it. Building it is a deliberate, reviewed phase. |
@@ -170,7 +194,7 @@ canonical admin-panel channel remains.
 | --- | --- | --- |
 | **0M.N** | **Notification Records** — durable admin-panel notices, deduplication, recipients, notice states | **`0M.N1` complete**; `0M.N2`'s **delivery half complete in `1.5`** (durable retrying email, Postmark, bounce/complaint ingestion, suppression); the canonical admin-panel view remains |
 | **0M.R** | **Risk Management and Commercial Controls** — required before the **production** payment and commerce capabilities it governs are enabled; **not** a prerequisite to `0M.8` | **`0M.R1` complete**; `0M.R2` not started |
-| **0M.T** | **Tax, MoR and Transaction Accounting** — required before checkout/payment architecture is production-capable; its `0M.T1` foundation is a prerequisite to `0M.9`, **not** to `0M.8` | **`0M.T1` complete**; `0M.T2` not started |
+| **0M.T** | **Tax, MoR and Transaction Accounting** — required before checkout/payment architecture is production-capable; its `0M.T1` foundation is a prerequisite to `0M.9`, **not** to `0M.8` | **`0M.T1` complete**; `0M.T2`'s **calculation half complete in `1.6`** (Stripe Tax, Product tax classification, sourcing, evidence); nexus, provider tax transactions, exemption certificates, filing, and remittance remain |
 
 ### Dependency order
 
@@ -850,13 +874,20 @@ remains is `0M.T2`: tax execution and reversal accounting.
 > moment it does. Monacado must not create a transactional payment record it
 > cannot account for. It is now **complete** — see the section above.
 
-Reserved for `0M.T2`, and designed in none of it yet: sales-tax nexus and
-registration; VAT and GST; product tax classification; sourcing; tax calculation;
-filing and remittance; tax refunds and reversals; refund and chargeback
-accounting; double-entry ledger postings; processor reconciliation workflows; and
-settlement audit evidence. `0M.T1` recorded tax and shipping **amounts** and the
-settlement states that will carry provider evidence; it determined, calculated,
-and remitted nothing.
+Reserved for `0M.T2`. **Phase `1.6` delivered its calculation half** — product
+tax classification, sourcing, tax calculation through Stripe Tax, and evidence
+that pins the exact Product source version a rate was computed from. `0M.T1` had
+recorded tax and shipping **amounts** and the settlement states that would carry
+provider evidence; it determined, calculated, and remitted nothing.
+
+**Still reserved, and designed in none of it yet:** sales-tax nexus
+determination; registration (configured by an operator inside the provider, and
+only *evidenced* on Monacado's side); provider-side **Tax Transactions**, without
+which the provider's reports do not contain Monacado's sales and no reversal can
+name a transaction; VAT and GST specifics; exemption certificates; filing and
+remittance; tax refunds and reversals; refund and chargeback accounting;
+double-entry ledger postings; processor reconciliation workflows; and settlement
+audit evidence.
 
 **Must hold:** tax and shipping stay **outside** the wholesale-acquisition basis
 and outside commission and promoter-margin bases — `0M.4A` already enforces that
@@ -1487,6 +1518,107 @@ Detail: [`PRODUCTION_COMMUNICATIONS_AND_NOTIFICATION_DELIVERY.md`](PRODUCTION_CO
 
 ---
 
+## 1.6 — Production Tax Integration
+
+**Complete.** `1.2` built the tax boundary and deliberately named no vendor. This
+phase names one — **Stripe Tax**, in test mode — and supplies everything a real
+engine needs that `1.2` did not have.
+
+**Why Stripe Tax.** Stripe is already the payment platform and Monacado is
+merchant of record on those charges, so the tax engine sharing that account is the
+one whose registrations, reports, and eventual reversals line up with the charges
+they concern. It adds **no dependency**: the calls go through the SDK the payment
+integration already installed, on the same account and the same test-mode-only
+credential path. `1.2`'s harder blocker — "a real engine needs to know where the
+buyer is, and Monacado collects no address" — was resolved by `1.2`'s own buyer
+snapshot.
+
+**A provider-neutral Product fact, outside the capsule.**
+`taxClassification` — `DIGITAL_GOOD` \| `SOFTWARE` \| `PHYSICAL_GOOD` \|
+`SERVICE` — lives on the Product **source record**, beside `recordStatus`, not
+inside `facts`. A fiscal characterization published under *creator* authority
+would be the flat capsule ADR §2 forbids, and a capsule reader would reasonably
+mistake it for a determination about tax due. Classifying a Product therefore
+changes nothing about the artifact it publishes: **same candidate, same hash**, as
+a test asserts. There is **no `UNSPECIFIED` member** — a value meaning "we do not
+know" is one an engine can be handed, and absence must fail closed instead. A
+`txcd_…` never enters Product semantics; the map lives in configuration, so
+changing engine never rewrites immutable history.
+
+**Everything unresolvable refuses.** An unclassified Product, a classification
+this deployment has not mapped, a `PHYSICAL_GOOD` declared as delivered
+digitally, an absent destination, a `livemode` answer, a calculation Stripe will
+not give a reference for, a total that does not reconcile — each throws, and
+checkout refuses. The first three refuse **before any provider is contacted and
+before an Order exists**. Not one returns a zero.
+
+**Two addresses, and one sourcing rule.** Standard retail checkout collects a
+**billing** address and a **ship-to** address on every purchase, and **tax is
+always sourced to ship-to** — digital, physical, and a future mixed basket alike.
+`shipToSameAsBilling` supplies the second from the first, so nobody types one
+address twice, and a ship-to address on a download implies no physical
+fulfillment. There is **no runtime choice of tax source**: no buyer-declared
+location, no billing mode, no IP. Only the ship-to destination crosses the tax
+boundary, as a bounded country/subdivision/postal triple — Stripe Tax cannot
+produce a correct US rate from a country code — and the billing address never
+reaches it at all. No street line, name, or email crosses, and there is no field
+in which one could. This does not claim to resolve every international sourcing
+rule: it decides which facts the engine is given, and the engine determines the
+result.
+
+**Ordinary checkout accepts no buyer tax-exemption credentials** — no exemption
+number, VAT number, resale certificate, buyer exemption state, or approval
+workflow. Provider-determined non-taxability is ordinary and fully evidenced; a
+buyer's own status is pursued through the applicable tax processes. Monacado and
+its providers retain authority to correct or adjust transaction tax later
+determined to have been charged or reported incorrectly. That is internal policy
+and Terms material, recorded as `MONACADO_RETAIL_TAX_POLICY` — **no checkout copy
+was added**.
+
+**Evidence that stays interpretable.** Seven additive columns pin the provider
+mode, the exact Product source version and classification, the provider code, the
+mapping version, and the calculation's expiry. **Pinned, never joined** —
+reclassifying a Product tomorrow, or remapping `SOFTWARE` next quarter, changes
+nothing about a sale made today. No raw payload, no address: the address lives
+once on the buyer snapshot and is reached through `buyerSnapshotId`.
+
+**Idempotency the Order id could not provide.** Tax is calculated *before*
+`placeOrder` commits, so there is no Order id to key on. The key is a digest of
+the calculation's own facts, with the instant excluded — a reload reuses the
+calculation, and anything that could change the tax owed does not. Quote expiry is
+modelled explicitly and checked at both boundaries.
+
+**Registration and filing are stated, never inferred.** Stripe owns registration
+configuration; Monacado keeps the smallest honest record that an operator
+configured it deliberately, plus a reference to where that decision lives — both,
+or the posture is incomplete. **Monacado files and remits nothing**, recorded as a
+value rather than left in prose, and the consequence is stated plainly: until
+provider-side **Tax Transactions** are recorded — deferred to the phase that also
+needs to reverse them — Stripe Tax's reports do not contain Monacado's sales.
+
+**Two deliberate changes elsewhere.** `1.2`'s live-readiness check proved the tax
+adapter worked by *performing a calculation*; with a real provider that would have
+made an API call from a command documented as read-only, so readiness is now
+configuration inspection and the narrowing is recorded rather than glossed. And a
+**test tax adapter no longer counts as a satisfied control** for live commerce — a
+stub returning a plausible number is more dangerous than no engine, because its
+answers look calculated.
+
+**`STRIPE_MODES` is unchanged.** Tax using Stripe does not widen it, tax reaches
+the account through the same one credential resolver that refuses a live prefix,
+and the adapter additionally refuses a `livemode` answer on the **provider's own
+statement** — which is what catches a deployment holding a live key it believes is
+a test one. `npm run tax:readiness` reports the whole posture without a secret,
+without a provider call, and without a write.
+
+One additive migration: two `ALTER TABLE … ADD COLUMN` and one index, **no drop,
+no narrowing, no committed migration modified**. **No production tax call and no
+production write occurred** — every test drives an injected client double.
+
+Detail: [`PRODUCTION_TAX_INTEGRATION.md`](PRODUCTION_TAX_INTEGRATION.md).
+
+---
+
 ## Standing constraints across the track
 
 1. **Publication stays gated and asynchronous.** Creators and promoters never hold
@@ -1515,3 +1647,4 @@ Detail: [`PRODUCTION_COMMUNICATIONS_AND_NOTIFICATION_DELIVERY.md`](PRODUCTION_CO
 - [`PRODUCT_PUBLICATION_WORKER_OPERATIONS_TRACK.md`](PRODUCT_PUBLICATION_WORKER_OPERATIONS_TRACK.md)
 - [`POLICY_BOOTSTRAP_AND_VERIFICATION_EMAIL_DELIVERY.md`](POLICY_BOOTSTRAP_AND_VERIFICATION_EMAIL_DELIVERY.md)
 - [`PRODUCTION_COMMUNICATIONS_AND_NOTIFICATION_DELIVERY.md`](PRODUCTION_COMMUNICATIONS_AND_NOTIFICATION_DELIVERY.md)
+- [`PRODUCTION_TAX_INTEGRATION.md`](PRODUCTION_TAX_INTEGRATION.md)

@@ -191,6 +191,24 @@ model ProductSourceRecordVersionRow {
   /// facts.relationships.offer (optional opaque ANS node reference).
   factOfferRef                 String? @db.VarChar(191)
 
+  /// DIGITAL_GOOD | SOFTWARE | PHYSICAL_GOOD | SERVICE — how this Product is
+  /// taxed, in Monacado's PROVIDER-NEUTRAL vocabulary (Phase 1.6).
+  ///
+  /// NOT a `fact*` column, and deliberately so: this is a Monacado fiscal control
+  /// fact, not a creator-authoritative Product fact, and it is never projected
+  /// into the published capsule. See product-tax-classification.ts.
+  ///
+  /// It holds no vendor code. A Stripe Tax `txcd_…` is mapped from this value in
+  /// the adapter/configuration layer, so changing tax engine never rewrites
+  /// immutable Product history.
+  ///
+  /// NULLABLE FOR BACKWARD COMPATIBILITY ONLY. Source versions written before
+  /// this fact existed have none, and making it required would invalidate them
+  /// retroactively. ABSENCE IS NOT A DEFAULT: a production tax calculation
+  /// REFUSES an unclassified Product rather than guessing a category, because a
+  /// guessed category is a tax rate nobody chose.
+  taxClassification            String? @db.VarChar(32)
+
   // — Mapping controls (NOT Product facts, NOT publication metadata) —
   capsuleSemver      String   @db.VarChar(64)
   mappingVersion     String   @db.VarChar(64)
@@ -3149,9 +3167,19 @@ model OrderTaxEvidence {
   /// charged amount, and no reader could tell which was authoritative.
   orderId String @unique @db.VarChar(191)
 
-  /// TEST_ZERO_RATE | TEST_FLAT_RATE. Both are TEST adapters; no production tax
-  /// vendor is named, configured, or installed.
+  /// TEST_ZERO_RATE | TEST_FLAT_RATE | STRIPE_TAX (Phase 1.6). Only STRIPE_TAX is
+  /// production-capable; the other two are test adapters and are refused by the
+  /// live-commerce readiness gate.
   provider String @db.VarChar(32)
+
+  /// TEST | LIVE — which of the provider's two worlds answered, read from the
+  /// PROVIDER's own statement about its object rather than from Monacado's
+  /// configuration. That is what catches a deployment holding a live credential
+  /// it believes is a test one.
+  ///
+  /// NULLABLE only because the column is additive over rows written before Phase
+  /// 1.6; every row written now sets it.
+  providerMode String? @db.VarChar(16)
 
   /// The engine's own identifier for this calculation. Opaque: never parsed,
   /// never interpreted, and no decision is made from it. Kept so an auditor can
@@ -3170,7 +3198,12 @@ model OrderTaxEvidence {
   treatment String @db.VarChar(24)
 
   /// A bounded CODE (US-CA, GB) — the jurisdiction the amount was SOURCED under.
-  /// Derived from the buyer snapshot's billing address, never from an IP.
+  ///
+  /// Derived from the SHIP-TO destination sent to the engine, never from billing
+  /// and never from an IP. There is no companion "which address was this" column
+  /// and deliberately not: tax is always sourced to ship-to, so such a column
+  /// would have exactly one legitimate value. The address itself lives once, on
+  /// OrderBuyerSnapshot, reached through `buyerSnapshotId`.
   jurisdictionCode String? @db.VarChar(16)
 
   /// The buyer snapshot whose billing address produced that jurisdiction.
@@ -3179,6 +3212,29 @@ model OrderTaxEvidence {
   /// years later. NULLABLE only because the column is additive over rows written
   /// before buyer snapshots existed; every row this phase writes sets it.
   buyerSnapshotId String? @db.VarChar(191)
+
+  // — The Product basis this rate was computed under (Phase 1.6) —
+  //
+  // PINNED, never joined. Reclassifying a Product tomorrow, or remapping
+  // SOFTWARE next quarter, must change nothing about a sale made today — which
+  // is exactly why these are columns and not a lookup through the Product.
+
+  /// The stable Product source record, and the EXACT immutable version whose
+  /// classification produced this rate.
+  productSourceRecordId      String? @db.VarChar(191)
+  productSourceRecordVersion String? @db.VarChar(64)
+  /// The Monacado provider-neutral classification that version declared.
+  productTaxClassification   String? @db.VarChar(32)
+  /// The provider code that classification was mapped to, and the version of the
+  /// Monacado-side mapping that produced it. Together they make "why this rate"
+  /// answerable after the mapping changes. Never a credential.
+  providerTaxCode            String? @db.VarChar(64)
+  providerConfigVersion      String? @db.VarChar(64)
+
+  /// When the provider stops honouring the calculation named above, where it
+  /// states one. Modelled explicitly because a stale calculation cannot become
+  /// the provider-side transaction a later reversal needs.
+  providerCalculationExpiresAt DateTime? @db.DateTime(3)
 
   calculatedAt DateTime @db.DateTime(3)
   recordedAt   DateTime @db.DateTime(3)
@@ -3191,6 +3247,9 @@ model OrderTaxEvidence {
 
   @@index([provider, calculatedAt])
   @@index([treatment])
+  /// Answers "which sales were priced off this Product version" without a scan —
+  /// the query a reclassification review actually runs.
+  @@index([productSourceRecordId, productSourceRecordVersion])
 }
 
 /// What was given back on a completed sale (Phase 1.2).

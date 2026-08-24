@@ -31,6 +31,15 @@
  * profile, and not reusable across orders. Buying twice as a guest produces two
  * snapshots, because each records who bought *that* order.
  *
+ * ## Two addresses, both required (Phase 1.6)
+ *
+ * Standard Monacado retail checkout takes a **billing address** and a **ship-to
+ * address**, on every purchase. Billing is the payment and transaction record;
+ * ship-to is the destination and **the tax jurisdiction**, digital and physical
+ * alike. `shipToSameAsBilling` supplies the second from the first so nobody types
+ * one address twice, and a ship-to address on a download implies no physical
+ * fulfillment. There is no third buyer-facing tax address.
+ *
  * ## `NEVER_ON_ORDER` still holds, literally
  *
  * `0M.9` named `buyerEmail`, `buyerName`, and `buyerAddress` as never-on-`Order`,
@@ -141,35 +150,100 @@ export type BuyerDetailSource = z.infer<typeof BuyerDetailSource>;
  * refusals are unchanged, and this widens it by exactly the information the
  * purchase genuinely requires.
  *
- * Billing is always required; shipping depends on what the basket delivers. See
- * `SHIPPING_ADDRESS_POLICY`.
+ * **Billing and ship-to are both always required**, and `shipToSameAsBilling`
+ * supplies the second from the first. See `BUYER_ADDRESS_POLICY`.
  */
 export const BuyerCheckoutDetailsInput = z.strictObject({
   name: z.string().min(1).max(200),
   email: AccountEmail,
   billingAddress: PostalAddress,
   /**
-   * **Conditionally required**, on the same structured shape as billing.
+   * The **ship-to address**, required for every completed transaction.
    *
-   * Required when the basket contains any `PHYSICAL` Product; absent for an
-   * all-digital basket, which is never asked for one. The decision is
-   * `evaluateBasketFulfillment`'s, taken from explicit Product delivery modes —
-   * see `SHIPPING_ADDRESS_POLICY`.
+   * `null` **only** when `shipToSameAsBilling` is set — in which case billing
+   * supplies it. It is never left null on the stored snapshot: see
+   * `resolveShipToAddress`.
    */
   shippingAddress: PostalAddress.nullable(),
+  /**
+   * The ordinary retail convenience: *ship to my billing address*.
+   *
+   * Present so a buyer is never made to type one address twice. It is a **form
+   * affordance, not a second address concept** — selecting it copies billing into
+   * the authoritative ship-to fields, and what is stored afterwards is an
+   * ordinary ship-to address indistinguishable from one that was typed.
+   *
+   * Defaults to `false` so an omitted flag can never silently substitute billing
+   * for an address a buyer meant to give.
+   */
+  shipToSameAsBilling: z.boolean().default(false),
 });
 export type BuyerCheckoutDetailsInput = z.infer<typeof BuyerCheckoutDetailsInput>;
+
+/**
+ * The one place a ship-to address is resolved, and the invariant it enforces.
+ *
+ * **Every completed transaction has a ship-to address** — digital, physical, and
+ * a future mixed basket alike. Two ways to arrive at one, and no third:
+ *
+ *   - `shipToSameAsBilling` → billing is **copied** into ship-to;
+ *   - otherwise the buyer supplies a distinct one.
+ *
+ * Neither present is a refusal, never a fallback to billing. A silent fallback
+ * would tax a sale to an address the buyer never nominated, and would do it
+ * invisibly.
+ *
+ * The copy is deliberate rather than a reference: the stored snapshot must hold a
+ * populated ship-to even when it began as "same as billing", so that a later
+ * reader — or a later correction to billing — cannot change where a completed
+ * sale was taxed and sent.
+ */
+export function resolveShipToAddress(details: {
+  billingAddress: PostalAddress;
+  shippingAddress: PostalAddress | null;
+  shipToSameAsBilling?: boolean;
+}): PostalAddress {
+  if (details.shipToSameAsBilling === true) return { ...details.billingAddress };
+  const parsed = PostalAddress.safeParse(details.shippingAddress);
+  if (!parsed.success) {
+    throw new ShipToAddressRequiredError();
+  }
+  return parsed.data;
+}
+
+/**
+ * No ship-to address could be resolved, so no sale may proceed.
+ *
+ * Carries no address and no field values — a refusal about an address is exactly
+ * the log line an address ends up in.
+ */
+export class ShipToAddressRequiredError extends Error {
+  readonly detail = "SHIPPING_ADDRESS_REQUIRED";
+  constructor() {
+    super("A ship-to address is required for every purchase");
+    this.name = "ShipToAddressRequiredError";
+  }
+}
 
 // — Record —
 
 /**
  * The persisted snapshot, one per Order.
  *
- * `taxCountryCode` and `taxRegionCode` are **derived from the billing address**
+ * **Four things every new Order has**: a buyer name, a buyer email, a billing
+ * address, and a ship-to address. The application boundary enforces all four;
+ * the shipping columns stay nullable in the database only so Orders written
+ * before this policy stay readable, and nothing new is written with them empty.
+ *
+ * `taxCountryCode` and `taxRegionCode` are **derived from the ship-to address**
  * and stored beside it rather than recomputed on read. That is a deliberate
  * duplication: the jurisdiction a tax amount was actually sourced under must stay
  * answerable even if the derivation rule changes later, and re-deriving it from
  * an address years afterwards would answer a different question.
+ *
+ * There is **no third address**. Billing is the payment record, ship-to is the
+ * destination, and the tax jurisdiction is a derived *code* — not a separate
+ * buyer-facing tax address, which the settled policy does not have.
  */
 export const OrderBuyerSnapshotRecord = z.strictObject({
   buyerSnapshotId: OrderBuyerSnapshotId,
@@ -179,14 +253,16 @@ export const OrderBuyerSnapshotRecord = z.strictObject({
   email: AccountEmail,
   billingAddress: PostalAddress,
   /**
-   * `null` when the basket needed no delivery address.
+   * The ship-to address. **Populated on every Order written under this policy**,
+   * including one where the buyer chose "same as billing" — the values are copied
+   * in, never left null to mean "look at billing instead".
    *
-   * That is a **fact worth reading back**, not a gap: it records that this
-   * purchase was all-digital, which is why the buyer was never asked.
+   * Nullable only for Orders that predate the policy, where no ship-to was ever
+   * collected and inventing one would fabricate a destination.
    */
   shippingAddress: PostalAddress.nullable(),
 
-  /** Derived from `billingAddress` at capture. Never supplied by a caller. */
+  /** Derived from `shippingAddress` at capture. Never supplied by a caller. */
   taxCountryCode: CountryCode,
   taxRegionCode: RegionCode.nullable(),
 
@@ -197,18 +273,19 @@ export const OrderBuyerSnapshotRecord = z.strictObject({
 export type OrderBuyerSnapshotRecord = z.infer<typeof OrderBuyerSnapshotRecord>;
 
 /**
- * The tax jurisdiction implied by a billing address.
+ * The tax jurisdiction implied by the **ship-to** address.
  *
  * Derived in exactly one place so a forgotten fallback cannot silently source a
- * sale to the wrong regime. **Never from an IP address**: an IP locates a network
- * interface, not a buyer, and sourcing tax from one is guessing with a number
- * that looks authoritative.
+ * sale to the wrong regime, and from one address only — **there is no runtime
+ * choice of tax source**. Never from billing, never buyer-declared, and **never
+ * from an IP address**: an IP locates a network interface, not a buyer, and
+ * sourcing tax from one is guessing with a number that looks authoritative.
  */
-export function deriveTaxJurisdiction(billing: PostalAddress): {
+export function deriveTaxJurisdiction(shipTo: PostalAddress): {
   taxCountryCode: string;
   taxRegionCode: string | null;
 } {
-  return { taxCountryCode: billing.countryCode, taxRegionCode: billing.region };
+  return { taxCountryCode: shipTo.countryCode, taxRegionCode: shipTo.region };
 }
 
 /**
@@ -218,39 +295,62 @@ export function deriveTaxJurisdiction(billing: PostalAddress): {
  * `TaxJurisdictionCode` already accepts, built from the snapshot rather than
  * invented.
  */
-export function taxJurisdictionCodeFor(billing: PostalAddress): string {
-  const { taxCountryCode, taxRegionCode } = deriveTaxJurisdiction(billing);
+/**
+ * The bounded jurisdiction code a sale is sourced under, from its ship-to address.
+ *
+ * `US-CA` where a subdivision exists, `GB` where none does. One input, one rule,
+ * and no alternative: helpers that derived a jurisdiction from billing, or chose
+ * between billing and shipping, existed briefly during Phase 1.6 and were
+ * removed. A second derivation sitting beside this one is a second answer waiting
+ * to be called by mistake.
+ */
+export function taxJurisdictionCodeFor(shipTo: PostalAddress): string {
+  const { taxCountryCode, taxRegionCode } = deriveTaxJurisdiction(shipTo);
   return taxRegionCode === null ? taxCountryCode : `${taxCountryCode}-${taxRegionCode}`;
 }
 
 // — Shipping is conditional on what the basket delivers —
 
 /**
- * **Billing is always required. Shipping depends on the basket.**
+ * **Two addresses, both always required.**
  *
  * ```
- * all lines DIGITAL   → no shipping address requested, and none required
- * any line PHYSICAL   → shipping address required; absence refuses checkout
- * any line UNKNOWN    → checkout refuses. Absence is never a default.
+ * billing   ALWAYS required — the payment and transaction record
+ * ship-to   ALWAYS required — the destination, and the tax jurisdiction
  * ```
  *
- * A mixed basket therefore requires shipping — that falls out of "any" rather
- * than needing its own case, because there is nowhere to ship half an order to.
+ * This settles a question Phase 1.2 answered differently. `1.2` collected a
+ * shipping address only when something physical was in the basket, and sourced
+ * tax to billing; Phase 1.6's first correction made sourcing depend on what was
+ * being delivered. Both are superseded: **standard Monacado retail checkout takes
+ * a billing address and a ship-to address, and tax is always sourced to ship-to.**
+ * There is no third buyer-facing tax address and no runtime choice of tax source.
  *
- * The decision comes from `evaluateBasketFulfillment`, reading **explicit
- * `deliveryMode` facts** off each Product's authoritative source version. It is
- * never inferred from a name, a category, `specifications`, or `capabilities`:
- * those are free-form, and reading a checkout rule out of one would make whether
- * a buyer is asked for an address depend on how somebody phrased a spec key.
+ * **`shipToSameAsBilling` is why this is not friction.** A buyer shipping to the
+ * address they pay from ticks one box; the values are copied into the ship-to
+ * fields, and nobody types an address twice.
  *
- * Not asking is as deliberate as asking. Demanding a delivery address for a
- * download is friction with no purpose, and it teaches buyers that Monacado asks
- * for data it does not need.
+ * **A ship-to address does not imply physical fulfillment.** For a digital
+ * purchase it is a destination for *tax* purposes and nothing else: no parcel, no
+ * carrier, no shipping address collected on the provider's hosted page, and the
+ * digital-delivery entitlement policy is untouched. Whether anything physically
+ * ships remains `evaluateBasketFulfillment`'s question, decided from explicit
+ * Product `deliveryMode` facts — never from a name, a category, `specifications`,
+ * or `capabilities`.
+ *
+ * A **mixed** basket is ordinary here: every line shares the one transaction
+ * ship-to for tax sourcing. Split shipments and multiple destinations are not
+ * implemented, and would need their own governed design.
  */
-export const SHIPPING_ADDRESS_POLICY = {
+export const BUYER_ADDRESS_POLICY = {
   billing: "ALWAYS_REQUIRED",
-  shipping: "REQUIRED_WHEN_ANY_LINE_IS_PHYSICAL",
+  shipTo: "ALWAYS_REQUIRED",
+  shipToSameAsBilling: "SUPPORTED",
+  taxJurisdictionSource: "SHIP_TO",
+  digitalShipToImpliesFulfillment: false,
+  physicalFulfillmentDecision: "PRODUCT_DELIVERY_MODE",
   unknownDeliveryMode: "REFUSE_CHECKOUT",
+  multipleShipToDestinations: "NOT_IMPLEMENTED",
 } as const;
 
 // — Never on a buyer snapshot —

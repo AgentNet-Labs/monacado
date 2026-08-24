@@ -70,13 +70,17 @@ Monacado's retention on **$100.00** — an integration test asserts the snapshot
 
 ### The jurisdiction is authoritative, and comes from the buyer
 
-`TaxQuote` is computed from the **billing address the buyer supplied at
-checkout** — never the shipping address, and collecting one does not move the
-jurisdiction. A shipping address may later participate in sourcing if a real
-engine requires it; that policy is not invented here.
+> **Superseded by Phase 1.6.** `1.2` sourced tax to the **billing** address and
+> recorded that a shipping address might later participate "if a real engine
+> requires it". The settled rule is different: standard retail checkout collects
+> **billing and ship-to on every purchase**, and **tax is always sourced to
+> ship-to** — digital, physical, and mixed alike. `taxJurisdictionCodeFor` now
+> takes the ship-to address, and there is no runtime choice of tax source. See
+> [`PRODUCTION_TAX_INTEGRATION.md`](PRODUCTION_TAX_INTEGRATION.md) §4.
 
-It is derived in one place by `taxJurisdictionCodeFor` and **never from an IP
-address** — an IP locates a network interface, not a buyer.
+`TaxQuote` is computed from an address the buyer supplied at checkout, derived in
+one place and **never from an IP address** — an IP locates a network interface,
+not a buyer.
 
 The evidence row names the exact `buyerSnapshotId` whose address produced it, so
 three questions stay answerable years later: *what address was used*, *which
@@ -302,43 +306,55 @@ as satisfied: a check that cannot run has not passed.
 A completed purchase requires information sufficient for payment authorization,
 tax jurisdiction and sourcing, fraud and compliance evaluation, transactional
 communication and support, and fulfillment where applicable. `OrderBuyerSnapshot`
-holds it: name, email, a **structured** billing address, an optional shipping
-address, and the tax jurisdiction derived from billing.
+holds it: name, email, a **structured** billing address, a **structured ship-to
+address**, and the tax jurisdiction derived from ship-to. (Phase 1.6 made ship-to
+required on every Order and moved the jurisdiction onto it; `1.2` had it optional
+and derived from billing.)
 
 Structured rather than a blob because the two things an address is actually for —
 deriving a jurisdiction and handing a carrier something deliverable — both need
 the parts named, and parsing them back out of a blob is a guess dressed as a
 field.
 
-### Billing is required; shipping is not
+### Billing and ship-to are both required (Phase 1.6)
+
+> **Superseded by Phase 1.6.** `1.2` required a shipping address only when the
+> basket needed delivering, and stored none for an all-digital purchase even if
+> one was volunteered. The settled policy requires **both addresses on every
+> purchase**.
 
 | | |
 | --- | --- |
-| **Billing / tax address** | **always required** |
-| **Shipping address** | **required only when the basket needs delivering** |
+| **Billing address** | **always required** — payment and transaction record |
+| **Ship-to address** | **always required** — destination, and the tax jurisdiction |
 
 Both rules apply identically to guest and authenticated buyers.
 
+**`shipToSameAsBilling` keeps it frictionless.** A buyer shipping to the address
+they pay from ticks one box; billing is **copied** into the ship-to fields, and
+nobody types the same address twice. The stored snapshot holds a populated ship-to
+either way — never a null meaning "look at billing instead".
+
+**A ship-to address does not imply physical fulfillment.** For a digital purchase
+it is a destination for *tax* purposes only: no parcel, no carrier, no shipping
+address collected on the provider's hosted page, and the digital-delivery
+entitlement policy below is unchanged.
+
+What still depends on delivery mode is **whether anything physically ships**:
+
 ```
-all lines DIGITAL   → no shipping address requested, and none required
-any line PHYSICAL   → shipping address required; absence refuses checkout
+all lines DIGITAL   → nothing ships; the hosted page collects no delivery address
+any line PHYSICAL   → the basket ships; the hosted page collects one
 any line UNKNOWN    → checkout refuses. Absence is never a default.
 ```
 
-A **mixed basket requires shipping** — that falls out of "any" rather than needing
-its own case, because there is nowhere to ship half an order to.
+A **mixed basket** ships, and shares the one transaction ship-to for tax sourcing.
 
 The decision comes from `evaluateBasketFulfillment`, reading the **explicit
 `deliveryMode` fact** off each Product's authoritative source version. It is never
 inferred from a name, a category, `specifications`, or `capabilities`: those are
 free-form and creator-supplied, and reading a checkout rule out of one would make
-whether a buyer is asked for an address depend on how somebody phrased a spec key.
-
-**Not asking is as deliberate as asking.** Demanding a delivery address for a
-download is friction with no purpose, and it teaches buyers that Monacado asks for
-data it does not need. An all-digital basket stores no shipping address even if
-one is volunteered — quietly keeping what was typed would make the record disagree
-with the policy that never asked for it.
+fulfillment depend on how somebody phrased a spec key.
 
 ### Delivery mode is an authoritative Product fact
 
@@ -369,9 +385,11 @@ because each records who bought *that* order.
 | after payment | `PROVIDER_CONFIRMED` | **the identity the payment actually authorized** |
 
 Stripe always collects billing (`billing_address_collection: "required"`) and
-collects shipping **only when the basket needs delivering** — Monacado decides
-from explicit Product delivery modes and tells the provider, so an all-digital
-purchase is never asked. The shipping allow-list is deployment configuration
+collects a shipping address **only when the basket physically ships** — Monacado
+decides from explicit Product delivery modes and tells the provider, so a
+download is never asked for one on the hosted page. (Monacado's own ship-to
+address is collected in its checkout form regardless, as the tax destination —
+these are different questions.) The shipping allow-list is deployment configuration
 defaulting to a deliberately narrow starter set: Stripe has no "anywhere" value,
 and a list widened to whatever a client typed would be no list.
 
@@ -511,12 +529,13 @@ delivery is done" is never mistakable for true.
 
 **Blocking, and named honestly.**
 
-1. **A real tax engine.** The destination problem is **resolved**: checkout now
-   collects a billing address and every calculation receives the buyer's own
-   jurisdiction. What remains is a production engine behind the port.
-2. **Nexus determination, product tax classification, sourcing, exemption
-   certificates, filing and remittance.** `0M.T2`'s operational half. This phase
-   records what an engine says; it files nothing.
+1. ~~**A real tax engine.**~~ **Delivered in Phase 1.6** — Stripe Tax behind the
+   unchanged port, sourced to the Order's ship-to address.
+2. **Nexus determination, exemption certificates, filing and remittance.**
+   `0M.T2`'s operational half; product tax classification and sourcing were
+   delivered in `1.6`. This phase records what an engine says; it files nothing.
+   Ordinary retail checkout deliberately accepts **no buyer exemption
+   credentials** — see [`PRODUCTION_TAX_INTEGRATION.md`](PRODUCTION_TAX_INTEGRATION.md) §15.
 3. **Partial refunds**, and the allocation ruling they require (§3).
 4. **Live refund execution.** `RefundExecutionPort` has no adapter.
 5. **Payout execution.** Obligations record what is owed and can now be held;

@@ -231,16 +231,28 @@ export function readStripeRuntimeConfig(env: Env = process.env): StripeRuntimeCo
  * card, and the mode label alone would not have caught it.
  */
 export function resolveStripeApiKey(config: StripeRuntimeConfig, env: Env = process.env): string {
-  const raw = env[config.apiKeyEnvVar];
+  return resolveTestModeSecretKey(config.apiKeyEnvVar, env);
+}
+
+/**
+ * Resolve a Stripe secret key by variable name, refusing anything not test mode.
+ *
+ * The **one** implementation of that refusal, extracted in Phase 1.6 so Stripe
+ * Tax reaches the same account through the same door. A tax integration with its
+ * own credential reader would be a second place the live-prefix check could be
+ * forgotten, and forgetting it there charges real cards just as surely.
+ */
+export function resolveTestModeSecretKey(apiKeyEnvVar: string, env: Env = process.env): string {
+  const raw = env[apiKeyEnvVar];
   if (raw === undefined || raw.trim() === "") {
-    throw new StripeCredentialError("MISSING", config.apiKeyEnvVar);
+    throw new StripeCredentialError("MISSING", apiKeyEnvVar);
   }
   const key = raw.trim();
   if (LIVE_CREDENTIAL_PREFIXES.some((p) => key.startsWith(p))) {
-    throw new StripeCredentialError("NOT_TEST_MODE", config.apiKeyEnvVar);
+    throw new StripeCredentialError("NOT_TEST_MODE", apiKeyEnvVar);
   }
   if (!key.startsWith(TEST_SECRET_KEY_PREFIX)) {
-    throw new StripeCredentialError("NOT_TEST_MODE", config.apiKeyEnvVar);
+    throw new StripeCredentialError("NOT_TEST_MODE", apiKeyEnvVar);
   }
   return key;
 }

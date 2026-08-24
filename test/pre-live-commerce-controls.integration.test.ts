@@ -352,6 +352,10 @@ async function seedProductVersion(
       factPromotable: true,
       factGeneralAvailabilityState: "available",
       factDeliveryMode: deliveryMode,
+      /* Phase 1.6 — checkout fails closed on an unclassified Product, exactly as
+         Phase 1.2 made it fail closed on an unknown delivery mode. Every fixture
+         states it rather than relying on a default, because there is none. */
+      taxClassification: deliveryMode === "PHYSICAL" ? "PHYSICAL_GOOD" : "DIGITAL_GOOD",
       factCreatorRef: `mon:creator:${pad26(`${TAG}CRF${next()}`)}`,
       capsuleSemver: "1.0.0",
       mappingVersion: "product-mapping/1.0.0",
@@ -729,13 +733,14 @@ describeDb("1.2 — pre-live commerce controls", () => {
       expect(snapshot!.email).toBe(BUYER_DETAILS.email);
       expect(snapshot!.billingAddress.line1).toBe("1 Test Street");
       expect(snapshot!.billingAddress.countryCode).toBe("US");
-      /* A DIGITAL product: billing required, and no delivery address stored —
-         the buyer was never asked for one. */
-      expect(snapshot!.shippingAddress).toBeNull();
+      /* Phase 1.6 — four things on every new Order: name, email, billing, and a
+         ship-to address. A DIGITAL product is no exception; ship-to is its tax
+         destination and implies no physical fulfillment. */
+      expect(snapshot!.shippingAddress?.line1).toBe("9 Delivery Road");
       expect(snapshot!.detailSource).toBe("BUYER_SUPPLIED");
-      /* Derived from the billing address, never from an IP. */
+      /* Derived from the SHIP-TO address, never from billing and never an IP. */
       expect(snapshot!.taxCountryCode).toBe("US");
-      expect(snapshot!.taxRegionCode).toBe("CA");
+      expect(snapshot!.taxRegionCode).toBe("NY");
     });
 
     it("persists the same transaction snapshot for an account buyer, independent of profile", async () => {
@@ -766,7 +771,8 @@ describeDb("1.2 — pre-live commerce controls", () => {
       expect(snapshot!.email).not.toBe(account.email);
       expect(snapshot!.name).toBe(BUYER_DETAILS.name);
       expect(snapshot!.billingAddress.city).toBe("Testville");
-      expect(snapshot!.shippingAddress).toBeNull();
+      /* Both addresses, on an account Order exactly as on a guest one. */
+      expect(snapshot!.shippingAddress?.city).toBe("Shipton");
     });
 
     it("refuses a checkout with no billing address, and writes no Order", async () => {
@@ -792,7 +798,11 @@ describeDb("1.2 — pre-live commerce controls", () => {
       expect(await db.order.count()).toBe(before);
     });
 
-    it("does not require or store a shipping address for a DIGITAL product", async () => {
+    it("stores a ship-to address for a DIGITAL product without shipping anything", async () => {
+      /* Phase 1.6 settled this differently from `1.2`. Ship-to is required for
+         EVERY purchase because it is the tax destination — but on a digital sale
+         it implies no physical fulfillment, so nothing is shipped and the hosted
+         page is not asked to collect a delivery address of its own. */
       const seller = await seedSellerDirect(10_000, "DIGITAL");
       const policyId = await seedCommercialPolicy();
       const riskPolicyId = await seedRiskPolicy();
@@ -806,20 +816,22 @@ describeDb("1.2 — pre-live commerce controls", () => {
           port,
           taxPort: createZeroRateTaxAdapter(),
           riskPolicyId,
-          buyerDetails: { ...BUYER_DETAILS, shippingAddress: null },
+          buyerDetails: BUYER_DETAILS,
         },
         { ...deps(), taxIds, buyerSnapshotIds },
       );
 
+      const snapshot = await getBuyerSnapshot(begun.order.orderId, { db });
+      expect(snapshot!.shippingAddress?.city).toBe("Shipton");
+      /* The tax jurisdiction follows it. */
+      expect(snapshot!.taxRegionCode).toBe("NY");
+      /* And nothing physically ships. */
       expect(begun.fulfillment.requiresShippingAddress).toBe(false);
       expect(begun.fulfillment.physicalProductIds).toEqual([]);
-      expect((await getBuyerSnapshot(begun.order.orderId, { db }))!.shippingAddress).toBeNull();
-      /* Not asking is as deliberate as asking: demanding a delivery address for
-         a download is friction with no purpose. */
       expect(port.lastRequest?.collectShippingAddress).toBe(false);
     });
 
-    it("stores no shipping address for a digital basket even if one is volunteered", async () => {
+    it("accepts same-as-billing and stores a populated ship-to, never a null", async () => {
       const seller = await seedSellerDirect(10_000, "DIGITAL");
       const policyId = await seedCommercialPolicy();
       const riskPolicyId = await seedRiskPolicy();
@@ -832,13 +844,15 @@ describeDb("1.2 — pre-live commerce controls", () => {
           port: initiationDouble(),
           taxPort: createZeroRateTaxAdapter(),
           riskPolicyId,
-          buyerDetails: BUYER_DETAILS,
+          buyerDetails: { ...BUYER_DETAILS, shippingAddress: null, shipToSameAsBilling: true },
         },
         { ...deps(), taxIds, buyerSnapshotIds },
       );
-      /* Quietly keeping what was typed anyway would make the record disagree
-         with the policy that never asked for it. */
-      expect((await getBuyerSnapshot(begun.order.orderId, { db }))!.shippingAddress).toBeNull();
+      /* Billing is COPIED IN rather than left null to mean "look at billing" —
+         so a later correction to billing cannot move where this sale was taxed. */
+      const snapshot = await getBuyerSnapshot(begun.order.orderId, { db });
+      expect(snapshot!.shippingAddress?.city).toBe("Testville");
+      expect(snapshot!.taxRegionCode).toBe("CA");
     });
 
     it("requires a shipping address for a PHYSICAL product, and refuses without one", async () => {
@@ -864,10 +878,14 @@ describeDb("1.2 — pre-live commerce controls", () => {
       ).rejects.toMatchObject({ detail: "SHIPPING_ADDRESS_REQUIRED" });
       expect(port.calls).toBe(0);
 
-      /* The refusal happens after the Order is placed but before any payment —
-         so no charge is ever started for a purchase that cannot be delivered. */
+      /* Phase 1.6 correction — the refusal moved EARLIER, and the requirement is
+         unchanged. A physical sale is now taxed to its delivery address, so
+         "where does this go" has to be answered before the tax engine is called,
+         which is before the Order is written. The error keeps its identity; what
+         changed is that a purchase that cannot be delivered now leaves nothing
+         behind at all. */
       const countAfterRefusal = await db.order.count();
-      expect(countAfterRefusal).toBe(before + 1);
+      expect(countAfterRefusal).toBe(before);
 
       const begun = await beginCheckout(
         CHECKOUT_INPUT(seller.internalListingId),
@@ -947,7 +965,7 @@ describeDb("1.2 — pre-live commerce controls", () => {
       }
     });
 
-    it("sources tax from BILLING even when a shipping address is collected", async () => {
+    it("sources tax from SHIP-TO, not from billing, when the two differ", async () => {
       const seller = await seedSellerDirect(10_000, "PHYSICAL");
       const policyId = await seedCommercialPolicy();
       const riskPolicyId = await seedRiskPolicy();
@@ -967,26 +985,34 @@ describeDb("1.2 — pre-live commerce controls", () => {
       const snapshot = await getBuyerSnapshot(begun.order.orderId, { db });
       expect(snapshot!.billingAddress.city).toBe("Testville");
       expect(snapshot!.shippingAddress?.city).toBe("Shipton");
-      /* Tax sources from BILLING, not shipping — the two differ here (CA vs NY)
-         precisely so that would be visible if it ever stopped being true.
-         Collecting a delivery address does not move the tax jurisdiction. */
+      /* Phase 1.6 settled tax sourcing on SHIP-TO. The two addresses differ here
+         (billing CA, ship-to NY) precisely so the rule is visible: the tax
+         jurisdiction follows the destination, not the payment address. */
       expect(snapshot!.shippingAddress?.region).toBe("NY");
-      expect(snapshot!.taxRegionCode).toBe("CA");
+      expect(snapshot!.taxRegionCode).toBe("NY");
     });
 
-    it("gives tax the authoritative billing jurisdiction and binds the evidence to the snapshot", async () => {
+    it("gives tax the authoritative ship-to jurisdiction and binds the evidence to the snapshot", async () => {
       const seller = await seedSellerDirect();
       const policyId = await seedCommercialPolicy();
       const riskPolicyId = await seedRiskPolicy();
 
-      const seen: Array<{ buyerJurisdictionCode: string | null }> = [];
+      const seen: Array<{ destination: { countryCode: string; regionCode: string | null } | null }> =
+        [];
       const recordingTaxPort = {
-        async calculate(request: { buyerJurisdictionCode: string | null }) {
-          seen.push({ buyerJurisdictionCode: request.buyerJurisdictionCode });
-          return createFlatRateTaxAdapter({
-            basisPoints: 1_000,
-            jurisdictionCode: request.buyerJurisdictionCode ?? "US",
-          }).calculate(request as never);
+        async calculate(request: {
+          destination: { countryCode: string; regionCode: string | null } | null;
+        }) {
+          seen.push({ destination: request.destination });
+          const code =
+            request.destination === null
+              ? "US"
+              : request.destination.regionCode === null
+                ? request.destination.countryCode
+                : `${request.destination.countryCode}-${request.destination.regionCode}`;
+          return createFlatRateTaxAdapter({ basisPoints: 1_000, jurisdictionCode: code }).calculate(
+            request as never,
+          );
         },
       };
 
@@ -1003,14 +1029,18 @@ describeDb("1.2 — pre-live commerce controls", () => {
         { ...deps(), taxIds, buyerSnapshotIds },
       );
 
-      /* The engine was asked about the buyer's OWN jurisdiction, derived from
-         the billing address and from nothing else. */
+      /* The engine was asked about the SHIP-TO destination, and about no other
+         location — the request carries no second one. */
       expect(seen).toHaveLength(1);
-      expect(seen[0]!.buyerJurisdictionCode).toBe("US-CA");
+      expect(seen[0]!.destination).toEqual({
+        countryCode: "US",
+        regionCode: "NY",
+        postalCode: "10001",
+      });
 
       const snapshot = await getBuyerSnapshot(begun.order.orderId, { db });
       const evidence = await getOrderTaxEvidence(begun.order.orderId, { db });
-      expect(evidence!.jurisdictionCode).toBe("US-CA");
+      expect(evidence!.jurisdictionCode).toBe("US-NY");
       /* And the evidence names the exact snapshot whose address produced it, so
          "what address was this calculated from" stays answerable. */
       expect(evidence!.buyerSnapshotId).toBe(snapshot!.buyerSnapshotId);
@@ -1551,17 +1581,21 @@ describeDb("1.2 — pre-live commerce controls", () => {
       });
 
       expect(readiness.satisfied).toEqual(
-        expect.arrayContaining([
-          "TAX_CALCULATION",
-          "RISK_POLICY",
-          "NOTIFICATION_DELIVERY",
-          "REVERSAL_ACCOUNTING",
-        ]),
+        expect.arrayContaining(["RISK_POLICY", "NOTIFICATION_DELIVERY", "REVERSAL_ACCOUNTING"]),
       );
-      /* Every control this phase built is present, and live commerce is STILL
-         refused — because live-mode support does not exist and no configuration
-         can pretend otherwise. That is the accurate answer, not a placeholder. */
-      expect(readiness.blockers).toEqual(["LIVE_PROVIDER_NOT_ENABLED"]);
+      /* Phase 1.6 — a TEST tax adapter no longer counts as a satisfied tax
+         control. A stub returning a plausible number is MORE dangerous than no
+         engine, because its answers look calculated; and the registration and
+         filing postures are decisions nobody has stated here.
+         `CONFIGURED` deliberately still selects TEST_ZERO_RATE, so this asserts
+         exactly that: a fixture cannot configure its way to live commerce. */
+      expect(readiness.blockers).toEqual([
+        "TAX_PROVIDER_NOT_PRODUCTION_CAPABLE",
+        "TAX_REGISTRATION_CONFIGURATION_REQUIRED",
+        "TAX_FILING_OR_REMITTANCE_CONFIGURATION_REQUIRED",
+        "LIVE_PROVIDER_NOT_ENABLED",
+      ]);
+      expect(readiness.satisfied).not.toContain("TAX_CALCULATION");
       expect(readiness.ready).toBe(false);
     });
   });

@@ -400,6 +400,10 @@ async function seedProductVersion(
       factPromotable: true,
       factGeneralAvailabilityState: "available",
       factDeliveryMode: deliveryMode,
+      /* Phase 1.6 — checkout fails closed on an unclassified Product, exactly as
+         Phase 1.2 made it fail closed on an unknown delivery mode. Every fixture
+         states it rather than relying on a default, because there is none. */
+      taxClassification: deliveryMode === "PHYSICAL" ? "PHYSICAL_GOOD" : "DIGITAL_GOOD",
       factCreatorRef: `mon:creator:${pad26(`${TAG}CRF${next()}`)}`,
       capsuleSemver: "1.0.0",
       mappingVersion: "product-mapping/1.0.0",

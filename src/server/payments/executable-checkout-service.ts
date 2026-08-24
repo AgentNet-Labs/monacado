@@ -57,7 +57,13 @@ import { riskAllowed, type RiskDecision } from "../../contracts/marketplace/tran
 import { evaluateTransactionRisk } from "../risk/transaction-risk-service";
 import { TransactionDeniedByRiskError } from "../risk/risk-errors";
 import { recordOrderTaxEvidence } from "../tax/tax-evidence-service";
+import { taxCalculationIdempotencyKey } from "../tax/tax-idempotency";
+import { ProductTaxClassificationMissingError } from "../tax/tax-errors";
+import { resolveProductTaxFacts } from "../product/product-tax-facts-service";
+import { taxClassificationAgreesWithDelivery } from "../../contracts/product/product-tax-classification";
+import { resolveTaxDestination } from "../../contracts/marketplace/tax-destination";
 import {
+  BasketFulfillmentError,
   evaluateBasketFulfillment,
   type BasketFulfillmentRequirement,
 } from "../../contracts/marketplace/basket-fulfillment";
@@ -68,7 +74,8 @@ import { hasUsableSupportContactIn } from "../policy/support-contact-service";
 import { MONACADO_MARKETPLACE_POLICY_ID } from "../../contracts/marketplace/marketplace-policy-content";
 import {
   BuyerCheckoutDetailsInput,
-  taxJurisdictionCodeFor,
+  ShipToAddressRequiredError,
+  resolveShipToAddress,
   type OrderBuyerSnapshotRecord,
 } from "../../contracts/marketplace/order-buyer-snapshot";
 import {
@@ -223,22 +230,104 @@ export async function beginCheckout(
     throw new SellerSupportContactUnavailableError();
   }
 
-  /* — 3. Tax, from an authoritative engine. —
+  /* — 2c. The Product facts a real engine needs (Phase 1.6). —
    *
-   * An adapter that cannot compute THROWS; it never returns a convenient zero.
-   * So a deployment with no tax engine cannot sell, which is the whole point of
-   * replacing the hard-coded zero `1.0` and `1.1` carried. */
-  const quote = await args.taxPort.calculate({
+   * Read BEFORE the engine is called, and from the authoritative source version
+   * the Product currently points at — never inferred from a name, a category, a
+   * specification, or the delivery mode.
+   *
+   * An unclassified Product REFUSES, here, without contacting the provider. That
+   * is the phase's most important refusal: every alternative is a guess, and a
+   * guessed tax category is a rate nobody chose. It fails before any Order
+   * exists, so a refused checkout leaves nothing behind. */
+  const productTaxFacts = await resolveProductTaxFacts(db, prepared.internalProductId);
+  if (productTaxFacts === null || productTaxFacts.deliveryMode === null) {
+    /* The delivery question is asked HERE now, earlier than `1.2` asked it,
+       because a tax engine needs the same fact. Its refusal keeps `1.2`'s error
+       identity rather than gaining a second name for one condition — and it now
+       lands before any Order is written, which is strictly better. */
+    throw new BasketFulfillmentError(
+      "DELIVERY_MODE_UNKNOWN",
+      "This product does not declare how it is delivered, so checkout cannot proceed",
+      [prepared.internalProductId],
+    );
+  }
+  if (productTaxFacts.taxClassification === null) {
+    throw new ProductTaxClassificationMissingError(prepared.internalProductId);
+  }
+  if (
+    !taxClassificationAgreesWithDelivery(
+      productTaxFacts.taxClassification,
+      productTaxFacts.deliveryMode,
+    )
+  ) {
+    /* A PHYSICAL_GOOD delivered digitally is a data-entry error, and the two
+       facts it contradicts are the two a tax engine is about to be told. Refusing
+       is cheaper than a rate computed from a contradiction nobody noticed. */
+    throw new ProductTaxClassificationMissingError(prepared.internalProductId);
+  }
+
+  /* — 2d. The ship-to address, and therefore the tax destination. —
+   *
+   * **Every completed transaction has one**, digital and physical alike. Either
+   * the buyer ticked "same as billing" — in which case billing is copied in — or
+   * they supplied a distinct address. Neither is a refusal, never a fallback to
+   * billing: a silent fallback would tax a sale to an address nobody nominated.
+   *
+   * Resolved HERE, before the engine is contacted and before an Order exists, so
+   * a purchase that cannot be sourced leaves nothing behind.
+   *
+   * For a digital sale this address is a **tax destination only**. It does not
+   * make anything ship: what physically ships is `evaluateBasketFulfillment`'s
+   * separate question, decided from Product delivery modes further down. */
+  let shipToAddress;
+  try {
+    shipToAddress = resolveShipToAddress(details);
+  } catch (error) {
+    if (error instanceof ShipToAddressRequiredError) {
+      /* One condition, one name — the refusal a caller already handles. */
+      throw new BuyerSnapshotError(
+        "SHIPPING_ADDRESS_REQUIRED",
+        "This purchase requires a ship-to address",
+      );
+    }
+    throw error;
+  }
+  const shipToDetails = { ...details, shippingAddress: shipToAddress };
+
+  const taxRequestFacts = {
     currency: prepared.quote.currency,
     commercialRetailAmountMinorUnits: prepared.quote.quotedCommercialRetailAmountMinorUnits,
     shippingAmountMinorUnits: v.shippingAmountMinorUnits,
     internalProductId: prepared.internalProductId,
     sellerParticipantId: prepared.sellerParticipantId,
-    /* The AUTHORITATIVE jurisdiction, derived from the buyer's billing address
-       and from nothing else. Never an IP: an IP locates a network interface,
-       not a buyer, and sourcing tax from one is guessing with a number that
-       looks authoritative. */
-    buyerJurisdictionCode: taxJurisdictionCodeFor(details.billingAddress),
+    /* The AUTHORITATIVE destination: the Order's ship-to address, bounded to the
+       three fields an engine needs. One rule, no runtime choice, and never an IP —
+       an IP locates a network interface, not a buyer, and sourcing tax from one is
+       guessing with a number that looks authoritative. */
+    destination: resolveTaxDestination(shipToAddress),
+    product: {
+      internalProductId: productTaxFacts.internalProductId,
+      sourceRecordId: productTaxFacts.sourceRecordId,
+      sourceRecordVersion: productTaxFacts.sourceRecordVersion,
+      taxClassification: productTaxFacts.taxClassification,
+      deliveryMode: productTaxFacts.deliveryMode,
+    },
+  };
+
+  /* — 3. Tax, from an authoritative engine. —
+   *
+   * An adapter that cannot compute THROWS; it never returns a convenient zero.
+   * So a deployment with no tax engine cannot sell, which is the whole point of
+   * replacing the hard-coded zero `1.0` and `1.1` carried.
+   *
+   * The idempotency key is derived from the calculation's own facts, so a buyer
+   * who reloads or double-submits the same checkout reuses the calculation the
+   * provider already made — and any change that could change the tax owed
+   * produces a different key, so a stale calculation is never reused. */
+  const quote = await args.taxPort.calculate({
+    ...taxRequestFacts,
+    idempotencyKey: taxCalculationIdempotencyKey(taxRequestFacts),
     at: v.placedAt,
   });
 
@@ -272,12 +361,11 @@ export async function beginCheckout(
     await resolveBasketDeliveryLines(db, [prepared.internalProductId]),
   );
 
-  if (fulfillment.requiresShippingAddress && details.shippingAddress === null) {
-    throw new BuyerSnapshotError(
-      "SHIPPING_ADDRESS_REQUIRED",
-      "This purchase requires a delivery address",
-    );
-  }
+  /* No address check here any more: a ship-to address was resolved before tax was
+     calculated, so by this point one exists for every basket. What `fulfillment`
+     still decides is narrower and unchanged — whether anything PHYSICALLY ships,
+     and therefore whether the provider's hosted page collects a delivery address
+     of its own. */
 
   /* — 5. Record WHO is buying. —
    *
@@ -287,13 +375,11 @@ export async function beginCheckout(
   const snapshot = await captureBuyerSnapshot(
     {
       orderId: placed.order.orderId,
-      details: {
-        ...details,
-        /* An all-digital basket stores no shipping address even if a buyer
-           volunteered one: not asking is the policy, and quietly keeping what
-           was typed anyway would make the record disagree with it. */
-        shippingAddress: fulfillment.requiresShippingAddress ? details.shippingAddress : null,
-      },
+      /* The RESOLVED ship-to, so a buyer who chose "same as billing" gets a
+         populated ship-to on the record rather than a null that means "look at
+         billing instead". A later correction to billing then cannot change where
+         a completed sale was taxed and sent. */
+      details: shipToDetails,
       capturedAt: v.placedAt,
     },
     {

@@ -29,6 +29,7 @@ import {
   type ProductCapsuleCandidate as ProductCapsuleCandidateT,
 } from "./product.capsule";
 import { generateProductCandidate } from "./product.factory";
+import { ProductTaxClassification } from "./product-tax-classification";
 
 // — Opaque internal identifiers (distinct from ANS Node/capsule IDs) —
 
@@ -105,6 +106,24 @@ export const ProductSourceRecordBase = z.strictObject({
   capsuleSemver: SemVer,
   mappingVersion: z.string().min(1),
   recordStatus: RecordStatus,
+  /**
+   * How this Product is taxed, in Monacado's provider-neutral vocabulary
+   * (Phase 1.6).
+   *
+   * **Not a Product fact and not a capsule field** — it sits here beside
+   * `recordStatus` rather than inside `facts`, so it is versioned with the record
+   * and never projected into the published capsule. See
+   * `product-tax-classification.ts` for why a fiscal characterization does not
+   * belong under creator authority.
+   *
+   * **Optional for backward compatibility only.** Every source version written
+   * before this fact existed has none, and requiring it would invalidate them
+   * retroactively — a source-version model exists so history stays readable.
+   * **Absence is not a default**: a production tax calculation refuses an
+   * unclassified Product rather than guessing a category, because a guessed
+   * category is a tax rate nobody chose.
+   */
+  taxClassification: ProductTaxClassification.optional(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
   acquiredAt: z.iso.datetime(),
@@ -189,6 +208,8 @@ export function productSourceRecordToCapsuleCandidate(record: unknown): ProductC
  *   - internalProductId  : internal application id, never published/derived;
  *   - authority          : internal authorship authority, never published;
  *   - recordStatus       : internal authoring state, never published;
+ *   - taxClassification  : Monacado fiscal control fact (Phase 1.6), never
+ *                          published and never a creator assertion;
  *   - createdAt          : internal audit timestamp (record creation);
  *   - updatedAt          : internal audit timestamp (last governed modification;
  *                          distinct from the capsule-generation event).
@@ -212,6 +233,9 @@ export const PROJECTION_EXCLUDED_FIELDS = [
   "internalProductId",
   "authority",
   "recordStatus",
+  /* Phase 1.6 — a Monacado fiscal control fact, never a published creator
+     assertion. See product-tax-classification.ts. */
+  "taxClassification",
   "createdAt",
   "updatedAt",
 ] as const;
@@ -322,6 +346,16 @@ export interface ReviseSourceRecordInput {
   capsuleSemver?: string;
   mappingVersion?: string;
   recordStatus?: RecordStatus;
+  /**
+   * A corrected or newly supplied tax classification (Phase 1.6).
+   *
+   * Omitted, the prior version's value carries forward — the ordinary
+   * immutable-version behaviour every other field here has. There is no way to
+   * *clear* it: a Product that was classified does not become unclassified, and a
+   * revision that could erase the fact would be a revision that could quietly
+   * remove a sale's tax basis.
+   */
+  taxClassification?: ProductTaxClassification;
   /** Hostile inputs — if provided and changed, revision is rejected. */
   sourceRecordId?: string;
   internalProductId?: string;
@@ -368,6 +402,9 @@ export function reviseProductSourceRecord(input: ReviseSourceRecordInput): Produ
     ...(input.capsuleSemver !== undefined ? { capsuleSemver: input.capsuleSemver } : {}),
     ...(input.mappingVersion !== undefined ? { mappingVersion: input.mappingVersion } : {}),
     ...(input.recordStatus !== undefined ? { recordStatus: input.recordStatus } : {}),
+    ...(input.taxClassification !== undefined
+      ? { taxClassification: input.taxClassification }
+      : {}),
   };
   return ProductSourceRecordSchema.parse(next);
 }

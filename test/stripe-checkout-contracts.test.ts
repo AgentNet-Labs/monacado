@@ -63,6 +63,7 @@ import {
   parseCheckoutBody,
   buildGuestClaimCookie,
   GUEST_CLAIM_COOKIE_NAME,
+  toBuyerDetails,
 } from "../src/server/payments/checkout-route-handler";
 import { handleStripeWebhookRequest } from "../src/server/payments/stripe-webhook-route-handler";
 import {
@@ -828,21 +829,34 @@ describe("1.0 · a browser cannot assert anything commercial", () => {
 
     const accepted = Object.keys(BeginCheckoutRequest.shape);
     expect(accepted).toContain("internalListingId");
-    /* Every other accepted field is buyer contact or address. */
+    /* Every other accepted field is buyer contact or address — including
+       `shipToSameAsBilling`, which is a form affordance over the ship-to address
+       rather than a fact of its own. */
     for (const field of accepted) {
       if (field === "internalListingId") continue;
-      expect(/^(buyerName|buyerEmail|billing|shipping)/.test(field), field).toBe(true);
+      expect(
+        /^(buyerName|buyerEmail|billing|shipping|shipToSameAsBilling)/.test(field),
+        field,
+      ).toBe(true);
     }
   });
 
-  it("always requires billing, and leaves shipping to the basket rule", () => {
-    /* Shipping is OPTIONAL on the request shape because the request cannot know
-       what the basket delivers — that is `evaluateBasketFulfillment`'s decision,
-       taken from explicit Product delivery modes. The service refuses a physical
-       basket without one. */
+  it("always requires billing, and takes ship-to either way it can be given", () => {
+    /* Phase 1.6 — ship-to is required for EVERY purchase, and the fields are
+       optional on the request SHAPE only because `shipToSameAsBilling` is the
+       other way to supply it. The service refuses a checkout with neither. */
     const { shippingLine1: _s1, shippingCity: _s2, shippingCountryCode: _s3, ...noShipping } =
       VALID_CHECKOUT_BODY;
     expect(BeginCheckoutRequest.safeParse(noShipping).success).toBe(true);
+    expect(
+      BeginCheckoutRequest.safeParse({ ...noShipping, shipToSameAsBilling: "on" }).success,
+    ).toBe(true);
+    /* A word that merely looks boolean does not tick the box. */
+    expect(
+      toBuyerDetails(
+        BeginCheckoutRequest.parse({ ...noShipping, shipToSameAsBilling: "false" }),
+      ).shipToSameAsBilling,
+    ).toBe(false);
 
     /* Billing country is the one field tax sourcing cannot proceed without. */
     const { billingCountryCode: _c, ...noCountry } = VALID_CHECKOUT_BODY;

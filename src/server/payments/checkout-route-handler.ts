@@ -23,7 +23,7 @@
  * | payment outcome | **nowhere** — no such field exists | this is the whole point |
  * | `placedAt` | the injected clock | a client-chosen instant prices a sale window that has closed |
  * | buyer name, email, billing address | **the client — required** (1.2) | a merchant of record cannot source tax, send a receipt, or answer support without them. An address is not a price, and none of the refusals below is weakened |
- * | shipping address | the client, **required only for a physical basket** | whether it is needed is decided from explicit Product delivery modes, never from what the client sends |
+ * | ship-to address | the client, **required for every purchase** | tax is sourced to it, digital included; `shipToSameAsBilling` copies billing in so nobody types it twice |
  *
  * ## Guest by default
  *
@@ -93,6 +93,26 @@ import {
 type Db = ReturnType<typeof getPrisma>;
 
 /**
+ * The tokens a checkbox may post, ticked and unticked.
+ *
+ * A browser sends `on` for a bare `<input type="checkbox">` and **nothing at all**
+ * when it is unticked, so absence must read as false. Some clients serialize the
+ * unticked case explicitly, which is why `off`/`false`/`0`/`no` are accepted and
+ * read as false rather than refused with a 400.
+ *
+ * A **bounded vocabulary**, not "any string": an unrecognised token is a
+ * refusal, so a client cannot half-say something and have it guessed at.
+ */
+export const CHECKED_TOKENS = ["on", "true", "1", "yes"] as const;
+export const UNCHECKED_TOKENS = ["off", "false", "0", "no"] as const;
+const CHECKBOX_TOKENS = [...CHECKED_TOKENS, ...UNCHECKED_TOKENS] as const;
+
+function isChecked(value: boolean | string | undefined): boolean {
+  if (typeof value === "boolean") return value;
+  return value !== undefined && (CHECKED_TOKENS as readonly string[]).includes(value);
+}
+
+/**
  * The entire client request.
  *
  * A `strictObject`, so a body carrying `amountMinorUnits`, `policyId`,
@@ -124,10 +144,20 @@ export const BeginCheckoutRequest = z.strictObject({
   billingPostalCode: z.string().min(1).max(32).optional(),
   billingCountryCode: CountryCode,
 
-  /* Conditionally required: the service refuses a physical basket without one,
-     and an all-digital basket is never asked. Optional HERE because the request
-     shape cannot know what the basket delivers — that is `evaluateBasket
-     Fulfillment`'s decision, taken from explicit Product delivery modes. */
+  /* The ordinary retail convenience: ship to the billing address. Set it and the
+     ship-to fields below may be omitted — billing is copied in by
+     `resolveShipToAddress`, so nobody types one address twice.
+     
+     A checkbox, so a form posts a token when ticked and NOTHING when not — which
+     is why absence must read as false rather than as a missing required field. A
+     boolean here would reject every form post; the JSON door accepts a real
+     boolean too. */
+  shipToSameAsBilling: z.union([z.boolean(), z.enum(CHECKBOX_TOKENS)]).optional(),
+
+  /* The SHIP-TO address, required for every purchase — digital included, where it
+     serves as the tax destination and implies no physical fulfillment. Optional
+     in the request SHAPE only because `shipToSameAsBilling` is the other way to
+     supply it; the service refuses a checkout with neither. */
   shippingLine1: z.string().min(1).max(200).optional(),
   shippingLine2: z.string().min(1).max(200).optional(),
   shippingCity: z.string().min(1).max(120).optional(),
@@ -149,6 +179,7 @@ export function toBuyerDetails(request: BeginCheckoutRequest) {
       postalCode: request.billingPostalCode ?? null,
       countryCode: request.billingCountryCode,
     },
+    shipToSameAsBilling: isChecked(request.shipToSameAsBilling),
     shippingAddress:
       request.shippingLine1 === undefined ||
       request.shippingCity === undefined ||

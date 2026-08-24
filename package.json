@@ -19,6 +19,7 @@
     "policy:bootstrap": "tsx scripts/bootstrap-marketplace-policy.ts",
     "policy:bootstrap:activate": "tsx scripts/bootstrap-marketplace-policy.ts --activate",
     "policy:bootstrap:inspect": "tsx scripts/bootstrap-marketplace-policy.ts --inspect",
+    "tax:readiness": "tsx scripts/tax-readiness.ts",
     "worker:publication:once": "tsx scripts/run-publication-worker.ts",
     "email:dispatch:once": "tsx scripts/run-email-dispatcher.ts",
     "db:test": "RUN_DB_TESTS=1 vitest run --no-file-parallelism test/*.integration.test.ts",

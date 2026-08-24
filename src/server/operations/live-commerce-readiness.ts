@@ -27,20 +27,29 @@
  * | Blocker | Why it gates real money |
  * | --- | --- |
  * | tax not configured | selling untaxed creates a liability nobody recorded |
+ * | tax provider is a test adapter | a stub's plausible number looks calculated |
+ * | tax registrations not stated | nobody has said where Monacado collects |
+ * | tax filing not stated | collected tax with nobody named to remit it |
  * | risk not configured | no ceiling, no restriction check, nothing to stop one mispriced Listing |
  * | notification not configured | a buyer charged real money who is told nothing has no receipt and no recourse |
  * | reversal unavailable | taking money with no way to give it back |
  * | live provider not enabled | the deliberate gate above |
  *
- * Each is checked against **actual state**, not a self-declaration: the tax
- * adapter must resolve, the risk policy must have an `ACTIVE` version in the
- * database, the mail transport must be enabled, and the reversal table must be
- * reachable.
+ * Each is checked against **actual state**, not a self-declaration: the risk
+ * policy must have an `ACTIVE` version in the database, the mail transport must
+ * be enabled, and the reversal table must be reachable.
+ *
+ * The tax controls are the one exception, and the exception is honest: Monacado
+ * cannot read Stripe's registration list, so registration and filing posture are
+ * **operator statements**. What is checked is that somebody made them explicitly
+ * and said where the decision is recorded — evidence that a human looked, not a
+ * copy of what they found. Inferring either would be asserting a fiscal position
+ * nobody took, inside the document an operator reads instead of checking.
  */
 
 import "../server-only";
 import { STRIPE_MODES } from "../payments/stripe-runtime-config";
-import { isTaxCalculationEnabled, resolveTaxPort } from "../tax/tax-adapters";
+import { evaluateTaxReadiness } from "../tax/tax-readiness";
 import { isMailEnabled } from "../notifications/mail-port";
 import { getActiveRiskPolicyVersion } from "../risk/risk-policy-service";
 import { getPrisma } from "../db/client";
@@ -59,8 +68,19 @@ export type Env = Record<string, string | undefined>;
 export const LIVE_READINESS_BLOCKER_CODES = [
   /** No tax engine is configured, so checkout cannot establish a tax amount. */
   "TAX_CALCULATION_NOT_CONFIGURED",
-  /** The configured tax adapter cannot actually produce a result. */
+  /** The tax configuration is incomplete, so no calculation could be made. */
   "TAX_CALCULATION_NOT_OPERATIONAL",
+  /**
+   * A tax engine is configured, and it is a TEST adapter (Phase 1.6).
+   *
+   * A stub returning a plausible number is **more** dangerous than no engine at
+   * all, because its answers look calculated.
+   */
+  "TAX_PROVIDER_NOT_PRODUCTION_CAPABLE",
+  /** Nobody has stated that provider-side tax registrations are configured. */
+  "TAX_REGISTRATION_CONFIGURATION_REQUIRED",
+  /** Nobody has stated who files and remits the tax Monacado collects. */
+  "TAX_FILING_OR_REMITTANCE_CONFIGURATION_REQUIRED",
   /** No risk policy identity is configured for this deployment. */
   "RISK_POLICY_NOT_CONFIGURED",
   /** The configured risk policy has no ACTIVE version. */
@@ -106,27 +126,38 @@ export async function evaluateLiveCommerceReadiness(
   const satisfied: string[] = [];
 
   // — Tax —
-  if (!isTaxCalculationEnabled(env)) {
+  /* Phase 1.6 — CONFIGURATION IS INSPECTED, NOT EXERCISED.
+   *
+   * `1.2` proved the adapter worked by performing a calculation on a nominal
+   * basis. That was safe while every adapter was a local test double, and is not
+   * safe now: with Stripe Tax selected, this readiness check would make a live
+   * API call to a payment provider every time an operator ran a command
+   * documented as read-only.
+   *
+   * The narrowing is deliberate and is recorded rather than glossed: a
+   * configuration check cannot prove the engine answers. It proves the deployment
+   * has decided everything the engine needs, which is the question a launch
+   * review is actually asking. */
+  const tax = evaluateTaxReadiness(at, env);
+  if (!tax.enabled) {
     blockers.push("TAX_CALCULATION_NOT_CONFIGURED");
+  } else if (!tax.productionCapableProvider) {
+    blockers.push("TAX_PROVIDER_NOT_PRODUCTION_CAPABLE");
+  } else if (!tax.calculationConfigured) {
+    blockers.push("TAX_CALCULATION_NOT_OPERATIONAL");
   } else {
-    /* Configured is not the same as working. The adapter is exercised on a
-       nominal basis, because a deployment that names a provider it cannot reach
-       is exactly as unable to sell as one that names none. */
-    try {
-      await resolveTaxPort(env).calculate({
-        currency: "USD",
-        commercialRetailAmountMinorUnits: 1_000,
-        shippingAmountMinorUnits: 0,
-        internalProductId: "mon:product:READINESS0PROBE00000000000",
-        sellerParticipantId: "mon:mpart:READINESS0PROBE00000000000",
-        buyerJurisdictionCode: null,
-        at,
-      });
-      satisfied.push("TAX_CALCULATION");
-    } catch {
-      blockers.push("TAX_CALCULATION_NOT_OPERATIONAL");
-    }
+    satisfied.push("TAX_CALCULATION");
   }
+
+  if (!tax.registration.complete) {
+    blockers.push("TAX_REGISTRATION_CONFIGURATION_REQUIRED");
+  } else satisfied.push("TAX_REGISTRATION_CONFIGURATION");
+
+  if (tax.filing.posture === "UNCONFIGURED") {
+    /* Collecting tax creates an obligation to remit it. Live commerce with
+       nobody named as filer is a liability with no filer. */
+    blockers.push("TAX_FILING_OR_REMITTANCE_CONFIGURATION_REQUIRED");
+  } else satisfied.push("TAX_FILING_POSTURE");
 
   // — Risk —
   const riskPolicyId = (env.MONACADO_RISK_POLICY_ID ?? "").trim();
