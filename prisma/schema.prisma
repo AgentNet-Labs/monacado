@@ -3387,6 +3387,21 @@ model OrderTaxTransaction {
   /// When the provider call finally succeeded or was abandoned.
   finalizedAt DateTime? @db.DateTime(3)
 
+  /// How many times an operator has explicitly requeued this row, and when last
+  /// (Phase 1.8).
+  ///
+  /// A requeue resets `attemptCount` so the bounded schedule starts again — which
+  /// would otherwise ERASE the evidence that the work had already been tried and
+  /// abandoned. These two columns keep that evidence: `attemptCount` says how far
+  /// the CURRENT round has got, and `requeueCount` says how many rounds a human
+  /// has authorised.
+  ///
+  /// A requeue is never an undo. It alters no sale-time fact, clears no failure
+  /// code, and is refused outright for failures a retry cannot fix — see
+  /// NON_REQUEUEABLE_FAILURE_REMEDIATION.
+  requeueCount   Int       @default(0)
+  lastRequeuedAt DateTime? @db.DateTime(3)
+
   createdAt DateTime @default(now()) @db.DateTime(3)
   updatedAt DateTime @updatedAt @db.DateTime(3)
 

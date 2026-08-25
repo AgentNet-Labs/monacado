@@ -109,7 +109,8 @@ labels sort in.
 | 22 | **1.4** | **Policy Bootstrap and Verification Email Delivery** — operational only; makes `1.3`'s two prerequisites satisfiable | **complete** |
 | 23 | **1.5** | **Production Communications and Notification Delivery** — durable retrying email, Postmark, bounce/complaint ingestion, suppression | **complete** |
 | 24 | **1.6** | **Production Tax Integration** — Stripe Tax behind the unchanged tax port, Product tax classification, strengthened evidence, registration/filing posture, operator readiness | **complete** — `1bf79b7` |
-| 25 | **1.7** | **Stripe Tax Transaction Recording and Private Tax Capsule Foundation** — post-payment provider reporting, durable audit-efficient tax record, retry/recovery, reconciliation, first private capsule | **complete** |
+| 25 | **1.7** | **Stripe Tax Transaction Recording and Private Tax Capsule Foundation** — post-payment provider reporting, durable audit-efficient tax record, retry/recovery, reconciliation, first private capsule | **complete** — `71d28f2` |
+| 26 | **1.8** | **Tax Recording Operations and Recovery** — dispatcher endpoint, scheduler, best-effort immediate attempt, backlog/status tooling, governed requeue, operational readiness | **complete** |
 
 ### Forward sequence
 
@@ -204,6 +205,31 @@ transaction is **private by default**, with public disclosure requiring a separa
 governance decision. **Nothing was published**, to AgentNet or anywhere else.
 
 Detail: [`TAX_TRANSACTION_RECORDING_AND_PRIVATE_CAPSULE.md`](TAX_TRANSACTION_RECORDING_AND_PRIVATE_CAPSULE.md).
+
+**`1.8` made tax recording dependable rather than merely durable.** `1.7` shipped
+a bounded recorder and nothing to run it — durable work nobody processes is
+recoverable in principle and unrecovered in fact. This adds the secret-gated
+dispatcher endpoint, the deployment cron that invokes it, a best-effort immediate
+attempt on the successful-payment path, and the backlog tooling that makes stuck
+work visible.
+
+The invariant is now whole: **a paid Order requiring provider Tax Transaction
+recording creates durable work that remains observable and recoverable until
+recorded or explicitly terminal.**
+
+No second retry engine: the claim lease, attempts, backoff, and terminal states
+are `1.7`'s unchanged, and the dispatcher invokes `1.7`'s cycle. The one state
+transition added is a **governed requeue** — operator-invoked, refusing the three
+failures a retry could not fix, and preserving both the original failure code and
+the evidence that the work had already been abandoned once.
+
+Readiness now distinguishes *can it record* from *will anything run the recorder*
+from *is it keeping up*, and a recorder nothing invokes no longer reports tax
+lifecycle readiness. An expired calculation is surfaced as an operator
+**adjustment**, never silently re-priced: a new calculation would price a
+historical sale at today's rates and be indistinguishable from a correct record.
+
+Detail: [`TAX_RECORDING_OPERATIONS.md`](TAX_RECORDING_OPERATIONS.md).
 
 **What remains is the operational half of each workstream**, not another feature:
 
@@ -1726,6 +1752,81 @@ Detail: [`TAX_TRANSACTION_RECORDING_AND_PRIVATE_CAPSULE.md`](TAX_TRANSACTION_REC
 
 ---
 
+## 1.8 — Tax Recording Operations and Recovery
+
+**Complete.** `1.7` made tax recording durable. This makes it dependable.
+
+**The gap it closes.** `1.7` shipped `tax:record:once` and nothing to run it. A
+bounded cycle with no invoker is durable work nobody will ever process — the
+failure mode that looks fine in every test and produces a filing with sales
+missing from it.
+
+**Three layers, and only the middle one is a guarantee.** A best-effort immediate
+attempt on the successful-payment path reports an ordinary sale in seconds; a
+scheduled dispatcher — recommended cadence about every five minutes — is what
+actually guarantees recovery once deployed; the backlog tooling is what an
+operator uses when neither worked. The immediate attempt runs **outside** the
+sale's transaction, catches everything, and **cannot roll back a completed
+payment** — a webhook that told Stripe to retry a booked sale because a tax report
+was slow would be strictly worse than a slow tax report.
+
+**A dedicated secret, and both verbs.** `MONACADO_TAX_RECORDER_SECRET`, never the
+email dispatcher's: one operational secret driving two subsystems is one rotation
+away from an outage in the one nobody was thinking about. `401` answers
+unconfigured, absent, wrong-scheme, and wrong identically, with a body naming
+nothing. `GET` is accepted alongside `POST` — a deliberate departure from `1.5`,
+because **Vercel Cron invokes with `GET` and cannot be configured otherwise**, and
+the CSRF-shaped concern that made `1.5` POST-only cannot reach past a mandatory
+`Authorization` header a browser will not attach cross-origin.
+
+**No cron is committed, and the deployment step is written down instead.** A
+`vercel.json` carrying a five-minute schedule was written for this phase and
+removed before commit: Vercel caps **Hobby** cron at once per day, minute-level
+schedules need **Pro or Enterprise**, and the repository holds no authoritative
+statement of which plan Monacado production runs on. Committing that schedule
+would have committed a deployment that fails at deploy time on a plan nobody has
+ruled out — and downgrading to daily to fit Hobby is worse, because once a day is
+not a tax-recording cadence.
+
+So the endpoint ships production-ready and the cadence is documented. The
+scheduler **need not be Vercel**: any controlled scheduler issuing an
+authenticated request satisfies it. The operator sets the secret, chooses a
+scheduler, arranges for its bearer value to equal the Monacado recorder secret
+(Vercel sends `CRON_SECRET`, which the endpoint deliberately does not read
+directly), and declares `MONACADO_TAX_RECORDER_SCHEDULE`. Monacado cannot see its
+own deployment's scheduler, so readiness treats that declaration as an **operator
+statement** and never takes a file's presence as proof. **Scheduler deployment
+remains a production prerequisite, and readiness stays blocked until it is
+done.**
+
+**Backlog visibility with no provider call and no buyer PII.** Counts and ages in
+the summary — no identifiers at all, because it is pasted into chat — and Order,
+tax-transaction, and provider object references in the per-row view, which
+identify a transaction rather than a person.
+
+**A governed requeue, not a retry button.** It refuses the three failures a retry
+could not fix and names what is actually required instead: an expired calculation
+needs an adjustment, a duplicate reference needs reconciliation, and a record
+divergence needs investigation. It retains `lastFailureCode` deliberately — a
+requeue is a decision to try again, not a claim the failure never happened — and
+the two additive columns exist so resetting `attemptCount` cannot erase the
+evidence that the work had already been abandoned.
+
+**An expired calculation is never silently re-priced.** A new calculation would
+price a historical sale at today's rates and report it as what the buyer was
+charged: a fabricated record indistinguishable from a correct one. The row stays
+terminal and named, surfacing that a paid Order exists, its tax reporting is
+incomplete, and remediation is required.
+
+Zero-tax sales move through the identical pipeline; the private capsule is
+untouched, remains projection-only, and **is not an input to any of this**. One
+additive migration, two columns with a default. **No AgentNet publication and no
+production Stripe call occurred** — every test drives injected doubles.
+
+Detail: [`TAX_RECORDING_OPERATIONS.md`](TAX_RECORDING_OPERATIONS.md).
+
+---
+
 ## Standing constraints across the track
 
 1. **Publication stays gated and asynchronous.** Creators and promoters never hold
@@ -1756,3 +1857,4 @@ Detail: [`TAX_TRANSACTION_RECORDING_AND_PRIVATE_CAPSULE.md`](TAX_TRANSACTION_REC
 - [`PRODUCTION_COMMUNICATIONS_AND_NOTIFICATION_DELIVERY.md`](PRODUCTION_COMMUNICATIONS_AND_NOTIFICATION_DELIVERY.md)
 - [`PRODUCTION_TAX_INTEGRATION.md`](PRODUCTION_TAX_INTEGRATION.md)
 - [`TAX_TRANSACTION_RECORDING_AND_PRIVATE_CAPSULE.md`](TAX_TRANSACTION_RECORDING_AND_PRIVATE_CAPSULE.md)
+- [`TAX_RECORDING_OPERATIONS.md`](TAX_RECORDING_OPERATIONS.md)

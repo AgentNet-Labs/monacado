@@ -610,8 +610,18 @@ describe("1.7 · reconciliation is local, and readiness separates the two capabi
     const ready = evaluateTaxReadiness(AT, configured);
     expect(ready.calculationConfigured).toBe(true);
     expect(ready.taxTransactionRecordingAvailable).toBe(true);
-    expect(ready.taxLifecycleReady).toBe(true);
     expect(ready.satisfied).toContain("TAX_TRANSACTION_RECORDING");
+    /* Phase 1.8 — the recording CAPABILITY is available and the lifecycle is
+       still not ready, because nothing would invoke the recorder. Declaring the
+       dispatcher and its schedule is what closes it. */
+    expect(ready.taxLifecycleReady).toBe(false);
+    expect(
+      evaluateTaxReadiness(AT, {
+        ...configured,
+        MONACADO_TAX_RECORDER_SECRET: "p17-secret",
+        MONACADO_TAX_RECORDER_SCHEDULE: "vercel-cron",
+      }).taxLifecycleReady,
+    ).toBe(true);
   });
 
   it("refuses tax lifecycle readiness when recording capability is absent", () => {

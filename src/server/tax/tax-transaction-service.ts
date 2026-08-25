@@ -257,6 +257,19 @@ export interface ClaimedTaxTransaction {
   lockToken: string;
 }
 
+/** What one claim attempt got, and what it lost to another worker. */
+export interface TaxTransactionClaim {
+  claimed: ClaimedTaxTransaction[];
+  /**
+   * Rows that looked eligible and were taken first.
+   *
+   * Not an error — it is what concurrency looks like — but a **persistently**
+   * non-zero count means more workers are running than the work needs, which is
+   * worth an operator seeing.
+   */
+  conflicts: number;
+}
+
 /**
  * Claim due tax transactions for one worker.
  *
@@ -269,7 +282,7 @@ export interface ClaimedTaxTransaction {
 export async function claimDueTaxTransactions(
   args: { now: string; limit: number },
   deps: TaxTransactionDeps = {},
-): Promise<ClaimedTaxTransaction[]> {
+): Promise<TaxTransactionClaim> {
   const db = deps.db ?? getPrisma();
   const ids = deps.ids ?? cryptoTaxTransactionIdProvider;
   const lockToken = ids.nextLockToken();
@@ -289,7 +302,7 @@ export async function claimDueTaxTransactions(
       orderBy: { nextAttemptAt: "asc" },
       take: Math.max(1, Math.min(args.limit, 100)),
     });
-    if (eligible.length === 0) return [];
+    if (eligible.length === 0) return { claimed: [], conflicts: 0 };
 
     await db.orderTaxTransaction.updateMany({
       where: {
@@ -302,7 +315,13 @@ export async function claimDueTaxTransactions(
     });
 
     const claimed = await db.orderTaxTransaction.findMany({ where: { lockToken } });
-    return claimed.map((row) => ({ record: taxTransactionRowToRecord(row), lockToken }));
+    return {
+      claimed: claimed.map((row) => ({ record: taxTransactionRowToRecord(row), lockToken })),
+      /* Eligible when selected, gone by the time the guarded update ran: another
+         worker took them. The `where` re-asserts every condition, so a live claim
+         is never stolen — the loser simply gets fewer rows. */
+      conflicts: eligible.length - claimed.length,
+    };
   } catch (error) {
     if (error instanceof TaxError) throw error;
     throw new TaxTransactionPersistenceFailureError("claimDueTaxTransactions", error);

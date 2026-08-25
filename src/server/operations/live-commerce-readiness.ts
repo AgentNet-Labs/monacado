@@ -30,6 +30,8 @@
  * | tax provider is a test adapter | a stub's plausible number looks calculated |
  * | tax registrations not stated | nobody has said where Monacado collects |
  * | tax filing not stated | collected tax with nobody named to remit it |
+ * | tax recorder not operational | a recorder nothing runs is work nobody processes |
+ * | tax recording backlog unhealthy | paid sales whose tax report is stuck or overdue |
  * | risk not configured | no ceiling, no restriction check, nothing to stop one mispriced Listing |
  * | notification not configured | a buyer charged real money who is told nothing has no receipt and no recourse |
  * | reversal unavailable | taking money with no way to give it back |
@@ -50,6 +52,7 @@
 import "../server-only";
 import { STRIPE_MODES } from "../payments/stripe-runtime-config";
 import { evaluateTaxReadiness } from "../tax/tax-readiness";
+import { evaluateTaxOperationsReadiness } from "../tax/tax-recording-operations-service";
 import { isMailEnabled } from "../notifications/mail-port";
 import { getActiveRiskPolicyVersion } from "../risk/risk-policy-service";
 import { getPrisma } from "../db/client";
@@ -81,6 +84,20 @@ export const LIVE_READINESS_BLOCKER_CODES = [
   "TAX_REGISTRATION_CONFIGURATION_REQUIRED",
   /** Nobody has stated who files and remits the tax Monacado collects. */
   "TAX_FILING_OR_REMITTANCE_CONFIGURATION_REQUIRED",
+  /**
+   * Tax can be recorded and nothing runs the recorder (Phase 1.8).
+   *
+   * The gap `1.7` left: a bounded cycle with no dispatcher secret and no declared
+   * schedule is durable work nobody will ever process.
+   */
+  "TAX_RECORDER_NOT_OPERATIONAL",
+  /**
+   * Paid sales whose tax reporting is stuck or overdue (Phase 1.8).
+   *
+   * Every permanently-failed row is a return line that will be missing, and an
+   * overdue backlog means the dispatcher is not running.
+   */
+  "TAX_RECORDING_BACKLOG_UNHEALTHY",
   /** No risk policy identity is configured for this deployment. */
   "RISK_POLICY_NOT_CONFIGURED",
   /** The configured risk policy has no ACTIVE version. */
@@ -152,6 +169,24 @@ export async function evaluateLiveCommerceReadiness(
   if (!tax.registration.complete) {
     blockers.push("TAX_REGISTRATION_CONFIGURATION_REQUIRED");
   } else satisfied.push("TAX_REGISTRATION_CONFIGURATION");
+
+  /* Phase 1.8 — recording CODE is not recording OPERATIONS. A deployment able to
+     price and report a sale, with nothing that invokes the recorder, collects tax
+     whose report nobody sends. */
+  if (!tax.recorderOperations.operationallyInvocable) {
+    blockers.push("TAX_RECORDER_NOT_OPERATIONAL");
+  } else satisfied.push("TAX_RECORDER_OPERATIONS");
+
+  /* And configured is not the same as keeping up. This is the one tax control
+     that reads rows rather than configuration — no provider call, all local. */
+  try {
+    const operations = await evaluateTaxOperationsReadiness(at, { db });
+    if (!operations.healthy) blockers.push("TAX_RECORDING_BACKLOG_UNHEALTHY");
+    else satisfied.push("TAX_RECORDING_BACKLOG");
+  } catch {
+    /* A control that cannot be read has not passed. */
+    blockers.push("TAX_RECORDING_BACKLOG_UNHEALTHY");
+  }
 
   if (tax.filing.posture === "UNCONFIGURED") {
     /* Collecting tax creates an obligation to remit it. Live commerce with

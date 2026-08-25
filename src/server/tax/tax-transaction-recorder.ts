@@ -62,6 +62,12 @@ import {
 } from "./tax-transaction-service";
 import { taxTransactionIdempotencyKey } from "./tax-transaction-idempotency";
 import { createStripeTaxTransactionRecorder, type TaxTransactionRecordingPort } from "./stripe-tax-transaction-adapter";
+import {
+  NULL_TAX_RECORDING_MONITOR,
+  type TaxRecordingCycleCounts,
+  type TaxRecordingEvent,
+  type TaxRecordingMonitor,
+} from "../../contracts/marketplace/tax-recording-operations";
 
 /** What one cycle did, as counts an operator can read. */
 export interface TaxRecordingCycleOutcome {
@@ -70,12 +76,21 @@ export interface TaxRecordingCycleOutcome {
   retryScheduled: number;
   permanentlyFailed: number;
   staleClaimsRecovered: number;
+  /** Rows that looked eligible and were taken by another worker first (1.8). */
+  claimConflicts: number;
   ranAt: string;
 }
 
 export interface TaxRecordingCycleDeps extends TaxTransactionDeps {
   /** Injected so a test drives the whole cycle with no network at all. */
   port?: TaxTransactionRecordingPort;
+  /**
+   * Where cycle events go (Phase 1.8). **Injected, and silent by default.**
+   *
+   * Monitoring can never affect recording: a monitor that throws is contained
+   * here, and a line written after a provider was contacted cannot un-contact it.
+   */
+  monitor?: TaxRecordingMonitor;
 }
 
 /**
@@ -149,10 +164,14 @@ export async function runTaxTransactionRecordingCycle(
   deps: TaxRecordingCycleDeps = {},
 ): Promise<TaxRecordingCycleOutcome> {
   const port = deps.port ?? createStripeTaxTransactionRecorder();
+  const monitor = deps.monitor ?? NULL_TAX_RECORDING_MONITOR;
   const limit = Math.max(1, Math.min(args.limit ?? 25, 100));
 
+  emit(monitor, "tax_recording_cycle_started", {});
+
   const staleClaimsRecovered = await recoverStaleTaxTransactionClaims({ now: args.at }, deps);
-  const claimed = await claimDueTaxTransactions({ now: args.at, limit }, deps);
+  const claim = await claimDueTaxTransactions({ now: args.at, limit }, deps);
+  const claimed = claim.claimed;
 
   let recorded = 0;
   let retryScheduled = 0;
@@ -212,14 +231,35 @@ export async function runTaxTransactionRecordingCycle(
     else retryScheduled += 1;
   }
 
-  return {
+  const counts = {
     claimed: claimed.length,
     recorded,
     retryScheduled,
     permanentlyFailed,
     staleClaimsRecovered,
-    ranAt: args.at,
+    claimConflicts: claim.conflicts,
   };
+  emit(monitor, "tax_recording_cycle_completed", counts);
+  return { ...counts, ranAt: args.at };
+}
+
+/**
+ * Emit one monitoring event, and never let it matter.
+ *
+ * A monitor that throws is contained here. Monitoring must not change an
+ * outcome, and above all must not cause a second provider call — a line written
+ * after a transaction was created cannot un-create it.
+ */
+function emit(
+  monitor: TaxRecordingMonitor,
+  event: TaxRecordingEvent,
+  counts: Partial<TaxRecordingCycleCounts>,
+): void {
+  try {
+    monitor.onEvent(event, counts);
+  } catch {
+    /* Deliberately swallowed. See above. */
+  }
 }
 
 /** The claim lease this worker holds, exposed so an operator can reason about it. */

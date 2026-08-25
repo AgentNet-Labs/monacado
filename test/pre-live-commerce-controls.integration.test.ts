@@ -1595,6 +1595,10 @@ describeDb("1.2 — pre-live commerce controls", () => {
       expect(readiness.blockers).toEqual([
         "TAX_PROVIDER_NOT_PRODUCTION_CAPABLE",
         "TAX_REGISTRATION_CONFIGURATION_REQUIRED",
+        /* Phase 1.8 — a recorder nothing runs is durable work nobody will ever
+           process. The fixture declares no dispatcher secret and no schedule, so
+           this is exactly the gap the phase exists to make visible. */
+        "TAX_RECORDER_NOT_OPERATIONAL",
         "TAX_FILING_OR_REMITTANCE_CONFIGURATION_REQUIRED",
         "LIVE_PROVIDER_NOT_ENABLED",
       ]);

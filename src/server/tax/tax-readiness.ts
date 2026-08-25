@@ -44,6 +44,10 @@ import {
 } from "../../contracts/marketplace/tax-calculation";
 import type { ProductTaxClassification } from "../../contracts/product/product-tax-classification";
 import { STRIPE_MODES } from "../payments/stripe-runtime-config";
+import {
+  TAX_RECORDER_ENDPOINT_PATH,
+  isTaxRecorderSecretConfigured,
+} from "./tax-recorder-route-handler";
 import { TaxProviderConfigurationError } from "./tax-errors";
 import {
   isTaxCalculationEnabled,
@@ -87,6 +91,17 @@ export const TAX_READINESS_BLOCKER_CODES = [
    * both.
    */
   "TAX_TRANSACTION_RECORDING_NOT_AVAILABLE",
+  /**
+   * The recorder exists and nothing runs it (Phase 1.8).
+   *
+   * The distinction this phase is about: recording *code* and recording
+   * *operations* are different capabilities, and a system with the first and not
+   * the second collects tax whose report nobody will ever send. The secret is
+   * what makes the dispatcher reachable at all.
+   */
+  "TAX_RECORDER_DISPATCHER_NOT_CONFIGURED",
+  /** No schedule is declared, so nothing invokes the dispatcher. */
+  "TAX_RECORDER_SCHEDULE_NOT_DECLARED",
   /** Nobody has stated that provider-side registrations are configured. */
   "REGISTRATION_CONFIGURATION_REQUIRED",
   /** Nobody has stated who files and remits what is collected. */
@@ -111,6 +126,8 @@ export const TAX_READINESS_STATES = [
   "PRODUCT_CLASSIFICATION_CONFIGURATION_REQUIRED",
   /** Calculation is configured; the post-payment recording half is not. */
   "TAX_TRANSACTION_RECORDING_REQUIRED",
+  /** Recording works; nothing runs it. */
+  "TAX_RECORDER_OPERATIONS_REQUIRED",
   "REGISTRATION_CONFIGURATION_REQUIRED",
   "FILING_OR_REMITTANCE_CONFIGURATION_REQUIRED",
 ] as const;
@@ -147,6 +164,25 @@ export interface TaxReadinessReport {
    * separately-stated posture.
    */
   taxLifecycleReady: boolean;
+  /**
+   * Whether anything will actually **run** the recorder (Phase 1.8).
+   *
+   * Configuration only — the dispatcher secret and a declared schedule. Whether
+   * the schedule has ever fired is a question about the backlog, and lives in
+   * `evaluateTaxOperationsReadiness`, which reads the database.
+   */
+  recorderOperations: {
+    /** The recorder and its bounded cycle exist in this build. Always true. */
+    recorderImplemented: true;
+    /** The dispatcher endpoint's path, so an operator can check the schedule. */
+    dispatcherPath: string;
+    /** Whether the dispatcher's dedicated secret is set. Never its value. */
+    dispatcherSecretConfigured: boolean;
+    /** What the operator states invokes it, or `null`. Never inferred. */
+    scheduleDeclaration: string | null;
+    /** Both of the above. */
+    operationallyInvocable: boolean;
+  };
   state: TaxReadinessState;
   blockers: TaxReadinessBlockerCode[];
   satisfied: string[];
@@ -317,6 +353,36 @@ export function evaluateTaxReadiness(at: string, env: Env = process.env): TaxRea
   if (recordingAvailable) satisfied.push("TAX_TRANSACTION_RECORDING");
   else if (enabled) blockers.push("TAX_TRANSACTION_RECORDING_NOT_AVAILABLE");
 
+  // — Recorder operations (Phase 1.8) —
+  //
+  // Recording CODE and recording OPERATIONS are different capabilities, and the
+  // gap between them is what `1.7` left open: a bounded cycle with nothing to
+  // run it is durable work nobody will ever process.
+  //
+  // Both signals are OPERATOR STATEMENTS, following the same rule registration
+  // posture follows: Monacado cannot see its own deployment's cron table, and a
+  // readiness check that inferred one would assert an operational guarantee
+  // nobody made.
+  const dispatcherSecretConfigured = isTaxRecorderSecretConfigured(env);
+  const scheduleDeclaration = (env.MONACADO_TAX_RECORDER_SCHEDULE ?? "").trim() || null;
+  const operationallyInvocable = dispatcherSecretConfigured && scheduleDeclaration !== null;
+
+  if (dispatcherSecretConfigured) {
+    present.push("MONACADO_TAX_RECORDER_SECRET");
+    satisfied.push("TAX_RECORDER_DISPATCHER");
+  } else {
+    missing.push("MONACADO_TAX_RECORDER_SECRET");
+    if (enabled) blockers.push("TAX_RECORDER_DISPATCHER_NOT_CONFIGURED");
+  }
+
+  if (scheduleDeclaration !== null) {
+    present.push("MONACADO_TAX_RECORDER_SCHEDULE");
+    satisfied.push("TAX_RECORDER_SCHEDULE");
+  } else {
+    missing.push("MONACADO_TAX_RECORDER_SCHEDULE");
+    if (enabled) blockers.push("TAX_RECORDER_SCHEDULE_NOT_DECLARED");
+  }
+
   // — Live commerce, by construction —
 
   const liveSupported = (STRIPE_MODES as readonly string[]).includes("LIVE");
@@ -339,7 +405,10 @@ export function evaluateTaxReadiness(at: string, env: Env = process.env): TaxRea
   /* The WHOLE lifecycle: price it, then report it. Deliberately not a filing
      claim — recording transactions is what makes a provider's reports contain
      Monacado's sales; who files them is a separate, separately-stated posture. */
-  const taxLifecycleReady = calculationConfigured && recordingAvailable;
+  /* The whole lifecycle now includes being RUN. A deployment that can calculate
+     and record but never invokes the recorder is not tax-lifecycle ready — it
+     collects tax whose report nobody sends. */
+  const taxLifecycleReady = calculationConfigured && recordingAvailable && operationallyInvocable;
 
   const state: TaxReadinessState = !enabled
     ? "PROVIDER_NOT_CONFIGURED"
@@ -352,6 +421,8 @@ export function evaluateTaxReadiness(at: string, env: Env = process.env): TaxRea
         ? "PRODUCT_CLASSIFICATION_CONFIGURATION_REQUIRED"
         : blockers.includes("TAX_TRANSACTION_RECORDING_NOT_AVAILABLE")
           ? "TAX_TRANSACTION_RECORDING_REQUIRED"
+          : !operationallyInvocable && enabled
+          ? "TAX_RECORDER_OPERATIONS_REQUIRED"
           : blockers.includes("REGISTRATION_CONFIGURATION_REQUIRED")
             ? "REGISTRATION_CONFIGURATION_REQUIRED"
             : blockers.includes("FILING_OR_REMITTANCE_CONFIGURATION_REQUIRED")
@@ -367,6 +438,13 @@ export function evaluateTaxReadiness(at: string, env: Env = process.env): TaxRea
     calculationConfigured,
     taxTransactionRecordingAvailable: recordingAvailable,
     taxLifecycleReady,
+    recorderOperations: {
+      recorderImplemented: true,
+      dispatcherPath: TAX_RECORDER_ENDPOINT_PATH,
+      dispatcherSecretConfigured,
+      scheduleDeclaration,
+      operationallyInvocable,
+    },
     state,
     blockers,
     satisfied,

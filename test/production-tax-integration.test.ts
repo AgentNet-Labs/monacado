@@ -816,6 +816,9 @@ describe("1.6 · readiness fails closed, states the posture, and prints no secre
     MONACADO_TAX_REGISTRATIONS_CONFIGURED: "true",
     MONACADO_TAX_REGISTRATION_CONFIG_REF: "OPS-1421 2026-08-24",
     MONACADO_TAX_FILING_POSTURE: "PROVIDER_MANAGED",
+    /* Phase 1.8 — a recorder nothing runs is not a ready tax system. */
+    MONACADO_TAX_RECORDER_SECRET: "p16-dispatcher-secret",
+    MONACADO_TAX_RECORDER_SCHEDULE: "vercel-cron:*/5 * * * *",
   };
 
   it("names every missing control with nothing configured", () => {
@@ -842,17 +845,28 @@ describe("1.6 · readiness fails closed, states the posture, and prints no secre
   });
 
   it("distinguishes calculation readiness from compliance configuration", () => {
-    const noCompliance = evaluateTaxReadiness(AT, {
+    const calculable = {
       MONACADO_TAX_ENABLED: "true",
       MONACADO_TAX_PROVIDER: "STRIPE_TAX",
       MONACADO_STRIPE_SECRET_KEY: "sk_test_x",
       MONACADO_TAX_STRIPE_TAX_CODE_DIGITAL_GOOD: DIGITAL_TAX_CODE,
-    });
+    };
+    const noCompliance = evaluateTaxReadiness(AT, calculable);
     /* Able to calculate, and still owing the decisions that make collecting
        lawful. Reporting them as one number would let clearing the easy half look
        like clearing both. */
     expect(noCompliance.calculationConfigured).toBe(true);
-    expect(noCompliance.state).toBe("REGISTRATION_CONFIGURATION_REQUIRED");
+    /* Phase 1.8 — with no dispatcher secret and no declared schedule, the more
+       fundamental gap is that nothing would ever RUN the recorder, so that is
+       the headline. Declare both and the compliance question resurfaces. */
+    expect(noCompliance.state).toBe("TAX_RECORDER_OPERATIONS_REQUIRED");
+    expect(
+      evaluateTaxReadiness(AT, {
+        ...calculable,
+        MONACADO_TAX_RECORDER_SECRET: "p16-secret",
+        MONACADO_TAX_RECORDER_SCHEDULE: "vercel-cron",
+      }).state,
+    ).toBe("REGISTRATION_CONFIGURATION_REQUIRED");
 
     const ready = evaluateTaxReadiness(AT, READY_ENV);
     expect(ready.state).toBe("CALCULATION_READY");

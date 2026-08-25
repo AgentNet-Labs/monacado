@@ -72,6 +72,9 @@ import {
 import { PostalAddress } from "../../contracts/marketplace/order-buyer-snapshot";
 import { confirmBuyerSnapshot } from "../marketplace/order-buyer-snapshot-service";
 import { finalizeConfirmedPayment } from "./executable-checkout-service";
+import { runTaxTransactionRecordingCycle } from "../tax/tax-transaction-recorder";
+import type { TaxTransactionRecordingPort } from "../tax/stripe-tax-transaction-adapter";
+import type { TaxRecordingMonitor } from "../../contracts/marketplace/tax-recording-operations";
 import {
   StripeEventNotAttributableError,
   StripeWebhookVerificationError,
@@ -123,6 +126,16 @@ export interface WebhookRouteDeps {
   /** Injected so a test drives delivery without a mail provider. */
   mail?: MailPort;
   deliveryIds?: OutboundEmailIdProvider;
+  /**
+   * Phase 1.8 — the port a best-effort immediate tax recording uses.
+   *
+   * **Opt-in, and absent by default.** A webhook route that constructed a real
+   * provider client on its own would make every test that exercises the route a
+   * test that could reach the network. The production route module supplies it;
+   * everything else gets the scheduler, which is the guarantee anyway.
+   */
+  taxRecordingPort?: TaxTransactionRecordingPort;
+  taxRecordingMonitor?: TaxRecordingMonitor;
   now?: () => string;
 }
 
@@ -223,6 +236,44 @@ export async function handleStripeWebhookRequest(
       } catch {
         /* Recorded-nowhere-else detail failing to land must not fail a booked
            sale, and must not tell Stripe to retry one. */
+      }
+    }
+
+    /* — Best-effort immediate tax recording (Phase 1.8) —
+     *
+     * `1.7` committed the tax-recording obligation inside the sale's own
+     * transaction and left the scheduler to process it. That is correct and
+     * remains the guarantee; this is the fast path in front of it, so an ordinary
+     * sale is reported in seconds rather than at the next cycle.
+     *
+     * Three properties make it safe to run here:
+     *
+     *   - it is **outside** the sale's transaction, so no provider call is ever
+     *     held inside a database lock;
+     *   - it **cannot roll back a completed payment** — the sale is already
+     *     committed and this catches everything;
+     *   - it claims through `1.7`'s own claim/lease/idempotency machinery, so it
+     *     races the scheduler safely and cannot produce a second provider
+     *     transaction.
+     *
+     * A failure here is not a failure: the row stays durable and due, and the
+     * scheduled dispatcher recovers it. That is why the webhook still returns
+     * 200 — telling Stripe to retry a booked sale because a tax report was slow
+     * would be strictly worse. */
+    if (finalized.disposition === "SALE_RECORDED" && deps.taxRecordingPort !== undefined) {
+      try {
+        await runTaxTransactionRecordingCycle(
+          { at: observedAt, limit: 1 },
+          {
+            db,
+            port: deps.taxRecordingPort,
+            ...(deps.taxRecordingMonitor === undefined
+              ? {}
+              : { monitor: deps.taxRecordingMonitor }),
+          },
+        );
+      } catch {
+        /* Durable work stays durable. The scheduler is the guarantee. */
       }
     }
 
