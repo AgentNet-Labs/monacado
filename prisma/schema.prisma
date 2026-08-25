@@ -2595,6 +2595,8 @@ model Order {
 
   /// Why this Order was charged the tax it was charged (Phase 1.2).
   taxEvidence        OrderTaxEvidence?
+  /// What was reported to the tax provider once this sale was paid (Phase 1.7).
+  taxTransaction     OrderTaxTransaction?
   /// What was given back, if anything (Phase 1.2). New evidence, not an edit.
   reversals          TransactionReversal[]
   orderBuyerSnapshot OrderBuyerSnapshot?
@@ -3244,12 +3246,161 @@ model OrderTaxEvidence {
   // would leave a charged amount nobody can account for.
   order         Order               @relation(fields: [orderId], references: [id], onDelete: Restrict)
   buyerSnapshot OrderBuyerSnapshot? @relation(fields: [buyerSnapshotId], references: [id], onDelete: Restrict)
+  /// The Phase 1.7 record of what was reported to the provider from this
+  /// calculation. At most one; absent until a sale is paid.
+  taxTransaction OrderTaxTransaction?
 
   @@index([provider, calculatedAt])
   @@index([treatment])
   /// Answers "which sales were priced off this Product version" without a scan —
   /// the query a reclassification review actually runs.
   @@index([productSourceRecordId, productSourceRecordVersion])
+}
+
+/// What Monacado reported to its tax provider once a sale was paid (Phase 1.7).
+///
+/// The post-payment counterpart to OrderTaxEvidence. Evidence records what an
+/// engine was asked and answered BEFORE the buyer was charged; this records what
+/// was reported to the provider AFTER the charge succeeded. Different facts about
+/// different instants, and one exists without the other — a declined payment
+/// leaves evidence and no transaction.
+///
+/// AUDIT-EFFICIENT, NEITHER A POINTER NOR A MIRROR. Storing only a Stripe id
+/// would make every audit, reconciliation, refund, correction, and filing
+/// preparation begin with a round trip — and become unanswerable once a
+/// credential rotates or a provider is replaced. Mirroring the raw response would
+/// put an unbounded vendor payload, with a customer address in it, in a table
+/// nobody scoped. What is kept is the bounded set of facts a later reader
+/// actually needs.
+///
+/// IMMUTABLE SALE-TIME FACTS vs MUTABLE LIFECYCLE. Every column above
+/// `lifecycleState` is written once, inside the sale's own transaction, and is
+/// never rewritten — not by a retry, not by a later adjustment or reversal. Only
+/// the recording-lifecycle columns and the two provider-transaction fields that
+/// do not exist until the provider answers are ever updated.
+model OrderTaxTransaction {
+  /// Opaque identity (mon:txtax:<opaque>). Distinct from mon:taxe: — sharing an
+  /// identifier space would make "was this reported?" and "what was calculated?"
+  /// the same question.
+  id String @id @db.VarChar(191)
+
+  /// One tax transaction per Order. UNIQUE, which is what makes a replayed
+  /// payment webhook produce ONE obligation rather than a second report.
+  orderId String @unique @db.VarChar(191)
+
+  /// The Phase 1.6 calculation evidence this reports.
+  taxEvidenceId String @unique @db.VarChar(191)
+
+  // — Provider identity —
+
+  /// STRIPE_TAX in production; the 1.6 test adapters otherwise.
+  provider     String @db.VarChar(32)
+  /// TEST | LIVE, copied from the evidence's own provider statement.
+  providerMode String @db.VarChar(16)
+
+  /// The engine's calculation this transaction was created FROM. Copied from the
+  /// evidence rather than joined, so the pairing a filing rests on survives
+  /// independently of either row moving.
+  providerCalculationRef String @db.VarChar(191)
+
+  /// The provider's Tax Transaction. NULL until the provider call succeeds.
+  /// THE IDENTIFIER A LATER REVERSAL NAMES: Stripe reverses a transaction, not a
+  /// calculation.
+  providerTaxTransactionRef String? @db.VarChar(191)
+
+  /// The Monacado reference sent to the provider — the Order id. Stripe requires
+  /// it unique across all its transactions INCLUDING REVERSALS, which is the
+  /// second idempotency guard: even a lost Monacado-side key cannot produce two
+  /// Tax Transactions for one Order.
+  providerReference String @db.VarChar(191)
+
+  // — Immutable sale-time facts —
+
+  currency               String  @db.VarChar(3)
+  /// Retail + shipping, as reported. Never includes tax.
+  taxableBasisMinorUnits BigInt
+  taxAmountMinorUnits    BigInt
+  /// What the provider represents this transaction as totalling, once recorded.
+  /// A CHECKED figure, not a second source of truth: a total that is not basis +
+  /// tax means the two systems describe different sales. NULL until recorded.
+  providerTotalAmountMinorUnits BigInt?
+
+  /// The bounded code the tax was sourced under, derived from the Order's
+  /// SHIP-TO address. Never an address.
+  jurisdictionCode String? @db.VarChar(16)
+  /// TAXABLE | EXEMPT | OUT_OF_SCOPE. A zero-tax result is still reported: a
+  /// jurisdiction where Monacado collected nothing is a RETURN LINE, not an
+  /// absence, and a transaction the provider never saw cannot appear on one.
+  treatment String @db.VarChar(24)
+
+  /// The EXACT Product source version whose classification produced the rate.
+  /// Pinned, never joined. An Order binds one Listing today, so these fields ARE
+  /// the line-level tax evidence; a multi-line Order needs a lines table, which
+  /// is recorded as a seam rather than built empty.
+  internalProductId          String @db.VarChar(191)
+  productSourceRecordId      String @db.VarChar(191)
+  productSourceRecordVersion String @db.VarChar(64)
+  productTaxClassification   String @db.VarChar(32)
+  /// The provider code that classification mapped to, and the mapping version.
+  providerTaxCode       String? @db.VarChar(64)
+  providerConfigVersion String? @db.VarChar(64)
+
+  /// When the engine calculated; when the provider created its transaction; and
+  /// when Monacado committed this obligation inside the sale's transaction.
+  calculatedAt                    DateTime  @db.DateTime(3)
+  providerTaxTransactionCreatedAt DateTime? @db.DateTime(3)
+  recordedAt                      DateTime  @db.DateTime(3)
+
+  // — Lifecycle —
+
+  /// RECORDED | ADJUSTED | PARTIALLY_REVERSED | REVERSED — what has happened to
+  /// this sale's tax SINCE it was reported. Only RECORDED is written by this
+  /// phase; the rest are RESERVED so a later correction can be expressed without
+  /// rewriting the sale-time facts underneath it.
+  lifecycleState String @db.VarChar(24)
+
+  /// PENDING | IN_PROGRESS | RECORDED | RETRY_PENDING | FAILED_PERMANENT — where
+  /// the PROVIDER CALL got to, which is a different question from what happened
+  /// to the tax. PENDING is written inside the sale's own transaction: either the
+  /// sale and its tax-recording obligation both commit, or neither does.
+  recordingStatus String @db.VarChar(24)
+
+  /// Provider attempts already made, bounded by TAX_TRANSACTION_RETRY_POLICY.
+  attemptCount Int @default(0)
+  /// When the next attempt becomes due. NULL once terminal.
+  nextAttemptAt DateTime? @db.DateTime(3)
+
+  /// The claim, exactly the technique OutboundEmailDelivery and PublicationOutbox
+  /// use: a guarded UPDATE re-asserts eligibility and stamps a token, so of two
+  /// concurrent workers exactly one wins. A live claim is never stolen — this is
+  /// lease EXPIRY, not lock stealing.
+  lockToken      String?   @db.VarChar(64)
+  lockedAt       DateTime? @db.DateTime(3)
+  leaseExpiresAt DateTime? @db.DateTime(3)
+
+  /// The last normalised failure and its class. NO PROVIDER TEXT, no exception
+  /// message, no raw Stripe error payload — a vendor string can echo the request,
+  /// and the request named a ship-to destination.
+  lastFailureCode  String? @db.VarChar(48)
+  lastFailureClass String? @db.VarChar(16)
+
+  /// When the provider call finally succeeded or was abandoned.
+  finalizedAt DateTime? @db.DateTime(3)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  // RESTRICT on both: a tax transaction explains what was reported about a sale.
+  // Deleting the Order or the evidence beneath it would leave a filing obligation
+  // nobody can account for.
+  order       Order            @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  taxEvidence OrderTaxEvidence @relation(fields: [taxEvidenceId], references: [id], onDelete: Restrict)
+
+  /// The worker's query: what is due, oldest first.
+  @@index([recordingStatus, nextAttemptAt])
+  /// The operator's and reconciler's query: which sales are not yet reported.
+  @@index([recordingStatus, recordedAt])
+  @@index([providerTaxTransactionRef])
 }
 
 /// What was given back on a completed sale (Phase 1.2).

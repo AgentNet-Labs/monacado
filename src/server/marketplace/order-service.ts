@@ -90,6 +90,11 @@ import {
 import type { ReviewCapsuleKind } from "../../contracts/marketplace/review-authority";
 import type { PaymentProvider } from "../../contracts/marketplace/payment-account";
 import { getPrisma } from "../db/client";
+import { commitTaxTransactionObligationInTx } from "../tax/tax-transaction-service";
+import {
+  cryptoTaxTransactionIdProvider,
+  type TaxTransactionIdProvider,
+} from "../tax/tax-transaction-ids";
 import { prepareCheckout, type PreparedCheckout } from "./checkout-service";
 import { recordTransactionEconomicSnapshotInTx } from "./transaction-accounting-service";
 import { upsertObligationInTx } from "./notification-obligation-service";
@@ -138,6 +143,8 @@ export interface OrderServiceDeps {
   /** Supplies `nextObligationId` for the 0M.N1 notice rows a sale creates. */
   notificationIds?: ParticipantIdProvider;
   claimCodes?: GuestClaimCodeProvider;
+  /** Phase 1.7 — supplies the id for the tax-recording obligation a sale commits. */
+  taxTransactionIds?: TaxTransactionIdProvider;
 }
 
 /** An Order placed and awaiting payment, plus the guest's one-time claim code. */
@@ -666,6 +673,33 @@ async function recordCompletedSale(
         });
         obligations.push(proceedsObligationRowToRecord(row));
       }
+
+      /* — Phase 1.7 —
+       *
+       * The obligation to report this sale's tax to the provider, committed
+       * INSIDE this transaction. Either the sale and its tax-recording
+       * obligation both exist, or neither does — there is no window in which
+       * Monacado has taken money and holds no record that it owes a tax report.
+       *
+       * It is NOT the provider call. Contacting Stripe here would hold a lock
+       * across a network round trip and, worse, would let a provider timeout
+       * roll back a COMPLETED PAYMENT. The payment stands; the unreported tax
+       * becomes durable, retryable work.
+       *
+       * `null` for a pre-1.6 Order whose calculation evidence predates the facts
+       * a transaction needs. Nothing is fabricated — reconciliation reports the
+       * gap rather than this path inventing a classification nobody chose. */
+      await commitTaxTransactionObligationInTx(
+        tx,
+        {
+          orderId: order.orderId,
+          taxableBasisMinorUnits:
+            order.quote.quotedCommercialRetailAmountMinorUnits +
+            order.quote.quotedShippingAmountMinorUnits,
+          recordedAt: at,
+        },
+        deps.taxTransactionIds ?? cryptoTaxTransactionIdProvider,
+      );
 
       /* The private record that this buyer transacted — the provenance a review's
          authority rests on. Never published (ADR §11.10). */

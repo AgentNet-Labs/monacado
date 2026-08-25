@@ -640,7 +640,9 @@ describeDb("Phase 0M.R1 — versioned commercial policy and activation risk reco
         "chargeback",
         "ledger",
         "taxclass",
-        "taxtransaction",
+        /* `taxtransaction` was on this list until Phase 1.7, which legitimately
+           owns `OrderTaxTransaction`. What this asserts is that *0M.R1* added
+           none of these — the same narrowing every other member has had. */
         "reserve",
         "velocity",
         "riskscore",

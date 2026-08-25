@@ -108,7 +108,8 @@ labels sort in.
 | 21 | **1.3** | **Marketplace Policy, Acceptance, Seller Support Contacts, and Email Verification** | **complete** — `c0b74e8` |
 | 22 | **1.4** | **Policy Bootstrap and Verification Email Delivery** — operational only; makes `1.3`'s two prerequisites satisfiable | **complete** |
 | 23 | **1.5** | **Production Communications and Notification Delivery** — durable retrying email, Postmark, bounce/complaint ingestion, suppression | **complete** |
-| 24 | **1.6** | **Production Tax Integration** — Stripe Tax behind the unchanged tax port, Product tax classification, strengthened evidence, registration/filing posture, operator readiness | **complete** |
+| 24 | **1.6** | **Production Tax Integration** — Stripe Tax behind the unchanged tax port, Product tax classification, strengthened evidence, registration/filing posture, operator readiness | **complete** — `1bf79b7` |
+| 25 | **1.7** | **Stripe Tax Transaction Recording and Private Tax Capsule Foundation** — post-payment provider reporting, durable audit-efficient tax record, retry/recovery, reconciliation, first private capsule | **complete** |
 
 ### Forward sequence
 
@@ -174,11 +175,41 @@ answers look calculated.
 
 Detail: [`PRODUCTION_TAX_INTEGRATION.md`](PRODUCTION_TAX_INTEGRATION.md).
 
+**`1.7` closed the post-payment half of the tax lifecycle.** `1.6` calculated tax
+and recorded why; this reports the sale to the provider once the charge succeeds,
+and keeps a durable, **audit-efficient** record of what was reported — neither a
+bare Stripe id (unanswerable once a credential rotates) nor a mirrored payload
+(an unbounded vendor blob with a customer address in it), but the bounded set of
+facts an audit, a reconciliation, a refund, a correction, or a filing actually
+needs.
+
+The obligation **commits inside the sale's own transaction**, so there is no
+window in which Monacado has taken money and holds no record that it owes a tax
+report — and the provider is deliberately *not* called there, because a timeout
+must never roll back a completed payment. Reporting is bounded, retryable, and
+idempotent twice over: a Monacado key derived from the Order and calculation, and
+Stripe's own uniqueness rule over transaction references. Sale-time facts are
+**immutable across every retry**; a reserved lifecycle vocabulary lets a future
+correction append rather than overwrite.
+
+Reconciliation compares Order, evidence, transaction, and provider reference
+**from local records only** — which is what audit-efficient persistence is for.
+A zero-tax sale is still reported: a jurisdiction where Monacado collected nothing
+is a return line, not an absence.
+
+It also projects Monacado's **first private capsule**. `visibility.ts` states the
+governing rule — public capsules are for discoverability, private ones for
+research, reconciliation, audit, and internal agentic workflow — and a tax
+transaction is **private by default**, with public disclosure requiring a separate
+governance decision. **Nothing was published**, to AgentNet or anywhere else.
+
+Detail: [`TAX_TRANSACTION_RECORDING_AND_PRIVATE_CAPSULE.md`](TAX_TRANSACTION_RECORDING_AND_PRIVATE_CAPSULE.md).
+
 **What remains is the operational half of each workstream**, not another feature:
 
 | Next | Why it is next |
 | --- | --- |
-| **`0M.T2` — tax operations** | **`1.6` closed the calculation half**: Stripe Tax behind the port, Product tax classification, sourcing from the buyer's billing address, evidence that pins the version it was priced from. The destination problem is solved — `1.2`'s buyer snapshot supplies a bounded country/subdivision/postal destination. What remains is genuinely operational: nexus determination, provider-side **Tax Transactions** (without which Stripe Tax's reports do not contain Monacado's sales, and no reversal can name a transaction), exemption certificates, filing, and remittance. |
+| **`0M.T2` — tax operations** | **`1.6` closed the calculation half and `1.7` the recording half**: Stripe Tax behind the port, Product tax classification, ship-to sourcing, pinned evidence, and provider Tax Transactions with retry, reconciliation, and the durable reference a reversal names. What remains is genuinely operational and mostly external: nexus determination, registrations, **filing and remittance**, and reversal execution. Buyer exemption certificates are **not** on that list and never were — ordinary retail checkout does not adjudicate a buyer's tax status, which is settled policy rather than a gap; provider-determined non-taxability is supported and evidenced. |
 | **`0M.R2` — risk operations** | `1.2` supplied a ceiling, restriction and approval checks, and a payout hold. Velocity limits, reserves, per-transaction policy selection, and a review function remain — and a scoring model without somebody to review its output would produce refusals nobody can explain. |
 | **`0M.N2` — the canonical channel** | **`1.5` closed the delivery half**: bounded durable retry, a production provider, bounce and complaint ingestion, and suppression — and `1.2`'s buyer snapshot had already retired the guest-address gate. What remains is the **canonical channel itself**: the admin-panel view, the `SUPER_OWNER`/`ADMIN` visibility rule, and notification preferences. |
 | **Live-mode Stripe support** | Does not exist. `STRIPE_MODES` has one member, so `LIVE_PROVIDER_NOT_ENABLED` is reported by construction and no configuration clears it. Building it is a deliberate, reviewed phase. |
@@ -194,7 +225,7 @@ Detail: [`PRODUCTION_TAX_INTEGRATION.md`](PRODUCTION_TAX_INTEGRATION.md).
 | --- | --- | --- |
 | **0M.N** | **Notification Records** — durable admin-panel notices, deduplication, recipients, notice states | **`0M.N1` complete**; `0M.N2`'s **delivery half complete in `1.5`** (durable retrying email, Postmark, bounce/complaint ingestion, suppression); the canonical admin-panel view remains |
 | **0M.R** | **Risk Management and Commercial Controls** — required before the **production** payment and commerce capabilities it governs are enabled; **not** a prerequisite to `0M.8` | **`0M.R1` complete**; `0M.R2` not started |
-| **0M.T** | **Tax, MoR and Transaction Accounting** — required before checkout/payment architecture is production-capable; its `0M.T1` foundation is a prerequisite to `0M.9`, **not** to `0M.8` | **`0M.T1` complete**; `0M.T2`'s **calculation half complete in `1.6`** (Stripe Tax, Product tax classification, sourcing, evidence); nexus, provider tax transactions, exemption certificates, filing, and remittance remain |
+| **0M.T** | **Tax, MoR and Transaction Accounting** — required before checkout/payment architecture is production-capable; its `0M.T1` foundation is a prerequisite to `0M.9`, **not** to `0M.8` | **`0M.T1` complete**; `0M.T2`'s **calculation half complete in `1.6`** and **recording half complete in `1.7`**; nexus, registrations, filing, remittance, and reversal execution remain — buyer exemption certificates are settled policy (not supported, not planned), distinct from provider-determined non-taxability, which is |
 
 ### Dependency order
 
@@ -880,14 +911,16 @@ that pins the exact Product source version a rate was computed from. `0M.T1` had
 recorded tax and shipping **amounts** and the settlement states that would carry
 provider evidence; it determined, calculated, and remitted nothing.
 
+**Phase `1.7` delivered its recording half** — provider-side Tax Transactions
+created from the exact calculation once a sale is paid, with bounded retry,
+local reconciliation, and the durable provider reference a reversal must name.
+
 **Still reserved, and designed in none of it yet:** sales-tax nexus
 determination; registration (configured by an operator inside the provider, and
-only *evidenced* on Monacado's side); provider-side **Tax Transactions**, without
-which the provider's reports do not contain Monacado's sales and no reversal can
-name a transaction; VAT and GST specifics; exemption certificates; filing and
-remittance; tax refunds and reversals; refund and chargeback accounting;
-double-entry ledger postings; processor reconciliation workflows; and settlement
-audit evidence.
+only *evidenced* on Monacado's side); VAT and GST specifics; exemption
+certificates; filing and remittance; tax refunds and reversals; refund and
+chargeback accounting; double-entry ledger postings; processor reconciliation
+workflows; and settlement audit evidence.
 
 **Must hold:** tax and shipping stay **outside** the wholesale-acquisition basis
 and outside commission and promoter-margin bases — `0M.4A` already enforces that
@@ -1619,6 +1652,80 @@ Detail: [`PRODUCTION_TAX_INTEGRATION.md`](PRODUCTION_TAX_INTEGRATION.md).
 
 ---
 
+## 1.7 — Stripe Tax Transaction Recording and Private Tax Capsule Foundation
+
+**Complete.** `1.6` priced tax and recorded why. This reports the sale to the
+provider once the charge succeeds, and keeps a record an audit can actually use.
+
+**Audit-efficient, neither a pointer nor a mirror.** Storing only a Stripe id
+would make every audit, reconciliation, refund, correction, and filing
+preparation begin with a round trip — and become unanswerable once a credential
+rotates or a provider is replaced. Mirroring the raw response would put an
+unbounded vendor payload, with a customer address in it, in a table nobody
+scoped. What is kept is the bounded set of facts a later reader needs: both
+provider references, the amounts, the currency, the ship-to jurisdiction code,
+the exact Product source version and classification, the provider code and mapping
+version, and the three instants.
+
+**The obligation commits with the sale, and the provider is not called there.**
+Either the sale and its tax-recording obligation both exist, or neither does — so
+there is no window in which Monacado has taken money and holds no record that it
+owes a tax report. Contacting Stripe inside that transaction would hold a lock
+across a network round trip and let a timeout roll back a **completed payment**;
+the rule is the opposite, and stated as one: *the payment stands, and the
+unreported tax becomes durable work.*
+
+**Bounded retry, reusing `1.5`'s mechanism rather than a second queue.** A guarded
+claim with a lock token and a lease, eight attempts on a readable backoff, and a
+terminal pair. A worker that dies mid-call costs an attempt, not the obligation.
+Permanent refusals — an expired calculation, a duplicate reference — stop
+immediately instead of burning attempts on something that cannot change. **No raw
+Stripe error payload is persisted**: a vendor string can echo the request, and the
+request named a ship-to destination.
+
+**Idempotent twice over.** A Monacado key derived from the Order and the
+calculation — no clock, no attempt counter, so every attempt sends the identical
+key — and Stripe's own uniqueness rule over transaction references, which one
+Order cannot defeat even if the Monacado key were lost.
+
+**Sale-time facts are immutable.** Nineteen named fields, written once, unchanged
+across a failure, a retry, and a success — asserted by test. A reserved lifecycle
+vocabulary (`ADJUSTED`, `PARTIALLY_REVERSED`, `REVERSED`; only `RECORDED`
+reachable) exists so a later correction can **append rather than overwrite**.
+
+**Reconciliation reads local records and calls nobody** — which is what the
+persistence above is *for*. It reports every finding rather than the first, and
+it repairs nothing: a divergence between two authoritative records is a fact
+somebody must decide about, and quietly fixing one would destroy the evidence that
+they ever disagreed.
+
+**A zero-tax sale is still reported.** A jurisdiction where Monacado is registered
+and collected nothing is a **return line**, not an absence, and a transaction the
+provider never saw cannot appear on one.
+
+**The first private capsule.** `visibility.ts` states the rule that had been a
+per-capsule habit: public capsules are for discoverability, private ones for
+research, reconciliation, audit, and internal agentic workflow. A tax transaction
+is **private by default**, carries no buyer identity of any kind, and becoming
+public would need a separate governance decision including an *aggregate*
+disclosure review. **Nothing was published** — the module imports no registrar,
+outbox, or transport machinery, and a test asserts it.
+
+**Readiness now separates calculating from reporting.** A deployment that can
+price a sale but not record it collects tax that never reaches a return, and no
+longer reports tax lifecycle readiness. Recording transactions is emphatically
+**not** filing readiness: Stripe's reports now contain Monacado's sales, and
+somebody still has to be named to submit them.
+
+One additive migration: one table and two foreign keys on it, **no existing table
+altered and no committed migration modified**. **`STRIPE_MODES` remains `["TEST"]`,
+no live credential is accepted, and no production Stripe call occurred** — every
+test drives an injected double.
+
+Detail: [`TAX_TRANSACTION_RECORDING_AND_PRIVATE_CAPSULE.md`](TAX_TRANSACTION_RECORDING_AND_PRIVATE_CAPSULE.md).
+
+---
+
 ## Standing constraints across the track
 
 1. **Publication stays gated and asynchronous.** Creators and promoters never hold
@@ -1648,3 +1755,4 @@ Detail: [`PRODUCTION_TAX_INTEGRATION.md`](PRODUCTION_TAX_INTEGRATION.md).
 - [`POLICY_BOOTSTRAP_AND_VERIFICATION_EMAIL_DELIVERY.md`](POLICY_BOOTSTRAP_AND_VERIFICATION_EMAIL_DELIVERY.md)
 - [`PRODUCTION_COMMUNICATIONS_AND_NOTIFICATION_DELIVERY.md`](PRODUCTION_COMMUNICATIONS_AND_NOTIFICATION_DELIVERY.md)
 - [`PRODUCTION_TAX_INTEGRATION.md`](PRODUCTION_TAX_INTEGRATION.md)
+- [`TAX_TRANSACTION_RECORDING_AND_PRIVATE_CAPSULE.md`](TAX_TRANSACTION_RECORDING_AND_PRIVATE_CAPSULE.md)

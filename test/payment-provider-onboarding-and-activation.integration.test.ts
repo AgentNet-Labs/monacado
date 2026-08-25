@@ -1420,8 +1420,8 @@ describeDb("Phase 0M.8 — payment-provider onboarding and governed activation",
      *     records a REVERSAL as accounting evidence and executes no payout and no
      *     provider refund;
      *   - no ledger or commission table — double-entry posting is still 0M.T2's;
-     *   - no taxclass / taxtransaction table — 1.2 stores EVIDENCE of one Order's
-     *     tax, and classifies, files, and remits nothing;
+     *   - no taxclass table — Product tax classification became a Product SOURCE
+     *     fact in 1.6, not a table of its own;
      *   - no riskdecision table — the gate reads and returns, and deliberately
      *     logs nothing, because a denial log is a manual-review workflow's
      *     foundation. */
@@ -1440,7 +1440,10 @@ describeDb("Phase 0M.8 — payment-provider onboarding and governed activation",
         "ledger",
         "commission",
         "taxclass",
-        "taxtransaction",
+        /* `taxtransaction` was on this list until Phase 1.7, which legitimately
+           owns `OrderTaxTransaction` — the record of what was reported to the tax
+           provider once a sale was paid. Narrowed for the same reason every other
+           member was: what this asserts is that *0M.8* added none of them. */
         "riskdecision",
       ]) {
         expect(names.some((n) => n.includes(forbidden)), `${forbidden} table must not exist`).toBe(

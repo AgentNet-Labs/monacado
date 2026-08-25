@@ -78,6 +78,15 @@ export const TAX_READINESS_BLOCKER_CODES = [
   "TAX_PROVIDER_CREDENTIAL_NOT_CONFIGURED",
   /** No Monacado classification is mapped to a provider tax code. */
   "PRODUCT_TAX_CLASSIFICATION_MAPPING_REQUIRED",
+  /**
+   * Tax can be calculated but not **reported** (Phase 1.7).
+   *
+   * A deployment able to price a sale and unable to record the provider Tax
+   * Transaction collects tax that never reaches a return. Distinct from
+   * calculation readiness precisely so clearing one cannot look like clearing
+   * both.
+   */
+  "TAX_TRANSACTION_RECORDING_NOT_AVAILABLE",
   /** Nobody has stated that provider-side registrations are configured. */
   "REGISTRATION_CONFIGURATION_REQUIRED",
   /** Nobody has stated who files and remits what is collected. */
@@ -100,6 +109,8 @@ export const TAX_READINESS_STATES = [
   "PROVIDER_NOT_CONFIGURED",
   "PROVIDER_CONFIGURATION_REQUIRED",
   "PRODUCT_CLASSIFICATION_CONFIGURATION_REQUIRED",
+  /** Calculation is configured; the post-payment recording half is not. */
+  "TAX_TRANSACTION_RECORDING_REQUIRED",
   "REGISTRATION_CONFIGURATION_REQUIRED",
   "FILING_OR_REMITTANCE_CONFIGURATION_REQUIRED",
 ] as const;
@@ -120,6 +131,22 @@ export interface TaxReadinessReport {
    * **Configuration completeness, not proof of service.** See the module header.
    */
   calculationConfigured: boolean;
+  /**
+   * Whether this deployment can **report** a paid sale to the provider (1.7).
+   *
+   * A separate answer from `calculationConfigured`, and deliberately so: pricing
+   * a sale and recording it are different capabilities, and a system that can do
+   * the first but not the second collects tax that never reaches a return.
+   */
+  taxTransactionRecordingAvailable: boolean;
+  /**
+   * Whether the **whole** tax lifecycle — calculate, then report — is available.
+   *
+   * Still not a filing claim. Recording transactions is what makes a provider's
+   * reports contain Monacado's sales; who files them remains a separate,
+   * separately-stated posture.
+   */
+  taxLifecycleReady: boolean;
   state: TaxReadinessState;
   blockers: TaxReadinessBlockerCode[];
   satisfied: string[];
@@ -139,6 +166,8 @@ export interface TaxReadinessReport {
     /** What this repository actually does about filing: nothing. */
     monacadoFiles: false;
     providerRecordsTransactions: boolean;
+    /** Stated so a reader cannot mistake `1.7` for a filing capability. */
+    recordingImpliesFilingReadiness: false;
   };
   /** Always `false` in this phase, by construction. */
   liveTaxCommercePermitted: boolean;
@@ -271,6 +300,23 @@ export function evaluateTaxReadiness(at: string, env: Env = process.env): TaxRea
     present.push("MONACADO_TAX_FILING_POSTURE");
   }
 
+  // — Tax transaction recording (Phase 1.7) —
+  //
+  // Recording a paid sale needs exactly what calculating one needs: the same
+  // provider, the same test-mode credential, the same configuration block. What
+  // it does NOT need is a classification mapping — the transaction is created
+  // from a calculation Stripe already holds, not from a fresh classification.
+  //
+  // So the capability is reported separately rather than folded in: they are
+  // different questions, and a deployment that can price a sale but cannot
+  // report it collects tax that never reaches a return.
+  const recordingAvailable =
+    productionCapable &&
+    !blockers.includes("TAX_PROVIDER_CONFIGURATION_INVALID") &&
+    !blockers.includes("TAX_PROVIDER_CREDENTIAL_NOT_CONFIGURED");
+  if (recordingAvailable) satisfied.push("TAX_TRANSACTION_RECORDING");
+  else if (enabled) blockers.push("TAX_TRANSACTION_RECORDING_NOT_AVAILABLE");
+
   // — Live commerce, by construction —
 
   const liveSupported = (STRIPE_MODES as readonly string[]).includes("LIVE");
@@ -290,6 +336,11 @@ export function evaluateTaxReadiness(at: string, env: Env = process.env): TaxRea
   ];
   const calculationConfigured = !blockers.some((b) => calculationBlockers.includes(b));
 
+  /* The WHOLE lifecycle: price it, then report it. Deliberately not a filing
+     claim — recording transactions is what makes a provider's reports contain
+     Monacado's sales; who files them is a separate, separately-stated posture. */
+  const taxLifecycleReady = calculationConfigured && recordingAvailable;
+
   const state: TaxReadinessState = !enabled
     ? "PROVIDER_NOT_CONFIGURED"
     : blockers.includes("TAX_PROVIDER_NOT_RECOGNISED") ||
@@ -299,11 +350,13 @@ export function evaluateTaxReadiness(at: string, env: Env = process.env): TaxRea
       ? "PROVIDER_CONFIGURATION_REQUIRED"
       : blockers.includes("PRODUCT_TAX_CLASSIFICATION_MAPPING_REQUIRED")
         ? "PRODUCT_CLASSIFICATION_CONFIGURATION_REQUIRED"
-        : blockers.includes("REGISTRATION_CONFIGURATION_REQUIRED")
-          ? "REGISTRATION_CONFIGURATION_REQUIRED"
-          : blockers.includes("FILING_OR_REMITTANCE_CONFIGURATION_REQUIRED")
-            ? "FILING_OR_REMITTANCE_CONFIGURATION_REQUIRED"
-            : "CALCULATION_READY";
+        : blockers.includes("TAX_TRANSACTION_RECORDING_NOT_AVAILABLE")
+          ? "TAX_TRANSACTION_RECORDING_REQUIRED"
+          : blockers.includes("REGISTRATION_CONFIGURATION_REQUIRED")
+            ? "REGISTRATION_CONFIGURATION_REQUIRED"
+            : blockers.includes("FILING_OR_REMITTANCE_CONFIGURATION_REQUIRED")
+              ? "FILING_OR_REMITTANCE_CONFIGURATION_REQUIRED"
+              : "CALCULATION_READY";
 
   return {
     provider,
@@ -312,6 +365,8 @@ export function evaluateTaxReadiness(at: string, env: Env = process.env): TaxRea
     enabled,
     productionCapableProvider: productionCapable,
     calculationConfigured,
+    taxTransactionRecordingAvailable: recordingAvailable,
+    taxLifecycleReady,
     state,
     blockers,
     satisfied,
@@ -329,6 +384,9 @@ export function evaluateTaxReadiness(at: string, env: Env = process.env): TaxRea
       posture: compliance.filingPosture,
       monacadoFiles: false,
       providerRecordsTransactions: TAX_FILING_BOUNDARY.providerRecordsTransactions,
+      /* Reporting transactions is NOT filing readiness. A provider whose reports
+         now contain Monacado's sales still needs somebody named to file them. */
+      recordingImpliesFilingReadiness: false,
     },
     /* By construction, and not a placeholder: live-mode support does not exist,
        so no configuration can make this true. */

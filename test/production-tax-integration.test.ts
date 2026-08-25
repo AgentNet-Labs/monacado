@@ -897,7 +897,10 @@ describe("1.6 · the boundaries this phase does not cross", () => {
   it("claims no filing or remittance, and says so as a value", () => {
     expect(TAX_FILING_BOUNDARY).toEqual({
       calculation: "IMPLEMENTED",
-      providerRecordsTransactions: false,
+      /* Phase 1.7 records provider Tax Transactions, so a provider's reports now
+         contain Monacado's sales. Filing and remittance below are UNCHANGED —
+         somebody still has to be named to submit what those reports show. */
+      providerRecordsTransactions: true,
       nexusDetermination: "OPERATOR_AND_ADVISER",
       registration: "OPERATOR_CONFIGURED_IN_PROVIDER",
       filing: "NOT_IMPLEMENTED",

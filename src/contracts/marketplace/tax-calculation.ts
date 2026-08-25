@@ -667,8 +667,16 @@ export const NEVER_A_TAX_EXEMPTION_INPUT = [
 export const TAX_FILING_BOUNDARY = {
   /** Monacado calculates tax through a provider. */
   calculation: "IMPLEMENTED",
-  /** Recording the calculation as a provider-side transaction. */
-  providerRecordsTransactions: false,
+  /**
+   * Recording the calculation as a provider-side transaction.
+   *
+   * **`true` since Phase 1.7.** A paid sale's calculation is turned into a Stripe
+   * Tax Transaction, so the provider's reports now contain Monacado's sales.
+   * That is emphatically **not** filing readiness: `filing` and `remittance`
+   * below are unchanged, and somebody still has to be named to submit what those
+   * reports show.
+   */
+  providerRecordsTransactions: true,
   /** Determining where Monacado must collect. Never inferred by this code. */
   nexusDetermination: "OPERATOR_AND_ADVISER",
   /** Where Monacado is registered. Configured in the provider, evidenced here. */

@@ -200,6 +200,19 @@ export const ORDER_BUYER_SNAPSHOT_ID_RE = new RegExp(`^mon:obsn:${OPAQUE_BODY}$`
 export const ORDER_TAX_EVIDENCE_ID_RE = new RegExp(`^mon:taxe:${OPAQUE_BODY}$`);
 
 /**
+ * Order tax transaction identity (`mon:txtax:${OPAQUE_BODY}`) — Phase 1.7.
+ *
+ * Distinct from `mon:taxe:`, and necessarily so. Tax evidence records **what an
+ * engine was asked and answered before the buyer was charged**; a tax transaction
+ * records **what was reported to the provider once the charge succeeded**. They
+ * are different facts about different instants, and one of them can exist without
+ * the other — a refused payment leaves evidence and no transaction. Sharing an
+ * identifier space would make "was this reported?" and "what was calculated?" the
+ * same question.
+ */
+export const ORDER_TAX_TRANSACTION_ID_RE = new RegExp(`^mon:txtax:${OPAQUE_BODY}$`);
+
+/**
  * Transaction reversal identity (`mon:txrev:${OPAQUE_BODY}`) — Phase 1.2.
  *
  * Distinct from `mon:txsnp:`, and necessarily so: a reversal is **new

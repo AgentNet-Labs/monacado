@@ -277,18 +277,14 @@ export async function hasTaxEvidenceIn(tx: Tx, orderId: string): Promise<boolean
  * ## What the reversal phase must add, and why it is not here
  *
  * Stripe Tax's reporting, filing, and reversal products all operate on a **Tax
- * Transaction**, created from a calculation *after* the payment succeeds. This
- * phase creates none, for two reasons: it is a write into a provider on a
- * confirmed sale, which belongs with the confirmation path rather than inside a
- * function that answers a question; and its natural owner is the phase that also
- * needs to reverse it.
+ * Transaction**, created from a calculation *after* the payment succeeds.
  *
- * That has a consequence worth stating plainly rather than discovering later:
- * **until transactions are recorded, Stripe Tax's reports do not contain
- * Monacado's sales**, and a calculation that expires unrecorded cannot be turned
- * into one afterwards. The reversal phase therefore has to record the transaction
- * at confirmation time — not only at refund time — and `1.6` deliberately does
- * not pretend otherwise.
+ * **Phase 1.7 built exactly that.** `OrderTaxTransaction` commits the obligation
+ * inside the sale's own transaction and a bounded worker reports it, so Stripe's
+ * reports now contain Monacado's sales and the durable
+ * `providerTaxTransactionRef` a reversal must name exists. What remains for the
+ * reversal phase is `createReversal` itself and the accounting rules that decide
+ * whose money comes back — not the identifier.
  *
  * **The immutable economic snapshot is not touched by any of this.** `0M.T1` gave
  * `TransactionEconomicSnapshot` no update path, `1.2` added `TransactionReversal`
@@ -306,11 +302,12 @@ export const TAX_REVERSAL_FUTURE_HOOK = {
     "productSourceRecordVersion",
     "productTaxClassification",
   ],
-  /** Not implemented in 1.6. Required before a tax reversal can be executed. */
-  requiredFutureSteps: [
+  /** The first two were delivered by Phase 1.7. The third remains. */
+  requiredFutureSteps: ["REVERSE_PROVIDER_TAX_TRANSACTION_ON_REFUND"],
+  /** Delivered in Phase 1.7 — see `tax-transaction.ts`. */
+  deliveredInPhase17: [
     "RECORD_PROVIDER_TAX_TRANSACTION_ON_CONFIRMED_PAYMENT",
     "PERSIST_PROVIDER_TAX_TRANSACTION_REF",
-    "REVERSE_PROVIDER_TAX_TRANSACTION_ON_REFUND",
   ],
   /** Unchanged by this phase, and by the reversal phase. */
   economicSnapshotMutation: "FORBIDDEN",

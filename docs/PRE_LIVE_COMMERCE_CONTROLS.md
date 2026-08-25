@@ -531,11 +531,16 @@ delivery is done" is never mistakable for true.
 
 1. ~~**A real tax engine.**~~ **Delivered in Phase 1.6** — Stripe Tax behind the
    unchanged port, sourced to the Order's ship-to address.
-2. **Nexus determination, exemption certificates, filing and remittance.**
-   `0M.T2`'s operational half; product tax classification and sourcing were
-   delivered in `1.6`. This phase records what an engine says; it files nothing.
-   Ordinary retail checkout deliberately accepts **no buyer exemption
-   credentials** — see [`PRODUCTION_TAX_INTEGRATION.md`](PRODUCTION_TAX_INTEGRATION.md) §15.
+2. **Nexus determination, registrations, filing and remittance.** `0M.T2`'s
+   operational half; product tax classification and sourcing were delivered in
+   `1.6`, and provider Tax Transaction recording in `1.7`. This phase records what
+   an engine says; it files nothing.
+
+   **Buyer exemption certificates are not among the remaining work.** Ordinary
+   retail checkout accepts no buyer exemption credentials at all — settled
+   policy, not a gap — and that is distinct from **provider-determined
+   non-taxability**, which is supported and evidenced. See
+   [`PRODUCTION_TAX_INTEGRATION.md`](PRODUCTION_TAX_INTEGRATION.md) §15.
 3. **Partial refunds**, and the allocation ruling they require (§3).
 4. **Live refund execution.** `RefundExecutionPort` has no adapter.
 5. **Payout execution.** Obligations record what is owed and can now be held;

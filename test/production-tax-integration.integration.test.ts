@@ -290,6 +290,9 @@ async function cleanup(): Promise<void> {
   if (orderIdList.length > 0) {
     /* Tax evidence points at the buyer snapshot, which points at the Order —
        both RESTRICT, so they come off in that order. */
+    /* Phase 1.7 — a tax transaction holds RESTRICT keys onto BOTH the Order
+       and its tax evidence, so it comes off before either. */
+    await db.orderTaxTransaction.deleteMany({ where: { orderId: { in: orderIdList } } });
     await db.orderTaxEvidence.deleteMany({ where: { orderId: { in: orderIdList } } });
     await db.orderBuyerSnapshot.deleteMany({ where: { orderId: { in: orderIdList } } });
     await db.notificationDelivery.deleteMany({
