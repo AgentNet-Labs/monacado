@@ -58,7 +58,7 @@ import {
 } from "../../contracts/marketplace/transaction-accounting";
 import type { PaymentProvider } from "../../contracts/marketplace/payment-account";
 import { getPrisma } from "../db/client";
-import { getTransactionEconomicSnapshot } from "./transaction-accounting-service";
+import { snapshotRowToRecord } from "./transaction-accounting-mapper";
 
 type Db = ReturnType<typeof getPrisma>;
 type Tx = Db | Prisma.TransactionClient;
@@ -173,14 +173,67 @@ export async function recordFullReversal(
     );
   }
 
-  const view = await getTransactionEconomicSnapshot(input.snapshotId, { db });
-  const snapshot = view.snapshot;
+  try {
+    /* One transaction containing the reversal row and the settlement advance, so
+       a reversal without its settlement state — or the reverse — is impossible
+       rather than merely unlikely. The work itself is `recordFullReversalInTx`,
+       which is the ONE place that decides what reversing a sale means. */
+    return await db.$transaction((tx) => recordFullReversalInTx(tx, input, ids));
+  } catch (error) {
+    if (error instanceof TransactionReversalError) throw error;
+    if (isUniqueViolation(error)) {
+      throw new TransactionReversalError(
+        "REVERSAL_ALREADY_RECORDED",
+        "This sale has already been reversed",
+      );
+    }
+    throw error;
+  }
+}
 
-  const row = await db.transactionEconomicSnapshot.findUnique({
+/**
+ * Record a full reversal **inside a caller's transaction** (Phase 1.9).
+ *
+ * Extracted so that `1.9` can write the accounting entry, advance the settlement
+ * row, mark the refund `REFUNDED`, commit the tax-reversal obligation, and raise
+ * any proceeds recovery exceptions **atomically**. Before this existed, the only
+ * way to do it was two transactions with a window between them in which a buyer
+ * had their money and Monacado's books said the sale still stood.
+ *
+ * It is a genuine extraction, not a second implementation: `recordFullReversal`
+ * now delegates to it, so there is exactly one place that derives the amounts,
+ * checks that they balance, writes the entry, and moves the settlement state.
+ * Two implementations of "what does reversing a sale mean" would eventually be
+ * two answers.
+ *
+ * Everything the outer function guaranteed still holds. **The snapshot is not
+ * touched**; the amounts are derived from it rather than supplied, so a caller
+ * still cannot return more than the sale earned, cannot return less and call it
+ * full, and cannot invent a promoter share on a seller-direct sale.
+ */
+export async function recordFullReversalInTx(
+  tx: Prisma.TransactionClient,
+  input: {
+    snapshotId: string;
+    kind: ReversalKind;
+    reasonCode: ReversalReasonCode;
+    provider: PaymentProvider | null;
+    providerReversalRef: string | null;
+    occurredAt: string;
+    recordedAt: string;
+  },
+  ids: ReversalIdProvider,
+): Promise<RecordedReversal> {
+  const snapshotRow = await tx.transactionEconomicSnapshot.findUnique({
     where: { id: input.snapshotId },
-    select: { orderId: true },
   });
-  if (row?.orderId == null) {
+  if (snapshotRow === null) {
+    throw new TransactionReversalError(
+      "REVERSAL_SNAPSHOT_NOT_FOUND",
+      "This sale has no economic snapshot",
+    );
+  }
+  if (snapshotRow.orderId === null) {
     /* A snapshot with no Order is pre-`0M.9` data or a corrupt row. Reversing
        one would produce evidence pointing at nothing. */
     throw new TransactionReversalError(
@@ -188,6 +241,7 @@ export async function recordFullReversal(
       "This sale has no bound Order and cannot be reversed",
     );
   }
+  const snapshot = snapshotRowToRecord(snapshotRow);
 
   const amounts: ReversedAmounts = deriveFullReversalAmounts({
     commercialRetailAmountMinorUnits: snapshot.commercialRetailAmountMinorUnits,
@@ -199,82 +253,69 @@ export async function recordFullReversal(
      misstatement of what three parties owe each other. */
   reconcileFullReversal({ amounts, transactionType: snapshot.economics.transactionType });
 
-  try {
-    return await db.$transaction(async (tx) => {
-      const settlement = await tx.transactionSettlement.findUnique({
-        where: { snapshotId: input.snapshotId },
-      });
-      if (settlement === null) {
-        throw new TransactionReversalError(
-          "REVERSAL_SETTLEMENT_MISSING",
-          "This sale has no settlement record",
-        );
-      }
-      const from = settlement.state as TransactionSettlementState;
-      if (!isValidTransactionSettlementTransition(from, "REVERSED")) {
-        /* REVERSED is terminal, so this is reached exactly when the sale is
-           already reversed — which the unique index below also refuses. */
-        throw new TransactionReversalError(
-          "REVERSAL_ALREADY_RECORDED",
-          "This sale has already been reversed",
-        );
-      }
-
-      const created = await tx.transactionReversal.create({
-        data: {
-          id: ids.nextReversalId(),
-          snapshotId: input.snapshotId,
-          orderId: row.orderId!,
-          kind: input.kind,
-          scope: "FULL",
-          reasonCode: input.reasonCode,
-          currency: snapshot.currency,
-          reversedCommercialRetailAmountMinorUnits: BigInt(
-            amounts.commercialRetailAmountMinorUnits,
-          ),
-          reversedTaxAmountMinorUnits: BigInt(amounts.taxAmountMinorUnits),
-          reversedShippingAmountMinorUnits: BigInt(amounts.shippingAmountMinorUnits),
-          reversedOtherPassThroughAmountMinorUnits: BigInt(
-            amounts.otherPassThroughAmountMinorUnits,
-          ),
-          reversedMonacadoRetainedAmountMinorUnits: BigInt(
-            amounts.monacadoRetainedAmountMinorUnits,
-          ),
-          reversedSellerProceedsMinorUnits: BigInt(amounts.sellerProceedsMinorUnits),
-          reversedPromoterNetProceedsMinorUnits:
-            amounts.promoterNetProceedsMinorUnits === null
-              ? null
-              : BigInt(amounts.promoterNetProceedsMinorUnits),
-          provider: input.provider,
-          providerReversalRef: input.providerReversalRef,
-          occurredAt: new Date(input.occurredAt),
-          recordedAt: new Date(input.recordedAt),
-        },
-      });
-
-      /* 0M.T1's mutable half, moving to the state that phase created for exactly
-         this. The snapshot itself is untouched. */
-      await tx.transactionSettlement.update({
-        where: { snapshotId: input.snapshotId },
-        data: { state: "REVERSED", reversedAt: new Date(input.occurredAt) },
-      });
-
-      return {
-        reversal: rowToRecord(created),
-        reversedBuyerTotalMinorUnits: reversedBuyerTotalMinorUnits(amounts),
-        settlementState: "REVERSED" as const,
-      };
-    });
-  } catch (error) {
-    if (error instanceof TransactionReversalError) throw error;
-    if (isUniqueViolation(error)) {
-      throw new TransactionReversalError(
-        "REVERSAL_ALREADY_RECORDED",
-        "This sale has already been reversed",
-      );
-    }
-    throw error;
+  const settlement = await tx.transactionSettlement.findUnique({
+    where: { snapshotId: input.snapshotId },
+  });
+  if (settlement === null) {
+    throw new TransactionReversalError(
+      "REVERSAL_SETTLEMENT_MISSING",
+      "This sale has no settlement record",
+    );
   }
+  const from = settlement.state as TransactionSettlementState;
+  if (!isValidTransactionSettlementTransition(from, "REVERSED")) {
+    /* REVERSED is terminal, so this is reached exactly when the sale is already
+       reversed — which the unique index on `snapshotId` also refuses. */
+    throw new TransactionReversalError(
+      "REVERSAL_ALREADY_RECORDED",
+      "This sale has already been reversed",
+    );
+  }
+
+  const created = await tx.transactionReversal.create({
+    data: {
+      id: ids.nextReversalId(),
+      snapshotId: input.snapshotId,
+      orderId: snapshotRow.orderId,
+      kind: input.kind,
+      scope: "FULL",
+      reasonCode: input.reasonCode,
+      currency: snapshot.currency,
+      reversedCommercialRetailAmountMinorUnits: BigInt(
+        amounts.commercialRetailAmountMinorUnits,
+      ),
+      reversedTaxAmountMinorUnits: BigInt(amounts.taxAmountMinorUnits),
+      reversedShippingAmountMinorUnits: BigInt(amounts.shippingAmountMinorUnits),
+      reversedOtherPassThroughAmountMinorUnits: BigInt(
+        amounts.otherPassThroughAmountMinorUnits,
+      ),
+      reversedMonacadoRetainedAmountMinorUnits: BigInt(
+        amounts.monacadoRetainedAmountMinorUnits,
+      ),
+      reversedSellerProceedsMinorUnits: BigInt(amounts.sellerProceedsMinorUnits),
+      reversedPromoterNetProceedsMinorUnits:
+        amounts.promoterNetProceedsMinorUnits === null
+          ? null
+          : BigInt(amounts.promoterNetProceedsMinorUnits),
+      provider: input.provider,
+      providerReversalRef: input.providerReversalRef,
+      occurredAt: new Date(input.occurredAt),
+      recordedAt: new Date(input.recordedAt),
+    },
+  });
+
+  /* 0M.T1's mutable half, moving to the state that phase created for exactly
+     this. The snapshot itself is untouched. */
+  await tx.transactionSettlement.update({
+    where: { snapshotId: input.snapshotId },
+    data: { state: "REVERSED", reversedAt: new Date(input.occurredAt) },
+  });
+
+  return {
+    reversal: rowToRecord(created),
+    reversedBuyerTotalMinorUnits: reversedBuyerTotalMinorUnits(amounts),
+    settlementState: "REVERSED" as const,
+  };
 }
 
 // — Reads —

@@ -284,10 +284,18 @@ export type TransactionReversalRecord = z.infer<typeof TransactionReversalRecord
  * one are different privileges, and one interface holding both is a privilege
  * nobody scoped.
  *
- * **No concrete adapter exists in this phase.** A test supplies a double; a real
- * Stripe refund is deliberately not implemented, because executing one is a
- * live-money operation and this phase is about the controls that must exist
- * before any live money moves at all.
+ * **`1.2` shipped no concrete adapter.** A real Stripe refund was deliberately
+ * not implemented there, because executing one is a live-money operation and that
+ * phase was about the controls that must exist before any live money moves at
+ * all.
+ *
+ * **Phase 1.9 built the adapter** — `stripe-refund-adapter.ts`, TEST mode only,
+ * refusing live credentials by the same single `resolveTestModeSecretKey` gate
+ * every other Stripe path goes through. The port's shape is unchanged; the
+ * failure vocabulary was extended additively (see
+ * `REFUND_EXECUTION_FAILURE_CODES`) and two fields were added to the success
+ * arm, because a durable refund record has to say **when** the provider created
+ * its refund and **which mode** answered.
  */
 export const RefundExecutionRequest = z.strictObject({
   /** The original charge to reverse. Opaque to Monacado. */
@@ -304,17 +312,59 @@ export const RefundExecuted = z.strictObject({
   outcome: z.literal("EXECUTED"),
   provider: PaymentProvider,
   providerReversalRef: ProviderTransactionRef,
+  /**
+   * When the provider created its refund (Phase 1.9).
+   *
+   * The provider's own instant, not Monacado's. A refund record that stamped its
+   * own clock would be unable to answer "when did the money actually go back",
+   * which is the first question asked in a chargeback.
+   */
+  providerCreatedAt: z.iso.datetime(),
+  /**
+   * The mode the provider answered from (Phase 1.9).
+   *
+   * The **provider's** statement about its own object, which is what catches a
+   * deployment holding a live credential it believes is a test one — the same
+   * check `1.7`'s tax adapter makes against `transaction.livemode`.
+   */
+  providerMode: z.enum(["TEST", "LIVE"]),
 });
+
+/**
+ * Why a provider refused to return funds, in Monacado's words.
+ *
+ * **Extended in Phase 1.9**, additively, when the first real adapter was built
+ * behind this port. `1.2` named the five conditions it could foresee; a
+ * production-capable adapter also has to distinguish a deployment that is not
+ * configured, a credential answering from the wrong mode, and an outright
+ * rejection from a transport failure — because those three lead to different
+ * operator actions and only one of them is worth retrying on a timer.
+ *
+ * Additive rather than a rewrite: every `1.2` member is unchanged and still means
+ * what it meant. `1.9`'s `RefundFailureCode` is the richer vocabulary the durable
+ * record carries, and `refundFailureCodeFor` maps this port's answer into it.
+ */
+export const REFUND_EXECUTION_FAILURE_CODES = [
+  // — Phase 1.2 —
+  "ALREADY_REVERSED",
+  "CHARGE_NOT_FOUND",
+  "AMOUNT_EXCEEDS_CHARGE",
+  "PROVIDER_UNAVAILABLE",
+  "UNSPECIFIED_FAILURE",
+  // — Phase 1.9, when the first adapter made the distinctions load-bearing —
+  /** The provider refused the request as malformed or unauthorised. */
+  "PROVIDER_REJECTED",
+  /** The payment integration is not configured for this deployment. */
+  "PROVIDER_NOT_CONFIGURED",
+  /** The provider answered from a mode this deployment does not permit. */
+  "PROVIDER_MODE_NOT_PERMITTED",
+] as const;
+export const RefundExecutionFailureCode = z.enum(REFUND_EXECUTION_FAILURE_CODES);
+export type RefundExecutionFailureCode = z.infer<typeof RefundExecutionFailureCode>;
 
 export const RefundRefused = z.strictObject({
   outcome: z.literal("REFUSED"),
-  failureCode: z.enum([
-    "ALREADY_REVERSED",
-    "CHARGE_NOT_FOUND",
-    "AMOUNT_EXCEEDS_CHARGE",
-    "PROVIDER_UNAVAILABLE",
-    "UNSPECIFIED_FAILURE",
-  ]),
+  failureCode: RefundExecutionFailureCode,
 });
 
 export const RefundExecutionResult = z.discriminatedUnion("outcome", [

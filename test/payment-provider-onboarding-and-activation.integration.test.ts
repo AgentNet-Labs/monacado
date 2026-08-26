@@ -1416,9 +1416,10 @@ describeDb("Phase 0M.8 — payment-provider onboarding and governed activation",
        them.
      *
      * Every remaining member still holds, and each is worth keeping:
-     *   - no charge / paymentintent / payout / refund / chargeback table — 1.2
-     *     records a REVERSAL as accounting evidence and executes no payout and no
-     *     provider refund;
+     *   - no charge / paymentintent / payout / chargeback table — 1.2 records a
+     *     REVERSAL as accounting evidence, and payout execution and dispute
+     *     ingestion are still unbuilt. `refund` left this list at 1.9, which
+     *     legitimately owns `OrderRefund` — the EXECUTION 1.2 deferred;
      *   - no ledger or commission table — double-entry posting is still 0M.T2's;
      *   - no taxclass table — Product tax classification became a Product SOURCE
      *     fact in 1.6, not a table of its own;
@@ -1435,15 +1436,16 @@ describeDb("Phase 0M.8 — payment-provider onboarding and governed activation",
         "charge",
         "paymentintent",
         "payout",
-        "refund",
         "chargeback",
         "ledger",
         "commission",
         "taxclass",
         /* `taxtransaction` was on this list until Phase 1.7, which legitimately
            owns `OrderTaxTransaction` — the record of what was reported to the tax
-           provider once a sale was paid. Narrowed for the same reason every other
-           member was: what this asserts is that *0M.8* added none of them. */
+           provider once a sale was paid — and `refund` until Phase 1.9, which
+           legitimately owns `OrderRefund`. Narrowed for the same reason every
+           other member was: what this asserts is that *0M.8* added none of them.
+           `payout` and `chargeback` stay, because nothing owns either yet. */
         "riskdecision",
       ]) {
         expect(names.some((n) => n.includes(forbidden)), `${forbidden} table must not exist`).toBe(

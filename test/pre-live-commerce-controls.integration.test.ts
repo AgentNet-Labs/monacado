@@ -41,6 +41,7 @@ import {
 } from "../src/contracts/marketplace/marketplace-policy-content";
 import {
   ensureShippedMarketplacePolicyActive,
+  ensureSellerRefundPolicy,
   verifyPrimarySupportContact,
 } from "./support/marketplace-policy-fixture";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
@@ -252,6 +253,10 @@ async function cleanup(): Promise<void> {
        and its tax evidence, so it comes off before either. */
     await db.orderTaxTransaction.deleteMany({ where: { orderId: { in: orderIdList } } });
     await db.orderTaxEvidence.deleteMany({ where: { orderId: { in: orderIdList } } });
+    /* The purchase-time refund disclosure, RESTRICT to its Order (Phase 1.9). */
+    await db.orderRefundContactEvidence.deleteMany({
+      where: { orderId: { in: orderIdList } },
+    });
     await db.orderBuyerSnapshot.deleteMany({ where: { orderId: { in: orderIdList } } });
     await db.notificationDelivery.deleteMany({
       where: { subjectKind: "ORDER", subjectRef: { in: orderIdList } },
@@ -300,6 +305,14 @@ async function cleanup(): Promise<void> {
     await db.storefront.deleteMany({ where: { ownerParticipantId: { in: participantIds } } });
     await db.marketplaceRoleAssignment.deleteMany({
       where: { participantId: { in: participantIds } },
+    });
+    /* RESTRICT to the participant, and Orders RESTRICT to the version row — so
+       the policy comes off after the Orders above and before the seller. */
+    await db.sellerRefundPolicyVersionRow.deleteMany({
+      where: { sellerParticipantId: { in: participantIds } },
+    });
+    await db.sellerRefundPolicy.deleteMany({
+      where: { sellerParticipantId: { in: participantIds } },
     });
     await db.marketplaceParticipant.deleteMany({ where: { id: { in: participantIds } } });
   }
@@ -414,6 +427,16 @@ async function seedSellerDirect(
      reach. Verified here through the real challenge flow, because these
      participants are made ACTIVE by direct update rather than through review. */
   await verifyPrimarySupportContact(db, { participantId, accountId, now: NOW });
+  /* Phase 1.9 correction — checkout binds the seller's ACTIVE refund policy and
+     REFUSES a sale it cannot bind, on the same footing as the verified support
+     contact above. Seeded with permissive, shipping-refundable terms so a sale
+     completes and a full refund returns the whole buyer charge. */
+  await ensureSellerRefundPolicy(db, {
+    sellerParticipantId: participantId,
+    recordedByAccountId: accountId,
+    now: NOW,
+    policyId: `mon:srpol:${participantId.slice(-26)}`,
+  });
 
   const n = next();
   const internalProductId = `${PRODUCT_PREFIX}${pad26(String(n)).slice(0, 26 - PRODUCT_TAG.length)}`;
@@ -1600,8 +1623,24 @@ describeDb("1.2 — pre-live commerce controls", () => {
            this is exactly the gap the phase exists to make visible. */
         "TAX_RECORDER_NOT_OPERATIONAL",
         "TAX_FILING_OR_REMITTANCE_CONFIGURATION_REQUIRED",
+        /* Phase 1.9 — the same three shapes, for refunds.
+         *
+         * `REVERSAL_ACCOUNTING` above is SATISFIED and these are blockers, which
+         * is exactly the distinction 1.9 added: 1.2's control asks whether the
+         * reversal TABLE is reachable, and a deployment can pass it while being
+         * wholly unable to return anybody's money. A marketplace that can take
+         * live payments and cannot refund them is not launch-ready.
+         *
+         * The fixture configures no Stripe block, declares no refund-processor
+         * secret or schedule, and selects TEST_ZERO_RATE — so all three fail, and
+         * `REFUND_BACKLOG` is satisfied because an empty backlog is a healthy
+         * one. */
+        "REFUND_EXECUTION_NOT_CONFIGURED",
+        "REFUND_PROCESSOR_NOT_OPERATIONAL",
+        "TAX_REVERSAL_NOT_CONFIGURED",
         "LIVE_PROVIDER_NOT_ENABLED",
       ]);
+      expect(readiness.satisfied).toContain("REFUND_BACKLOG");
       expect(readiness.satisfied).not.toContain("TAX_CALCULATION");
       expect(readiness.ready).toBe(false);
     });
@@ -1763,10 +1802,19 @@ describeDb("1.2 — pre-live commerce controls", () => {
         "utf8",
       ).replace(/\/\*[\s\S]*?\*\//g, "");
 
-      /* Checkout asks a yes/no question and never learns the address. A second
-         copy of the fallback rule would be a second chance to disclose the
-         wrong mailbox. */
-      expect(source).toContain("hasUsableSupportContactIn");
+      /* Checkout goes through the ONE canonical resolver.
+       *
+       * Phase 1.9's historical-receipt correction changed which entry point it
+       * calls — from the yes/no `hasUsableSupportContactIn` to
+       * `resolveSellerSupportContactIn`, whose answer it now KEEPS, because a
+       * receipt must record which contact the buyer was actually told about and
+       * that cannot be reconstructed from a seller who has since changed it.
+       *
+       * What this test is really about is unchanged and is the second half
+       * below: checkout must not REIMPLEMENT the precedence. Learning the
+       * address through the canonical resolver is not a second copy of the rule;
+       * deciding between a dedicated and a primary contact here would be. */
+      expect(source).toContain("SellerSupportContactIn");
       for (const leak of ["DEDICATED_SUPPORT", "PRIMARY_PROFILE", "resolveEffectiveSupportContact"]) {
         expect(source, leak).not.toContain(leak);
       }

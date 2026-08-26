@@ -110,7 +110,8 @@ labels sort in.
 | 23 | **1.5** | **Production Communications and Notification Delivery** — durable retrying email, Postmark, bounce/complaint ingestion, suppression | **complete** |
 | 24 | **1.6** | **Production Tax Integration** — Stripe Tax behind the unchanged tax port, Product tax classification, strengthened evidence, registration/filing posture, operator readiness | **complete** — `1bf79b7` |
 | 25 | **1.7** | **Stripe Tax Transaction Recording and Private Tax Capsule Foundation** — post-payment provider reporting, durable audit-efficient tax record, retry/recovery, reconciliation, first private capsule | **complete** — `71d28f2` |
-| 26 | **1.8** | **Tax Recording Operations and Recovery** — dispatcher endpoint, scheduler, best-effort immediate attempt, backlog/status tooling, governed requeue, operational readiness | **complete** |
+| 26 | **1.8** | **Tax Recording Operations and Recovery** — dispatcher endpoint, scheduler, best-effort immediate attempt, backlog/status tooling, governed requeue, operational readiness | **complete** — `c16bdfd` |
+| 27 | **1.9** | **Refunds and Tax Reversals** — line-unit refund execution, versioned Seller refund policy bound at purchase, Stripe TEST refund adapter, Stripe Tax reversal adapter, independently durable payment/tax halves, promoter-commission recovery seam, reconciliation, private refund capsules | **complete** |
 
 ### Forward sequence
 
@@ -235,7 +236,7 @@ Detail: [`TAX_RECORDING_OPERATIONS.md`](TAX_RECORDING_OPERATIONS.md).
 
 | Next | Why it is next |
 | --- | --- |
-| **`0M.T2` — tax operations** | **`1.6` closed the calculation half and `1.7` the recording half**: Stripe Tax behind the port, Product tax classification, ship-to sourcing, pinned evidence, and provider Tax Transactions with retry, reconciliation, and the durable reference a reversal names. What remains is genuinely operational and mostly external: nexus determination, registrations, **filing and remittance**, and reversal execution. Buyer exemption certificates are **not** on that list and never were — ordinary retail checkout does not adjudicate a buyer's tax status, which is settled policy rather than a gap; provider-determined non-taxability is supported and evidenced. |
+| **`0M.T2` — tax operations** | **`1.6` closed the calculation half, `1.7` the recording half, and `1.9` the reversal half**: Stripe Tax behind the port, Product tax classification, ship-to sourcing, pinned evidence, provider Tax Transactions with retry and reconciliation, and now provider reversals driven from the exact recorded transaction — never a fresh calculation. What remains is genuinely operational and mostly external: nexus determination, registrations, and **filing and remittance**. Buyer exemption certificates are **not** on that list and never were — ordinary retail checkout does not adjudicate a buyer's tax status, which is settled policy rather than a gap; provider-determined non-taxability is supported and evidenced. |
 | **`0M.R2` — risk operations** | `1.2` supplied a ceiling, restriction and approval checks, and a payout hold. Velocity limits, reserves, per-transaction policy selection, and a review function remain — and a scoring model without somebody to review its output would produce refusals nobody can explain. |
 | **`0M.N2` — the canonical channel** | **`1.5` closed the delivery half**: bounded durable retry, a production provider, bounce and complaint ingestion, and suppression — and `1.2`'s buyer snapshot had already retired the guest-address gate. What remains is the **canonical channel itself**: the admin-panel view, the `SUPER_OWNER`/`ADMIN` visibility rule, and notification preferences. |
 | **Live-mode Stripe support** | Does not exist. `STRIPE_MODES` has one member, so `LIVE_PROVIDER_NOT_ENABLED` is reported by construction and no configuration clears it. Building it is a deliberate, reviewed phase. |
@@ -251,7 +252,7 @@ Detail: [`TAX_RECORDING_OPERATIONS.md`](TAX_RECORDING_OPERATIONS.md).
 | --- | --- | --- |
 | **0M.N** | **Notification Records** — durable admin-panel notices, deduplication, recipients, notice states | **`0M.N1` complete**; `0M.N2`'s **delivery half complete in `1.5`** (durable retrying email, Postmark, bounce/complaint ingestion, suppression); the canonical admin-panel view remains |
 | **0M.R** | **Risk Management and Commercial Controls** — required before the **production** payment and commerce capabilities it governs are enabled; **not** a prerequisite to `0M.8` | **`0M.R1` complete**; `0M.R2` not started |
-| **0M.T** | **Tax, MoR and Transaction Accounting** — required before checkout/payment architecture is production-capable; its `0M.T1` foundation is a prerequisite to `0M.9`, **not** to `0M.8` | **`0M.T1` complete**; `0M.T2`'s **calculation half complete in `1.6`** and **recording half complete in `1.7`**; nexus, registrations, filing, remittance, and reversal execution remain — buyer exemption certificates are settled policy (not supported, not planned), distinct from provider-determined non-taxability, which is |
+| **0M.T** | **Tax, MoR and Transaction Accounting** — required before checkout/payment architecture is production-capable; its `0M.T1` foundation is a prerequisite to `0M.9`, **not** to `0M.8` | **`0M.T1` complete**; `0M.T2`'s **calculation half complete in `1.6`**, **recording half in `1.7`**, and **reversal half in `1.9`**; nexus, registrations, filing, and remittance remain — buyer exemption certificates are settled policy (not supported, not planned), distinct from provider-determined non-taxability, which is |
 
 ### Dependency order
 
@@ -1827,6 +1828,146 @@ Detail: [`TAX_RECORDING_OPERATIONS.md`](TAX_RECORDING_OPERATIONS.md).
 
 ---
 
+## 1.9 — Refunds and Tax Reversals
+
+**Complete.** `1.2` built the accounting for undoing a sale and deliberately
+shipped no way to execute one. `1.7` reported a sale's tax and kept "the
+identifier a later reversal names". This is the execution of both halves, in
+Stripe **TEST mode only**.
+
+**The invariant.** A refund is *new evidence about* a completed sale, never a
+correction *of* one — and the payment refund and the tax reversal are
+**independently durable facts**, either of which may fail while the other
+succeeded. Two lifecycle records rather than one, because a single row would make
+"the money went back but the tax did not" inexpressible, which is precisely the
+state that must be expressible, retryable, and visible.
+
+**The accounting entry is still written once.** `TransactionReversal` gains no
+status column, no attempt counter, and no lease. Those live on `OrderRefund`, and
+the entry is created inside the transaction that records the provider's
+confirmation — the same split `1.7` drew between evidence and transaction.
+
+**The refund unit is a whole Order line.** One or more lines may be selected,
+each returned in full; unselected lines are untouched. A refund may therefore be
+**partial relative to the Order** while being full relative to every line it
+touches. What stays refused is an arbitrary partial-dollar refund of a *single*
+line — and structurally, because there is no monetary parameter in the request
+path at all. A caller selects lines; the system derives the figure.
+
+Today's Order binds one Listing, so every refund executes as a whole-Order
+refund — but `SINGLE_LINE_EXECUTION_LIMIT` records that as a property of the
+**Order model**, not of the refund policy, and the subset path fails closed rather
+than being absent.
+
+> **Subset-line refund execution is REQUIRED FUNCTIONALITY of whatever phase
+> implements `OrderLine` / basket checkout — not an optional extension of it.**
+>
+> The business policy already permits refunding some lines and not others. What
+> blocks it is infrastructure and evidence, not a commercial prohibition: there is
+> no `OrderLine` table, `TransactionReversal.scope` has only `FULL`, no
+> line-level provider tax evidence is recorded at sale time, and no governed
+> shipping-allocation rule exists. A basket phase that shipped multi-line Orders
+> while leaving refunds whole-Order-only would be shipping a checkout Monacado
+> cannot correctly undo — and the line-level tax mapping in particular **must be
+> recorded at sale time**, because it cannot be reconstructed afterwards.
+
+**A receipt records what the buyer was told, not what is true now.** Checkout
+freezes the seller's effective verified refund-support contact onto
+`OrderRefundContactEvidence` alongside the policy binding, in one transaction. A
+seller who later changes their primary email, nominates a dedicated support
+address, or publishes tighter terms **cannot rewrite an old receipt**. The
+current contact is offered beside the historical one under a different name, is
+structurally unable to replace it, and an old receipt reproduces without it —
+including for a seller who has since gone dark.
+
+**The seller owns the declared refund policy; Monacado enforces the version that
+governed the purchase.** `SellerRefundPolicy` reuses the existing versioned-policy
+pattern — immutable versions, `DRAFT`/`ACTIVE`/`RETIRED`, one active marker — and
+checkout **binds the exact version**, refusing a sale it cannot bind. Enforced
+terms are columns because code decides them; the seller's prose is a hashed
+document on an immutable row, and a version whose prose contradicts its terms is
+refused. A seller who tightens their terms tomorrow does not retroactively tighten
+them for yesterday's buyer. The policy is disclosed **before purchase** and again
+**on the receipt**, and the receipt never substitutes today's terms for an old
+Order's.
+
+**Shipping refundability follows that seller policy** — never all, never none,
+never prorated. Where only part of a basket returns, `1.9` **fails closed** rather
+than inventing an allocation rule.
+
+**The whole-buyer-charge invariant is gone.** The amount is composed from selected
+lines, their sale-time tax, and policy-governed shipping. For a one-line Order
+that may still be the whole charge — or the whole charge *minus non-refundable
+shipping*, which is the visible proof.
+
+**Every figure comes from durable sale-time evidence.** Nothing is recomputed
+from current Product, Offer, or commercial-policy data — a refund priced from
+today's data, under today's terms, would return a figure the buyer was never
+charged under terms they were never shown, and both would look entirely correct.
+
+**Ordering, and forward recovery.** Persist intent → refund → persist success,
+the accounting entry, the settlement reversal, the tax-reversal obligation, and
+any recovery exceptions *in one transaction* → reverse the tax → reconcile. A
+failed payment refund produces **no** tax reversal, structurally. A refunded
+payment whose tax reversal failed is preserved, retried, surfaced, and closed by a
+later cycle — never rolled back and never hidden.
+
+**Idempotency is the whole safety property on the payment side.** Stripe's Refunds
+API has no `reference` uniqueness rule to lean on, so a key derived from immutable
+identity — no clock, no counter, no randomness — is the only thing standing
+between a timeout-plus-retry and a buyer refunded twice.
+
+**Proceeds and promoter commission, treated identically.** Unpaid claims become
+payout-ineligible through `1.2`'s existing hold, now actually reachable.
+Already-paid and already-eligible ones raise a durable
+`ProceedsRecoveryException` — carrying both the obligation's whole figure and the
+part the refunded lines attribute to it — and are **never rewritten**: a refund
+does not un-pay anybody, and fabricating a negative obligation would assert a
+claim against a participant that no phase has designed. The symmetry is
+deliberate: silently absorbing an already-paid promoter commission into Monacado
+would turn a refund into an unrecorded marketplace expense nobody authorised.
+Clawback execution is `T2`'s.
+
+**Guests can start a refund without an account.** Verified with the claim code
+the purchase already established, digest-compared, with nothing minted and no
+Account fabricated — and a wrong code answers identically to an unknown Order.
+
+**The Marketplace Policy document needs a new version to state all this, and this
+phase did not write one.** Editing an `ACTIVE`, already-accepted version would
+silently change what participants agreed to, so the requirement is recorded in
+`REQUIRED_MARKETPLACE_POLICY_NEXT_VERSION` rather than applied.
+
+**Zero-tax sales follow the identical lifecycle** and the provider *is* called —
+`1.7` reports them so they appear as return lines, and a reversal the provider
+never saw cannot appear on one.
+
+**Notices never control financial success.** Enqueued after the transaction
+commits, every failure swallowed; a test drives a refund with a notice subsystem
+that throws on every write and asserts the money still went back.
+
+**Readiness gains four blockers**, kept separate from `1.2`'s
+`REVERSAL_ACCOUNTING_UNAVAILABLE` on purpose: that control asks whether the
+reversal table is reachable, and a deployment can pass it while being wholly
+unable to return anybody's money. A marketplace able to take live payments and
+unable to refund them is not launch-ready.
+
+**One honest limitation, recorded rather than papered over:** `Stripe.Refund`
+carries no `livemode` field on the pinned API version, so the refund adapter has
+two mode gates where `1.7`'s tax adapter has three. The credential gate carries
+the guarantee — an `sk_test_` key cannot reach live data — and what is checked
+instead is that the returned refund names the payment intent Monacado asked about.
+
+Private `Refund` and `TaxReversal` capsules are projected and **nothing is
+published**; the `Refund` candidate carries the seller policy *reference* and
+never its prose. Two additive migrations, six tables, and two nullable columns on
+`Order` — pre-binding Orders stay valid and are never backfilled. **No AgentNet publication and no production Stripe call occurred** —
+every test drives injected doubles, and the tax-reversal double throws if reached
+on a failed-payment path.
+
+Detail: [`REFUNDS_AND_TAX_REVERSALS.md`](REFUNDS_AND_TAX_REVERSALS.md).
+
+---
+
 ## Standing constraints across the track
 
 1. **Publication stays gated and asynchronous.** Creators and promoters never hold
@@ -1858,3 +1999,4 @@ Detail: [`TAX_RECORDING_OPERATIONS.md`](TAX_RECORDING_OPERATIONS.md).
 - [`PRODUCTION_TAX_INTEGRATION.md`](PRODUCTION_TAX_INTEGRATION.md)
 - [`TAX_TRANSACTION_RECORDING_AND_PRIVATE_CAPSULE.md`](TAX_TRANSACTION_RECORDING_AND_PRIVATE_CAPSULE.md)
 - [`TAX_RECORDING_OPERATIONS.md`](TAX_RECORDING_OPERATIONS.md)
+- [`REFUNDS_AND_TAX_REVERSALS.md`](REFUNDS_AND_TAX_REVERSALS.md)

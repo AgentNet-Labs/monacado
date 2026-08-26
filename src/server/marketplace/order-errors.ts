@@ -33,6 +33,7 @@ export type OrderErrorCode =
   | "NO_EFFECTIVE_COMMERCIAL_POLICY"
   | "MARKETPLACE_POLICY_UNAVAILABLE"
   | "SELLER_SUPPORT_CONTACT_UNAVAILABLE"
+  | "SELLER_REFUND_POLICY_UNAVAILABLE"
   | "BUYER_ACCOUNT_NOT_FOUND"
   | "SELLER_NOT_RESOLVABLE"
   | "INVALID_ORDER_TRANSITION"
@@ -180,6 +181,29 @@ export class SellerSupportContactUnavailableError extends OrderServiceError {
       cause,
     );
     this.name = "SellerSupportContactUnavailableError";
+  }
+}
+
+/**
+ * The seller has no ACTIVE refund policy version (Phase 1.9 correction).
+ *
+ * A sale is refund-governed, so checkout binds the exact version in force. With
+ * none, the sale is refused on the identical reasoning that refuses a sale with
+ * no active marketplace policy: a buyer must see the applicable returns terms
+ * before purchasing and on the receipt afterwards, and an Order that bound
+ * nothing can supply neither.
+ *
+ * Carries no policy identity, no seller identity, and no prose — a checkout
+ * refusal is rendered to a buyer.
+ */
+export class SellerRefundPolicyUnavailableError extends OrderServiceError {
+  constructor(cause?: unknown) {
+    super(
+      "SELLER_REFUND_POLICY_UNAVAILABLE",
+      "This seller has no active refund policy; no new sale can be placed",
+      cause,
+    );
+    this.name = "SellerRefundPolicyUnavailableError";
   }
 }
 

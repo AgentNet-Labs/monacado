@@ -77,6 +77,7 @@ import {
 } from "../src/server/product/product-tax-facts-service";
 import {
   ensureShippedMarketplacePolicyActive,
+  ensureSellerRefundPolicy,
   verifyPrimarySupportContact,
 } from "./support/marketplace-policy-fixture";
 
@@ -301,6 +302,10 @@ async function cleanup(): Promise<void> {
        is RESTRICT, so it comes off before either. */
     await db.orderTaxTransaction.deleteMany({ where: { orderId: { in: orderIdList } } });
     await db.orderTaxEvidence.deleteMany({ where: { orderId: { in: orderIdList } } });
+    /* The purchase-time refund disclosure, RESTRICT to its Order (Phase 1.9). */
+    await db.orderRefundContactEvidence.deleteMany({
+      where: { orderId: { in: orderIdList } },
+    });
     await db.orderBuyerSnapshot.deleteMany({ where: { orderId: { in: orderIdList } } });
     await db.notificationDelivery.deleteMany({
       where: { subjectKind: "ORDER", subjectRef: { in: orderIdList } },
@@ -347,6 +352,14 @@ async function cleanup(): Promise<void> {
     await db.storefront.deleteMany({ where: { ownerParticipantId: { in: participantIds } } });
     await db.marketplaceRoleAssignment.deleteMany({
       where: { participantId: { in: participantIds } },
+    });
+    /* RESTRICT to the participant, and Orders RESTRICT to the version row — so
+       the policy comes off after the Orders above and before the seller. */
+    await db.sellerRefundPolicyVersionRow.deleteMany({
+      where: { sellerParticipantId: { in: participantIds } },
+    });
+    await db.sellerRefundPolicy.deleteMany({
+      where: { sellerParticipantId: { in: participantIds } },
     });
     await db.marketplaceParticipant.deleteMany({ where: { id: { in: participantIds } } });
   }
@@ -455,6 +468,16 @@ async function seedSellerDirect(
     data: { status: "ACTIVE" },
   });
   await verifyPrimarySupportContact(db, { participantId, accountId, now: NOW });
+  /* Phase 1.9 correction — checkout binds the seller's ACTIVE refund policy and
+     REFUSES a sale it cannot bind, on the same footing as the verified support
+     contact above. Seeded with permissive, shipping-refundable terms so a sale
+     completes and a full refund returns the whole buyer charge. */
+  await ensureSellerRefundPolicy(db, {
+    sellerParticipantId: participantId,
+    recordedByAccountId: accountId,
+    now: NOW,
+    policyId: `mon:srpol:${participantId.slice(-26)}`,
+  });
 
   const n = next();
   const internalProductId = `${PRODUCT_PREFIX}${pad26(String(n)).slice(0, 26 - PRODUCT_TAG.length)}`;

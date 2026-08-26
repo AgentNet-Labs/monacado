@@ -35,7 +35,20 @@
  * | risk not configured | no ceiling, no restriction check, nothing to stop one mispriced Listing |
  * | notification not configured | a buyer charged real money who is told nothing has no receipt and no recourse |
  * | reversal unavailable | taking money with no way to give it back |
+ * | refund execution not configured | *(1.9)* the same thing, now checkable: `1.2`'s reversal accounting existed with no way to execute one |
+ * | refund processor not operational | *(1.9)* durable refund work nobody runs is a buyer's money nobody returns |
+ * | tax reversal not configured | *(1.9)* a refunded sale whose tax stands reported overstates what was collected |
+ * | refund backlog unhealthy | *(1.9)* refunds stuck, or refunded sales whose tax was never reversed |
  * | live provider not enabled | the deliberate gate above |
+ *
+ * ## Why `1.9` added four rather than folding into `REVERSAL_ACCOUNTING`
+ *
+ * `1.2`'s `REVERSAL_ACCOUNTING_UNAVAILABLE` asks whether the reversal *table* is
+ * reachable, which was the only refund-shaped question that could be asked when
+ * no refund could be executed. It is now the weakest of five, and keeping it
+ * separate is what makes the report legible: an operator reading "reversal
+ * accounting satisfied" should not be able to conclude that Monacado can refund
+ * anybody, which is exactly what one code covering both would have implied.
  *
  * Each is checked against **actual state**, not a self-declaration: the risk
  * policy must have an `ACTIVE` version in the database, the mail transport must
@@ -53,6 +66,8 @@ import "../server-only";
 import { STRIPE_MODES } from "../payments/stripe-runtime-config";
 import { evaluateTaxReadiness } from "../tax/tax-readiness";
 import { evaluateTaxOperationsReadiness } from "../tax/tax-recording-operations-service";
+import { evaluateRefundReadiness } from "./refund-readiness";
+import { evaluateRefundOperationsReadiness } from "../marketplace/refund-operations-service";
 import { isMailEnabled } from "../notifications/mail-port";
 import { getActiveRiskPolicyVersion } from "../risk/risk-policy-service";
 import { getPrisma } from "../db/client";
@@ -106,6 +121,37 @@ export const LIVE_READINESS_BLOCKER_CODES = [
   "NOTIFICATION_DELIVERY_NOT_CONFIGURED",
   /** Reversal accounting is unavailable. */
   "REVERSAL_ACCOUNTING_UNAVAILABLE",
+  /**
+   * No payment integration a refund could go through (Phase 1.9).
+   *
+   * `1.2` could only ask whether the reversal TABLE was reachable, because no
+   * refund could be executed. This asks whether one could be.
+   */
+  "REFUND_EXECUTION_NOT_CONFIGURED",
+  /**
+   * Nothing invokes the refund processor (Phase 1.9).
+   *
+   * `1.8`'s lesson, applied where it costs more: a bounded cycle with no
+   * dispatcher secret and no declared schedule is durable work nobody will ever
+   * process — and here that work is returning a buyer's money.
+   */
+  "REFUND_PROCESSOR_NOT_OPERATIONAL",
+  /**
+   * A refunded sale's tax cannot be reversed with a provider (Phase 1.9).
+   *
+   * Separate from `TAX_CALCULATION_NOT_CONFIGURED` because they fail at
+   * different moments and a deployment can pass the first while failing this
+   * one — a test tax adapter calculates plausibly and reverses nothing.
+   */
+  "TAX_REVERSAL_NOT_CONFIGURED",
+  /**
+   * Refunds stuck, or refunded sales whose tax was never reversed (Phase 1.9).
+   *
+   * The rows-not-configuration control. Every permanently failed refund is a
+   * buyer owed money, and every failed tax reversal is a return line that will
+   * overstate what Monacado collected.
+   */
+  "REFUND_BACKLOG_UNHEALTHY",
   /** Live provider support does not exist. Cleared only by a reviewed phase. */
   "LIVE_PROVIDER_NOT_ENABLED",
 ] as const;
@@ -223,6 +269,40 @@ export async function evaluateLiveCommerceReadiness(
     satisfied.push("REVERSAL_ACCOUNTING");
   } catch {
     blockers.push("REVERSAL_ACCOUNTING_UNAVAILABLE");
+  }
+
+  // — Refunds (Phase 1.9) —
+  /* CONFIGURATION IS INSPECTED, NOT EXERCISED, on `1.6`'s terms and more so:
+     probing a refund port means refunding something. `evaluateRefundReadiness`
+     makes no network call and reads no credential value.
+     `LIVE_PROVIDER_NOT_ENABLED` is deliberately not re-reported from it — this
+     function reports that once, below, from the same single-member enum. */
+  const refunds = evaluateRefundReadiness(at, env);
+  if (!refunds.refundExecutionConfigured) {
+    /* A marketplace able to take live payments and unable to refund them is not
+       launch-ready. Every payment network requires a merchant to be able to
+       refund, and the only remaining correction path without one is the
+       chargeback — slower, dearer, and adjudicated by somebody else. */
+    blockers.push("REFUND_EXECUTION_NOT_CONFIGURED");
+  } else satisfied.push("REFUND_EXECUTION");
+
+  if (!refunds.processorOperationallyInvocable) {
+    blockers.push("REFUND_PROCESSOR_NOT_OPERATIONAL");
+  } else satisfied.push("REFUND_PROCESSOR_OPERATIONS");
+
+  if (!refunds.taxReversalConfigured) {
+    blockers.push("TAX_REVERSAL_NOT_CONFIGURED");
+  } else satisfied.push("TAX_REVERSAL_CONFIGURATION");
+
+  /* And configured is not the same as keeping up. Rows, not configuration, and
+     still no provider call. */
+  try {
+    const refundOperations = await evaluateRefundOperationsReadiness(at, { db });
+    if (!refundOperations.healthy) blockers.push("REFUND_BACKLOG_UNHEALTHY");
+    else satisfied.push("REFUND_BACKLOG");
+  } catch {
+    /* A control that cannot be read has not passed. */
+    blockers.push("REFUND_BACKLOG_UNHEALTHY");
   }
 
   // — Live provider —

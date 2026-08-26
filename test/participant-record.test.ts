@@ -401,9 +401,15 @@ describe("public participant projection ruling (0M.1 decision 4)", () => {
 describe("Creator vs Seller ruling (0M.1 decision 1)", () => {
   it("keeps one neutral participant identity with additive roles", () => {
     expect([...MARKETPLACE_ROLES]).toEqual(["SELLER", "PROMOTER", "BUYER"]);
-    // No second identity table competing with MarketplaceParticipant.
-    expect(SCHEMA_CODE).not.toContain("model Creator");
-    expect(SCHEMA_CODE).not.toContain("model Seller");
+    /* No second IDENTITY table competing with MarketplaceParticipant.
+     *
+     * Matched on the declaration itself rather than a prefix. Phase 1.9 added
+     * `SellerRefundPolicy` — a policy a participant OWNS, with a foreign key to
+     * them — and a prefix match would read that as a rival identity. What the
+     * ruling forbids is a `Seller` or `Creator` entity standing beside
+     * `MarketplaceParticipant`, which is what these now check for exactly. */
+    expect(SCHEMA_CODE).not.toContain("model Creator {");
+    expect(SCHEMA_CODE).not.toContain("model Seller {");
   });
 });
 

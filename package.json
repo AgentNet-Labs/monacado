@@ -22,6 +22,8 @@
     "tax:readiness": "tsx scripts/tax-readiness.ts",
     "tax:record:once": "tsx scripts/run-tax-transaction-recorder.ts",
     "tax:record:status": "tsx scripts/tax-recording-status.ts",
+    "refund:process:once": "tsx scripts/run-refund-processor.ts",
+    "refund:status": "tsx scripts/refund-status.ts",
     "worker:publication:once": "tsx scripts/run-publication-worker.ts",
     "email:dispatch:once": "tsx scripts/run-email-dispatcher.ts",
     "db:test": "RUN_DB_TESTS=1 vitest run --no-file-parallelism test/*.integration.test.ts",

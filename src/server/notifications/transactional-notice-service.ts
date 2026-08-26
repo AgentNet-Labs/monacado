@@ -225,6 +225,72 @@ async function obligationIdFor(
   return row?.id ?? null;
 }
 
+/**
+ * The buyer's refund notice (Phase 1.9).
+ *
+ * Says the one thing they want to know — their money is coming back, and how
+ * much — and nothing about the marketplace's internals. It deliberately names
+ * **no reason code**: Monacado's governed classification of why a refund happened
+ * is an internal accounting fact, and a buyer told their refund was categorised
+ * `FRAUD_OR_RISK` has been accused of something in a receipt.
+ *
+ * It also says nothing about tax reversal. Whether Monacado has finished
+ * un-reporting the sale to a tax provider is none of the buyer's business, and
+ * holding this message until it had would withhold the fact they actually want.
+ */
+export function renderBuyerRefundCompleted(
+  order: OrderRecord,
+  refund: { amountMinorUnits: number; currency: string },
+): { subject: string; body: string } {
+  const total = formatAmount(refund.amountMinorUnits, refund.currency);
+  return {
+    subject: `Your Monacado order has been refunded — ${total}`,
+    body: [
+      "Your order has been refunded in full.",
+      "",
+      `Order reference: ${order.orderId}`,
+      `Amount refunded: ${total}`,
+      "",
+      "The refund has been issued to your original payment method. How long it",
+      "takes to appear depends on your bank or card issuer.",
+      "",
+      "— Monacado",
+    ].join("\n"),
+  };
+}
+
+/**
+ * The seller's or promoter's refund notice (Phase 1.9).
+ *
+ * A different message to a different party about the same event. It states the
+ * consequence that matters to them — a sale they were credited for has been
+ * undone — and, like the sale notice, names **no economics**: what they earned
+ * and are no longer owed is on records they can read, and a figure in an email is
+ * a figure that can go stale.
+ *
+ * It says nothing about recovery either. Whether Monacado will seek money back
+ * from an already-paid proceeds claim is a governed settlement decision nobody
+ * has taken, and an email implying one would be making it.
+ */
+export function renderParticipantRefundRecorded(order: OrderRecord): {
+  subject: string;
+  body: string;
+} {
+  return {
+    subject: "A Monacado sale has been refunded",
+    body: [
+      "A sale recorded to your account has been refunded to the buyer.",
+      "",
+      `Order reference: ${order.orderId}`,
+      "",
+      "Proceeds for this sale are no longer eligible for payout. You can review",
+      "the sale and its current standing in your Monacado account.",
+      "",
+      "— Monacado",
+    ].join("\n"),
+  };
+}
+
 // — Triggers —
 
 /**

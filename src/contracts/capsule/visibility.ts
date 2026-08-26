@@ -68,6 +68,25 @@ export const CAPSULE_VISIBILITY_POLICY = {
    * Never public by default, and never published by this phase at all.
    */
   TaxTransaction: "PRIVATE",
+  /**
+   * **Private** (Phase 1.9). That a buyer was refunded, and why.
+   *
+   * The disclosure question here is sharper than the tax transaction's and the
+   * answer is the same word for a stronger reason. A public refund capsule would
+   * publish, per sale, that a purchase was returned and under which reason code —
+   * which is a statement about a seller's failure rate and, on a marketplace
+   * where a Listing has one Product and one seller, an inference about individual
+   * buyers' dissatisfaction. Neither party agreed to either disclosure.
+   */
+  Refund: "PRIVATE",
+  /**
+   * **Private** (Phase 1.9). That a sale's tax was reversed with the provider.
+   *
+   * Private on `TaxTransaction`'s terms exactly: it is the same fiscal detail,
+   * about the same sale, read by the same internal reconciliation and audit
+   * workflows.
+   */
+  TaxReversal: "PRIVATE",
 } as const satisfies Record<string, CapsuleVisibility>;
 
 export type GovernedCapsuleType = keyof typeof CAPSULE_VISIBILITY_POLICY;

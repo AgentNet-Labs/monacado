@@ -307,3 +307,69 @@ export const PROCEEDS_OBLIGATION_ID_RE = new RegExp(`^mon:pobl:${OPAQUE_BODY}$`)
  * is nobody's business but the marketplace's.
  */
 export const PARTICIPANT_COMMERCE_APPROVAL_ID_RE = new RegExp(`^mon:pcap:${OPAQUE_BODY}$`);
+
+/**
+ * One buyer refund (`mon:refnd:<opaque>`) — Phase 1.9.
+ *
+ * Names Monacado's own authoritative record that funds were returned for one
+ * Order, distinct from every provider refund identifier — a Stripe `re_…` is a
+ * *field* on that row, never the row's identity, so the lifecycle never becomes
+ * provider-shaped.
+ *
+ * Deliberately **not** `mon:txrev:`. `TransactionReversal` (Phase 1.2) is the
+ * accounting entry stating what each party gave back; a refund is the
+ * **execution** that produced it, with attempts, failures, and a lease. One
+ * identifier space for both would make "what was given back?" and "did the
+ * provider call succeed?" the same question — the same distinction `1.7` drew
+ * between `mon:taxe:` and `mon:txtax:`.
+ *
+ * Operational only. Not a Node, not a capsule identity, never published.
+ */
+export const ORDER_REFUND_ID_RE = new RegExp(`^mon:refnd:${OPAQUE_BODY}$`);
+
+/**
+ * One tax reversal (`mon:txrvs:<opaque>`) — Phase 1.9.
+ *
+ * Names Monacado's record that a sale's *tax* was reversed with the provider,
+ * which is an independently durable fact from the payment refund that occasioned
+ * it: a refunded payment whose tax reversal has not succeeded is a real,
+ * recoverable state, and one identifier covering both would make it
+ * inexpressible.
+ *
+ * Distinct from `mon:txtax:`, which names the **original** report. The original
+ * is never rewritten; this names the new record appended beside it.
+ */
+export const ORDER_TAX_REVERSAL_ID_RE = new RegExp(`^mon:txrvs:${OPAQUE_BODY}$`);
+
+/**
+ * One proceeds recovery exception (`mon:precx:<opaque>`) — Phase 1.9.
+ *
+ * Names the durable record that a refunded sale left a proceeds obligation
+ * Monacado had **already paid**, or had already made payout-eligible. It is a
+ * *seam*, not an execution: nothing here claws anything back, and the row exists
+ * precisely so that the alternative — silently rewriting a settled
+ * `ProceedsObligation` — is never necessary.
+ *
+ * Operational only, never published.
+ */
+export const PROCEEDS_RECOVERY_EXCEPTION_ID_RE = new RegExp(`^mon:precx:${OPAQUE_BODY}$`);
+
+/**
+ * One seller's refund policy identity (`mon:srpol:<opaque>`) — Phase 1.9.
+ *
+ * Deliberately **not** `mon:mpol:`. A marketplace policy states what every party
+ * undertakes to Monacado and there is exactly one of them; a seller refund policy
+ * is one seller's own declared terms, and there is one per seller. Sharing an
+ * identifier space would make "whose terms are these?" a question you had to look
+ * up rather than read.
+ *
+ * Also not `mon:cpol:`: a commercial policy decides what Monacado *earns*, and a
+ * refund policy decides what a *seller* promises a buyer. An Order binds all
+ * three separately, so a fee change, a terms change, and a seller's returns
+ * change can never move together.
+ *
+ * Operational only. Not a Node, not a capsule identity, never published — though
+ * its *reference* appears in the private Refund capsule, because "which policy
+ * governed this refund" is the first question an internal audit asks.
+ */
+export const SELLER_REFUND_POLICY_ID_RE = new RegExp(`^mon:srpol:${OPAQUE_BODY}$`);

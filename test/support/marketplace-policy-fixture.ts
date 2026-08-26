@@ -37,6 +37,13 @@ import {
   MONACADO_MARKETPLACE_POLICY_ID,
 } from "../../src/contracts/marketplace/marketplace-policy-content";
 import { ACCEPTANCE_REQUIRED_AUDIENCES } from "../../src/contracts/marketplace/marketplace-policy";
+import {
+  activateSellerRefundPolicyVersion,
+  ensureSellerRefundPolicy as ensureSellerRefundPolicyIdentity,
+  getActiveSellerRefundPolicyVersion,
+  readSellerRefundPolicyVersion,
+  recordSellerRefundPolicyVersion,
+} from "../../src/server/marketplace/seller-refund-policy-service";
 
 type Db = ReturnType<typeof getPrisma>;
 
@@ -232,4 +239,120 @@ export async function deleteParticipantPolicyRows(
   await db.emailVerificationChallenge.deleteMany({ where: owned });
   await db.participantEmailContact.deleteMany({ where: owned });
   await db.participantPolicyAcceptance.deleteMany({ where: owned });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 1.9 correction — seller refund policy
+//
+// Checkout now binds the seller's ACTIVE refund-policy version, and REFUSES a
+// sale it cannot bind. That is a real prerequisite on the same footing as `1.3`'s
+// verified support contact, so it lives here for the same reason: satisfying it
+// should be one call, and the *reason* a suite seeds one should be explained in
+// one place rather than re-explained in every `seedSellerDirect`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Give one seller an ACTIVE refund policy, so their Listings can be sold.
+ *
+ * Idempotent and additive: the identity is upserted, version `1` recorded only if
+ * absent, and activated only if nothing is active. Nothing here retires or
+ * replaces a version, so suites cannot fight over one another's sellers.
+ *
+ * **The default terms are deliberately permissive and shipping-refundable**, so
+ * that a suite which only wants a sale to complete gets the least surprising
+ * economics: a full refund of such an Order returns the whole buyer charge, which
+ * is what every pre-correction test already assumed. A suite testing the shipping
+ * rule states its own `shippingRefundability` instead.
+ */
+export async function ensureSellerRefundPolicy(
+  db: Db,
+  input: {
+    sellerParticipantId: string;
+    recordedByAccountId: string;
+    now: string;
+    /** A deterministic `mon:srpol:` id, so a suite's rows stay identifiable. */
+    policyId: string;
+    shippingRefundability?: "ALWAYS_REFUNDED" | "NEVER_REFUNDED" | "REFUNDED_WHEN_SELLER_AT_FAULT";
+    refundsAllowed?: boolean;
+    refundWindowDays?: number | null;
+  },
+): Promise<{ policyId: string; policyVersion: string }> {
+  const refundsAllowed = input.refundsAllowed ?? true;
+  /* A window on a policy that refunds nothing is a term that can never apply, and
+     `sellerRefundPolicyIssues` refuses one. */
+  const refundWindowDays = refundsAllowed ? (input.refundWindowDays ?? null) : null;
+  const shippingRefundability = input.shippingRefundability ?? "ALWAYS_REFUNDED";
+
+  const policyId = await ensureSellerRefundPolicyIdentity(
+    {
+      sellerParticipantId: input.sellerParticipantId,
+      label: "Returns policy",
+      now: input.now,
+    },
+    { db, ids: { nextSellerRefundPolicyId: () => input.policyId } },
+  );
+
+  if ((await readSellerRefundPolicyVersion(policyId, "1", { db })) === null) {
+    await recordSellerRefundPolicyVersion(
+      {
+        policyId,
+        policyVersion: "1",
+        sellerParticipantId: input.sellerParticipantId,
+        terms: {
+          refundsAllowed,
+          eligibilityConditions: refundsAllowed ? ["ANY_REASON"] : [],
+          refundWindowDays,
+          shippingRefundability,
+          procedureKind: "CONTACT_SELLER_SUPPORT",
+        },
+        document: {
+          title: "Returns and refunds",
+          sections: [
+            {
+              key: "SUMMARY",
+              heading: "Summary",
+              body: refundsAllowed
+                ? "We accept returns for any reason."
+                : "This seller does not offer refunds.",
+            },
+            ...(refundWindowDays === null
+              ? []
+              : [
+                  {
+                    key: "WINDOW" as const,
+                    heading: "Time limit",
+                    body: `Refunds may be requested within ${refundWindowDays} days of purchase.`,
+                  },
+                ]),
+            {
+              key: "SHIPPING" as const,
+              heading: "Shipping charges",
+              body:
+                shippingRefundability === "NEVER_REFUNDED"
+                  ? "Shipping charges are not refunded."
+                  : "Shipping charges are refunded with the item.",
+            },
+            {
+              key: "PROCEDURE" as const,
+              heading: "How to request a refund",
+              body: "Contact us at the support address on your receipt, quoting your order reference.",
+            },
+          ],
+        },
+        effectiveFrom: input.now,
+        recordedByAccountId: input.recordedByAccountId,
+        recordedAt: input.now,
+      },
+      { db },
+    );
+  }
+
+  if ((await getActiveSellerRefundPolicyVersion(input.sellerParticipantId, { db })) === null) {
+    await activateSellerRefundPolicyVersion(
+      { policyId, policyVersion: "1", activatedAt: input.now },
+      { db },
+    );
+  }
+
+  return { policyId, policyVersion: "1" };
 }

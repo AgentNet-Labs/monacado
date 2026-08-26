@@ -636,13 +636,15 @@ describeDb("Phase 0M.R1 — versioned commercial policy and activation risk reco
         "charge",
         "paymentintent",
         "payout",
-        "refund",
         "chargeback",
         "ledger",
         "taxclass",
         /* `taxtransaction` was on this list until Phase 1.7, which legitimately
-           owns `OrderTaxTransaction`. What this asserts is that *0M.R1* added
-           none of these — the same narrowing every other member has had. */
+           owns `OrderTaxTransaction`, and `refund` until Phase 1.9, which
+           legitimately owns `OrderRefund`. What this asserts is that *0M.R1*
+           added none of these — the same narrowing every other member has had.
+           `chargeback` stays: nothing owns one, and nothing should until a phase
+           designs dispute ingestion. */
         "reserve",
         "velocity",
         "riskscore",

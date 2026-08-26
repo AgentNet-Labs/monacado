@@ -180,16 +180,16 @@ model ProductSourceRecordVersionRow {
   /// ABSENCE IS NOT A DEFAULT: checkout FAILS CLOSED on an unknown mode rather
   /// than guessing, because guessing either demands an address nobody needs or
   /// ships nothing to a buyer expecting a parcel.
-  factDeliveryMode String? @db.VarChar(16)
+  factDeliveryMode   String? @db.VarChar(16)
   /// Validated JSON: Record<string, string|number|boolean>. Validated by the
   /// ProductData Zod contract before write and after read.
-  factSpecifications           Json?
+  factSpecifications Json?
   /// Validated JSON: string[]. Validated by the ProductData Zod contract.
-  factCapabilities             Json?
+  factCapabilities   Json?
   /// facts.relationships.creator (opaque ANS node reference an:node:<opaque>).
-  factCreatorRef               String  @db.VarChar(191)
+  factCreatorRef     String  @db.VarChar(191)
   /// facts.relationships.offer (optional opaque ANS node reference).
-  factOfferRef                 String? @db.VarChar(191)
+  factOfferRef       String? @db.VarChar(191)
 
   /// DIGITAL_GOOD | SOFTWARE | PHYSICAL_GOOD | SERVICE — how this Product is
   /// taxed, in Monacado's PROVIDER-NEUTRAL vocabulary (Phase 1.6).
@@ -207,7 +207,7 @@ model ProductSourceRecordVersionRow {
   /// retroactively. ABSENCE IS NOT A DEFAULT: a production tax calculation
   /// REFUSES an unclassified Product rather than guessing a category, because a
   /// guessed category is a tax rate nobody chose.
-  taxClassification            String? @db.VarChar(32)
+  taxClassification String? @db.VarChar(32)
 
   // — Mapping controls (NOT Product facts, NOT publication metadata) —
   capsuleSemver      String   @db.VarChar(64)
@@ -724,6 +724,10 @@ model Account {
   ordersPlaced  Order[] @relation("OrderBuyerAccount")
   ordersClaimed Order[] @relation("OrderClaimedByAccount")
 
+  /// Refunds this account requested (Phase 1.9). RESTRICT: the acting account
+  /// on a financial correction is evidence, and evidence is not deletable.
+  refundsRequested OrderRefund[] @relation("RefundRequestedBy")
+
   @@index([status])
 }
 
@@ -907,6 +911,15 @@ model MarketplaceParticipant {
   /// Monacado's governed commerce-approval decisions about this participant
   /// (0M.9). RESTRICT: the evidence behind every sale they made.
   commerceApprovals ParticipantCommerceApproval[]
+
+  /// Proceeds this participant was paid, or made eligible for, on a sale that
+  /// was subsequently refunded (Phase 1.9). A SEAM, not a clawback.
+  proceedsRecoveryExceptions ProceedsRecoveryException[]
+
+  /// This seller's own declared refund policy (Phase 1.9). At most one identity;
+  /// its VERSIONS are what an Order binds. A promoter has none — the returns
+  /// terms belong to whoever supplies the Product.
+  sellerRefundPolicy SellerRefundPolicy?
 
   @@index([status])
 }
@@ -2369,6 +2382,10 @@ model TransactionEconomicSnapshot {
   reversal            TransactionReversal?
   proceedsObligations ProceedsObligation[]
 
+  /// The refund execution that produced the reversal above, if any (Phase 1.9).
+  refund                     OrderRefund?
+  proceedsRecoveryExceptions ProceedsRecoveryException[]
+
   @@index([internalListingId, occurredAt])
   @@index([listingSourceRecordId, listingSourceRecordVersion])
   @@index([offerSourceRecordId, offerSourceRecordVersion])
@@ -2523,6 +2540,24 @@ model Order {
   marketplacePolicyId      String? @db.VarChar(191)
   marketplacePolicyVersion String? @db.VarChar(64)
 
+  // — Exact seller refund-policy binding (Phase 1.9) —
+  //
+  // WHICH SELLER TERMS governed this purchase's returns, as distinct from which
+  // marketplace terms and which fees did. Bound at checkout so a refund years
+  // later applies the policy the buyer was actually shown, and a receipt renders
+  // it — rather than whichever version the seller happens to have published by
+  // then.
+  //
+  // NULLABLE because the columns are additive over Orders written before the
+  // binding existed. Every Order placed from now on binds one, and checkout
+  // REFUSES a sale it cannot bind. NOTHING BACKFILLS THEM: showing a buyer
+  // today's terms for a historical purchase would be worse than showing none,
+  // because it would look authoritative.
+  //
+  // A REFERENCE, NEVER PROSE. No policy text is copied onto an Order.
+  sellerRefundPolicyId      String? @db.VarChar(191)
+  sellerRefundPolicyVersion String? @db.VarChar(64)
+
   // — Operational references —
   storefrontId      String @db.VarChar(191)
   internalProductId String @db.VarChar(191)
@@ -2571,17 +2606,19 @@ model Order {
 
   // RESTRICT everywhere: an Order is a commercial transaction. Nothing it binds
   // to may be deleted beneath it.
-  buyerAccount     Account?                      @relation("OrderBuyerAccount", fields: [buyerAccountId], references: [id], onDelete: Restrict)
-  claimedByAccount Account?                      @relation("OrderClaimedByAccount", fields: [claimedByAccountId], references: [id], onDelete: Restrict)
-  buyerParticipant MarketplaceParticipant?       @relation("OrderBuyerParticipant", fields: [buyerParticipantId], references: [id], onDelete: Restrict)
-  listing          Listing                       @relation(fields: [internalListingId], references: [internalListingId], onDelete: Restrict)
-  listingVersion   ListingSourceRecordVersionRow @relation(fields: [listingSourceRecordId, listingSourceRecordVersion], references: [listingSourceRecordId, sourceRecordVersion], onDelete: Restrict)
-  policyVersionRow CommercialPolicyVersionRow    @relation(fields: [policyId, policyVersion], references: [policyId, policyVersion], onDelete: Restrict)
-  marketplacePolicyVersionRow MarketplacePolicyVersionRow? @relation(fields: [marketplacePolicyId, marketplacePolicyVersion], references: [policyId, policyVersion], onDelete: Restrict)
-  storefront       Storefront                    @relation(fields: [storefrontId], references: [internalStorefrontId], onDelete: Restrict)
-  product          Product                       @relation(fields: [internalProductId], references: [internalProductId], onDelete: Restrict)
-  seller           MarketplaceParticipant        @relation("OrderSeller", fields: [sellerParticipantId], references: [id], onDelete: Restrict)
-  promoter         MarketplaceParticipant?       @relation("OrderPromoter", fields: [promoterParticipantId], references: [id], onDelete: Restrict)
+  buyerAccount                 Account?                      @relation("OrderBuyerAccount", fields: [buyerAccountId], references: [id], onDelete: Restrict)
+  claimedByAccount             Account?                      @relation("OrderClaimedByAccount", fields: [claimedByAccountId], references: [id], onDelete: Restrict)
+  buyerParticipant             MarketplaceParticipant?       @relation("OrderBuyerParticipant", fields: [buyerParticipantId], references: [id], onDelete: Restrict)
+  listing                      Listing                       @relation(fields: [internalListingId], references: [internalListingId], onDelete: Restrict)
+  listingVersion               ListingSourceRecordVersionRow @relation(fields: [listingSourceRecordId, listingSourceRecordVersion], references: [listingSourceRecordId, sourceRecordVersion], onDelete: Restrict)
+  policyVersionRow             CommercialPolicyVersionRow    @relation(fields: [policyId, policyVersion], references: [policyId, policyVersion], onDelete: Restrict)
+  marketplacePolicyVersionRow  MarketplacePolicyVersionRow?  @relation(fields: [marketplacePolicyId, marketplacePolicyVersion], references: [policyId, policyVersion], onDelete: Restrict)
+  /// RESTRICT: the terms a sale was made under are never deleted beneath it.
+  sellerRefundPolicyVersionRow SellerRefundPolicyVersionRow? @relation(fields: [sellerRefundPolicyId, sellerRefundPolicyVersion], references: [policyId, policyVersion], onDelete: Restrict)
+  storefront                   Storefront                    @relation(fields: [storefrontId], references: [internalStorefrontId], onDelete: Restrict)
+  product                      Product                       @relation(fields: [internalProductId], references: [internalProductId], onDelete: Restrict)
+  seller                       MarketplaceParticipant        @relation("OrderSeller", fields: [sellerParticipantId], references: [id], onDelete: Restrict)
+  promoter                     MarketplaceParticipant?       @relation("OrderPromoter", fields: [promoterParticipantId], references: [id], onDelete: Restrict)
 
   /// The economics of this sale, when it completed. At most one (0M.T1).
   ///
@@ -2600,6 +2637,20 @@ model Order {
   /// What was given back, if anything (Phase 1.2). New evidence, not an edit.
   reversals          TransactionReversal[]
   orderBuyerSnapshot OrderBuyerSnapshot?
+
+  /// The execution that returned the buyer's funds, if any (Phase 1.9). At most
+  /// one: the refund unit is a set of whole Order lines, so a SECOND refund of
+  /// one Order is a refusal rather than a partial return arriving under a name
+  /// nobody agreed to.
+  refund                     OrderRefund?
+  /// What was reversed with the tax provider, if anything (Phase 1.9).
+  taxReversal                OrderTaxReversal?
+  /// Proceeds already paid or already payout-eligible when this Order was
+  /// refunded (Phase 1.9). A recovery SEAM; nothing here executes one.
+  proceedsRecoveryExceptions ProceedsRecoveryException[]
+  /// The refund-support contact DISCLOSED TO THIS BUYER at purchase (Phase 1.9).
+  /// At most one, written with the policy binding in the same transaction.
+  refundContactEvidence      OrderRefundContactEvidence?
 
   @@index([buyerAccountId, placedAt])
   @@index([sellerParticipantId, lifecycle])
@@ -2660,6 +2711,15 @@ model ProceedsObligation {
   // nor the party it is owed to may be deleted.
   snapshot    TransactionEconomicSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
   participant MarketplaceParticipant      @relation(fields: [participantId], references: [id], onDelete: Restrict)
+
+  /// Raised when this claim was already PAID or already ELIGIBLE at the moment
+  /// its sale was refunded (Phase 1.9). At most one — a claim is settled once,
+  /// and one refund per Order means one occasion for an exception.
+  ///
+  /// NOTE WHAT IS ABSENT: no `reversedAt`, no `recoveredAmount`, and no fourth
+  /// state. The obligation is NEVER rewritten by a refund; the exception is a
+  /// separate row precisely so that stays true.
+  recoveryException ProceedsRecoveryException?
 
   /// ONE obligation per party per sale, enforced by the database rather than by
   /// a service remembering. Paying a party twice for one sale is the failure
@@ -2858,7 +2918,7 @@ model MarketplacePolicyVersionRow {
   title String @db.VarChar(200)
 
   /// Stable identifier of the source content (marketplace-policy/1.0.0).
-  contentRef String @db.VarChar(191)
+  contentRef  String @db.VarChar(191)
   /// sha256:<hex> over the canonical JSON of the document. Detects prose moving
   /// without a version bump.
   contentHash String @db.VarChar(80)
@@ -2872,8 +2932,8 @@ model MarketplacePolicyVersionRow {
   effectiveFrom DateTime @db.DateTime(3)
 
   /// Who recorded it, as the durable internal Account id. Never an email.
-  recordedByAccountId String   @db.VarChar(191)
-  recordedAt          DateTime @db.DateTime(3)
+  recordedByAccountId String    @db.VarChar(191)
+  recordedAt          DateTime  @db.DateTime(3)
   activatedAt         DateTime? @db.DateTime(3)
   retiredAt           DateTime? @db.DateTime(3)
 
@@ -2939,8 +2999,8 @@ model ParticipantPolicyAcceptance {
 
   // RESTRICT: an acceptance is evidence of an undertaking. Nothing it binds to
   // may be deleted beneath it.
-  participant   MarketplaceParticipant      @relation(fields: [participantId], references: [id], onDelete: Restrict)
-  policy        MarketplacePolicy           @relation(fields: [policyId], references: [id], onDelete: Restrict)
+  participant      MarketplaceParticipant      @relation(fields: [participantId], references: [id], onDelete: Restrict)
+  policy           MarketplacePolicy           @relation(fields: [policyId], references: [id], onDelete: Restrict)
   policyVersionRow MarketplacePolicyVersionRow @relation(fields: [policyId, policyVersion], references: [policyId, policyVersion], onDelete: Restrict)
 
   /// One acceptance per participant × version × audience. A repeat is the same
@@ -2991,7 +3051,7 @@ model ParticipantEmailContact {
   createdAt DateTime @db.DateTime(3)
   updatedAt DateTime @updatedAt @db.DateTime(3)
 
-  participant MarketplaceParticipant          @relation(fields: [participantId], references: [id], onDelete: Cascade)
+  participant MarketplaceParticipant       @relation(fields: [participantId], references: [id], onDelete: Cascade)
   challenges  EmailVerificationChallenge[]
 
   /// One contact per participant per purpose, so a seller can verify a new
@@ -3244,8 +3304,8 @@ model OrderTaxEvidence {
 
   // RESTRICT: tax evidence explains a charge. Deleting the Order beneath it
   // would leave a charged amount nobody can account for.
-  order         Order               @relation(fields: [orderId], references: [id], onDelete: Restrict)
-  buyerSnapshot OrderBuyerSnapshot? @relation(fields: [buyerSnapshotId], references: [id], onDelete: Restrict)
+  order          Order                @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  buyerSnapshot  OrderBuyerSnapshot?  @relation(fields: [buyerSnapshotId], references: [id], onDelete: Restrict)
   /// The Phase 1.7 record of what was reported to the provider from this
   /// calculation. At most one; absent until a sale is paid.
   taxTransaction OrderTaxTransaction?
@@ -3316,10 +3376,10 @@ model OrderTaxTransaction {
 
   // — Immutable sale-time facts —
 
-  currency               String  @db.VarChar(3)
+  currency                      String  @db.VarChar(3)
   /// Retail + shipping, as reported. Never includes tax.
-  taxableBasisMinorUnits BigInt
-  taxAmountMinorUnits    BigInt
+  taxableBasisMinorUnits        BigInt
+  taxAmountMinorUnits           BigInt
   /// What the provider represents this transaction as totalling, once recorded.
   /// A CHECKED figure, not a second source of truth: a total that is not basis +
   /// tax means the two systems describe different sales. NULL until recorded.
@@ -3331,19 +3391,19 @@ model OrderTaxTransaction {
   /// TAXABLE | EXEMPT | OUT_OF_SCOPE. A zero-tax result is still reported: a
   /// jurisdiction where Monacado collected nothing is a RETURN LINE, not an
   /// absence, and a transaction the provider never saw cannot appear on one.
-  treatment String @db.VarChar(24)
+  treatment        String  @db.VarChar(24)
 
   /// The EXACT Product source version whose classification produced the rate.
   /// Pinned, never joined. An Order binds one Listing today, so these fields ARE
   /// the line-level tax evidence; a multi-line Order needs a lines table, which
   /// is recorded as a seam rather than built empty.
-  internalProductId          String @db.VarChar(191)
-  productSourceRecordId      String @db.VarChar(191)
-  productSourceRecordVersion String @db.VarChar(64)
-  productTaxClassification   String @db.VarChar(32)
+  internalProductId          String  @db.VarChar(191)
+  productSourceRecordId      String  @db.VarChar(191)
+  productSourceRecordVersion String  @db.VarChar(64)
+  productTaxClassification   String  @db.VarChar(32)
   /// The provider code that classification mapped to, and the mapping version.
-  providerTaxCode       String? @db.VarChar(64)
-  providerConfigVersion String? @db.VarChar(64)
+  providerTaxCode            String? @db.VarChar(64)
+  providerConfigVersion      String? @db.VarChar(64)
 
   /// When the engine calculated; when the provider created its transaction; and
   /// when Monacado committed this obligation inside the sale's transaction.
@@ -3366,7 +3426,7 @@ model OrderTaxTransaction {
   recordingStatus String @db.VarChar(24)
 
   /// Provider attempts already made, bounded by TAX_TRANSACTION_RETRY_POLICY.
-  attemptCount Int @default(0)
+  attemptCount  Int       @default(0)
   /// When the next attempt becomes due. NULL once terminal.
   nextAttemptAt DateTime? @db.DateTime(3)
 
@@ -3410,6 +3470,13 @@ model OrderTaxTransaction {
   // nobody can account for.
   order       Order            @relation(fields: [orderId], references: [id], onDelete: Restrict)
   taxEvidence OrderTaxEvidence @relation(fields: [taxEvidenceId], references: [id], onDelete: Restrict)
+
+  /// What was reversed against this report, if anything (Phase 1.9).
+  ///
+  /// A SEPARATE row, never columns here. The whole value of this record is that
+  /// it still says what was reported at the moment of sale, and the reserved
+  /// `lifecycleState` value is the ONLY thing a reversal moves on it.
+  reversal OrderTaxReversal?
 
   /// The worker's query: what is due, oldest first.
   @@index([recordingStatus, nextAttemptAt])
@@ -3483,6 +3550,13 @@ model TransactionReversal {
   // may be deleted beneath it.
   snapshot TransactionEconomicSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
   order    Order                       @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  /// The Phase 1.9 execution that produced this entry, where one did.
+  ///
+  /// NULLABLE and back-referenced rather than owned: a reversal may be recorded
+  /// from evidence that arrived by other means (a chargeback), and this entry
+  /// stays the authoritative accounting record either way.
+  refund OrderRefund?
 
   @@index([orderId])
   @@index([kind, occurredAt])
@@ -3681,9 +3755,9 @@ model OutboundEmailDelivery {
   /// that re-asserts eligibility, so of two concurrent workers exactly one wins.
   /// A live (unexpired) claim is never stolen — this is lease EXPIRY, not lock
   /// stealing.
-  lockToken       String?   @db.VarChar(64)
-  lockedAt        DateTime? @db.DateTime(3)
-  leaseExpiresAt  DateTime? @db.DateTime(3)
+  lockToken      String?   @db.VarChar(64)
+  lockedAt       DateTime? @db.DateTime(3)
+  leaseExpiresAt DateTime? @db.DateTime(3)
 
   /// Which adapter answered (DISABLED | LOG | CAPTURE | POSTMARK). NULL until an
   /// attempt has been made. NEVER a credential and never an endpoint.
@@ -3704,12 +3778,12 @@ model OutboundEmailDelivery {
   /// another attempt happens.
   lastFailureClass String? @db.VarChar(16)
 
-  createdAt DateTime  @db.DateTime(3)
+  createdAt   DateTime  @db.DateTime(3)
   /// When a PROVIDER accepted responsibility. Never an inbox-delivery claim.
-  sentAt    DateTime? @db.DateTime(3)
+  sentAt      DateTime? @db.DateTime(3)
   /// When it reached a terminal state, either way.
   finalizedAt DateTime? @db.DateTime(3)
-  updatedAt DateTime  @updatedAt @db.DateTime(3)
+  updatedAt   DateTime  @updatedAt @db.DateTime(3)
 
   // RESTRICT: a delivery points at the obligation it accompanies. An obligation
   // Monacado owes must not vanish beneath the evidence that it tried to send it.
@@ -3806,4 +3880,671 @@ model ProviderEmailEvent {
   @@unique([provider, providerEventId])
   @@index([addressDigest, occurredAt])
   @@index([providerMessageRef])
+}
+
+// ---------------------------------------------------------------------------
+// Refunds and tax reversals (Phase 1.9)
+//
+// The post-sale correction lifecycle, as three tables that between them make one
+// property true:
+//
+//   > A refund is NEW EVIDENCE ABOUT a completed sale, never a correction OF one.
+//
+// Nothing here has a foreign key that permits writing back into `Order`,
+// `TransactionEconomicSnapshot`, `OrderTaxEvidence`, or the immutable half of
+// `OrderTaxTransaction`. The two columns a refund does move elsewhere are named
+// and bounded: `TransactionSettlement.state` → `REVERSED` (0M.T1's mutable half,
+// created for exactly this) and `OrderTaxTransaction.lifecycleState` → `REVERSED`
+// (the value 1.7 RESERVED for exactly this).
+//
+//   OrderRefund               — did the provider return the buyer's funds, and
+//                               what happened on the way?
+//   OrderTaxReversal          — did the tax provider reverse the sale's tax?
+//                               INDEPENDENTLY DURABLE from the line above.
+//   ProceedsRecoveryException — a party was already paid, or already made
+//                               payout-eligible, on a sale now refunded.
+//                               A SEAM. Nothing here claws anything back.
+//
+// WHY TWO LIFECYCLE TABLES AND NOT ONE. They are two provider calls to two
+// systems, and either can fail while the other succeeded. A single row would
+// make "the money went back but the tax did not" inexpressible — which is
+// precisely the state that must be expressible, retryable, and visible.
+//
+// FULL REFUNDS ONLY. There is no partial-refund column anywhere below: no
+// running total, no remaining-refundable, no allocation rule, and no line table.
+// Their absence is the enforcement. Allocation across seller proceeds, promoter
+// proceeds, Monacado's retained amount, tax, and shipping is a commercial policy
+// decision (MONACADO_MOR_BUSINESS_MODEL §I) and is refused, not deferred by
+// accident.
+//
+// NO BUYER PERSONAL DATA ANYWHERE. No column for an email, a name, an address, a
+// card detail, or a raw provider payload on any table here.
+// ---------------------------------------------------------------------------
+
+/// One buyer refund execution (Phase 1.9).
+///
+/// THE EXECUTION, NOT THE ACCOUNTING. What each party gave back is
+/// `TransactionReversal` (1.2), an immutable entry with no lifecycle at all. This
+/// row carries the attempts, the lease, the failures, and the provider's own
+/// reference — the things an accounting entry must never acquire, which is why
+/// they live here and the entry is written once, at the moment the provider
+/// confirms.
+model OrderRefund {
+  /// Opaque identity (mon:refnd:<opaque>). Distinct from mon:txrev: — sharing an
+  /// identifier space would make "what was given back?" and "did the provider
+  /// call succeed?" the same question.
+  id String @id @db.VarChar(191)
+
+  /// ONE refund per Order in this phase. UNIQUE, which is what makes a replayed
+  /// request a refusal rather than a second credit to the same buyer.
+  orderId String @unique @db.VarChar(191)
+
+  /// The sale's immutable economics. UNIQUE for the same reason as above; the
+  /// snapshot and the Order are one-to-one.
+  snapshotId String @unique @db.VarChar(191)
+
+  /// LINE_SET. The refund unit is one or more WHOLE Order lines; an arbitrary
+  /// partial-dollar refund of a single line is refused. See the section comment.
+  scope String @db.VarChar(16)
+
+  /// True when the selected lines covered every line the Order had.
+  ///
+  /// DERIVED AND STORED, deliberately: once the multi-line model lands, "did this
+  /// refund cover the whole Order" stops being answerable from the Order alone,
+  /// and a reconciler asking it retrospectively must not have to re-derive a line
+  /// count that has since changed shape.
+  coversWholeOrder Boolean
+
+  /// The EXACT seller refund-policy version that governed this purchase, copied
+  /// from the Order at request time.
+  ///
+  /// COPIED, NOT JOINED — and never resolved live. A seller's CURRENT policy is
+  /// not authority over a historical sale, and a refund that read one would apply
+  /// terms the buyer was never shown.
+  sellerRefundPolicyId      String @db.VarChar(191)
+  sellerRefundPolicyVersion String @db.VarChar(64)
+
+  /// CUSTOMER_REQUEST | PRODUCT_FAILURE | DUPLICATE_PAYMENT | FRAUD_OR_RISK |
+  /// OPERATOR_CORRECTION | OTHER_GOVERNED_REASON. A closed Monacado vocabulary,
+  /// NEVER provider text and never a support narrative.
+  reasonCode String @db.VarChar(32)
+
+  // — Who asked —
+
+  /// OPERATOR | BUYER | SYSTEM.
+  requestorKind String @db.VarChar(16)
+
+  /// The acting account, where one exists. NULL for SYSTEM, and NULL for a guest
+  /// buyer — no account is fabricated to fill it (0M.9's promise, unchanged).
+  requestedByAccountId String?  @db.VarChar(191)
+  requestedAt          DateTime @db.DateTime(3)
+
+  // — Provider identity —
+
+  /// STRIPE. From the committed 0M.8 vocabulary.
+  provider     String @db.VarChar(32)
+  /// TEST | LIVE. What the deployment's payment configuration states.
+  providerMode String @db.VarChar(16)
+
+  /// The ORIGINAL charge this reverses, copied from TransactionSettlement at
+  /// request time rather than joined at use time — so the pairing a refund rests
+  /// on survives independently of either row moving. An OPAQUE EXTERNAL
+  /// identifier, never a Monacado identity and never a credential.
+  providerTransactionRef String @db.VarChar(191)
+
+  /// The provider's refund. NULL until the provider call succeeds.
+  providerRefundRef       String?   @db.VarChar(191)
+  providerRefundCreatedAt DateTime? @db.DateTime(3)
+
+  // — Immutable request-time facts —
+
+  currency         String @db.VarChar(3)
+  /// What the provider is asked to return, DERIVED from the selected lines plus
+  /// the bound seller policy — never a caller's figure, and NEVER asserted to
+  /// equal the whole Order charge.
+  ///
+  /// Nothing is recomputed from current Product, Offer, or commercial-policy
+  /// data: a refund priced from today's data would return a figure the buyer was
+  /// never charged, and would look entirely correct.
+  amountMinorUnits BigInt
+
+  /// The parts of that total, so a reconciler CHECKS the sum rather than trusting
+  /// it. This is the one case where a stored breakdown earns its keep: the total
+  /// is what moved at the provider, and the parts are what must reconcile against
+  /// line evidence and the bound policy.
+  linesRetailMinorUnits      BigInt
+  linesTaxMinorUnits         BigInt
+  /// Shipping actually returned. ZERO where the bound seller policy withholds it
+  /// — the buyer paid for a carriage that happened.
+  refundedShippingMinorUnits BigInt
+
+  /// When Monacado committed the obligation to refund.
+  recordedAt DateTime @db.DateTime(3)
+
+  // — Lifecycle —
+
+  /// PENDING | IN_PROGRESS | REFUNDED | RETRY_PENDING | FAILED_PERMANENT.
+  /// PENDING is written in the same transaction that accepts the request: either
+  /// Monacado holds a durable record that it owes this buyer their money, or it
+  /// never accepted the request at all.
+  status String @db.VarChar(24)
+
+  attemptCount  Int       @default(0)
+  nextAttemptAt DateTime? @db.DateTime(3)
+
+  /// The claim, exactly the technique OutboundEmailDelivery, PublicationOutbox,
+  /// and OrderTaxTransaction use: a guarded UPDATE re-asserts eligibility and
+  /// stamps a token, so of two concurrent workers exactly one wins. A live claim
+  /// is never stolen — this is lease EXPIRY, not lock stealing.
+  lockToken      String?   @db.VarChar(64)
+  lockedAt       DateTime? @db.DateTime(3)
+  leaseExpiresAt DateTime? @db.DateTime(3)
+
+  /// The last normalised failure and its class. NO PROVIDER TEXT, no exception
+  /// message, no raw payload — a vendor string can echo the request, and the
+  /// request named a charge that names a buyer.
+  lastFailureCode  String? @db.VarChar(48)
+  lastFailureClass String? @db.VarChar(16)
+
+  finalizedAt DateTime? @db.DateTime(3)
+
+  /// How many times an operator has explicitly requeued this row, and when last.
+  /// A requeue resets `attemptCount`, which would otherwise ERASE the evidence
+  /// that the work had already been tried and abandoned. A requeue is never an
+  /// undo: it alters no request-time fact and clears no failure code.
+  requeueCount   Int       @default(0)
+  lastRequeuedAt DateTime? @db.DateTime(3)
+
+  /// The 1.2 accounting entry this refund produced. NULL until the provider
+  /// confirms — an entry written before the money moved would assert a reversal
+  /// that had not happened. UNIQUE: one entry per refund, one refund per entry.
+  reversalId String? @unique @db.VarChar(191)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  // RESTRICT everywhere: a refund is financial evidence. Nothing it binds to may
+  // be deleted beneath it.
+  order       Order                       @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  snapshot    TransactionEconomicSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
+  requestedBy Account?                    @relation("RefundRequestedBy", fields: [requestedByAccountId], references: [id], onDelete: Restrict)
+  reversal    TransactionReversal?        @relation(fields: [reversalId], references: [id], onDelete: Restrict)
+
+  taxReversal        OrderTaxReversal?
+  recoveryExceptions ProceedsRecoveryException[]
+  /// The lines this refund returns, each in full. At least one.
+  lines              OrderRefundLine[]
+
+  /// One provider refund maps to AT MOST ONE Monacado refund, so the same
+  /// provider refund cannot be recorded against two sales. MySQL treats each
+  /// NULL in a unique index as distinct, so unexecuted rows are unconstrained.
+  @@unique([provider, providerRefundRef])
+  /// The worker's query: what is due, oldest first.
+  @@index([status, nextAttemptAt])
+  /// The operator's and reconciler's query.
+  @@index([status, recordedAt])
+  @@index([providerTransactionRef])
+}
+
+/// What was reversed with the tax provider for one refunded sale (Phase 1.9).
+///
+/// 1.7 kept the provider Tax Transaction reference and said plainly it was "the
+/// identifier a later reversal names". This is that later record, and it names
+/// exactly that — never a fresh calculation, which would price a historical sale
+/// at today's rates and reverse a figure the buyer was never charged.
+///
+/// INDEPENDENTLY DURABLE from the payment refund. A refunded payment whose tax
+/// reversal has not succeeded is a real state, and it has to be expressible,
+/// retryable, and visible rather than hidden behind one combined status.
+model OrderTaxReversal {
+  /// Opaque identity (mon:txrvs:<opaque>). Distinct from mon:txtax:, which names
+  /// the ORIGINAL report — and the original is never rewritten.
+  id String @id @db.VarChar(191)
+
+  /// One tax reversal per Order in this phase.
+  orderId String @unique @db.VarChar(191)
+
+  /// The payment refund this accompanies. UNIQUE: one refund, one tax reversal.
+  refundId String @unique @db.VarChar(191)
+
+  /// The 1.7 record whose sale-time facts this reverses. UNIQUE, and the row it
+  /// points at is NEVER edited except for its reserved `lifecycleState` value.
+  taxTransactionId String @unique @db.VarChar(191)
+
+  /// FULL. A partial tax reversal is unreachable: only a full payment refund can
+  /// occasion a reversal, and a full refund reverses the whole of the tax.
+  scope String @db.VarChar(16)
+
+  // — Provider identity —
+
+  /// STRIPE_TAX in production; a 1.6 test adapter otherwise.
+  provider     String @db.VarChar(32)
+  /// TEST | LIVE, copied from the original transaction's own statement.
+  providerMode String @db.VarChar(16)
+
+  /// The ORIGINAL provider Tax Transaction, copied from the 1.7 record at commit
+  /// time. Copied rather than joined so the reversal target can never silently
+  /// become whatever the original row says later.
+  originalProviderTaxTransactionRef String @db.VarChar(191)
+
+  /// The provider's reversal transaction. NULL until the call succeeds.
+  providerReversalRef       String?   @db.VarChar(191)
+  providerReversalCreatedAt DateTime? @db.DateTime(3)
+
+  /// The Monacado reference sent to the provider for the REVERSAL. Distinct from
+  /// the original transaction's by construction: Stripe requires `reference`
+  /// unique across all transactions INCLUDING REVERSALS, so reusing the Order id
+  /// would be refused. Derived from the Order, so it is identical on every retry
+  /// — which is what makes a retry after a timeout reuse the provider's existing
+  /// reversal instead of creating a second.
+  providerReference String @db.VarChar(191)
+
+  // — Immutable reversal-time facts, copied from the original report —
+
+  currency                       String @db.VarChar(3)
+  /// The tax being reversed. Copied from the original, never recalculated.
+  reversedTaxAmountMinorUnits    BigInt
+  /// The basis the original transaction reported. Copied, for reconciliation.
+  reversedTaxableBasisMinorUnits BigInt
+
+  recordedAt DateTime @db.DateTime(3)
+
+  // — Lifecycle —
+
+  /// PENDING | IN_PROGRESS | REVERSED | RETRY_PENDING | FAILED_PERMANENT.
+  /// PENDING is written inside the same transaction that records the payment
+  /// refund's success: the tax reversal obligation cannot exist before the money
+  /// came back, and cannot fail to exist after it did.
+  status String @db.VarChar(24)
+
+  attemptCount  Int       @default(0)
+  nextAttemptAt DateTime? @db.DateTime(3)
+
+  lockToken      String?   @db.VarChar(64)
+  lockedAt       DateTime? @db.DateTime(3)
+  leaseExpiresAt DateTime? @db.DateTime(3)
+
+  lastFailureCode  String? @db.VarChar(48)
+  lastFailureClass String? @db.VarChar(16)
+
+  finalizedAt DateTime? @db.DateTime(3)
+
+  requeueCount   Int       @default(0)
+  lastRequeuedAt DateTime? @db.DateTime(3)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  // RESTRICT on all three: a tax reversal explains what was un-reported about a
+  // sale. Deleting anything beneath it would leave a filing obligation nobody
+  // can account for.
+  order          Order               @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  refund         OrderRefund         @relation(fields: [refundId], references: [id], onDelete: Restrict)
+  taxTransaction OrderTaxTransaction @relation(fields: [taxTransactionId], references: [id], onDelete: Restrict)
+
+  /// One provider reversal maps to AT MOST ONE Monacado record.
+  @@unique([provider, providerReversalRef])
+  /// The worker's query: what is due, oldest first.
+  @@index([status, nextAttemptAt])
+  @@index([status, recordedAt])
+  @@index([originalProviderTaxTransactionRef])
+}
+
+/// A party was already paid, or already made payout-eligible, on a sale that has
+/// now been refunded (Phase 1.9).
+///
+/// A SEAM, NOT AN EXECUTION. Nothing in this repository claws anything back, and
+/// this row exists precisely so that the alternative — silently rewriting a
+/// settled ProceedsObligation — is never necessary. 1.2's rule stands unchanged:
+/// "refusing to record what was actually paid would make the ledger wrong rather
+/// than safe."
+///
+/// A PENDING obligation creates NO row here. `advanceProceedsObligation` already
+/// refuses to make a reversed sale's claim ELIGIBLE, so it can never be paid, and
+/// an exception for it would be an exception to nothing.
+///
+/// NO NEGATIVE OBLIGATION IS FABRICATED. There is no negative-balance model, no
+/// offset rule against future proceeds, no notice requirement, no dispute path,
+/// and no payout-recovery execution anywhere in this repository. Writing one here
+/// would be writing commercial terms into an accounting table.
+model ProceedsRecoveryException {
+  /// Opaque identity (mon:precx:<opaque>). Distinct from mon:pobl:, which names
+  /// what Monacado OWES a party. This names what Monacado is owed BACK, and the
+  /// two travel in opposite directions.
+  id String @id @db.VarChar(191)
+
+  /// The refund that raised it.
+  refundId   String @db.VarChar(191)
+  orderId    String @db.VarChar(191)
+  snapshotId String @db.VarChar(191)
+
+  /// The claim at stake. UNIQUE: a claim is settled once, and one refund per
+  /// Order means one occasion for an exception against it.
+  proceedsObligationId String @unique @db.VarChar(191)
+
+  participantId String @db.VarChar(191)
+  /// SELLER | PROMOTER. Monacado is deliberately not a member: its retained
+  /// amount is what it KEPT, and it owes itself nothing back.
+  party         String @db.VarChar(16)
+
+  /// COPIED FROM THE OBLIGATION, never recomputed and never derived from the
+  /// reversal entry. What is at stake is exactly what Monacado committed to that
+  /// party; a figure recalculated from current policy would be a different number
+  /// wearing the same name.
+  ///
+  /// This is the obligation's WHOLE amount. What the refunded lines actually
+  /// attribute to it is the column below.
+  amountMinorUnits BigInt
+
+  /// The part of that obligation attributable to the REFUNDED LINES.
+  ///
+  /// Equal to `amountMinorUnits` for a whole-Order refund, which is every refund
+  /// today. It is a SEPARATE column because a subset-of-lines refund attributes
+  /// only part of a party's proceeds — and a phase that discovered it needed the
+  /// distinction later would be tempted to overwrite the total, which is exactly
+  /// the historical rewrite this table exists to avoid.
+  ///
+  /// From SALE-TIME commission evidence. Never a fresh commission calculation.
+  attributableAmountMinorUnits BigInt
+
+  currency String @db.VarChar(3)
+
+  /// PAID_BEFORE_REFUND | ELIGIBLE_BEFORE_REFUND. Kept distinct because the
+  /// remedies differ: the first needs money back from a party, the second needs
+  /// a payout STOPPED before it runs.
+  reasonCode              String @db.VarChar(32)
+  /// The obligation's state at the moment the refund completed: ELIGIBLE | PAID.
+  obligationStateAtRefund String @db.VarChar(16)
+
+  /// OPEN | ACKNOWLEDGED | RESOLVED. Forward-only, and none of it is execution:
+  /// RESOLVED records that a human settled the matter, exactly as
+  /// ProceedsObligation.PAID records rather than performs a payout. There is
+  /// deliberately no RECOVERED state, because nothing here can recover anything.
+  status String @db.VarChar(16)
+
+  /// How it was finally settled, from a closed vocabulary. NULL until RESOLVED.
+  /// WRITTEN_OFF is a real outcome, and naming it is what keeps it from being
+  /// expressed by deleting the row.
+  resolutionCode String? @db.VarChar(48)
+
+  raisedAt       DateTime  @db.DateTime(3)
+  acknowledgedAt DateTime? @db.DateTime(3)
+  resolvedAt     DateTime? @db.DateTime(3)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  // RESTRICT everywhere: an exception is a financial claim in the other
+  // direction. Nothing it binds to may be deleted beneath it.
+  refund             OrderRefund                 @relation(fields: [refundId], references: [id], onDelete: Restrict)
+  order              Order                       @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  snapshot           TransactionEconomicSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
+  proceedsObligation ProceedsObligation          @relation(fields: [proceedsObligationId], references: [id], onDelete: Restrict)
+  participant        MarketplaceParticipant      @relation(fields: [participantId], references: [id], onDelete: Restrict)
+
+  /// The operator's query: what is outstanding, oldest first.
+  @@index([status, raisedAt])
+  @@index([participantId, status])
+  @@index([refundId])
+}
+
+// ---------------------------------------------------------------------------
+// Seller refund policy and refund lines (Phase 1.9 correction)
+//
+// THE SELLER OWNS THE DECLARED REFUND TERMS; MONACADO ENFORCES THE VERSION THAT
+// GOVERNED THE PURCHASE. Three tables follow from that sentence:
+//
+//   SellerRefundPolicy           — one seller's stable policy identity.
+//   SellerRefundPolicyVersionRow — one IMMUTABLE governed version of it.
+//   OrderRefundLine              — which lines one refund returned, in full.
+//
+// WHY VERSIONED. A returns policy is exactly the kind of statement that gets
+// edited after a dispute starts. This mirrors MarketplacePolicyVersionRow and
+// CommercialPolicyVersionRow — the pattern already in this schema — for the
+// reason all three exist: a term that changed without a record of who changed it,
+// when, and what a buyer was actually shown is not governance.
+//
+// MUTABLE CURRENT PROFILE PROSE IS NEVER HISTORICAL AUTHORITY. An Order binds
+// (sellerRefundPolicyId, sellerRefundPolicyVersion); a receipt opened next year
+// renders THAT version. A seller who tightens their terms tomorrow does not
+// retroactively tighten them for yesterday's buyer.
+//
+// WHY THE PROSE IS STORED HERE WHEN MarketplacePolicy REFUSED TO STORE ITS OWN.
+// Monacado authors the marketplace policy, so its prose lives in a source module
+// pinned by contentRef. A seller's prose cannot live in a source module. Storing
+// it on an IMMUTABLE VERSION ROW is a different thing from the editable text
+// column that model was avoiding, and `contentHash` pins the exact bytes.
+// ---------------------------------------------------------------------------
+
+/// One seller's stable refund-policy identity (Phase 1.9).
+///
+/// Deliberately NOT a MarketplacePolicy: that states what every party undertakes
+/// to Monacado and there is exactly one; this is one seller's own terms and there
+/// is one per seller. And not a CommercialPolicy: that decides what Monacado
+/// EARNS, this decides what a SELLER PROMISES A BUYER. An Order binds all three
+/// separately, so a fee change, a terms change, and a returns change can never
+/// move together.
+model SellerRefundPolicy {
+  /// Opaque identity (mon:srpol:<opaque>).
+  id String @id @db.VarChar(191)
+
+  /// ONE policy identity per seller. UNIQUE, so "which policy is this seller's"
+  /// is a lookup rather than a judgement.
+  sellerParticipantId String @unique @db.VarChar(191)
+
+  /// Operator- and seller-facing label. Never a term and never prose.
+  label String @db.VarChar(200)
+
+  createdAt DateTime @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  /// RESTRICT: the terms behind every sale this seller made.
+  seller   MarketplaceParticipant         @relation(fields: [sellerParticipantId], references: [id], onDelete: Restrict)
+  versions SellerRefundPolicyVersionRow[]
+}
+
+/// One IMMUTABLE governed version of one seller's refund policy (Phase 1.9).
+///
+/// RETIRED STAYS READABLE AND BINDABLE. An Order sold under version 1 must remain
+/// explicable after the seller publishes version 2, and a receipt that could not
+/// render a retired version would be one that stops working the day a seller
+/// updates their terms.
+///
+/// ENFORCED TERMS ARE COLUMNS; DISCLOSED PROSE IS A DOCUMENT. Eligibility,
+/// window, and shipping refundability decide outcomes in code, so they are
+/// bounded columns. The seller's own words are what a buyer reads, so they are a
+/// hashed document. A rule that existed only in prose would be a rule nothing
+/// could enforce; a policy whose prose disagreed with its enforced behaviour
+/// would be worse than either alone, and `sellerRefundPolicyIssues` refuses one.
+model SellerRefundPolicyVersionRow {
+  /// Surrogate key. The meaningful identity is (policyId, policyVersion).
+  seq BigInt @id @default(autoincrement())
+
+  policyId      String @db.VarChar(191)
+  policyVersion String @db.VarChar(64)
+
+  /// Denormalised from the policy so a version can be read without a join, and
+  /// so "whose terms are these" survives independently of either row moving.
+  sellerParticipantId String @db.VarChar(191)
+
+  /// DRAFT | ACTIVE | RETIRED.
+  status String @db.VarChar(16)
+
+  // — Enforced terms. Bounded, never prose. —
+
+  /// Whether the seller offers refunds at all. FALSE is a legitimate declared
+  /// position, disclosed as such. It does NOT cap what Monacado may do — see
+  /// MARKETPLACE_REFUND_POSTURE.
+  refundsAllowed Boolean
+
+  /// Comma-separated bounded RefundEligibilityCondition members. A JOINED LIST
+  /// rather than a child table because it is a small closed set read as a whole
+  /// and never queried by member — the same judgement `shippingCountries` makes.
+  eligibilityConditions String @db.VarChar(255)
+
+  /// Days from the sale within which a refund may be claimed. NULL means NO
+  /// DECLARED WINDOW, which is not zero: zero would mean refunds expire
+  /// instantly, and a seller who declared nothing has not declared that.
+  refundWindowDays Int?
+
+  /// ALWAYS_REFUNDED | NEVER_REFUNDED | REFUNDED_WHEN_SELLER_AT_FAULT. There is
+  /// deliberately no PRORATED member: allocating one carriage across a partly
+  /// returned basket is a commercial ruling, not arithmetic.
+  shippingRefundability String @db.VarChar(32)
+
+  /// CONTACT_SELLER_SUPPORT | MONACADO_MEDIATED. Which route is authoritative;
+  /// the instructions themselves are the document's PROCEDURE section.
+  procedureKind String @db.VarChar(32)
+
+  // — Disclosed document —
+
+  /// The seller's declared policy as canonical JSON: a title and bounded
+  /// sections. The ONLY free text in this phase, admissible because a buyer must
+  /// be shown the policy and one nobody can read is not a disclosure. It decides
+  /// nothing — every enforced outcome comes from the columns above.
+  documentJson String @db.Text
+
+  /// sha256:<hex> over the canonical JSON of terms + document. Detects prose
+  /// moving without a version bump.
+  contentHash String @db.VarChar(80)
+
+  effectiveFrom DateTime @db.DateTime(3)
+
+  /// Who recorded it, as the durable internal Account id. Never an email.
+  recordedByAccountId String    @db.VarChar(191)
+  recordedAt          DateTime  @db.DateTime(3)
+  activatedAt         DateTime? @db.DateTime(3)
+  retiredAt           DateTime? @db.DateTime(3)
+
+  /// Set to `policyId` while ACTIVE and NULL otherwise, so the unique index
+  /// enforces AT MOST ONE ACTIVE VERSION per policy while permitting any number
+  /// of DRAFT and RETIRED ones. MySQL has no partial indexes; the same technique
+  /// MarketplacePolicyVersionRow and CommercialPolicyVersionRow use.
+  activeMarker String? @db.VarChar(191)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  policy SellerRefundPolicy @relation(fields: [policyId], references: [id], onDelete: Restrict)
+  /// Orders sold under this exact version. RESTRICT on the far side.
+  orders Order[]
+
+  @@unique([policyId, policyVersion])
+  @@unique([activeMarker])
+  @@index([policyId, status])
+  @@index([sellerParticipantId, status])
+  @@index([effectiveFrom])
+}
+
+/// One line returned in full by one refund (Phase 1.9).
+///
+/// THE REFUND UNIT. A refund selects one or more whole lines; an arbitrary
+/// partial-dollar refund of a single line is refused. This table is what makes
+/// "which lines came back" durable rather than inferred from the Order — which
+/// matters precisely because an Order stops meaning one line the day the
+/// multi-line model lands.
+///
+/// `lineRef` is a REFERENCE, not a minted identity. Today an Order has one line
+/// and no OrderLine table exists, so it is derived as `<orderId>#L1`. Minting an
+/// opaque identity now would create an identifier space with one member per Order
+/// that a real OrderLine row would immediately have to supersede. Nothing parses
+/// the string.
+///
+/// The economics are COPIED FROM SALE-TIME EVIDENCE, never recomputed from
+/// current Product, Offer, Listing, or commercial-policy data. A line priced from
+/// today's data would return a figure the buyer was never charged.
+///
+/// SHIPPING IS NOT A LINE FIELD. It is one charge for one carriage, governed by
+/// the seller's policy at Order level; attaching a share of it to a line would be
+/// the proration SHIPPING_ALLOCATION_SEAM refuses.
+model OrderRefundLine {
+  /// Surrogate key. The meaningful identity is (refundId, lineRef).
+  seq BigInt @id @default(autoincrement())
+
+  refundId String @db.VarChar(191)
+  /// Opaque to every caller: compared, never decomposed.
+  lineRef  String @db.VarChar(220)
+
+  /// The exact Product and Listing source version this line was sold under.
+  /// PINNED, never joined — reclassifying or repricing a Product must change
+  /// nothing about a line already sold.
+  internalProductId          String @db.VarChar(191)
+  listingSourceRecordId      String @db.VarChar(191)
+  listingSourceRecordVersion String @db.VarChar(64)
+
+  currency                         String @db.VarChar(3)
+  /// The merchandise amount for this line, as quoted. Never tax, never shipping.
+  commercialRetailAmountMinorUnits BigInt
+  /// The tax attributable to this line, from sale-time evidence. NEVER a fresh
+  /// calculation, and never a proportional split of an Order-level figure.
+  taxAmountMinorUnits              BigInt
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+
+  /// RESTRICT: a refund line is financial evidence about what came back.
+  refund OrderRefund @relation(fields: [refundId], references: [id], onDelete: Restrict)
+
+  /// ONE row per line per refund. A line refunded twice within one refund is a
+  /// double credit, and the database refuses it rather than a service remembering.
+  @@unique([refundId, lineRef])
+  @@index([internalProductId])
+}
+
+/// The refund-support contact disclosed to one buyer at purchase (Phase 1.9).
+///
+/// A RECEIPT IS A RECORD OF WHAT THE BUYER WAS TOLD. Phase 1.9 first resolved the
+/// seller's support address "at ask time", reasoning — correctly, for a support
+/// link — that a buyer needing help needs the mailbox that works TODAY. That
+/// reasoning does not hold for a RECEIPT: regenerating an old one must not
+/// silently substitute an address the buyer was never shown, because a receipt is
+/// evidence of a disclosure, not a directory lookup.
+///
+/// So both are kept, and kept apart:
+///
+///   purchase-time contact — THIS ROW. Frozen. What the receipt renders.
+///   current contact       — resolved live, offered alongside for convenience,
+///                           and never able to rewrite the historical value.
+///
+/// KEYED BY THE ORDER, with no identity of its own — TransactionSettlement's
+/// pattern, and for its stated reason: one row per parent, and the parent's
+/// identity IS the key. A second identifier space for one row per Order would be
+/// an identifier nobody needs.
+///
+/// WHAT IT DELIBERATELY DOES NOT HOLD. No seller name, no legal entity, no second
+/// address, no phone, no profile field, and nothing whatever about the buyer. The
+/// seller's identity is on the Order already and the POLICY is bound there too.
+/// This row answers exactly one question — WHICH CONTACT VALUE WAS SHOWN — plus
+/// the provenance needed to show it was the effective verified one at the time.
+model OrderRefundContactEvidence {
+  /// One row per Order; the Order's identity IS the key.
+  orderId String @id @db.VarChar(191)
+
+  /// THE EXACT VALUE DISCLOSED. Frozen at purchase, never refreshed, and never
+  /// reconciled against the seller's current configuration — a receipt that
+  /// "corrected" itself would be a receipt nobody could trust.
+  ///
+  /// A SELLER's support address, not a buyer's: 0M.5 records that a seller
+  /// activating without nominating an alternative makes their primary address
+  /// customer-facing as an explicit disclosure decision, and 1.9's receipt
+  /// already rendered it. This persists what was rendered.
+  contactAddress String @db.VarChar(320)
+
+  /// PRIMARY_PROFILE | DEDICATED_SUPPORT — WHICH contact was effective, so a
+  /// later reader can tell a nominated support mailbox from an account address
+  /// pressed into service. Provenance, not a second copy of the contact row.
+  contactSource String @db.VarChar(24)
+
+  /// The contact's state at capture. VERIFIED by construction — checkout refuses
+  /// a sale with no usable contact — and recorded rather than assumed, because
+  /// "this was the effective VERIFIED contact when the sale occurred" is exactly
+  /// the claim a receipt makes.
+  contactState String @db.VarChar(24)
+
+  /// The instant of disclosure. Supplied, never a clock read.
+  capturedAt DateTime @db.DateTime(3)
+  createdAt  DateTime @default(now()) @db.DateTime(3)
+
+  /// RESTRICT: a receipt's disclosure evidence outlives every later change to the
+  /// seller's configuration, and the Order beneath it is never deleted.
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
 }

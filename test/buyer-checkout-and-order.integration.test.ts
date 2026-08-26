@@ -171,6 +171,8 @@ async function cleanup(): Promise<void> {
   const ownOrders = { startsWith: `mon:order:${TAG}` };
 
   await db.reviewSubmissionAuthority.deleteMany({ where: { orderId: ownOrders } });
+  /* The purchase-time refund disclosure, RESTRICT to its Order (Phase 1.9). */
+  await db.orderRefundContactEvidence.deleteMany({ where: { orderId: ownOrders } });
   await db.purchaseEvidence.deleteMany({ where: { orderId: ownOrders } });
 
   const snapshots = await db.transactionEconomicSnapshot.findMany({
@@ -1452,6 +1454,24 @@ describeDb("0M.9 — buyer checkout, Order, and post-sale foundation", () => {
 
   describe("storage shape", () => {
     it("stores no buyer personal data on any table this phase created", async () => {
+      /* Two lists, because they were always two rules wearing one coat.
+       *
+       * The first is buyer PII and holds on every table, forever. The second is
+       * "0M.9 built none of this machinery" — a scope assertion, and one that a
+       * later phase legitimately narrows, exactly as `taxtransaction` was
+       * narrowed at 1.7 and `refund` at 1.9. */
+      const NEVER_BUYER_PII = [
+        "email",
+        "phone",
+        "address",
+        "ipaddress",
+        "cardlast4",
+        "cardnumber",
+        "bankaccount",
+        "devicefingerprint",
+      ];
+      const NO_MACHINERY_0M9 = ["chargeback", "payoutid", "taxrate", "jurisdiction"];
+
       for (const table of ["Order", "PurchaseEvidence", "ProceedsObligation"]) {
         const columns = await db.$queryRawUnsafe<Array<{ COLUMN_NAME: string }>>(
           `SELECT COLUMN_NAME FROM information_schema.COLUMNS
@@ -1459,22 +1479,42 @@ describeDb("0M.9 — buyer checkout, Order, and post-sale foundation", () => {
         );
         const names = columns.map((c) => c.COLUMN_NAME.toLowerCase());
         for (const forbidden of [
-          "email",
-          "phone",
-          "address",
-          "ipaddress",
-          "cardlast4",
-          "cardnumber",
-          "bankaccount",
-          "devicefingerprint",
-          "refund",
-          "chargeback",
-          "payoutid",
-          "taxrate",
-          "jurisdiction",
+          ...NEVER_BUYER_PII,
+          ...NO_MACHINERY_0M9,
+          /* `refund` left the Order's list at Phase 1.9, which legitimately binds
+             the seller refund-policy VERSION a sale was made under. That is a
+             reference, not refund machinery and not PII — asserted positively
+             below. It still holds for the other two tables, which gained
+             nothing. */
+          ...(table === "Order" ? [] : ["refund"]),
         ]) {
           expect(names.some((n) => n.includes(forbidden)), `${table}.${forbidden}`).toBe(false);
         }
+      }
+    });
+
+    it("carries the seller refund policy as a reference, never as prose or money", async () => {
+      const columns = await db.$queryRawUnsafe<
+        Array<{ COLUMN_NAME: string; DATA_TYPE: string; IS_NULLABLE: string }>
+      >(
+        `SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'Order'
+            AND COLUMN_NAME LIKE '%efund%'`,
+      );
+      const byName = new Map(columns.map((c) => [c.COLUMN_NAME, c]));
+
+      /* Exactly two, and both are identifiers. No text column, no amount, and no
+         refund state — the version is authoritative and a copy would be a second
+         answer able to disagree with what the buyer was shown. */
+      expect([...byName.keys()].sort()).toEqual([
+        "sellerRefundPolicyId",
+        "sellerRefundPolicyVersion",
+      ]);
+      for (const column of columns) {
+        expect(column.DATA_TYPE).toBe("varchar");
+        /* NULLABLE, so Orders written before the binding existed stay valid and
+           nothing is backfilled with terms their buyers never saw. */
+        expect(column.IS_NULLABLE).toBe("YES");
       }
     });
 

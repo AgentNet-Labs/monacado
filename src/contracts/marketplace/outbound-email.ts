@@ -86,6 +86,26 @@ export const OUTBOUND_EMAIL_PURPOSES = [
   "ORDER_CANCELLED",
   /** A seller's or promoter's supplemental notice that a sale was recorded. */
   "SALE_RECORDED",
+  /**
+   * A buyer's notice that their money has been returned (Phase 1.9).
+   *
+   * Sent when the **payment refund** completes, not when the whole lifecycle
+   * does. A buyer has no interest in whether Monacado has finished reversing the
+   * sale's tax with a provider, and holding their receipt until it had would
+   * withhold the one fact they actually want on the strength of a fact that is
+   * none of their business.
+   */
+  "REFUND_COMPLETED",
+  /**
+   * A seller's or promoter's notice that a sale of theirs was refunded
+   * (Phase 1.9).
+   *
+   * Deliberately distinct from `REFUND_COMPLETED`: the buyer is being told their
+   * money is coming back, and the counterparty is being told a sale they were
+   * credited for has been undone. Same event, different consequence, and one
+   * purpose covering both would render one of them the wrong message.
+   */
+  "REFUND_RECORDED",
   /** Proof-of-control for an email contact. Owed to nobody; obligation-free. */
   "EMAIL_VERIFICATION",
 ] as const;

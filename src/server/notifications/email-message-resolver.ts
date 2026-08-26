@@ -64,6 +64,8 @@ import {
   renderBuyerConfirmation,
   renderBuyerOrderExpired,
   renderBuyerPaymentFailed,
+  renderBuyerRefundCompleted,
+  renderParticipantRefundRecorded,
   renderParticipantSaleRecorded,
 } from "./transactional-notice-service";
 
@@ -132,7 +134,9 @@ async function resolveOrderMessage(
     return unresolvable("RECIPIENT_UNRESOLVABLE");
   }
 
-  if (delivery.purpose === "SALE_RECORDED") {
+  /* Participant mail. The address is the account's, which is already Monacado's
+     and already authoritative — `1.5`'s rule, and no new storage. */
+  if (delivery.purpose === "SALE_RECORDED" || delivery.purpose === "REFUND_RECORDED") {
     if (delivery.recipientParticipantId === null) return unresolvable("RECIPIENT_UNRESOLVABLE");
     const participant = await db.marketplaceParticipant.findUnique({
       where: { id: delivery.recipientParticipantId },
@@ -140,7 +144,10 @@ async function resolveOrderMessage(
     });
     const address = participant?.account?.email ?? null;
     if (address === null) return unresolvable("RECIPIENT_UNRESOLVABLE");
-    const { subject, body } = renderParticipantSaleRecorded(order);
+    const { subject, body } =
+      delivery.purpose === "SALE_RECORDED"
+        ? renderParticipantSaleRecorded(order)
+        : renderParticipantRefundRecorded(order);
     return { resolved: true, destination: address, subject, text: body };
   }
 
@@ -151,6 +158,25 @@ async function resolveOrderMessage(
   const snapshot = await getBuyerSnapshotIn(db, delivery.subjectRef);
   const address = snapshot?.email ?? null;
   if (address === null) return unresolvable("RECIPIENT_UNRESOLVABLE");
+
+  /* A refund notice states the amount from the REFUND ROW, not from the Order's
+     quote. They are equal today — a full refund returns the buyer's whole charge
+     — but they are different facts, and rendering the quote would be rendering
+     what was charged while claiming it is what came back. A refund row that has
+     gone missing is `RECIPIENT_UNRESOLVABLE` rather than a message asserting an
+     amount nobody can point at. */
+  if (delivery.purpose === "REFUND_COMPLETED") {
+    const refund = await db.orderRefund.findUnique({
+      where: { orderId: delivery.subjectRef },
+      select: { amountMinorUnits: true, currency: true },
+    });
+    if (refund === null) return unresolvable("RECIPIENT_UNRESOLVABLE");
+    const { subject, body } = renderBuyerRefundCompleted(order, {
+      amountMinorUnits: Number(refund.amountMinorUnits),
+      currency: refund.currency,
+    });
+    return { resolved: true, destination: address, subject, text: body };
+  }
 
   const rendered =
     delivery.purpose === "ORDER_CONFIRMATION"

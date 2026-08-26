@@ -70,7 +70,8 @@ import {
 import { resolveBasketDeliveryLines } from "../product/product-delivery-mode-service";
 import { getPrisma } from "../db/client";
 import { getActiveMarketplacePolicyVersionIn } from "../policy/marketplace-policy-service";
-import { hasUsableSupportContactIn } from "../policy/support-contact-service";
+import { resolveSellerSupportContactIn } from "../policy/support-contact-service";
+import { getActiveSellerRefundPolicyVersionIn } from "../marketplace/seller-refund-policy-service";
 import { MONACADO_MARKETPLACE_POLICY_ID } from "../../contracts/marketplace/marketplace-policy-content";
 import {
   BuyerCheckoutDetailsInput,
@@ -87,6 +88,7 @@ import type { TaxEvidenceIdProvider } from "../tax/tax-calculation-ids";
 import {
   InvalidOrderInputError,
   MarketplacePolicyUnavailableError,
+  SellerRefundPolicyUnavailableError,
   SellerSupportContactUnavailableError,
 } from "../marketplace/order-errors";
 
@@ -226,8 +228,47 @@ export async function beginCheckout(
     throw new MarketplacePolicyUnavailableError();
   }
 
-  if (!(await hasUsableSupportContactIn(db, prepared.sellerParticipantId))) {
+  /* Resolved ONCE, and the resolved VALUE is kept (Phase 1.9 correction).
+   *
+   * `1.2` asked the canonical resolver a yes/no question and deliberately never
+   * learned the address, so a second copy of the precedence rule could not exist.
+   * That reasoning is unchanged — this still asks the same single resolver and
+   * still reimplements nothing — but the answer is now retained, because the
+   * receipt must record WHICH CONTACT THE BUYER WAS TOLD ABOUT, and that cannot
+   * be reconstructed later from a seller who has since changed it.
+   *
+   * Fail-closed behaviour is untouched: no usable contact still refuses the sale. */
+  const supportContact = await resolveSellerSupportContactIn(
+    db,
+    prepared.sellerParticipantId,
+  );
+  if (!supportContact.available) {
     throw new SellerSupportContactUnavailableError();
+  }
+
+  /* — 2b². The seller's refund terms (Phase 1.9 correction). —
+   *
+   * A sale is refund-governed, so it binds the EXACT seller refund-policy version
+   * in force right now. A buyer must be able to see the applicable terms before
+   * completing purchase, and the receipt must render the same ones afterwards —
+   * neither is possible for an Order that bound nothing.
+   *
+   * With no ACTIVE version the sale is REFUSED, on the identical reasoning that
+   * refuses a sale with no active marketplace policy: selling under returns terms
+   * Monacado cannot afterwards name is worse than not selling, because the
+   * resulting Order is an unanswerable question rather than a missing one. It is
+   * also what stops a seller retiring their policy from silently leaving their
+   * commerce ungoverned.
+   *
+   * The version is bound, never the prose. A copied paragraph would be a second
+   * answer able to disagree with the version the buyer was shown — and the copy
+   * is always the one that gets read. */
+  const activeRefundPolicy = await getActiveSellerRefundPolicyVersionIn(
+    db,
+    prepared.sellerParticipantId,
+  );
+  if (activeRefundPolicy === null) {
+    throw new SellerRefundPolicyUnavailableError();
   }
 
   /* — 2c. The Product facts a real engine needs (Phase 1.6). —
@@ -340,12 +381,38 @@ export async function beginCheckout(
 
   /* A reference, never prose: the version is authoritative and a copied
      paragraph would be a second answer able to disagree with it. */
-  await db.order.update({
-    where: { id: placed.order.orderId },
-    data: {
-      marketplacePolicyId: activePolicy.policyId,
-      marketplacePolicyVersion: activePolicy.policyVersion,
-    },
+  /* ONE TRANSACTION, so an Order can never carry a policy binding without the
+     contact that was disclosed alongside it, or the reverse. A receipt assembled
+     from half a disclosure would be a receipt asserting something nobody can
+     stand behind. */
+  await db.$transaction(async (tx) => {
+    await tx.order.update({
+      where: { id: placed.order.orderId },
+      data: {
+        marketplacePolicyId: activePolicy.policyId,
+        marketplacePolicyVersion: activePolicy.policyVersion,
+        /* The seller's returns terms, bound as a reference on the same terms and
+           for the same reason (Phase 1.9 correction). */
+        sellerRefundPolicyId: activeRefundPolicy.policyId,
+        sellerRefundPolicyVersion: activeRefundPolicy.policyVersion,
+      },
+    });
+
+    /* WHAT THE BUYER WAS TOLD, frozen. Never refreshed, and never reconciled
+       against the seller's later configuration — see the model comment on
+       `OrderRefundContactEvidence`. The state is recorded rather than assumed
+       even though the refusal above makes it VERIFIED: "this was the effective
+       verified contact when the sale occurred" is the claim a receipt makes, and
+       a claim worth making is worth evidencing. */
+    await tx.orderRefundContactEvidence.create({
+      data: {
+        orderId: placed.order.orderId,
+        contactAddress: supportContact.address,
+        contactSource: supportContact.source,
+        contactState: "VERIFIED",
+        capturedAt: new Date(v.placedAt),
+      },
+    });
   });
 
   /* — 4b. Does this basket need a delivery address? —

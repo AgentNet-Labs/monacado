@@ -26,6 +26,7 @@ import "dotenv/config";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import {
   ensureShippedMarketplacePolicyActive,
+  ensureSellerRefundPolicy,
   verifyPrimarySupportContact,
 } from "./support/marketplace-policy-fixture";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
@@ -349,6 +350,10 @@ async function cleanup(): Promise<void> {
        and its tax evidence, so it comes off before either. */
     await db.orderTaxTransaction.deleteMany({ where: { orderId: { in: orderIdList } } });
     await db.orderTaxEvidence.deleteMany({ where: { orderId: { in: orderIdList } } });
+    /* The purchase-time refund disclosure, RESTRICT to its Order (Phase 1.9). */
+    await db.orderRefundContactEvidence.deleteMany({
+      where: { orderId: { in: orderIdList } },
+    });
     await db.orderBuyerSnapshot.deleteMany({ where: { orderId: { in: orderIdList } } });
     await db.reviewSubmissionAuthority.deleteMany({ where: { orderId: { in: orderIdList } } });
     await db.purchaseEvidence.deleteMany({ where: { orderId: { in: orderIdList } } });
@@ -391,6 +396,14 @@ async function cleanup(): Promise<void> {
     await db.storefront.deleteMany({ where: { ownerParticipantId: { in: participantIds } } });
     await db.marketplaceRoleAssignment.deleteMany({
       where: { participantId: { in: participantIds } },
+    });
+    /* RESTRICT to the participant, and Orders RESTRICT to the version row — so
+       the policy comes off after the Orders above and before the seller. */
+    await db.sellerRefundPolicyVersionRow.deleteMany({
+      where: { sellerParticipantId: { in: participantIds } },
+    });
+    await db.sellerRefundPolicy.deleteMany({
+      where: { sellerParticipantId: { in: participantIds } },
     });
     await db.marketplaceParticipant.deleteMany({ where: { id: { in: participantIds } } });
   }
@@ -508,6 +521,16 @@ async function seedActiveParticipant(roles: Array<"SELLER" | "PROMOTER">) {
      through review, so the contact is verified here through the real challenge
      flow. Records no acceptance: that is an activation prerequisite. */
   await verifyPrimarySupportContact(db, { participantId, accountId, now: NOW });
+  /* Phase 1.9 correction — checkout binds the seller's ACTIVE refund policy and
+     REFUSES a sale it cannot bind, on the same footing as the verified support
+     contact above. Seeded with permissive, shipping-refundable terms so a sale
+     completes and a full refund returns the whole buyer charge. */
+  await ensureSellerRefundPolicy(db, {
+    sellerParticipantId: participantId,
+    recordedByAccountId: accountId,
+    now: NOW,
+    policyId: `mon:srpol:${participantId.slice(-26)}`,
+  });
   return { participantId, accountId };
 }
 
