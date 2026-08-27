@@ -1542,9 +1542,13 @@ describe("1.9 — marketplace posture and disclosure", () => {
     );
   });
 
-  it("names the receipt surface it did not build, and what the Order already carries", () => {
+  it("names the receipt surface and what the Order already carries", () => {
     expect(RECEIPT_SURFACE.readContract).toBe("IMPLEMENTED");
-    expect(RECEIPT_SURFACE.renderer).toBe("NOT_IMPLEMENTED");
+    /* Phase 1.10 built it. What `1.9` had to guarantee — that the Order carries
+       everything a later renderer needs, because it cannot be backfilled onto
+       sales already made — is what made the renderer small when it arrived, and
+       is still what the rest of this test asserts. */
+    expect(RECEIPT_SURFACE.renderer).toBe("IMPLEMENTED");
     expect(RECEIPT_SURFACE.durableOnTheOrder).toContain("SELLER_REFUND_POLICY_VERSION");
     expect(RECEIPT_SURFACE.durableOnTheOrder).toContain(
       "PURCHASE_TIME_REFUND_CONTACT_ADDRESS",

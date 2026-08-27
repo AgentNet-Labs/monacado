@@ -11,7 +11,21 @@
  *   npm run policy:bootstrap           # record the shipped version as DRAFT
  *   npm run policy:bootstrap:activate  # record if needed, then ACTIVATE it
  *   npm run policy:bootstrap:inspect   # read and report; write nothing
+ *
+ *   npm run policy:bootstrap -- --version=1.1.0   # a specific shipped version
  * ```
+ *
+ * ## Which version (Phase 1.10)
+ *
+ * A deployment ships more than one version now, so `--version=` selects which,
+ * defaulting to the newest. A version this deployment does not ship is a **usage
+ * error** (exit 2) rather than a fallback: an operator typing a version is
+ * stating which terms they mean to publish, and publishing different ones because
+ * the typed ones do not exist would be the worst possible reading of a typo.
+ *
+ * Recording a version as DRAFT while a different one is ACTIVE is **permitted and
+ * ordinary** — that is how the next governed version is published. Activating it
+ * over a standing version is still refused here.
  *
  * ## Activation is a separate word
  *
@@ -80,8 +94,9 @@ import {
   type PolicyBootstrapOutcome,
 } from "../src/server/policy/marketplace-policy-bootstrap";
 import {
-  MARKETPLACE_POLICY_CONTENT_REF_1,
-  MONACADO_MARKETPLACE_POLICY_V1,
+  LATEST_MARKETPLACE_POLICY_VERSION,
+  MARKETPLACE_POLICY_CONTENT_REFS,
+  MARKETPLACE_POLICY_DOCUMENTS,
   marketplacePolicyContentHash,
 } from "../src/contracts/marketplace/marketplace-policy-content";
 
@@ -91,6 +106,16 @@ export interface CommandOptions {
   recordedByAccountId: string;
   /** Explicit authorisation to WRITE to a production-classified target. */
   confirmProduction: boolean;
+  /**
+   * Which shipped version to act on (Phase 1.10).
+   *
+   * Defaults to the newest this deployment ships. A version string that names no
+   * shipped document is a **usage error** rather than a fallback: an operator who
+   * mistypes a version is asking to publish terms, and publishing different ones
+   * because the typed ones do not exist would be the worst possible reading of
+   * the mistake.
+   */
+  policyVersion: string;
 }
 
 /**
@@ -183,11 +208,15 @@ export function parseCommandOptions(
   let mode: BootstrapMode = "APPLY";
   let activate = false;
   let confirmProduction = false;
+  let policyVersion: string = LATEST_MARKETPLACE_POLICY_VERSION;
   let recordedByAccountId = (env.MONACADO_POLICY_BOOTSTRAP_ACCOUNT_ID ?? "").trim();
 
   for (const arg of argv) {
     if (arg === "--inspect") mode = "INSPECT";
     else if (arg === "--activate") activate = true;
+    else if (arg.startsWith("--version=")) {
+      policyVersion = arg.slice("--version=".length).trim();
+    }
     /* Read from argv ONLY. There is deliberately no environment variable for
        this: a variable is set once and then silently authorises every later
        invocation, which is the accidental supply the gate exists to prevent. */
@@ -204,7 +233,12 @@ export function parseCommandOptions(
       "no recording account: set MONACADO_POLICY_BOOTSTRAP_ACCOUNT_ID or pass --recorded-by=<accountId>",
     );
   }
-  return { mode, activate, recordedByAccountId, confirmProduction };
+  if (!MARKETPLACE_POLICY_DOCUMENTS.has(policyVersion)) {
+    throw new BootstrapUsageError(
+      `unknown policy version: ${policyVersion} (shipped: ${[...MARKETPLACE_POLICY_DOCUMENTS.keys()].join(", ")})`,
+    );
+  }
+  return { mode, activate, recordedByAccountId, confirmProduction, policyVersion };
 }
 
 /**
@@ -220,15 +254,23 @@ export function formatPreflight(input: {
   environment: EnvironmentClassification;
   mode: BootstrapMode;
   activate: boolean;
+  /** Which shipped version. Defaults to the newest, exactly as parsing does. */
+  policyVersion?: string;
 }): string {
+  const version = input.policyVersion ?? LATEST_MARKETPLACE_POLICY_VERSION;
+  /* `parseCommandOptions` refuses an unshipped version before this is reached,
+     so the lookups resolve. The fallbacks exist so a preflight can never throw
+     on the path whose whole purpose is telling an operator what is about to
+     happen. */
+  const document = MARKETPLACE_POLICY_DOCUMENTS.get(version);
   return [
     "Monacado — marketplace policy bootstrap (preflight)",
     `  environment:      ${input.environment}`,
     `  mode:             ${input.mode}`,
-    `  policy id:        ${MONACADO_MARKETPLACE_POLICY_V1.policyId}`,
-    `  policy version:   ${MONACADO_MARKETPLACE_POLICY_V1.policyVersion}`,
-    `  content ref:      ${MARKETPLACE_POLICY_CONTENT_REF_1}`,
-    `  source hash:      ${marketplacePolicyContentHash(MONACADO_MARKETPLACE_POLICY_V1)}`,
+    `  policy id:        ${document?.policyId ?? "(unknown version)"}`,
+    `  policy version:   ${version}`,
+    `  content ref:      ${MARKETPLACE_POLICY_CONTENT_REFS.get(version) ?? "(unknown version)"}`,
+    `  source hash:      ${document === undefined ? "(unknown version)" : marketplacePolicyContentHash(document)}`,
     `  requested action: ${input.activate ? "RECORD_AND_ACTIVATE" : "RECORD_ONLY"}`,
   ].join("\n");
 }
@@ -245,10 +287,12 @@ export function formatReport(outcome: PolicyBootstrapOutcome): string {
     `  mode:             ${outcome.mode}`,
     `  policy id:        ${outcome.policyId}`,
     `  policy version:   ${outcome.policyVersion}`,
-    `  content ref:      ${outcome.contentRef}`,
-    `  source hash:      ${outcome.sourceHash}`,
+    `  content ref:      ${outcome.contentRef ?? "(none)"}`,
+    `  source hash:      ${outcome.sourceHash ?? "(none)"}`,
     `  persisted hash:   ${outcome.persistedHash ?? "(none)"}`,
     `  persisted state:  ${outcome.persistedState}`,
+    `  reacceptance:     ${outcome.requiresReacceptance ? "required" : "not required"}`,
+    `  standing active:  ${outcome.standingActiveVersion ?? "(none)"}`,
     `  action:           ${outcome.action}`,
     `  applied:          ${outcome.applied ? "yes" : "no"}`,
     `  activated:        ${outcome.activated ? "yes" : "no"}`,
@@ -300,6 +344,7 @@ export async function main(
         environment: gate.environment,
         mode: options.mode,
         activate: options.activate,
+        policyVersion: options.policyVersion,
       }),
     );
   }
@@ -320,6 +365,7 @@ export async function main(
         now: new Date().toISOString(),
         activate: options.activate,
         mode: options.mode,
+        policyVersion: options.policyVersion,
       },
       deps,
     );

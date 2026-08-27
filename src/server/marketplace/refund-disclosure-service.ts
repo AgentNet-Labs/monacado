@@ -1,10 +1,12 @@
 /**
  * Refund disclosure and receipt reads (Phase 1.9 correction) — SERVER ONLY.
  *
- * Two reads, and the difference between them is the whole point:
+ * Three reads, and the difference between the clocks is the whole point:
  *
  * ```
  * readListingRefundPolicyDisclosure   the seller's ACTIVE policy   → before purchase
+ * readCheckoutRefundDisclosure        both ACTIVE policies, and    → at checkout
+ *                                     what the Order will bind
  * readOrderRefundReceipt              the version the ORDER BOUND  → on the receipt
  * ```
  *
@@ -35,9 +37,13 @@
 
 import "../server-only";
 import {
+  CheckoutRefundDisclosure,
   OrderRefundReceiptView,
   RefundPolicyDisclosure,
 } from "../../contracts/marketplace/refund-disclosure";
+import { selectRefundGovernanceSections } from "../../contracts/marketplace/marketplace-policy";
+import { MONACADO_MARKETPLACE_POLICY_ID } from "../../contracts/marketplace/marketplace-policy-content";
+import { readActiveMarketplacePolicy } from "../policy/marketplace-policy-service";
 import {
   selectSellerRefundSection,
   type RefundProcedureKind,
@@ -145,6 +151,91 @@ export async function readListingRefundPolicyDisclosure(
     shippingRefundable: policy.terms.shippingRefundability,
     procedureKind: policy.terms.procedureKind,
     contentHash: policy.contentHash,
+    evaluatedAt: at,
+  });
+}
+
+/**
+ * Everything a checkout surface must disclose about refunds (Phase 1.10).
+ *
+ * The seller's complete terms, the marketplace refund rules in force, and the
+ * exact versions the Order is about to bind — in one read, so a checkout page and
+ * a listing page cannot disclose different things.
+ *
+ * ## It creates no second source of truth
+ *
+ * The seller half **is** `readListingRefundPolicyDisclosure`, called rather than
+ * reimplemented. The marketplace half is the active version's own buyer-facing
+ * refund sections, verified against the source by `readActiveMarketplacePolicy`
+ * before being returned. The binding block is the identity of those same two
+ * reads. Nothing here restates a term, and there is nothing to keep in step.
+ *
+ * ## No active marketplace policy is `null`, not a throw
+ *
+ * A deployment with no `ACTIVE` marketplace policy already refuses every sale for
+ * that reason. A disclosure surface asked in that state should say what it can
+ * about the seller and show no marketplace section, rather than fail to render —
+ * the buyer is not going to complete a purchase either way, and an exception here
+ * would replace an explainable page with a broken one.
+ */
+export async function readCheckoutRefundDisclosure(
+  internalListingId: string,
+  at: string,
+  deps: RefundDisclosureDeps = {},
+): Promise<CheckoutRefundDisclosure> {
+  const db = deps.db ?? getPrisma();
+
+  const sellerPolicy = await readListingRefundPolicyDisclosure(internalListingId, at, { db });
+
+  let marketplace: {
+    policyId: string;
+    policyVersion: string;
+    contentHash: string;
+    refundSections: ReturnType<typeof selectRefundGovernanceSections>;
+  } | null = null;
+  try {
+    const active = await readActiveMarketplacePolicy(MONACADO_MARKETPLACE_POLICY_ID, { db });
+    marketplace = {
+      policyId: active.version.policyId,
+      policyVersion: active.version.policyVersion,
+      contentHash: active.version.contentHash,
+      /* Buyer-facing refund governance only. An active version that states none —
+         1.0.0 states none — yields an empty list, which is the honest answer for
+         terms that do not cover this rather than a reason to borrow a newer
+         version's. */
+      refundSections: selectRefundGovernanceSections(active.document, "BUYER"),
+    };
+  } catch {
+    marketplace = null;
+  }
+
+  return CheckoutRefundDisclosure.parse({
+    sellerPolicy,
+    marketplacePolicy: marketplace,
+    binding: {
+      /* The SAME versions the disclosure above rendered. Not a second read: a
+         checkout that disclosed one version and bound another would satisfy every
+         test that looked at either half alone. */
+      sellerRefundPolicy:
+        sellerPolicy.policyId === null ||
+        sellerPolicy.policyVersion === null ||
+        sellerPolicy.contentHash === null
+          ? null
+          : {
+              policyId: sellerPolicy.policyId,
+              policyVersion: sellerPolicy.policyVersion,
+              contentHash: sellerPolicy.contentHash,
+            },
+      marketplacePolicy:
+        marketplace === null
+          ? null
+          : {
+              policyId: marketplace.policyId,
+              policyVersion: marketplace.policyVersion,
+              contentHash: marketplace.contentHash,
+            },
+      saleRefusedWithoutBinding: true,
+    },
     evaluatedAt: at,
   });
 }

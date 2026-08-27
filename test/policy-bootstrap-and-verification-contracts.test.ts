@@ -34,6 +34,7 @@ import {
   parseCommandOptions,
 } from "../scripts/bootstrap-marketplace-policy";
 import type { PolicyBootstrapOutcome } from "../src/server/policy/marketplace-policy-bootstrap";
+import { LATEST_MARKETPLACE_POLICY_VERSION } from "../src/contracts/marketplace/marketplace-policy-content";
 import { STRIPE_MODES } from "../src/server/payments/stripe-runtime-config";
 import { MailMessage } from "../src/contracts/marketplace/notification-delivery";
 import { createCapturingMailAdapter } from "../src/server/notifications/mail-port";
@@ -184,6 +185,10 @@ describe("the bootstrap command's invocation", () => {
       activate: false,
       confirmProduction: false,
       recordedByAccountId: ACCOUNT,
+      /* Phase 1.10: the newest shipped version, since a deployment now ships
+         more than one. Defaulting to the *oldest* would have made the command
+         quietly publish superseded terms. */
+      policyVersion: LATEST_MARKETPLACE_POLICY_VERSION,
     });
   });
 
@@ -323,8 +328,8 @@ describe("the preflight block", () => {
   it("names the target, the policy, the source hash, and the requested action", () => {
     expect(preflight).toContain("environment:      PRODUCTION");
     expect(preflight).toContain("mon:mpol:");
-    expect(preflight).toContain("1.0.0");
-    expect(preflight).toContain("marketplace-policy/1.0.0");
+    expect(preflight).toContain(LATEST_MARKETPLACE_POLICY_VERSION);
+    expect(preflight).toContain(`marketplace-policy/${LATEST_MARKETPLACE_POLICY_VERSION}`);
     expect(preflight).toMatch(/source hash:      sha256:[0-9a-f]{64}/);
     expect(preflight).toContain("requested action: RECORD_AND_ACTIVATE");
   });
@@ -356,6 +361,8 @@ describe("the bootstrap report", () => {
     activated: true,
     refusal: null,
     conflictingActiveVersion: null,
+    standingActiveVersion: null,
+    requiresReacceptance: true,
   };
 
   it("reports the policy id, version, source hash, state, action, and activation", () => {

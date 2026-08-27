@@ -52,15 +52,25 @@
  * could be passed in would be a body an attacker could pass in.
  *
  * **No message contains** the seller's proceeds, the promoter's spread,
- * Monacado's retention, a policy id, a provider transaction reference, a claim
- * code, or a Listing source version. A buyer's receipt says what they were
- * charged; a seller's says a sale happened and to go and look. Everything else is
- * a marketplace's private commercial position or a bearer credential.
+ * Monacado's retention, a commercial policy id, a provider transaction reference,
+ * a claim code, or a Listing source version. A seller's notice says a sale
+ * happened and to go and look. Everything else is a marketplace's private
+ * commercial position or a bearer credential.
+ *
+ * ## Phase 1.10: the buyer's receipt carries the terms it was sold under
+ *
+ * One exception was added, and only one: the buyer's confirmation now names the
+ * **seller refund policy version** bound to the purchase and renders that policy
+ * in full. That is not a marketplace commercial position — it is the buyer's own
+ * disclosed terms, shown to them before they paid, and the receipt is the only
+ * artifact they hold that can tell them which version applied. Monacado's
+ * commercial policy id, the participants, and every party's economics stay out.
  */
 
 import "../server-only";
 import type { OrderRecord } from "../../contracts/marketplace/order";
 import { quotedBuyerTotalMinorUnits } from "../../contracts/marketplace/order";
+import type { OrderReceiptView } from "../../contracts/marketplace/order-receipt";
 import type { NotificationCategory } from "../../contracts/marketplace/notification-obligation";
 import type { OutboundEmailDeliveryRecord } from "../../contracts/marketplace/outbound-email";
 import { getPrisma } from "../db/client";
@@ -96,31 +106,194 @@ function formatAmount(minorUnits: number, currency: string): string {
 }
 
 /**
+ * What this rendering of the receipt carries, and what it leaves to a richer one.
+ *
+ * The **read contract** (`OrderReceiptView`) answers everything a receipt can
+ * state. This is one rendering of it — plain text, in an email — and the split is
+ * a decision rather than an accident:
+ *
+ * | Carried here | Left to `OrderReceiptView` |
+ * | --- | --- |
+ * | the complete seller refund policy that governed the purchase | the marketplace policy's own refund sections, in full |
+ * | the exact seller policy version reference | the bound marketplace version's content hash |
+ * | the procedure and the contact disclosed at purchase | the purchased line's internal references |
+ * | the monetary summary, shipping, and tax | |
+ *
+ * The seller's policy is inlined because it is the buyer's **operative terms**
+ * and §4 requires the complete applicable policy on the receipt. The marketplace
+ * document's refund sections are referenced by the version that governed the sale
+ * rather than inlined: they were disclosed at checkout, they are identical for
+ * every purchase made under that version, and twenty paragraphs of marketplace
+ * governance in front of the seller's actual terms would bury the half the buyer
+ * needs to act on.
+ */
+export const RECEIPT_EMAIL_RENDERING = {
+  sellerRefundPolicy: "COMPLETE",
+  sellerPolicyVersionReference: "INCLUDED",
+  refundProcedure: "INCLUDED",
+  purchaseTimeSupportContact: "INCLUDED",
+  currentSellerSupportContact: "INCLUDED_SEPARATELY_WHEN_IT_DIFFERS",
+  monetarySummary: "INCLUDED",
+  marketplacePolicyRefundSections: "REFERENCED_BY_BOUND_VERSION",
+  promoterIdentity: "NEVER",
+  partyEconomics: "NEVER",
+  internalReferences: "NEVER",
+} as const;
+
+/** One "Label: value" line, padded so a plain-text receipt reads as a column. */
+const row = (label: string, value: string): string => `${`${label}:`.padEnd(17)}${value}`;
+
+/**
  * The buyer's receipt.
  *
- * Says what they bought (by order reference), what they were charged, and where
- * to look. It deliberately names **no participant, no product title, and no
- * economics** — the buyer already knows what they ordered, and the rest is either
- * private to the marketplace or absent from the Order by design.
+ * ## Phase 1.10: it states the terms the purchase was sold under
+ *
+ * `1.1` rendered the order reference and the total, on the reasoning that the
+ * buyer already knows what they ordered. That reasoning holds for the *product*
+ * and fails for the *terms*: a buyer cannot know, from memory, which version of a
+ * seller's refund policy was bound to their purchase, and the receipt is the only
+ * artifact they hold that can tell them. So when a receipt view is supplied, the
+ * message carries the complete governing policy, the exact version reference, how
+ * to request a refund, and the support contact **as it was disclosed to them**.
+ *
+ * Everything historical comes from the view, which reads it from evidence bound
+ * to the sale. Nothing here reaches for a seller's current configuration, and the
+ * one current value the view does carry is printed under its own heading and only
+ * when it differs from the disclosed one.
+ *
+ * ## Without a view it renders exactly as it did
+ *
+ * `receipt` is optional and a missing one is not an error. A receipt that could
+ * not be assembled — an Order whose bound policy has become unreadable — still
+ * produces the message a buyer needs most, which is confirmation that their money
+ * was taken and what for. A dispatcher that threw instead would withhold the
+ * whole receipt over the part of it that failed.
+ *
+ * It still names **no participant, no promoter, no product title, and no
+ * economics**: `1.1`'s line, unmoved. What was added is the buyer's own terms,
+ * which were disclosed to them before they paid.
  */
-export function renderBuyerConfirmation(order: OrderRecord): { subject: string; body: string } {
+export function renderBuyerConfirmation(
+  order: OrderRecord,
+  receipt?: OrderReceiptView | null,
+): { subject: string; body: string } {
   const total = formatAmount(quotedBuyerTotalMinorUnits(order.quote), order.quote.currency);
+  const money = receipt?.money ?? null;
+  const currency = order.quote.currency;
+
+  const lines: string[] = [
+    "Thank you for your order.",
+    "",
+    row("Order reference", order.orderId),
+  ];
+
+  if (money !== null) {
+    lines.push(row("Merchandise", formatAmount(money.merchandiseMinorUnits, money.currency)));
+    if (money.shippingMinorUnits !== 0) {
+      lines.push(row("Shipping", formatAmount(money.shippingMinorUnits, money.currency)));
+    }
+    /* Tax is stated even at zero. "Tax: $0.00" is a disclosure; silence is
+       ambiguous between "none was charged" and "we did not say". */
+    lines.push(row("Tax", formatAmount(money.taxMinorUnits, money.currency)));
+    if (money.otherPassThroughMinorUnits !== 0) {
+      lines.push(
+        row("Other charges", formatAmount(money.otherPassThroughMinorUnits, money.currency)),
+      );
+    }
+  }
+  lines.push(row("Total charged", total));
+  lines.push("", "Your payment has been confirmed and your order is complete.");
+
+  const refundBlock = receipt === undefined || receipt === null ? [] : renderRefundBlock(receipt);
+  if (refundBlock.length > 0) lines.push("", ...refundBlock);
+
+  lines.push("", "You can view this order at any time using the reference above.", "", "— Monacado");
+
   return {
-    subject: `Your Monacado order is confirmed — ${total}`,
-    body: [
-      "Thank you for your order.",
-      "",
-      `Order reference: ${order.orderId}`,
-      `Total charged:   ${total}`,
-      "",
-      "Your payment has been confirmed and your order is complete.",
-      "",
-      "You can view this order at any time using the reference above.",
-      "",
-      "— Monacado",
-    ].join("\n"),
+    subject: `Your Monacado order is confirmed — ${formatAmount(
+      money?.totalMinorUnits ?? quotedBuyerTotalMinorUnits(order.quote),
+      money?.currency ?? currency,
+    )}`,
+    body: lines.join("\n"),
   };
 }
+
+/**
+ * The refund half of the receipt, from purchase-time evidence only.
+ *
+ * Returns `[]` where no policy is bound — an Order placed before the binding
+ * existed, or one whose bound version has become unreadable. **Nothing is
+ * substituted in that case**, which is the whole rule: a section headed "your
+ * refund rights" filled in from today's terms would look authoritative and be
+ * wrong, and an absent section is the honest form of "we cannot reproduce what
+ * you were shown".
+ */
+function renderRefundBlock(receipt: OrderReceiptView): string[] {
+  const { refund } = receipt;
+  if (refund.policyRef === null || refund.policyVersion === null) return [];
+
+  const out: string[] = [
+    "REFUNDS",
+    "",
+    "These are the refund terms that applied to this purchase. They are the terms",
+    "disclosed to you when you bought, and they do not change if the seller",
+    "publishes different ones later.",
+    "",
+    row("Refund policy", `${refund.policyRef.policyId} version ${refund.policyRef.policyVersion}`),
+  ];
+
+  if (receipt.marketplacePolicy !== null) {
+    out.push(
+      row("Marketplace terms", `version ${receipt.marketplacePolicy.policyVersion}`),
+    );
+  }
+  if (receipt.shipping.refundability !== null) {
+    out.push(row("Shipping charges", SHIPPING_TREATMENT[receipt.shipping.refundability]));
+  }
+
+  /* THE COMPLETE POLICY. A summary would be a claim the terms might not support,
+     and a buyer who cannot read them in full has not been given them. */
+  for (const section of refund.policyVersion.document.sections) {
+    out.push("", section.heading, section.body);
+  }
+
+  const procedure = refund.procedure;
+  if (procedure !== null) {
+    out.push("", "How to request a refund", procedure.instructions);
+    if (procedure.purchaseTimeRefundContact !== null) {
+      out.push(
+        row("Contact", procedure.purchaseTimeRefundContact.address),
+        "(this is the support contact that was in effect when you bought)",
+      );
+    }
+    /* Beside the disclosed one, never instead of it, and only when it is
+       actually different — printing the same address twice under two headings
+       would suggest a distinction that is not there. */
+    if (
+      refund.currentSellerSupportContact !== null &&
+      refund.currentSellerSupportContact !== procedure.purchaseTimeRefundContact?.address
+    ) {
+      out.push(
+        row("Current contact", refund.currentSellerSupportContact),
+        "(the seller's support contact today, shown in addition to the one above)",
+      );
+    }
+    out.push(
+      "",
+      "You do not need a Monacado account to request a refund. Quote the order",
+      "reference above together with this confirmation.",
+    );
+  }
+
+  return out;
+}
+
+/** The declared shipping rule, in the buyer's words rather than the enum's. */
+const SHIPPING_TREATMENT = {
+  ALWAYS_REFUNDED: "refunded with the item under this policy",
+  NEVER_REFUNDED: "not refunded under this policy",
+  REFUNDED_WHEN_SELLER_AT_FAULT: "refunded where the refund is attributable to the seller",
+} as const;
 
 /**
  * The buyer's failure notice.

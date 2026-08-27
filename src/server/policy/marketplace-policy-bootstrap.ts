@@ -10,6 +10,21 @@
  * This is the connection, and it is deliberately the **smallest** one: it records
  * the exact shipped version and, when an operator explicitly asks, activates it.
  *
+ * ## Phase 1.10: more than one version is shipped
+ *
+ * `1.10` published Marketplace Policy 1.1.0 beside the already-`ACTIVE` 1.0.0, so
+ * "the shipped policy" stopped being a single thing. Two consequences, both
+ * narrow:
+ *
+ *   - `policyVersion` selects which shipped version to act on, defaulting to the
+ *     newest. An unshipped version is refused, never defaulted.
+ *   - **Recording a `DRAFT` beside a standing `ACTIVE` version is permitted.** A
+ *     `DRAFT` governs nobody — no participant accepts it, no checkout binds it,
+ *     nothing reads it — and it is precisely how the next governed version comes
+ *     into existence. The `CONFLICTING_ACTIVE_VERSION` refusal now guards the act
+ *     it was written to guard, which is **activation**, and no longer blocks the
+ *     supported publish-then-activate path through the only tooling that has one.
+ *
  * ## It refuses rather than resolves
  *
  * Four things are treated as somebody else's decision, and each is a refusal with
@@ -17,7 +32,8 @@
  *
  * | Situation | Why it is not repaired here |
  * | --- | --- |
- * | another version is `ACTIVE` | replacing it would retire terms participants are live under, silently. Whoever wants that supersession must perform it deliberately |
+ * | another version is `ACTIVE` **and activation was asked for** | replacing it would retire terms participants are live under, silently. Whoever wants that supersession must perform it deliberately |
+ * | the requested version is not one this deployment ships | a mistyped version is a mistake about which terms are being published, and publishing different ones instead is the worst reading of it |
  * | the persisted hash disagrees with the source | the prose moved without a version bump. Rewriting the row would destroy the only evidence of the drift |
  * | the shipped version is `RETIRED` | `0M.R1`'s rule, kept: a retired version never returns, because reactivation makes "which terms applied when" unanswerable |
  * | the recording account does not exist | governance records *who* recorded a version, and a fabricated recorder is worse than an unrecorded one |
@@ -38,8 +54,11 @@
 
 import "../server-only";
 import {
-  MARKETPLACE_POLICY_CONTENT_REF_1,
-  MONACADO_MARKETPLACE_POLICY_V1,
+  LATEST_MARKETPLACE_POLICY_VERSION,
+  MONACADO_MARKETPLACE_POLICY_ID,
+  MARKETPLACE_POLICY_CONTENT_REFS,
+  MARKETPLACE_POLICY_DOCUMENTS,
+  MARKETPLACE_POLICY_REACCEPTANCE,
   marketplacePolicyContentHash,
 } from "../../contracts/marketplace/marketplace-policy-content";
 import type {
@@ -108,6 +127,14 @@ export const BOOTSTRAP_REFUSALS = [
   "SHIPPED_VERSION_RETIRED",
   /** The account named as the recorder does not exist. */
   "RECORDING_ACCOUNT_NOT_FOUND",
+  /**
+   * The requested version is not one this deployment ships (Phase 1.10).
+   *
+   * Refused rather than defaulted to the latest. `--version=1.2.0` typed at a
+   * deployment that ships 1.1.0 is a mistake about what is being published, and
+   * silently recording something else would be recording terms nobody asked for.
+   */
+  "SHIPPED_VERSION_UNKNOWN",
 ] as const;
 export type BootstrapRefusal = (typeof BOOTSTRAP_REFUSALS)[number];
 
@@ -122,9 +149,18 @@ export interface PolicyBootstrapOutcome {
   mode: BootstrapMode;
   policyId: string;
   policyVersion: string;
-  contentRef: string;
-  /** The hash derived from the shipped source module, always recomputed. */
-  sourceHash: PolicyContentHash;
+  /**
+   * The shipped content this version names. `null` only for
+   * `SHIPPED_VERSION_UNKNOWN`, where no content exists to name.
+   */
+  contentRef: string | null;
+  /**
+   * The hash derived from the shipped source module, always recomputed.
+   *
+   * `null` only for `SHIPPED_VERSION_UNKNOWN` — there is no document to hash, and
+   * a placeholder digest reported as a source hash would be a fabricated one.
+   */
+  sourceHash: PolicyContentHash | null;
   /** The hash on the persisted row, or `null` when no row exists. */
   persistedHash: string | null;
   persistedState: PersistedPolicyState;
@@ -136,6 +172,23 @@ export interface PolicyBootstrapOutcome {
   refusal: BootstrapRefusal | null;
   /** The version standing in the way, only for `CONFLICTING_ACTIVE_VERSION`. */
   conflictingActiveVersion: string | null;
+  /**
+   * Whichever version is `ACTIVE` right now, refusal or not (Phase 1.10).
+   *
+   * Reported on **every** outcome, because recording a new `DRAFT` beside a
+   * standing `ACTIVE` version is now an ordinary success, and an operator reading
+   * "RECORD_DRAFT" needs to see which terms are still governing while it sits
+   * there. `conflictingActiveVersion` stays what it was — the version that
+   * *blocked* an activation — so a script reading either keeps its meaning.
+   */
+  standingActiveVersion: string | null;
+  /**
+   * Whether adopting this version requires participants to accept again.
+   *
+   * Read from the shipped registry, never decided here. Reported so an operator
+   * planning an activation can see the consequence before performing one.
+   */
+  requiresReacceptance: boolean;
 }
 
 export interface PolicyBootstrapInput {
@@ -151,6 +204,16 @@ export interface PolicyBootstrapInput {
    */
   activate: boolean;
   mode: BootstrapMode;
+  /**
+   * Which shipped version to act on. Defaults to the newest this deployment
+   * ships (Phase 1.10).
+   *
+   * Present because a deployment now ships more than one, and "the shipped
+   * policy" stopped being a single thing the moment 1.1.0 existed. A version this
+   * deployment does not ship is `SHIPPED_VERSION_UNKNOWN`, never silently the
+   * latest.
+   */
+  policyVersion?: string;
 }
 
 export interface PolicyBootstrapDeps extends PolicyServiceDeps {
@@ -167,21 +230,53 @@ export interface PolicyBootstrapDeps extends PolicyServiceDeps {
    * A caller supplying this must also supply `documents`, because
    * `recordMarketplacePolicyVersion` resolves the content from that registry.
    */
-  shipped?: { document: MarketplacePolicyDocument; contentRef: string };
+  shipped?: {
+    document: MarketplacePolicyDocument;
+    contentRef: string;
+    /** Defaults to `true`, matching every version this repository ships. */
+    requiresReacceptance?: boolean;
+  };
 }
 
-/** The shipped policy this deployment carries, unless a test substitutes one. */
+/** One shipped version: its content, its ref, and its reacceptance decision. */
+interface ShippedVersion {
+  document: MarketplacePolicyDocument;
+  contentRef: string;
+  requiresReacceptance: boolean;
+}
+
+/**
+ * The shipped version this run acts on, unless a test substitutes one.
+ *
+ * `null` when the requested version is not one this deployment ships — a refusal
+ * rather than a fallback to the newest, because a version typed by an operator is
+ * a statement about which terms they mean to publish.
+ */
 const resolveShipped = (
   deps: PolicyBootstrapDeps,
-): { document: MarketplacePolicyDocument; contentRef: string } =>
-  deps.shipped ?? {
-    document: MONACADO_MARKETPLACE_POLICY_V1,
-    contentRef: MARKETPLACE_POLICY_CONTENT_REF_1,
+  requestedVersion: string | undefined,
+): ShippedVersion | null => {
+  if (deps.shipped !== undefined) {
+    return {
+      document: deps.shipped.document,
+      contentRef: deps.shipped.contentRef,
+      requiresReacceptance: deps.shipped.requiresReacceptance ?? true,
+    };
+  }
+  const version = requestedVersion ?? LATEST_MARKETPLACE_POLICY_VERSION;
+  const document = MARKETPLACE_POLICY_DOCUMENTS.get(version);
+  const contentRef = MARKETPLACE_POLICY_CONTENT_REFS.get(version);
+  if (document === undefined || contentRef === undefined) return null;
+  return {
+    document,
+    contentRef,
+    requiresReacceptance: MARKETPLACE_POLICY_REACCEPTANCE.get(version) ?? true,
   };
+};
 
 const base = (
   mode: BootstrapMode,
-  shipped: { document: MarketplacePolicyDocument; contentRef: string },
+  shipped: ShippedVersion,
   sourceHash: PolicyContentHash,
 ) => ({
   mode,
@@ -195,6 +290,8 @@ const base = (
   activated: false,
   refusal: null as BootstrapRefusal | null,
   conflictingActiveVersion: null as string | null,
+  standingActiveVersion: null as string | null,
+  requiresReacceptance: shipped.requiresReacceptance,
 });
 
 /**
@@ -210,7 +307,28 @@ export async function bootstrapMarketplacePolicy(
   deps: PolicyBootstrapDeps = {},
 ): Promise<PolicyBootstrapOutcome> {
   const db = deps.db ?? getPrisma();
-  const source = resolveShipped(deps);
+  const source = resolveShipped(deps, input.policyVersion);
+  if (source === null) {
+    /* Refused before the database client is used at all. A version this
+       deployment does not ship names no content, so there is nothing to hash,
+       nothing to compare, and nothing to record. */
+    return {
+      mode: input.mode,
+      policyId: MONACADO_MARKETPLACE_POLICY_ID,
+      policyVersion: input.policyVersion ?? LATEST_MARKETPLACE_POLICY_VERSION,
+      contentRef: null,
+      sourceHash: null,
+      persistedHash: null,
+      persistedState: "ABSENT",
+      action: "REFUSED",
+      applied: false,
+      activated: false,
+      refusal: "SHIPPED_VERSION_UNKNOWN",
+      conflictingActiveVersion: null,
+      standingActiveVersion: null,
+      requiresReacceptance: false,
+    };
+  }
   const policyId = source.document.policyId;
   const policyVersion = source.document.policyVersion;
   /* Derived from the source on every run, never read from a constant: the whole
@@ -225,6 +343,7 @@ export async function bootstrapMarketplacePolicy(
     out.persistedHash = shipped.contentHash;
     out.persistedState = shipped.status;
   }
+  out.standingActiveVersion = active === null ? null : active.policyVersion;
 
   /* 1 — The prose moved without a version bump. The row is EVIDENCE of that and
      is left exactly as it is; rewriting it would erase the only record. */
@@ -232,9 +351,19 @@ export async function bootstrapMarketplacePolicy(
     return { ...out, action: "REFUSED", refusal: "CONTENT_HASH_MISMATCH" };
   }
 
-  /* 2 — Somebody else's version is governing. Fail closed: retiring it is a
-     supersession decision, and this command is not where one gets made. */
-  if (active !== null && active.policyVersion !== policyVersion) {
+  /* 2 — Somebody else's version is governing, and this run wants to ACTIVATE.
+     Fail closed: retiring the standing version is a supersession decision, and
+     this command is not where one gets made.
+
+     Gated on `activate` since Phase 1.10, and the distinction is the point.
+     Recording a version as `DRAFT` governs nobody: it creates an immutable row
+     nothing reads until somebody activates it, and it is exactly how the next
+     governed version comes into existence beside the one still in force. The
+     refusal exists to stop a command retiring live terms by accident — which a
+     DRAFT cannot do — so extending it to cover recording would have made the
+     supported path (publish the next version, activate it deliberately later)
+     unreachable through the only tooling that exists for it. */
+  if (input.activate && active !== null && active.policyVersion !== policyVersion) {
     return {
       ...out,
       action: "REFUSED",
@@ -293,9 +422,10 @@ export async function bootstrapMarketplacePolicy(
         policyId,
         policyVersion,
         contentRef: source.contentRef,
-        /* The first version: there is nothing prior to have accepted, and a
-           participant activating under it accepts it as part of onboarding. */
-        requiresReacceptance: true,
+        /* The publisher's judgement, carried from the shipped registry rather
+           than decided here. Whether a version obliges participants to accept
+           again is a governance call made once, by whoever wrote the version. */
+        requiresReacceptance: source.requiresReacceptance,
         effectiveFrom: input.now,
         recordedByAccountId: input.recordedByAccountId,
         recordedAt: input.now,

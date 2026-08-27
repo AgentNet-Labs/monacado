@@ -51,8 +51,10 @@ import type {
   OutboundEmailDeliveryRecord,
 } from "../../contracts/marketplace/outbound-email";
 import { getPrisma } from "../db/client";
+import type { OrderReceiptView } from "../../contracts/marketplace/order-receipt";
 import { getOrder } from "../marketplace/order-service";
 import { getBuyerSnapshotIn } from "../marketplace/order-buyer-snapshot-service";
+import { readOrderReceipt } from "../marketplace/order-receipt-service";
 import { issueVerificationChallenge } from "../policy/email-verification-service";
 import { renderVerificationMessage } from "../policy/verification-notice-service";
 import {
@@ -116,7 +118,7 @@ export async function resolveOutboundMessage(
   if (delivery.subjectKind === "EMAIL_CONTACT") {
     return resolveVerificationMessage(db, delivery, at, deps);
   }
-  return resolveOrderMessage(db, delivery, deps);
+  return resolveOrderMessage(db, delivery, at, deps);
 }
 
 // — Orders —
@@ -124,6 +126,7 @@ export async function resolveOutboundMessage(
 async function resolveOrderMessage(
   db: Db,
   delivery: OutboundEmailDeliveryRecord,
+  at: string,
   deps: MessageResolverDeps,
 ): Promise<ResolvedMessage> {
   let order;
@@ -178,12 +181,31 @@ async function resolveOrderMessage(
     return { resolved: true, destination: address, subject, text: body };
   }
 
+  if (delivery.purpose === "ORDER_CONFIRMATION") {
+    /* The receipt is assembled from evidence bound to the sale, so a retry three
+       days later renders the terms the buyer was shown rather than the terms the
+       seller has published since. A view that cannot be assembled is `null` and
+       the confirmation still goes out — withholding a buyer's receipt because
+       its refund section failed would deny them the fact they need most. */
+    let receipt: OrderReceiptView | null = null;
+    try {
+      receipt = await readOrderReceipt(delivery.subjectRef, at, { db });
+    } catch {
+      receipt = null;
+    }
+    const confirmation = renderBuyerConfirmation(order, receipt);
+    return {
+      resolved: true,
+      destination: address,
+      subject: confirmation.subject,
+      text: confirmation.body,
+    };
+  }
+
   const rendered =
-    delivery.purpose === "ORDER_CONFIRMATION"
-      ? renderBuyerConfirmation(order)
-      : delivery.purpose === "PAYMENT_FAILED"
-        ? renderBuyerPaymentFailed(order)
-        : renderBuyerOrderExpired(order);
+    delivery.purpose === "PAYMENT_FAILED"
+      ? renderBuyerPaymentFailed(order)
+      : renderBuyerOrderExpired(order);
 
   return { resolved: true, destination: address, subject: rendered.subject, text: rendered.body };
 }

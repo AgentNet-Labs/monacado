@@ -96,6 +96,13 @@ export const POLICY_SECTION_KEYS = [
   "DIGITAL_DELIVERY",
   "BUYER_CHECKOUT_INFORMATION",
   "COMMERCIAL_POLICY_REFERENCE",
+  /* Phase 1.10 — refund governance. Additive members, and additive is the whole
+     point: version 1.0.0 carries none of these sections, its bytes are untouched,
+     and its hash is unchanged. A version is a document, not an enum. */
+  "REFUNDS_AND_CANCELLATION",
+  "REFUND_REQUESTS",
+  "PURCHASE_RECEIPTS",
+  "REFUND_EFFECT_ON_PROCEEDS",
   "POLICY_CHANGES",
 ] as const;
 export const PolicySectionKey = z.enum(POLICY_SECTION_KEYS);
@@ -117,6 +124,15 @@ export const POLICY_REFERENCE_KINDS = [
   "DIGITAL_DELIVERY_POLICY",
   /** Another section of this same document. */
   "POLICY_SECTION",
+  /**
+   * `1.9`'s per-seller versioned refund policy, bound to each Order at checkout.
+   *
+   * Here for exactly the reason the other two are: the terms a buyer's refund is
+   * judged against are the seller's, held on an immutable version row, and a
+   * marketplace document that restated them would be a second authority able to
+   * disagree with the one actually bound to the sale.
+   */
+  "SELLER_REFUND_POLICY",
 ] as const;
 export const PolicyReferenceKind = z.enum(POLICY_REFERENCE_KINDS);
 
@@ -183,6 +199,44 @@ export function selectSection(
   key: PolicySectionKey,
 ): PolicySection | null {
   return document.sections.find((section) => section.key === key) ?? null;
+}
+
+/**
+ * The sections that state refund governance (Phase 1.10).
+ *
+ * Named as data so a checkout disclosure, a receipt, and a seller's obligations
+ * page all ask for the same set rather than each hard-coding a list that drifts
+ * from the others.
+ *
+ * Order is the document's, not this array's — `selectRefundGovernanceSections`
+ * filters, it does not re-sort. A policy read in a different order is a different
+ * policy, and that rule does not stop applying because a surface is narrower.
+ */
+export const REFUND_GOVERNANCE_SECTION_KEYS: readonly PolicySectionKey[] = [
+  "REFUNDS_AND_CANCELLATION",
+  "REFUND_REQUESTS",
+  "PURCHASE_RECEIPTS",
+  "REFUND_EFFECT_ON_PROCEEDS",
+];
+
+/**
+ * The refund-governance sections **this audience is shown**, in document order.
+ *
+ * A narrowing of `selectSectionsForAudience`, never a parallel one: it filters
+ * that function's output, so a section a seller may not see here is a section a
+ * seller may not see anywhere. There is still exactly one audience projection.
+ *
+ * A version that carries none of these sections — 1.0.0 — returns `[]`, which is
+ * the honest answer for a document that does not state this governance rather
+ * than a gap to be filled from a newer version.
+ */
+export function selectRefundGovernanceSections(
+  document: MarketplacePolicyDocument,
+  audience: PolicyAudience,
+): PolicySection[] {
+  return selectSectionsForAudience(document, audience).filter((section) =>
+    REFUND_GOVERNANCE_SECTION_KEYS.includes(section.key),
+  );
 }
 
 // — Content hash —

@@ -59,6 +59,7 @@ import {
   SellerRefundPolicyVersionRecord,
   RefundProcedureKind,
 } from "./seller-refund-policy";
+import { PolicySection } from "./marketplace-policy";
 import { EmailContactPurpose, EmailContactState } from "./participant-email-contact";
 
 // — Pre-purchase disclosure —
@@ -93,6 +94,85 @@ export const RefundPolicyDisclosure = z.strictObject({
   evaluatedAt: z.iso.datetime(),
 });
 export type RefundPolicyDisclosure = z.infer<typeof RefundPolicyDisclosure>;
+
+/**
+ * The complete refund disclosure a checkout surface must be able to show
+ * (Phase 1.10).
+ *
+ * **One read, and no second source of truth.** `1.9` shipped
+ * `RefundPolicyDisclosure` — the seller's terms — and `1.3` shipped the
+ * marketplace policy's audience projection. A checkout page needed both plus the
+ * knowledge that the sale is about to bind the first of them, and assembling that
+ * per surface is how two surfaces end up disclosing different things.
+ *
+ * Every field is **derived**: the seller half is `RefundPolicyDisclosure`
+ * unchanged, and the marketplace half is `selectRefundGovernanceSections` over
+ * the version that is `ACTIVE` right now. Nothing here restates a term, and
+ * nothing here is authoritative — it is a projection of two authorities that
+ * already exist.
+ *
+ * ## Pre-purchase reads the CURRENT versions, deliberately
+ *
+ * The opposite clock from a receipt, and for the opposite reason: a buyer about
+ * to pay is agreeing to what stands **now**, and the binding below is the promise
+ * that what stands now is exactly what their Order will carry.
+ */
+export const CheckoutRefundDisclosure = z.strictObject({
+  /** The seller's terms, complete. `available: false` means checkout refuses. */
+  sellerPolicy: RefundPolicyDisclosure,
+  /**
+   * The marketplace refund rules in force, projected for the buyer.
+   *
+   * `null` when no marketplace policy is `ACTIVE` — a state in which checkout
+   * already refuses every sale, shown honestly rather than as an empty section.
+   * `refundSections` may be empty for an active version that states no refund
+   * governance, which is 1.0.0's real answer and not a gap.
+   */
+  marketplacePolicy: z
+    .strictObject({
+      policyId: z.string().min(1).max(191),
+      policyVersion: z.string().min(1).max(64),
+      contentHash: z.string().min(1).max(80),
+      refundSections: z.array(PolicySection),
+    })
+    .nullable(),
+  /**
+   * What the Order will bind, stated before it binds it.
+   *
+   * The point of the whole shape: a buyer is shown terms and the sale then
+   * records *those exact versions*, so "the policy I was shown" and "the policy
+   * that governs my purchase" are the same object rather than two reads that
+   * happened to agree.
+   */
+  binding: z.strictObject({
+    /** The exact seller version a purchase now would bind. `null` when none. */
+    sellerRefundPolicy: z
+      .strictObject({
+        policyId: z.string().min(1).max(191),
+        policyVersion: z.string().min(1).max(64),
+        contentHash: z.string().min(1).max(80),
+      })
+      .nullable(),
+    /** The exact marketplace version a purchase now would bind. */
+    marketplacePolicy: z
+      .strictObject({
+        policyId: z.string().min(1).max(191),
+        policyVersion: z.string().min(1).max(64),
+        contentHash: z.string().min(1).max(80),
+      })
+      .nullable(),
+    /**
+     * Whether checkout refuses a sale it cannot bind. Always `true`.
+     *
+     * A literal because it is `1.9`'s structural guarantee rather than a setting:
+     * a sale that completed without a bound refund policy would be a purchase
+     * whose terms nobody could produce afterwards.
+     */
+    saleRefusedWithoutBinding: z.literal(true),
+  }),
+  evaluatedAt: z.iso.datetime(),
+});
+export type CheckoutRefundDisclosure = z.infer<typeof CheckoutRefundDisclosure>;
 
 // — Receipt —
 
@@ -204,9 +284,17 @@ export type OrderRefundReceiptView = z.infer<typeof OrderRefundReceiptView>;
 export const RECEIPT_SURFACE = {
   /** What exists today. */
   readContract: "IMPLEMENTED",
-  /** What does not. */
-  renderer: "NOT_IMPLEMENTED",
-  delivery: "NOT_IMPLEMENTED",
+  /**
+   * Implemented in `1.10`.
+   *
+   * `1.9` recorded this as `NOT_IMPLEMENTED` on the reasoning that the hard part
+   * was policy archaeology rather than presentation — and that reasoning is what
+   * made the renderer small when it came: `OrderReceiptView` answers the
+   * questions, and `renderBuyerConfirmation` prints them.
+   */
+  renderer: "IMPLEMENTED",
+  /** `1.5`'s durable outbound email, carrying the `ORDER_CONFIRMATION` purpose. */
+  delivery: "IMPLEMENTED",
   /** What the Order already carries, so a later renderer needs no backfill. */
   durableOnTheOrder: [
     "SELLER_REFUND_POLICY_ID",

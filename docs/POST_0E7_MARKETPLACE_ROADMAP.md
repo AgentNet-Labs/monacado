@@ -112,6 +112,7 @@ labels sort in.
 | 25 | **1.7** | **Stripe Tax Transaction Recording and Private Tax Capsule Foundation** — post-payment provider reporting, durable audit-efficient tax record, retry/recovery, reconciliation, first private capsule | **complete** — `71d28f2` |
 | 26 | **1.8** | **Tax Recording Operations and Recovery** — dispatcher endpoint, scheduler, best-effort immediate attempt, backlog/status tooling, governed requeue, operational readiness | **complete** — `c16bdfd` |
 | 27 | **1.9** | **Refunds and Tax Reversals** — line-unit refund execution, versioned Seller refund policy bound at purchase, Stripe TEST refund adapter, Stripe Tax reversal adapter, independently durable payment/tax halves, promoter-commission recovery seam, reconciliation, private refund capsules | **complete** |
+| 28 | **1.10** | **Marketplace Refund Policy Governance and Receipt Contract** — Marketplace Policy 1.1.0 stating the settled refund rules, Seller/Promoter/Buyer refund renderings, the authoritative receipt read contract and its rendering, checkout refund disclosure with binding confirmation | **complete** — policy version `DRAFT`, activation pending |
 
 ### Forward sequence
 
@@ -1968,6 +1969,105 @@ Detail: [`REFUNDS_AND_TAX_REVERSALS.md`](REFUNDS_AND_TAX_REVERSALS.md).
 
 ---
 
+## 1.10 — Marketplace Refund Policy Governance and Receipt Contract
+
+**Complete.** `1.9` settled every rule governing a refund and deliberately wrote
+none of them into the Marketplace Policy: version 1.0.0 was `ACTIVE` and already
+accepted, and editing an accepted document in place is the one thing a governance
+model exists to make impossible. It recorded the requirement in
+`REQUIRED_MARKETPLACE_POLICY_NEXT_VERSION` instead. **This is that version, plus
+the receipt that states it to a buyer.** No refund mechanics changed.
+
+**Marketplace Policy 1.1.0, recorded `DRAFT`.** Content ref
+`marketplace-policy/1.1.0`, hash `sha256:b0a48644…8e74b6`, all three audiences,
+`requiresReacceptance: true`. Four new sections — `REFUNDS_AND_CANCELLATION`,
+`REFUND_REQUESTS`, `PURCHASE_RECEIPTS`, `REFUND_EFFECT_ON_PROCEEDS` — plus
+extensions to the seller's and promoter's obligations and the buyer's checkout
+disclosure. **1.0.0 is untouched**: `sha256:e50e8771…43cb85`, still `ACTIVE`, and
+1.1.0 is written out as a complete document rather than composed from it, because
+a shared paragraph constant would have made an edit to 1.1.0 silently move
+1.0.0's hash and therefore what participants who accepted it are recorded as
+having accepted.
+
+**The refund unit is stated as the marketplace's, not the Order model's.** The
+policy says a refund returns one or more complete lines, that unselected lines are
+unaffected, and that today's single-line Order is *a consequence of how orders are
+currently composed and not a rule that a refund must cover an entire order*. A
+test asserts across every audience's rendering that nothing anywhere reads as
+"whole Orders only".
+
+**Shipping refundability follows the seller's declared policy** — never all, never
+none, never apportioned — and where a subset refund would split a single carriage
+charge, the policy says Monacado may require that question settled before
+executing rather than applying a rule nobody adopted. `SHIPPING_ALLOCATION_SEAM`,
+stated to the parties it binds.
+
+**Proceeds and commission, in commercially understandable terms and naming no
+internal record.** Unpaid amounts attributable to refunded merchandise cease to be
+payable; already-paid ones may be recovered, offset, or reflected as an
+account-balance adjustment under settlement rules; a refund never erases a payment
+that was made. A promoter's commission is conditional on the sale remaining
+economically valid, and a promoter neither sets the seller's terms nor decides a
+refund.
+
+**Legal posture stays operational.** Statutory buyer rights are not displaced;
+Monacado retains merchant-of-record authority under applicable law and provider
+requirements; no governing law, jurisdiction, consumer-law guarantee, provider
+name, or commercial percentage appears anywhere in the document.
+
+**The receipt is one read and one clock per fact.** `OrderReceiptView` carries the
+money, the line, the shipping treatment, `1.9`'s historical refund view whole, and
+the refund rules **from the marketplace version the Order bound** — so an Order
+bound to 1.0.0 shows that 1.0.0 states none, rather than borrowing 1.1.0's. The
+only value read from the seller's current configuration is the one field
+explicitly named as current. It names no promoter, no economics, and no buyer
+identity.
+
+**`1.9` recorded the renderer as `NOT_IMPLEMENTED`, and that reasoning is what
+made it small when it arrived.** `renderBuyerConfirmation` now carries the exact
+seller policy version reference, the complete governing policy, the procedure, the
+contact disclosed at purchase, and the current contact beside it only when it
+differs — and renders `1.1`'s original thin confirmation when a receipt cannot be
+assembled, because withholding a buyer's receipt over its refund section would
+deny them the fact they want most.
+
+**Checkout gained one read and no second source of truth.**
+`readCheckoutRefundDisclosure` returns the seller's complete terms, the active
+marketplace version's buyer-facing refund sections, and the exact versions the
+Order will bind — the seller half *is* `1.9`'s disclosure, called. An integration
+test drives the disclosure and then a real checkout and asserts the Order binds
+what the disclosure named.
+
+**The operator path publishes a second version, and still refuses to supersede.**
+`--version=` selects a shipped version, defaulting to the newest; an unshipped one
+is refused rather than defaulted. Recording a `DRAFT` beside a standing `ACTIVE`
+version is now permitted — a `DRAFT` governs nobody, and it is how the next
+version comes into existence — while **activating over a standing version is still
+refused**. That gate was written to stop a command retiring live terms by
+accident, which recording cannot do.
+
+**Two gaps found and recorded rather than closed with schema.** There is **no
+authoritative seller display name** anywhere in the repository; a Storefront name
+would name the promoter on a promoted sale and an account address is not a trading
+name, so `seller.displayName` is `null` by type. And **no purchase-time product
+description is bound to an Order** — the bound Listing version carries placement
+and commercial terms only, and `Product.currentSourceRecordVersion` is mutable, so
+a title read now would be today's. Like `1.9`'s line-level tax evidence, that one
+**must be recorded at sale time** and is required of whichever phase implements
+`OrderLine` / basket checkout.
+
+**Activation is pending and deliberate.** 1.1.0 stands `DRAFT`; activating it
+retires 1.0.0, starts governing live sales, and obliges every activated seller and
+promoter to accept again. **No production activation occurred, no migration was
+written, no AgentNet publication occurred, and no production network or provider
+write occurred** — the single activation anywhere is inside the disposable local
+database, in one test that restores 1.0.0 afterwards.
+
+Detail:
+[`MARKETPLACE_REFUND_GOVERNANCE_AND_RECEIPTS.md`](MARKETPLACE_REFUND_GOVERNANCE_AND_RECEIPTS.md).
+
+---
+
 ## Standing constraints across the track
 
 1. **Publication stays gated and asynchronous.** Creators and promoters never hold
@@ -2000,3 +2100,4 @@ Detail: [`REFUNDS_AND_TAX_REVERSALS.md`](REFUNDS_AND_TAX_REVERSALS.md).
 - [`TAX_TRANSACTION_RECORDING_AND_PRIVATE_CAPSULE.md`](TAX_TRANSACTION_RECORDING_AND_PRIVATE_CAPSULE.md)
 - [`TAX_RECORDING_OPERATIONS.md`](TAX_RECORDING_OPERATIONS.md)
 - [`REFUNDS_AND_TAX_REVERSALS.md`](REFUNDS_AND_TAX_REVERSALS.md)
+- [`MARKETPLACE_REFUND_GOVERNANCE_AND_RECEIPTS.md`](MARKETPLACE_REFUND_GOVERNANCE_AND_RECEIPTS.md)
