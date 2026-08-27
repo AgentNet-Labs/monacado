@@ -1445,7 +1445,11 @@ describeDb("Phase 0M.8 — payment-provider onboarding and governed activation",
            provider once a sale was paid — and `refund` until Phase 1.9, which
            legitimately owns `OrderRefund`. Narrowed for the same reason every
            other member was: what this asserts is that *0M.8* added none of them.
-           `payout` and `chargeback` stay, because nothing owns either yet. */
+           `payout` stays, because nothing owns one yet. `chargeback` stays for a
+           different reason now: Phase 1.11 designed dispute ingestion and owns
+           `TransactionDispute`, but a chargeback is a KIND OF REVERSAL on
+           `0M.T1`'s accounting entry rather than a table — so a `chargeback`
+           table would still mean a second ledger had appeared. */
         "riskdecision",
       ]) {
         expect(names.some((n) => n.includes(forbidden)), `${forbidden} table must not exist`).toBe(

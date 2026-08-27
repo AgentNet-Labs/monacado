@@ -94,6 +94,7 @@ import {
   RefundRefusedError,
 } from "./refund-errors";
 import { recordFullReversalInTx } from "./transaction-reversal-service";
+import { disputeBlockingRefundIn } from "./transaction-dispute-service";
 
 type Db = ReturnType<typeof getPrisma>;
 type Tx = Db | Prisma.TransactionClient;
@@ -397,6 +398,23 @@ export async function evaluateRefundEligibility(
        other route — a chargeback, or an operator's direct accounting entry.
        Refunding it again would be a second credit. */
     if (reversed > 0 && existingRefund === 0) refusals.push("SALE_ALREADY_REVERSED");
+
+    /* A payment dispute on this sale (Phase 1.11).
+     *
+     * Checked here rather than only at execution because BOTH paths run through
+     * this function: `verifyExecutableRefund` re-evaluates eligibility
+     * immediately before contacting the provider, so a refund requested before a
+     * dispute arrived and claimed after it meets the same refusal.
+     *
+     * Refunding while a bank is deciding is how a buyer is made whole twice:
+     * Monacado returns the money, the network then takes it as well, and only
+     * one of those is expressible as a Monacado reversal entry. A LOST dispute
+     * is named separately from `SALE_ALREADY_REVERSED` — which would otherwise
+     * be what the caller was told, since a lost dispute writes a reversal — so
+     * an operator learns the money left by chargeback rather than by refund. */
+    const disputeBlock = await disputeBlockingRefundIn(db, snapshot.id);
+    if (disputeBlock !== null && existingRefund === 0) refusals.push(disputeBlock);
+
     if (snapshot.currency !== order.currency) refusals.push("CURRENCY_MISMATCH");
     if (settlement !== null && settlement.state === "REVERSED" && existingRefund === 0) {
       refusals.push("CONFLICTING_REFUND_STATE");
@@ -1149,6 +1167,11 @@ async function raiseProceedsRecoveryExceptionsInTx(
       data: {
         id,
         refundId: args.refundId,
+        disputeId: null,
+        /* This writer only ever has a refund. The dispute half of the cause
+           vocabulary is written by `transaction-dispute-service`, which is the
+           only other thing that may raise one of these rows. */
+        causeKind: "REFUND",
         orderId: args.orderId,
         snapshotId: args.snapshotId,
         proceedsObligationId: obligation.id,

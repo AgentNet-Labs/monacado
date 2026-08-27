@@ -87,6 +87,25 @@ export const CAPSULE_VISIBILITY_POLICY = {
    * workflows.
    */
   TaxReversal: "PRIVATE",
+  /**
+   * **Private** (Phase 1.11). That a sale's payment was disputed, and how it
+   * went.
+   *
+   * The sharpest disclosure question of the four, and the same answer. A public
+   * dispute capsule would publish, per sale, that a cardholder went to their
+   * bank rather than to the seller — a statement about a seller's dispute rate
+   * and, on a marketplace where a Listing has one Product and one seller, an
+   * inference about an individual buyer's conduct toward a specific merchant.
+   * Card networks treat dispute rates as confidential merchant performance data,
+   * and neither the buyer nor the seller agreed to either disclosure.
+   *
+   * The ADR lists disputes among the records that stay relational-first and are
+   * not canonical entity capsules. This projection does not contradict that: the
+   * `TransactionDispute` ROW remains the authoritative record, and the capsule is
+   * a read-only private projection of it, exactly as `Refund` and `TaxReversal`
+   * are of theirs. Nothing projects back.
+   */
+  Dispute: "PRIVATE",
 } as const satisfies Record<string, CapsuleVisibility>;
 
 export type GovernedCapsuleType = keyof typeof CAPSULE_VISIBILITY_POLICY;

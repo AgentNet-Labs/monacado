@@ -68,6 +68,7 @@ import {
   renderBuyerPaymentFailed,
   renderBuyerRefundCompleted,
   renderParticipantRefundRecorded,
+  renderParticipantDisputeRecorded,
   renderParticipantSaleRecorded,
 } from "./transactional-notice-service";
 
@@ -139,7 +140,11 @@ async function resolveOrderMessage(
 
   /* Participant mail. The address is the account's, which is already Monacado's
      and already authoritative — `1.5`'s rule, and no new storage. */
-  if (delivery.purpose === "SALE_RECORDED" || delivery.purpose === "REFUND_RECORDED") {
+  if (
+    delivery.purpose === "SALE_RECORDED" ||
+    delivery.purpose === "REFUND_RECORDED" ||
+    delivery.purpose === "DISPUTE_RECORDED"
+  ) {
     if (delivery.recipientParticipantId === null) return unresolvable("RECIPIENT_UNRESOLVABLE");
     const participant = await db.marketplaceParticipant.findUnique({
       where: { id: delivery.recipientParticipantId },
@@ -150,7 +155,9 @@ async function resolveOrderMessage(
     const { subject, body } =
       delivery.purpose === "SALE_RECORDED"
         ? renderParticipantSaleRecorded(order)
-        : renderParticipantRefundRecorded(order);
+        : delivery.purpose === "REFUND_RECORDED"
+          ? renderParticipantRefundRecorded(order)
+          : renderParticipantDisputeRecorded(order);
     return { resolved: true, destination: address, subject, text: body };
   }
 
@@ -202,12 +209,23 @@ async function resolveOrderMessage(
     };
   }
 
-  const rendered =
-    delivery.purpose === "PAYMENT_FAILED"
-      ? renderBuyerPaymentFailed(order)
-      : renderBuyerOrderExpired(order);
-
-  return { resolved: true, destination: address, subject: rendered.subject, text: rendered.body };
+  /* EXHAUSTIVE, not a two-branch fallback (hardened at Phase 1.11).
+   *
+   * This was `purpose === "PAYMENT_FAILED" ? paymentFailed : orderExpired`,
+   * which meant every purpose added later silently rendered "your order
+   * expired" to a buyer. That is a real hazard rather than a hypothetical one:
+   * 1.11 added a purpose, and the wrong message would have gone out with no
+   * test failing. An unrecognised purpose is now an honest unresolvable — the
+   * dispatcher records it and nobody is told something false. */
+  if (delivery.purpose === "PAYMENT_FAILED") {
+    const rendered = renderBuyerPaymentFailed(order);
+    return { resolved: true, destination: address, subject: rendered.subject, text: rendered.body };
+  }
+  if (delivery.purpose === "ORDER_CANCELLED") {
+    const rendered = renderBuyerOrderExpired(order);
+    return { resolved: true, destination: address, subject: rendered.subject, text: rendered.body };
+  }
+  return unresolvable("RECIPIENT_UNRESOLVABLE");
 }
 
 // — Verification —

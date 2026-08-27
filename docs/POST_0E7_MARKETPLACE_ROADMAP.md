@@ -113,6 +113,7 @@ labels sort in.
 | 26 | **1.8** | **Tax Recording Operations and Recovery** — dispatcher endpoint, scheduler, best-effort immediate attempt, backlog/status tooling, governed requeue, operational readiness | **complete** — `c16bdfd` |
 | 27 | **1.9** | **Refunds and Tax Reversals** — line-unit refund execution, versioned Seller refund policy bound at purchase, Stripe TEST refund adapter, Stripe Tax reversal adapter, independently durable payment/tax halves, promoter-commission recovery seam, reconciliation, private refund capsules | **complete** |
 | 28 | **1.10** | **Marketplace Refund Policy Governance and Receipt Contract** — Marketplace Policy 1.1.0 stating the settled refund rules, Seller/Promoter/Buyer refund renderings, the authoritative receipt read contract and its rendering, checkout refund disclosure with binding confirmation | **complete** — policy version `DRAFT`, activation pending |
+| 29 | **1.11** | **Disputes and Chargebacks** — provider dispute intake behind the existing signed webhook (Stripe TEST), a dispute event ledger with replay and out-of-order tolerance, dispute-held seller/promoter proceeds, recovery evidence for already-paid economics, `CHARGEBACK` reversal accounting on a lost dispute, refund/dispute double-reversal refusal, a fail-closed tax consequence, local reconciliation, `dispute:status`, and a private dispute capsule | **implemented — not committed** |
 
 ### Forward sequence
 
@@ -130,6 +131,10 @@ halves of the cross-cutting workstreams below — `0M.T2`, `0M.R2`, and `0M.N2` 
 together with the live-mode gate itself, enumerated in
 [`EXECUTABLE_CHECKOUT_AND_STRIPE_TEST_MODE.md`](EXECUTABLE_CHECKOUT_AND_STRIPE_TEST_MODE.md).
 **No unstarted `1.x` phase is authorized by appearing here.**
+
+**`1.11` was authorized by explicit instruction, not by this table.** It is
+recorded above after the fact, which is the direction this document requires:
+the table follows the work rather than authorizing it.
 
 **`1.1` closed the operational gaps `1.0` left in the buyer's experience**: an
 abandoned checkout now resolves on Stripe's own `checkout.session.expired`, and

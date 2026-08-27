@@ -396,12 +396,26 @@ export class OrderPersistenceFailureError extends OrderServiceError {
  * `holdReason` is a bounded code, never free text — safe to log and safe to
  * surface, on the same terms as every other reason vocabulary here.
  */
+export type ProceedsPayoutHoldReason =
+  | "PARTICIPANT_PAYOUT_RESTRICTED"
+  | "SALE_REVERSED"
+  /**
+   * A payment dispute is open on the sale this claim arises from (Phase 1.11).
+   *
+   * Distinct from `SALE_REVERSED`, and deliberately so: a reversed sale is
+   * decided and the money is gone, whereas a disputed sale may still be won, at
+   * which point the claim becomes payable again on its ordinary terms. An
+   * operator told "reversed" about a dispute that is still open would conclude
+   * a payout was permanently lost when it is merely held.
+   */
+  | "SALE_DISPUTED";
+
 export class ProceedsPayoutHeldError extends OrderServiceError {
   readonly obligationId: string;
-  readonly holdReason: "PARTICIPANT_PAYOUT_RESTRICTED" | "SALE_REVERSED";
+  readonly holdReason: ProceedsPayoutHoldReason;
   constructor(
     obligationId: string,
-    holdReason: "PARTICIPANT_PAYOUT_RESTRICTED" | "SALE_REVERSED",
+    holdReason: ProceedsPayoutHoldReason,
   ) {
     super("PROCEEDS_PAYOUT_HELD", "This claim may not become payout-eligible");
     this.name = "ProceedsPayoutHeldError";

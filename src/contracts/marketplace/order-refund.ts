@@ -506,6 +506,25 @@ export const REFUND_REFUSAL_CODES = [
   "REFUND_ALREADY_EXISTS",
   /** The sale already carries a `1.2` reversal entry. */
   "SALE_ALREADY_REVERSED",
+  /**
+   * A payment dispute is open on this sale (Phase 1.11).
+   *
+   * Refunding while a bank is deciding whether to reverse the same payment is
+   * how a buyer ends up made whole twice: Monacado returns the money, the
+   * network then takes it as well, and only one of those is expressible as a
+   * Monacado reversal entry. The dispute is resolved first, and the refund
+   * remains available afterwards if the dispute is won.
+   */
+  "SALE_DISPUTE_OPEN",
+  /**
+   * A payment dispute on this sale was lost (Phase 1.11).
+   *
+   * The funds have already gone back to the buyer through the network. This is
+   * distinct from `SALE_ALREADY_REVERSED` — which is what the caller would
+   * otherwise be told, since a lost dispute writes a reversal — so that an
+   * operator learns the money left by chargeback rather than by refund.
+   */
+  "SALE_DISPUTE_LOST",
 
   // — Refund unit —
   /** No line was selected. A refund of nothing is not a refund. */

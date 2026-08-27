@@ -1638,9 +1638,29 @@ describeDb("1.2 — pre-live commerce controls", () => {
         "REFUND_EXECUTION_NOT_CONFIGURED",
         "REFUND_PROCESSOR_NOT_OPERATIONAL",
         "TAX_REVERSAL_NOT_CONFIGURED",
+        /* Phase 1.11 — disputes, and the two halves are deliberately separate.
+         *
+         * `DISPUTE_INTAKE_NOT_CONFIGURED` is a CONFIGURATION gap: the fixture
+         * declares no Stripe block, so no dispute event could arrive. Configure
+         * one and it clears.
+         *
+         * `DISPUTE_EVIDENCE_RESPONSE_NOT_IMPLEMENTED` is reported BY
+         * CONSTRUCTION and no configuration clears it, exactly as
+         * `LIVE_PROVIDER_NOT_ENABLED` is. That is the point of the control: a
+         * marketplace that records disputes and cannot answer them loses every
+         * one it might have won, so intake alone must not read as chargeback
+         * readiness.
+         *
+         * `DISPUTE_WEBHOOK_NOT_VERIFIABLE` is absent because it is conditional
+         * on intake being configured at all — one gap is reported once.
+         * `DISPUTE_BACKLOG` is satisfied because an empty book is a healthy
+         * one, on `REFUND_BACKLOG`'s terms. */
+        "DISPUTE_INTAKE_NOT_CONFIGURED",
+        "DISPUTE_EVIDENCE_RESPONSE_NOT_IMPLEMENTED",
         "LIVE_PROVIDER_NOT_ENABLED",
       ]);
       expect(readiness.satisfied).toContain("REFUND_BACKLOG");
+      expect(readiness.satisfied).toContain("DISPUTE_BACKLOG");
       expect(readiness.satisfied).not.toContain("TAX_CALCULATION");
       expect(readiness.ready).toBe(false);
     });

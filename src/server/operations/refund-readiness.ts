@@ -138,7 +138,28 @@ export const REFUND_CAPABILITY_IMPLEMENTATION = {
   paymentRefundAdapter: "STRIPE_TEST_MODE",
   taxReversalAdapter: "STRIPE_TAX_TEST_MODE",
   partialRefunds: "REFUSED",
-  chargebackIngestion: "NOT_IMPLEMENTED",
+  /**
+   * Phase 1.11 built dispute intake: the five `charge.dispute.*` events are
+   * recorded durably, hold unpaid proceeds, and raise recovery evidence.
+   *
+   * The word is narrow on purpose. **Ingestion** is implemented; responding to a
+   * dispute is not — see `disputeEvidenceSubmission` below. A single
+   * "chargebacks: implemented" would be read as covering both.
+   */
+  chargebackIngestion: "STRIPE_TEST_MODE",
+  /**
+   * Submitting evidence to the provider remains unbuilt (Phase 1.11).
+   *
+   * Not a convenience deferral: the evidence that answers a card-not-present
+   * dispute is files, there is no document store anywhere in this repository,
+   * and the text-only alternative is buyer PII. See
+   * `DISPUTE_EVIDENCE_SUBMISSION_SEAM`.
+   */
+  disputeEvidenceSubmission: "NOT_IMPLEMENTED",
+  /** A chargeback for less than the sale total has no expressible entry. */
+  partialDisputeAccounting: "NOT_IMPLEMENTED",
+  /** A dispute-caused tax correction has no expressible record. */
+  disputeCausedTaxReversal: "NOT_IMPLEMENTED",
   payoutClawbackExecution: "NOT_IMPLEMENTED",
 } as const;
 
@@ -233,8 +254,23 @@ export function evaluateRefundReadiness(
  * them.
  */
 export const REFUND_READINESS_EXCLUSIONS = {
-  /** A bank taking funds is a different event with different evidence. */
-  chargebackAndDisputeHandling: "NOT_IMPLEMENTED",
+  /**
+   * Phase 1.11 implemented dispute INTAKE and tracking.
+   *
+   * `1.9` recorded this as `NOT_IMPLEMENTED` and said "a bank taking funds is a
+   * different event with different evidence". That is still true, and 1.11 is
+   * the phase that built the evidence. What remains excluded is responding: see
+   * `disputeEvidenceResponse`.
+   */
+  chargebackAndDisputeHandling: "INTAKE_AND_TRACKING_ONLY",
+  /**
+   * Answering a dispute still happens in the provider's dashboard.
+   *
+   * A marketplace that cannot respond to a dispute loses every one it could
+   * have won, so this is surfaced as a live-commerce readiness blocker rather
+   * than left as a footnote.
+   */
+  disputeEvidenceResponse: "NOT_IMPLEMENTED",
   /** Requires the allocation ruling `PARTIAL_REFUND_DEFERRAL` names. */
   partialRefunds: "REFUSED",
   /** No clawback, no negative balance, no offset. See RECOVERY_EXECUTION_DEFERRAL. */

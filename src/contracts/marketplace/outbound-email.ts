@@ -106,6 +106,25 @@ export const OUTBOUND_EMAIL_PURPOSES = [
    * purpose covering both would render one of them the wrong message.
    */
   "REFUND_RECORDED",
+  /**
+   * A seller's or promoter's notice that a sale of theirs is disputed
+   * (Phase 1.11).
+   *
+   * Distinct from `REFUND_RECORDED` for the reason that one is distinct from
+   * `REFUND_COMPLETED`: a refund is Monacado returning money because somebody
+   * decided to, and a dispute is a bank reversing a payment because a cardholder
+   * asked it to. Telling a seller "a sale was refunded" when their buyer went to
+   * their bank would misdescribe both what happened and what the seller may need
+   * to do about it.
+   *
+   * **There is deliberately no buyer-facing counterpart.** The cardholder
+   * disputed with their bank, not with Monacado; a snapshot address may reach
+   * somebody who did not file it; and anything Monacado writes to a buyer about
+   * a live dispute becomes correspondence a bank may weigh. The precedent is
+   * already recorded for the closest analogue — a failed tax reversal
+   * deliberately emails nobody.
+   */
+  "DISPUTE_RECORDED",
   /** Proof-of-control for an email contact. Owed to nobody; obligation-free. */
   "EMAIL_VERIFICATION",
 ] as const;

@@ -87,6 +87,7 @@ import {
   type ReviewEligibility,
   type ReviewSubmissionAuthorityRecord,
 } from "../../contracts/marketplace/purchase-evidence";
+import { NON_TERMINAL_DISPUTE_STATUSES } from "../../contracts/marketplace/transaction-dispute";
 import type { ReviewCapsuleKind } from "../../contracts/marketplace/review-authority";
 import type { PaymentProvider } from "../../contracts/marketplace/payment-account";
 import { getPrisma } from "../db/client";
@@ -873,6 +874,20 @@ export async function advanceProceedsObligation(
        *     answer that can disagree with it.
        *   - a REVERSED sale — the money went back, so there is nothing left to
        *     become eligible. Paying out on a reversed sale is paying twice.
+       *   - an OPEN DISPUTE on the sale (Phase 1.11) — a bank is deciding
+       *     whether to take the money back, and paying a party out while it
+       *     decides is paying out money Monacado may not keep.
+       *
+       * The dispute hold is a PREDICATE, not a stored flag, and that is the
+       * whole design. Three alternatives were refused: a fourth
+       * ProceedsObligation state reverses a committed forward-only transition
+       * table; a `payoutHeldUntil` column is named on
+       * NEVER_ON_PROCEEDS_OBLIGATION; and an active `payout:receive`
+       * ParticipantRestriction would hold EVERY payout for that participant
+       * across every sale, which is grossly over-broad for one disputed Order.
+       * Computing it from the dispute rows means a won dispute lifts the hold
+       * with nothing to un-set — there is no stored flag able to be left behind,
+       * which is precisely the stale-hold bug this avoids.
        *
        * Nothing here blocks PAID. A claim already settled is history, and
        * refusing to record what was actually paid would make the ledger wrong
@@ -894,6 +909,15 @@ export async function advanceProceedsObligation(
         });
         if (reversed > 0) {
           throw new ProceedsPayoutHeldError(obligationId, "SALE_REVERSED");
+        }
+        const disputed = await tx.transactionDispute.count({
+          where: {
+            snapshotId: current.snapshotId,
+            status: { in: [...NON_TERMINAL_DISPUTE_STATUSES] },
+          },
+        });
+        if (disputed > 0) {
+          throw new ProceedsPayoutHeldError(obligationId, "SALE_DISPUTED");
         }
       }
       const row = await tx.proceedsObligation.update({

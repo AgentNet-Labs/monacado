@@ -2383,7 +2383,16 @@ model TransactionEconomicSnapshot {
   proceedsObligations ProceedsObligation[]
 
   /// The refund execution that produced the reversal above, if any (Phase 1.9).
-  refund                     OrderRefund?
+  refund OrderRefund?
+
+  /// Payment disputes raised against this sale (Phase 1.11).
+  ///
+  /// A LIST, unlike `reversal` and `refund`: a card network permits a second
+  /// dispute after a first is resolved, and a unique constraint here would turn
+  /// a real re-presentment into an unrecoverable insert failure inside a
+  /// webhook. At most one may be NON-TERMINAL at a time, which the intake
+  /// service enforces rather than the schema.
+  disputes                   TransactionDispute[]
   proceedsRecoveryExceptions ProceedsRecoveryException[]
 
   @@index([internalListingId, occurredAt])
@@ -2651,6 +2660,7 @@ model Order {
   /// The refund-support contact DISCLOSED TO THIS BUYER at purchase (Phase 1.9).
   /// At most one, written with the policy binding in the same transaction.
   refundContactEvidence      OrderRefundContactEvidence?
+  disputes                   TransactionDispute[]
 
   @@index([buyerAccountId, placedAt])
   @@index([sellerParticipantId, lifecycle])
@@ -2713,13 +2723,18 @@ model ProceedsObligation {
   participant MarketplaceParticipant      @relation(fields: [participantId], references: [id], onDelete: Restrict)
 
   /// Raised when this claim was already PAID or already ELIGIBLE at the moment
-  /// its sale was refunded (Phase 1.9). At most one — a claim is settled once,
-  /// and one refund per Order means one occasion for an exception.
+  /// its sale was refunded (Phase 1.9) or disputed (Phase 1.11).
+  ///
+  /// At most ONE PER CAUSE. 1.9 made this a single optional row, reasoning that
+  /// "a claim is settled once, and one refund per Order means one occasion for
+  /// an exception". 1.11 added the second occasion: a sale can be refunded and
+  /// then charged back, and an operator must see those as two separate claims
+  /// against the same party rather than one that overwrote the other.
   ///
   /// NOTE WHAT IS ABSENT: no `reversedAt`, no `recoveredAmount`, and no fourth
-  /// state. The obligation is NEVER rewritten by a refund; the exception is a
-  /// separate row precisely so that stays true.
-  recoveryException ProceedsRecoveryException?
+  /// state. The obligation is NEVER rewritten by a refund or by a dispute; the
+  /// exception is a separate row precisely so that stays true.
+  recoveryExceptions ProceedsRecoveryException[]
 
   /// ONE obligation per party per sale, enforced by the database rather than by
   /// a service remembering. Paying a party twice for one sale is the failure
@@ -3558,6 +3573,11 @@ model TransactionReversal {
   /// stays the authoritative accounting record either way.
   refund OrderRefund?
 
+  /// The Phase 1.11 dispute that produced this entry, where one did. The other
+  /// half of the sentence above: a CHARGEBACK reversal is recorded from a
+  /// provider dispute outcome, and this is the evidence it came from.
+  dispute TransactionDispute?
+
   @@index([orderId])
   @@index([kind, occurredAt])
   @@index([occurredAt])
@@ -4213,14 +4233,30 @@ model ProceedsRecoveryException {
   /// two travel in opposite directions.
   id String @id @db.VarChar(191)
 
-  /// The refund that raised it.
-  refundId   String @db.VarChar(191)
-  orderId    String @db.VarChar(191)
-  snapshotId String @db.VarChar(191)
+  /// WHAT RAISED IT. Exactly one of these is non-NULL, enforced in the service
+  /// that writes the row. Phase 1.9 had only refunds, so `refundId` was NOT NULL
+  /// and carried the cause implicitly. Phase 1.11 added the second cause, and a
+  /// nullable pair plus an explicit `causeKind` is what keeps "which fact put
+  /// this party in debt" answerable without reading two FKs and inferring.
+  refundId   String? @db.VarChar(191)
+  disputeId  String? @db.VarChar(191)
+  orderId    String  @db.VarChar(191)
+  snapshotId String  @db.VarChar(191)
 
-  /// The claim at stake. UNIQUE: a claim is settled once, and one refund per
-  /// Order means one occasion for an exception against it.
-  proceedsObligationId String @unique @db.VarChar(191)
+  /// REFUND | DISPUTE. Stated rather than inferred from which FK is set: an
+  /// operator reading a backlog needs the cause in the row, and the uniqueness
+  /// constraint below needs it as a column.
+  causeKind String @db.VarChar(16)
+
+  /// The claim at stake.
+  ///
+  /// Phase 1.9 made this UNIQUE outright — one refund per Order meant one
+  /// occasion for an exception. Phase 1.11 widened it to (obligation, cause),
+  /// because a sale can be refunded AND then charged back, and the two are
+  /// separate facts about the same claim that an operator must see separately.
+  /// It is still exactly one exception per cause per claim: a replayed dispute
+  /// event is a refusal, not a second row.
+  proceedsObligationId String @db.VarChar(191)
 
   participantId String @db.VarChar(191)
   /// SELLER | PROMOTER. Monacado is deliberately not a member: its retained
@@ -4249,11 +4285,16 @@ model ProceedsRecoveryException {
 
   currency String @db.VarChar(3)
 
-  /// PAID_BEFORE_REFUND | ELIGIBLE_BEFORE_REFUND. Kept distinct because the
-  /// remedies differ: the first needs money back from a party, the second needs
-  /// a payout STOPPED before it runs.
+  /// PAID_BEFORE_REFUND | ELIGIBLE_BEFORE_REFUND | PAID_BEFORE_DISPUTE |
+  /// ELIGIBLE_BEFORE_DISPUTE. Kept distinct because the remedies differ: a PAID
+  /// one needs money back from a party, an ELIGIBLE one needs a payout STOPPED
+  /// before it runs — and the refund/dispute halves differ again, because a
+  /// dispute may still be WON and cost nobody anything.
   reasonCode              String @db.VarChar(32)
-  /// The obligation's state at the moment the refund completed: ELIGIBLE | PAID.
+  /// The obligation's state at the moment the CAUSE was recorded: ELIGIBLE|PAID.
+  /// Named for the refund because 1.9 had no other cause; the column is the same
+  /// fact for a dispute, and renaming a committed financial column to say so
+  /// would be a destructive migration bought with nothing.
   obligationStateAtRefund String @db.VarChar(16)
 
   /// OPEN | ACKNOWLEDGED | RESOLVED. Forward-only, and none of it is execution:
@@ -4276,16 +4317,21 @@ model ProceedsRecoveryException {
 
   // RESTRICT everywhere: an exception is a financial claim in the other
   // direction. Nothing it binds to may be deleted beneath it.
-  refund             OrderRefund                 @relation(fields: [refundId], references: [id], onDelete: Restrict)
+  refund             OrderRefund?                @relation(fields: [refundId], references: [id], onDelete: Restrict)
+  dispute            TransactionDispute?         @relation(fields: [disputeId], references: [id], onDelete: Restrict)
   order              Order                       @relation(fields: [orderId], references: [id], onDelete: Restrict)
   snapshot           TransactionEconomicSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
   proceedsObligation ProceedsObligation          @relation(fields: [proceedsObligationId], references: [id], onDelete: Restrict)
   participant        MarketplaceParticipant      @relation(fields: [participantId], references: [id], onDelete: Restrict)
 
   /// The operator's query: what is outstanding, oldest first.
+  /// One exception per claim per cause. See `proceedsObligationId` above.
+  @@unique([proceedsObligationId, causeKind])
+  /// The operator's query: what is outstanding, oldest first.
   @@index([status, raisedAt])
   @@index([participantId, status])
   @@index([refundId])
+  @@index([disputeId])
 }
 
 // ---------------------------------------------------------------------------
@@ -4547,4 +4593,215 @@ model OrderRefundContactEvidence {
   /// RESTRICT: a receipt's disclosure evidence outlives every later change to the
   /// seller's configuration, and the Order beneath it is never deleted.
   order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+}
+
+// ---------------------------------------------------------------------------
+// Payment disputes and chargebacks (Phase 1.11)
+//
+// A DISPUTE IS NOT A REFUND. A refund is Monacado returning funds because
+// somebody decided to; a dispute is a buyer's bank reversing a payment because
+// the cardholder asked it to. They are decided by different parties, arrive by
+// different routes, and Phase 1.2 already reserved separate vocabulary for the
+// distinction (`REVERSAL_KINDS.CHARGEBACK`, `DISPUTED_BY_BUYER`). Modelling one
+// as the other would make the ledger say Monacado chose something it did not.
+//
+// TWO TABLES, FOR THE REASON 1.5 NEEDED TWO. `TransactionDispute` is the current
+// authoritative state of one dispute; `TransactionDisputeEvent` is the
+// append-only record of what the provider said and when. The webhook handler
+// (`0M.T1`/1.0) deliberately built NO event ledger, reasoning that "the Order's
+// own lifecycle and the UNIQUE index on TransactionEconomicSnapshot.orderId
+// already answer the question". That reasoning is sound for a payment, which is
+// one-shot and terminal at PAID. It FAILS for a dispute, which is mutated by
+// five event types over weeks with no natural terminal guard, so replay and
+// re-ordering have nothing to key on. 1.11 narrows that decision by evidence
+// for disputes only; it does not overturn it for payments.
+//
+// NO RAW PROVIDER PAYLOAD, EVER. Not a blob column, not a JSON column, not a
+// "for debugging" text field — the same rule `ProviderEmailEvent` follows, and
+// for the same reason: a payload column is where buyer identity ends up.
+//
+// NO BUYER PERSONAL DATA ANYWHERE. Stripe's dispute evidence object carries
+// customer email, name, purchase IP, and billing/shipping addresses. None of it
+// is stored here. `OrderBuyerSnapshot` is the one place buyer identity lives.
+//
+// THE ORIGINAL SALE IS NEVER REWRITTEN. No column of TransactionEconomicSnapshot
+// moves, Order.lifecycle stays PAID, and a lost dispute is recorded as a
+// SEPARATE TransactionReversal entry — new evidence about a completed sale,
+// never a correction of one.
+
+/// One payment dispute raised against one sale (Phase 1.11).
+model TransactionDispute {
+  /// Opaque identity (mon:dspt:<opaque>). Distinct from mon:txrev: — the dispute
+  /// is the provider's assertion, the reversal is Monacado's accounting entry,
+  /// and a dispute may exist for weeks before any entry is written (or be won,
+  /// and never produce one at all).
+  id String @id @db.VarChar(191)
+
+  /// The sale under dispute. NULLABLE, deliberately: a dispute Monacado cannot
+  /// attribute to a settlement is still a real withdrawal from its balance, and
+  /// discarding it because the FK cannot be satisfied is how a chargeback
+  /// becomes invisible. An unattributed dispute is durable and operator-visible.
+  orderId    String? @db.VarChar(191)
+  snapshotId String? @db.VarChar(191)
+
+  /// STRIPE. The provider whose statement this is.
+  provider     String @db.VarChar(32)
+  /// TEST. Mirrors OrderRefund.providerMode. A dispute whose provider says
+  /// `livemode: true` is refused into MANUAL_REMEDIATION_REQUIRED rather than
+  /// recorded, because a live dispute in a test deployment is a configuration
+  /// fault, not a fact to accept.
+  providerMode String @db.VarChar(16)
+
+  /// The provider's dispute id (dp_...). UNIQUE per provider: a redelivered
+  /// `charge.dispute.created` is an already-recorded dispute, not a second one.
+  providerDisputeRef String @db.VarChar(191)
+
+  /// The PaymentIntent this dispute names, COPIED at intake rather than joined
+  /// at read time — the same rule OrderRefund.providerTransactionRef follows.
+  /// This is the attribution key: TransactionSettlement carries the identical
+  /// value under @@unique([provider, providerTransactionRef]), and a dispute
+  /// event carries NO Monacado order metadata, so this lookup is the only route
+  /// from a provider dispute back to a sale.
+  providerTransactionRef String  @db.VarChar(191)
+  /// The provider's charge id (ch_...), kept as a secondary correlate for the
+  /// case where the PaymentIntent is absent. Never used for attribution.
+  providerChargeRef      String? @db.VarChar(191)
+
+  /// What the bank reversed, in minor units, as the provider stated it.
+  ///
+  /// STORED BUT NEVER PRINTED in operator summaries: a disputed amount is a
+  /// purchase amount, and `refund:status` already refuses to render those.
+  ///
+  /// This may be LESS than the sale total — Stripe permits a partial dispute.
+  /// Monacado's reversal accounting is FULL-scope only, so a partial dispute is
+  /// REFUSED into MANUAL_REMEDIATION_REQUIRED and writes no accounting entry.
+  /// Rounding one up to a full reversal would misstate what three parties owe.
+  disputedAmountMinorUnits BigInt
+  currency                 String @db.VarChar(3)
+
+  /// A BOUNDED MONACADO VOCABULARY, never the provider's reason string and never
+  /// its network reason code. `stripe-failure-mapping` already forbids
+  /// persisting issuer text; a dispute reason is the same kind of value.
+  reasonCode String @db.VarChar(32)
+
+  /// The adjudication axis: where the dispute has got to with the network.
+  /// OPEN | NEEDS_RESPONSE | UNDER_REVIEW | WON | LOST | CLOSED |
+  /// MANUAL_REMEDIATION_REQUIRED.
+  status String @db.VarChar(32)
+
+  /// The funds axis, kept SEPARATE from adjudication because the two genuinely
+  /// move independently: a dispute can close `won` having never withdrawn a
+  /// penny, and funds can be withdrawn while it is still under review. Collapsing
+  /// them into one column would make "has Monacado lost this money" unanswerable.
+  /// NOT_WITHDRAWN | WITHDRAWN | REINSTATED.
+  fundsState String @db.VarChar(24)
+
+  /// What Monacado concluded the tax consequence is. NOT a tax calculation and
+  /// not a tax reversal: OrderTaxReversal.refundId is NOT NULL at every layer,
+  /// so a dispute-caused correction is NOT EXPRESSIBLE today. This column FAILS
+  /// CLOSED by recording the decision, and reconciliation surfaces the ones that
+  /// need an operator rather than approximating a reversal nobody designed.
+  taxConsequence String @db.VarChar(48)
+
+  /// Whether Monacado's own economics were reversed by THIS dispute, or were
+  /// already reversed by a refund before it arrived. NONE |
+  /// REVERSED_BY_THIS_DISPUTE | ALREADY_REVERSED_BY_REFUND.
+  economicEffect String @db.VarChar(40)
+
+  /// Evidence posture — COUNTERS AND FLAGS ONLY, never the evidence itself.
+  ///
+  /// `evidenceDueBy` is NULL both when the provider gives no deadline and when
+  /// it permits no response at all; `responsePermitted` separates those, because
+  /// an empty deadline column means two opposite things and an operator acting on
+  /// the wrong one wastes the only window there was.
+  evidenceDueBy            DateTime? @db.DateTime(3)
+  responsePermitted        Boolean   @default(true)
+  evidenceStagedAtProvider Boolean   @default(false)
+  evidenceSubmissionCount  Int       @default(0)
+  evidenceSubmittedPastDue Boolean   @default(false)
+
+  /// Whether the provider still considers the charge refundable. Answers
+  /// directly whether 1.9's refund path remains available on this sale.
+  chargeStillRefundable Boolean @default(false)
+
+  /// Why this dispute needs a human, from a closed vocabulary. NULL when it does
+  /// not. No provider text, no free-form note.
+  remediationCode String? @db.VarChar(48)
+
+  /// ORDERING. The provider's own `event.created` for the last event APPLIED.
+  /// A delivery older than this is ingested into the event ledger (so the
+  /// provider stops retrying) and applies nothing — which is what stops a
+  /// redelivered `created` from rolling a `won` back to `needs_response`.
+  lastProviderEventAt DateTime @db.DateTime(3)
+
+  /// PROVIDER instants where the provider owns the fact, Monacado's where it
+  /// does not. A reversal stamped with a worker's clock could not answer "when
+  /// did the funds go back", which is the first question asked in a chargeback.
+  openedAt          DateTime  @db.DateTime(3)
+  fundsWithdrawnAt  DateTime? @db.DateTime(3)
+  fundsReinstatedAt DateTime? @db.DateTime(3)
+  closedAt          DateTime? @db.DateTime(3)
+  /// When Monacado committed the row. Distinct from openedAt.
+  recordedAt        DateTime  @db.DateTime(3)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  /// The accounting entry this dispute produced, if it produced one. NULL until
+  /// funds actually left. UNIQUE: one dispute produces at most one entry.
+  reversalId String? @unique @db.VarChar(191)
+
+  // RESTRICT everywhere: a dispute is a financial claim against a sale. Nothing
+  // it binds to may be deleted beneath it.
+  order              Order?                       @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  snapshot           TransactionEconomicSnapshot? @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
+  reversal           TransactionReversal?         @relation(fields: [reversalId], references: [id], onDelete: Restrict)
+  events             TransactionDisputeEvent[]
+  recoveryExceptions ProceedsRecoveryException[]
+
+  @@unique([provider, providerDisputeRef])
+  /// The operator's queries: what is open, and what is running out of time.
+  @@index([status, openedAt])
+  @@index([status, evidenceDueBy])
+  @@index([fundsState, fundsWithdrawnAt])
+  @@index([orderId])
+  @@index([providerTransactionRef])
+}
+
+/// One provider event about one dispute (Phase 1.11). APPEND-ONLY.
+///
+/// This is EVIDENCE about what the provider said, authoritative about nothing
+/// else — the third role the projection ADR insists must not be collapsed into
+/// either the transactional or the capsule layer.
+model TransactionDisputeEvent {
+  /// Opaque identity (mon:dsevt:<opaque>).
+  id String @id @db.VarChar(191)
+
+  disputeId String @db.VarChar(191)
+
+  /// The provider's event id (evt_...). UNIQUE per provider: a redelivered
+  /// webhook is a constraint violation, not a second event — exactly the shape
+  /// ProviderEmailEvent uses.
+  provider        String @db.VarChar(32)
+  providerEventId String @db.VarChar(191)
+
+  /// A BOUNDED MONACADO vocabulary, not the provider's event-type string.
+  /// OPENED | UPDATED | CLOSED | FUNDS_WITHDRAWN | FUNDS_REINSTATED.
+  eventKind String @db.VarChar(32)
+
+  /// Whether this event CHANGED anything. FALSE for a stale or out-of-order
+  /// delivery that was ingested and applied nothing — recorded rather than
+  /// silently dropped, so "why did nothing happen" is answerable.
+  applied Boolean
+
+  /// The provider's own instant for the event, and Monacado's for receipt.
+  occurredAt DateTime @db.DateTime(3)
+  receivedAt DateTime @db.DateTime(3)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+
+  dispute TransactionDispute @relation(fields: [disputeId], references: [id], onDelete: Restrict)
+
+  @@unique([provider, providerEventId])
+  @@index([disputeId, occurredAt])
 }

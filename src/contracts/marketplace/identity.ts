@@ -373,3 +373,24 @@ export const PROCEEDS_RECOVERY_EXCEPTION_ID_RE = new RegExp(`^mon:precx:${OPAQUE
  * governed this refund" is the first question an internal audit asks.
  */
 export const SELLER_REFUND_POLICY_ID_RE = new RegExp(`^mon:srpol:${OPAQUE_BODY}$`);
+
+/**
+ * Payment dispute identity (`mon:dspt:<opaque>`) — Phase 1.11.
+ *
+ * Distinct from `mon:txrev:` deliberately. A dispute is the PROVIDER's assertion
+ * that a cardholder's bank reversed a payment; a reversal is MONACADO's own
+ * accounting entry. A dispute may exist for weeks before any entry is written,
+ * and a dispute that is won produces none at all — so one identifier space for
+ * both would name two different facts and invite a reader to assume the second
+ * whenever they saw the first.
+ */
+export const TRANSACTION_DISPUTE_ID_RE = new RegExp(`^mon:dspt:${OPAQUE_BODY}$`);
+
+/**
+ * Dispute provider-event identity (`mon:dsevt:<opaque>`) — Phase 1.11.
+ *
+ * Distinct from `mon:pevt:` (`ProviderEmailEvent`): both are provider-event
+ * ledgers, and sharing a space would make an email bounce and a chargeback
+ * notice indistinguishable by identifier alone.
+ */
+export const TRANSACTION_DISPUTE_EVENT_ID_RE = new RegExp(`^mon:dsevt:${OPAQUE_BODY}$`);

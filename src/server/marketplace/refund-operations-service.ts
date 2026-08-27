@@ -407,7 +407,9 @@ export async function requeueRefundWork(
 
 function recoveryRowToRecord(row: {
   id: string;
-  refundId: string;
+  refundId: string | null;
+  disputeId: string | null;
+  causeKind: string;
   orderId: string;
   snapshotId: string;
   proceedsObligationId: string;
@@ -427,6 +429,8 @@ function recoveryRowToRecord(row: {
   const parsed = ProceedsRecoveryExceptionRecord.safeParse({
     exceptionId: row.id,
     refundId: row.refundId,
+    disputeId: row.disputeId,
+    causeKind: row.causeKind,
     orderId: row.orderId,
     snapshotId: row.snapshotId,
     proceedsObligationId: row.proceedsObligationId,

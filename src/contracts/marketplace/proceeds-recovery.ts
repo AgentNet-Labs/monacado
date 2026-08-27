@@ -65,24 +65,61 @@ export type ProceedsRecoveryExceptionId = z.infer<typeof ProceedsRecoveryExcepti
  * `ELIGIBLE_BEFORE_REFUND` needs a payout **stopped** before it runs, and an
  * operator handed one word for both would act late on half of them.
  */
+/**
+ * What put this party in debt (Phase 1.11).
+ *
+ * Phase 1.9 had one cause and carried it implicitly in a NOT NULL `refundId`.
+ * A sale can now also be charged back, and the two are genuinely different
+ * situations: a refund is settled the moment it completes, whereas a dispute may
+ * still be WON and cost nobody anything. An operator reading a backlog needs the
+ * cause in the row, and the uniqueness constraint needs it as a column.
+ */
+export const PROCEEDS_RECOVERY_CAUSE_KINDS = ["REFUND", "DISPUTE"] as const;
+export const ProceedsRecoveryCauseKind = z.enum(PROCEEDS_RECOVERY_CAUSE_KINDS);
+export type ProceedsRecoveryCauseKind = z.infer<typeof ProceedsRecoveryCauseKind>;
+
 export const PROCEEDS_RECOVERY_REASON_CODES = [
   /** Monacado had already settled this claim when the sale was refunded. */
   "PAID_BEFORE_REFUND",
   /** The claim was already payout-eligible when the sale was refunded. */
   "ELIGIBLE_BEFORE_REFUND",
+  /** Monacado had already settled this claim when the sale was disputed. */
+  "PAID_BEFORE_DISPUTE",
+  /** The claim was already payout-eligible when the sale was disputed. */
+  "ELIGIBLE_BEFORE_DISPUTE",
 ] as const;
 export const ProceedsRecoveryReasonCode = z.enum(PROCEEDS_RECOVERY_REASON_CODES);
 export type ProceedsRecoveryReasonCode = z.infer<typeof ProceedsRecoveryReasonCode>;
 
-/** The obligation states that create an exception, paired with their reason. */
+/**
+ * The obligation states that create an exception, paired with their reason.
+ *
+ * `PENDING` needs no exception under either cause: `advanceProceedsObligation`
+ * already refuses to make a claim eligible on a reversed **or** disputed sale,
+ * so it can never be paid, and an exception to something that cannot happen is
+ * an exception to nothing.
+ */
 export function recoveryReasonForObligationState(
   state: "PENDING" | "ELIGIBLE" | "PAID",
+  cause: ProceedsRecoveryCauseKind = "REFUND",
 ): ProceedsRecoveryReasonCode | null {
+  if (cause === "DISPUTE") {
+    if (state === "PAID") return "PAID_BEFORE_DISPUTE";
+    if (state === "ELIGIBLE") return "ELIGIBLE_BEFORE_DISPUTE";
+    return null;
+  }
   if (state === "PAID") return "PAID_BEFORE_REFUND";
   if (state === "ELIGIBLE") return "ELIGIBLE_BEFORE_REFUND";
-  /* PENDING needs no exception: `advanceProceedsObligation` already refuses to
-     make a reversed sale's claim eligible, so it can never be paid. */
   return null;
+}
+
+/** Which cause a reason code belongs to. Total over the vocabulary. */
+export function causeKindForRecoveryReason(
+  reason: ProceedsRecoveryReasonCode,
+): ProceedsRecoveryCauseKind {
+  return reason === "PAID_BEFORE_DISPUTE" || reason === "ELIGIBLE_BEFORE_DISPUTE"
+    ? "DISPUTE"
+    : "REFUND";
 }
 
 // — Status —
@@ -142,6 +179,17 @@ export const PROCEEDS_RECOVERY_RESOLUTION_CODES = [
   "PAYOUT_CANCELLED_BEFORE_EXECUTION",
   /** The exception was raised in error. */
   "RAISED_IN_ERROR",
+  /**
+   * The dispute that raised it was won, and nothing is actually due (Phase 1.11).
+   *
+   * Deliberately **not** `RAISED_IN_ERROR`: the exception was validly raised —
+   * at the moment it was written, a party held money on a sale a bank was
+   * contesting. The contest was then decided in the sale's favour. Recording
+   * that as an error would misdescribe a correct precaution as a mistake, and
+   * would make the two indistinguishable when somebody audits how often
+   * exceptions are raised wrongly.
+   */
+  "DISPUTE_RESOLVED_NO_RECOVERY_DUE",
 ] as const;
 export const ProceedsRecoveryResolutionCode = z.enum(PROCEEDS_RECOVERY_RESOLUTION_CODES);
 export type ProceedsRecoveryResolutionCode = z.infer<typeof ProceedsRecoveryResolutionCode>;
@@ -158,11 +206,16 @@ export type ProceedsRecoveryResolutionCode = z.infer<typeof ProceedsRecoveryReso
  */
 export const ProceedsRecoveryExceptionRecord = z.strictObject({
   exceptionId: ProceedsRecoveryExceptionId,
-  /** The refund that raised it. */
-  refundId: z.string().min(1).max(191),
+  /**
+   * What raised it. Exactly one of these is non-null, and `causeKind` says
+   * which without a reader having to check both.
+   */
+  refundId: z.string().min(1).max(191).nullable(),
+  disputeId: z.string().min(1).max(191).nullable(),
+  causeKind: ProceedsRecoveryCauseKind,
   orderId: z.string().min(1).max(191),
   snapshotId: z.string().min(1).max(191),
-  /** The claim at stake. One exception per obligation, enforced. */
+  /** The claim at stake. One exception per obligation **per cause**, enforced. */
   proceedsObligationId: z.string().min(1).max(191),
 
   participantId: z.string().min(1).max(191),
@@ -174,7 +227,7 @@ export const ProceedsRecoveryExceptionRecord = z.strictObject({
   currency: CurrencyCode,
 
   reasonCode: ProceedsRecoveryReasonCode,
-  /** The obligation's state at the moment the refund completed. */
+  /** The obligation's state at the moment the cause was recorded. */
   obligationStateAtRefund: z.enum(["ELIGIBLE", "PAID"]),
 
   status: ProceedsRecoveryStatus,

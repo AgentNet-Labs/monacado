@@ -173,7 +173,35 @@ export type NotificationSubject = z.infer<typeof NotificationSubject>;
  * a context that could hold a sentence would become where the notice body lived,
  * and then where private detail lived.
  */
-export const NotificationContextCode = OfferBusinessChangeCategory;
+/**
+ * The dispute sub-reasons (Phase 1.11).
+ *
+ * These exist for a specific and load-bearing reason. `notificationObligationKey`
+ * hashes `(recipient, category, subjectKind, subjectRef, subjectVersionRef,
+ * contextCode)`, and Phase 1.9's refund notices already write
+ * `category: "REFUND_OR_CHARGEBACK"` against `subject: {kind: "ORDER", ref:
+ * orderId}` with `contextCode: null`.
+ *
+ * A dispute obligation carrying the same tuple would resolve to the **same row**
+ * through the upsert, silently returning the refund's obligation — so a seller
+ * whose refunded sale was later charged back would never be told about the
+ * chargeback. The context code is the discriminator that keeps them apart, and
+ * it needs no migration: the column is already a nullable `VarChar(48)`.
+ */
+export const DISPUTE_NOTIFICATION_CONTEXT_CODES = [
+  "DISPUTE_OPENED",
+  "DISPUTE_EVIDENCE_REQUIRED",
+  "DISPUTE_WON",
+  "DISPUTE_LOST",
+  "DISPUTE_RECOVERY_REQUIRED",
+] as const;
+export const DisputeNotificationContextCode = z.enum(DISPUTE_NOTIFICATION_CONTEXT_CODES);
+export type DisputeNotificationContextCode = z.infer<typeof DisputeNotificationContextCode>;
+
+export const NotificationContextCode = z.union([
+  OfferBusinessChangeCategory,
+  DisputeNotificationContextCode,
+]);
 export type NotificationContextCode = z.infer<typeof NotificationContextCode>;
 
 // — Lifecycle —

@@ -84,6 +84,24 @@ describe("1.10 · Marketplace Policy 1.1.0", () => {
     expect(MONACADO_MARKETPLACE_POLICY_V1_1_HASH).toMatch(/^sha256:[0-9a-f]{64}$/);
   });
 
+  it("has the exact bytes it was recorded with, and no others", () => {
+    /* PINNED TO A LITERAL, as 1.0.0's hash already is (below).
+     *
+     * A shape assertion cannot catch a silent edit, and 1.1.0 is not merely
+     * source: this suite's integration half records it as a DRAFT row under the
+     * real policy identity, so wherever that has run, the version is persisted
+     * and hashed. Editing its bytes afterwards makes every later
+     * `policy:bootstrap` of 1.1.0 return REFUSED / CONTENT_HASH_MISMATCH and
+     * every read of it throw — a failure that would surface far from its cause.
+     *
+     * Noticed while adding dispute governance at Phase 1.11, which had to
+     * establish that 1.1.0 was safe to leave alone before recording the next
+     * version's requirement. */
+    expect(MONACADO_MARKETPLACE_POLICY_V1_1_HASH).toBe(
+      "sha256:b0a48644c8c146e2247d20de20140f6e124435401cad1ce096140ca5128e74b6",
+    );
+  });
+
   it("is the newest shipped version, and both versions stay resolvable", () => {
     expect(LATEST_MARKETPLACE_POLICY_VERSION).toBe(MARKETPLACE_POLICY_VERSION_1_1);
     /* A superseded version must stay readable: every receipt for every sale made

@@ -464,6 +464,50 @@ export function renderParticipantRefundRecorded(order: OrderRecord): {
   };
 }
 
+/**
+ * A seller's or promoter's notice that a sale of theirs is disputed (Phase 1.11).
+ *
+ * ## What this says, and what it carefully does not
+ *
+ * It does **not** say the buyer was refunded. A dispute is a bank reversing a
+ * payment, and telling a seller their sale was "refunded" would misdescribe both
+ * what happened and what they may need to do.
+ *
+ * It states no amount, names no buyer, and gives no reason code. The disputed
+ * amount is a purchase amount; the reason is the cardholder's assertion about
+ * this seller, relayed by a bank; and neither belongs in a message that lands in
+ * an inbox and a mail provider's logs. What the seller needs is which sale, what
+ * has happened to its proceeds, and that Monacado may ask them for evidence.
+ *
+ * Rendered from the `Order` alone, so a retry three days later renders what is
+ * true then rather than what was true when the message was first queued.
+ */
+export function renderParticipantDisputeRecorded(order: OrderRecord): {
+  subject: string;
+  body: string;
+} {
+  return {
+    subject: "A Monacado sale is under payment dispute",
+    body: [
+      "The buyer's bank has raised a payment dispute against a sale recorded to",
+      "your account. This is different from a refund: the dispute is decided by",
+      "the buyer's bank, not by Monacado or by you.",
+      "",
+      `Order reference: ${order.orderId}`,
+      "",
+      "Monacado is the merchant of record and is the party that answers the",
+      "dispute. You are not a party to it and should not contact the buyer's",
+      "bank. Monacado may ask you for evidence about what was supplied and when.",
+      "",
+      "While the dispute is open, proceeds attributable to this sale are not",
+      "payable. You can review the sale and its current standing in your",
+      "Monacado account.",
+      "",
+      "— Monacado",
+    ].join("\n"),
+  };
+}
+
 // — Triggers —
 
 /**

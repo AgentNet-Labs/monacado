@@ -1042,6 +1042,12 @@ describe("1.9 — proceeds recovery is a seam, not an execution", () => {
   const EXCEPTION = ProceedsRecoveryExceptionRecord.parse({
     exceptionId: EXCEPTION_ID,
     refundId: REFUND_ID,
+    /* Widened at Phase 1.11: a recovery exception may now be raised by a
+       dispute as well as by a refund, so the cause is stated rather than
+       implied by which reference is set. A refund-caused exception is still
+       exactly this row. */
+    disputeId: null,
+    causeKind: "REFUND",
     orderId: ORDER_ID,
     snapshotId: SNAPSHOT_ID,
     proceedsObligationId: OBLIGATION_ID,
@@ -1386,11 +1392,24 @@ describe("1.9 — readiness", () => {
   });
 
   it("names what this phase does NOT make Monacado ready for", () => {
-    expect(REFUND_READINESS_EXCLUSIONS.chargebackAndDisputeHandling).toBe("NOT_IMPLEMENTED");
+    /* NARROWED AT PHASE 1.11, which built dispute intake — the same narrowing
+       `taxtransaction` had at 1.7 and `refund` at 1.9. What 1.9 asserted was
+       that IT implemented no dispute handling, and that is still true; what
+       changed is that a later phase legitimately does. The value is checked
+       rather than deleted, and the two halves are now distinguishable: intake
+       exists, responding to a dispute does not. */
+    expect(REFUND_READINESS_EXCLUSIONS.chargebackAndDisputeHandling).toBe(
+      "INTAKE_AND_TRACKING_ONLY",
+    );
+    expect(REFUND_READINESS_EXCLUSIONS.disputeEvidenceResponse).toBe("NOT_IMPLEMENTED");
     expect(REFUND_READINESS_EXCLUSIONS.partialRefunds).toBe("REFUSED");
     expect(REFUND_READINESS_EXCLUSIONS.payoutRecoveryExecution).toBe("NOT_IMPLEMENTED");
     expect(REFUND_CAPABILITY_IMPLEMENTATION.paymentRefundAdapter).toBe("STRIPE_TEST_MODE");
-    expect(REFUND_CAPABILITY_IMPLEMENTATION.chargebackIngestion).toBe("NOT_IMPLEMENTED");
+    expect(REFUND_CAPABILITY_IMPLEMENTATION.chargebackIngestion).toBe("STRIPE_TEST_MODE");
+    /* The claim 1.11 is careful NOT to make. */
+    expect(REFUND_CAPABILITY_IMPLEMENTATION.disputeEvidenceSubmission).toBe("NOT_IMPLEMENTED");
+    expect(REFUND_CAPABILITY_IMPLEMENTATION.partialDisputeAccounting).toBe("NOT_IMPLEMENTED");
+    expect(REFUND_CAPABILITY_IMPLEMENTATION.disputeCausedTaxReversal).toBe("NOT_IMPLEMENTED");
   });
 
   it("names the endpoint once, so a runbook and a report cannot disagree", () => {

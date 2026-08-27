@@ -22,10 +22,22 @@
  * handler is what keeps every test of that handler unable to reach a network: a
  * handler with no port skips the fast path entirely and relies on the scheduler,
  * which is the guarantee regardless.
+ *
+ * **Phase 1.11 — the dispute port is supplied the same way, and for the same
+ * reason.** The five `charge.dispute.*` events arrive at this same endpoint,
+ * under the same signing secret, with no new environment variable: before 1.11
+ * they were verified, found unhandled, acknowledged, and discarded — which meant
+ * a bank could take money out of Monacado's balance and nothing in the database
+ * would record it.
+ *
+ * The dispute port is consulted only after the payment port has declined the
+ * delivery, so the committed money path is unchanged byte for byte. A handler
+ * given no dispute port behaves exactly as it did before this phase.
  */
 
 import { handleStripeWebhookRequest, STRIPE_SIGNATURE_HEADER } from "../../../../../src/server/payments/stripe-webhook-route-handler";
 import { createStripeTaxTransactionRecorder } from "../../../../../src/server/tax/stripe-tax-transaction-adapter";
+import { createStripeDisputeNotificationPort } from "../../../../../src/server/payments/stripe-dispute-adapter";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -39,7 +51,13 @@ export async function POST(request: Request): Promise<Response> {
     /* Lazily constructed inside the adapter: a deployment with no tax
        configuration yields a normalised PROVIDER_NOT_CONFIGURED against the row
        rather than an exception in a webhook. */
-    { taxRecordingPort: createStripeTaxTransactionRecorder() },
+    {
+      taxRecordingPort: createStripeTaxTransactionRecorder(),
+      /* Lazily constructed for the same reason: a deployment with no Stripe
+         configuration answers 503 against the delivery rather than throwing
+         inside a webhook. */
+      disputePort: createStripeDisputeNotificationPort(),
+    },
   );
 
   return new Response(JSON.stringify(result.body), {

@@ -68,6 +68,8 @@ import { evaluateTaxReadiness } from "../tax/tax-readiness";
 import { evaluateTaxOperationsReadiness } from "../tax/tax-recording-operations-service";
 import { evaluateRefundReadiness } from "./refund-readiness";
 import { evaluateRefundOperationsReadiness } from "../marketplace/refund-operations-service";
+import { evaluateDisputeReadiness } from "./dispute-readiness";
+import { evaluateDisputeOperationsReadiness } from "../marketplace/dispute-operations-service";
 import { isMailEnabled } from "../notifications/mail-port";
 import { getActiveRiskPolicyVersion } from "../risk/risk-policy-service";
 import { getPrisma } from "../db/client";
@@ -152,6 +154,43 @@ export const LIVE_READINESS_BLOCKER_CODES = [
    * overstate what Monacado collected.
    */
   "REFUND_BACKLOG_UNHEALTHY",
+  /**
+   * Nothing could record a payment dispute (Phase 1.11).
+   *
+   * The gap this phase closed. A marketplace that accepts live card payments and
+   * cannot intake a dispute lets a bank take money out of its balance with
+   * nothing in the database recording it — and every dispute clock runs whether
+   * or not anybody noticed.
+   */
+  "DISPUTE_INTAKE_NOT_CONFIGURED",
+  /**
+   * A dispute delivery could not be verified (Phase 1.11).
+   *
+   * Separate from intake because they fail differently: intake asks whether a
+   * provider exists at all, this asks whether its statements can be trusted.
+   * An unverified dispute webhook is an endpoint anybody can post a chargeback
+   * to.
+   */
+  "DISPUTE_WEBHOOK_NOT_VERIFIABLE",
+  /**
+   * Monacado cannot answer a dispute from inside this system (Phase 1.11).
+   *
+   * **Reported by construction, and this is the point of the control.** Evidence
+   * submission has no adapter; answering happens in the provider's dashboard.
+   * A marketplace that records disputes and cannot respond loses every one it
+   * might have won, so 1.11 refuses to let intake alone read as chargeback
+   * readiness. Cleared only by a phase that builds the response path.
+   */
+  "DISPUTE_EVIDENCE_RESPONSE_NOT_IMPLEMENTED",
+  /**
+   * The dispute book is not in a defensible state (Phase 1.11).
+   *
+   * The rows-not-configuration control, on `REFUND_BACKLOG_UNHEALTHY`'s terms.
+   * An unattributed dispute, a response deadline about to pass, or a lost
+   * dispute whose tax correction is owed and unexpressible each mean real money
+   * is at stake and nobody has acted.
+   */
+  "DISPUTE_BACKLOG_UNHEALTHY",
   /** Live provider support does not exist. Cleared only by a reviewed phase. */
   "LIVE_PROVIDER_NOT_ENABLED",
 ] as const;
@@ -303,6 +342,30 @@ export async function evaluateLiveCommerceReadiness(
   } catch {
     /* A control that cannot be read has not passed. */
     blockers.push("REFUND_BACKLOG_UNHEALTHY");
+  }
+
+  // — Disputes (Phase 1.11) —
+  /* CONFIGURATION IS INSPECTED, NOT EXERCISED, on the same terms as refunds:
+     `evaluateDisputeReadiness` makes no network call, reads no credential
+     value, and touches no row. */
+  const disputes = evaluateDisputeReadiness(at, env);
+  for (const blocker of disputes.blockers) {
+    if (blocker === "DISPUTE_INTAKE_NOT_CONFIGURED") blockers.push("DISPUTE_INTAKE_NOT_CONFIGURED");
+    else if (blocker === "DISPUTE_WEBHOOK_NOT_VERIFIABLE") {
+      blockers.push("DISPUTE_WEBHOOK_NOT_VERIFIABLE");
+    } else blockers.push("DISPUTE_EVIDENCE_RESPONSE_NOT_IMPLEMENTED");
+  }
+  for (const ok of disputes.satisfied) satisfied.push(ok);
+
+  /* And configured is not the same as keeping up. Rows, not configuration, and
+     still no provider call. */
+  try {
+    const disputeOperations = await evaluateDisputeOperationsReadiness({ at }, { db });
+    if (!disputeOperations.healthy) blockers.push("DISPUTE_BACKLOG_UNHEALTHY");
+    else satisfied.push("DISPUTE_BACKLOG");
+  } catch {
+    /* A control that cannot be read has not passed. */
+    blockers.push("DISPUTE_BACKLOG_UNHEALTHY");
   }
 
   // — Live provider —

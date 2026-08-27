@@ -643,8 +643,12 @@ describeDb("Phase 0M.R1 — versioned commercial policy and activation risk reco
            owns `OrderTaxTransaction`, and `refund` until Phase 1.9, which
            legitimately owns `OrderRefund`. What this asserts is that *0M.R1*
            added none of these — the same narrowing every other member has had.
-           `chargeback` stays: nothing owns one, and nothing should until a phase
-           designs dispute ingestion. */
+           `chargeback` STAYS, and Phase 1.11 — which designed dispute ingestion —
+           did not take it off. 1.11 owns `TransactionDispute`, which records
+           what a bank asserted; a chargeback remains a KIND OF REVERSAL on the
+           accounting entry `0M.T1` already owns, not a table of its own. A
+           `chargeback` table appearing would still mean somebody had built a
+           second ledger beside `TransactionReversal`. */
         "reserve",
         "velocity",
         "riskscore",

@@ -62,6 +62,9 @@ import type { MailPort } from "../../contracts/marketplace/notification-delivery
 import type { OrderRecord } from "../../contracts/marketplace/order";
 import { getPrisma } from "../db/client";
 import { resolveMailPort } from "../notifications/mail-port";
+import { enqueueDisputeNotices } from "../notifications/dispute-notice-service";
+import { recordDisputeObservation } from "../marketplace/transaction-dispute-service";
+import type { DisputeNotificationPort } from "./stripe-dispute-adapter";
 import type { OutboundEmailIdProvider } from "../notifications/outbound-email-ids";
 import { dispatchEmailDeliveriesNow } from "../notifications/email-dispatcher";
 import {
@@ -105,6 +108,8 @@ export const WEBHOOK_ERROR_CODES = {
   orderNotFound: "ORDER_NOT_FOUND",
   conflict: "PAYMENT_RESULT_CONFLICT",
   unavailable: "WEBHOOK_UNAVAILABLE",
+  /** A dispute was recorded and needs a human (Phase 1.11). Still a 200. */
+  disputeRemediation: "DISPUTE_REMEDIATION_REQUIRED",
 } as const;
 
 export const WEBHOOK_HEADERS: Readonly<Record<string, string>> = Object.freeze({
@@ -123,6 +128,14 @@ export interface WebhookRouteDeps {
   env?: Env;
   /** Injected so a test drives the whole route without a Stripe account. */
   port?: BuyerPaymentConfirmationPort;
+  /**
+   * Phase 1.11 — the port that reads a dispute event.
+   *
+   * A SEPARATE port, consulted only after the payment port has declined the
+   * delivery. Injected in the route module alone, exactly as `taxRecordingPort`
+   * is, so no test of this handler can reach a network.
+   */
+  disputePort?: DisputeNotificationPort;
   /** Injected so a test drives delivery without a mail provider. */
   mail?: MailPort;
   deliveryIds?: OutboundEmailIdProvider;
@@ -205,9 +218,91 @@ export async function handleStripeWebhookRequest(
     return respond(500, { error: WEBHOOK_ERROR_CODES.unavailable });
   }
 
-  /* Verified, and about something else. Acknowledged so Stripe stops retrying,
-     and acted on in no way whatsoever. */
-  if (confirmation === null) return respond(200, { received: true, handled: false });
+  /* Not a payment event. Before acknowledging, offer it to the dispute port
+     (Phase 1.11) — dispute events reached exactly this line before 1.11 and
+     were discarded, which meant a bank could take money out of Monacado's
+     balance and nothing in the database would record it. */
+  if (confirmation === null) {
+    if (deps.disputePort !== undefined) {
+      let observation;
+      try {
+        observation = await deps.disputePort.observeDispute({
+          rawBody: request.rawBody,
+          signatureHeader: request.signatureHeader,
+        });
+      } catch (error) {
+        if (error instanceof StripeWebhookVerificationError) {
+          return respond(400, { error: WEBHOOK_ERROR_CODES.verification });
+        }
+        if (
+          error instanceof StripeDisabledError ||
+          error instanceof StripeConfigurationError ||
+          error instanceof StripeCredentialError
+        ) {
+          return respond(503, { error: WEBHOOK_ERROR_CODES.notConfigured });
+        }
+        return respond(500, { error: WEBHOOK_ERROR_CODES.unavailable });
+      }
+
+      if (observation !== null) {
+        try {
+          const outcome = await recordDisputeObservation(
+            observation,
+            { recordedAt: new Date().toISOString() },
+            { db },
+          );
+
+          /* Notices are enqueued AFTER the dispute row commits, and every
+             failure is swallowed: a dispute Monacado recorded but could not
+             send mail about is still recorded. Email never determines
+             financial truth. */
+          if (outcome.applied) {
+            try {
+              /* Enqueued only. Dispatch is the email dispatcher's job, and a
+                 dispute notice has no reason to be more urgent than the retry
+                 machinery `1.5` already built for every other message. */
+              await enqueueDisputeNotices(
+                { disputeId: outcome.disputeId },
+                { db, ids: deps.deliveryIds },
+              );
+            } catch {
+              /* Deliberately ignored. See above. */
+            }
+          }
+
+          /* 200 EVEN WHEN A HUMAN IS NEEDED, and this diverges from the payment
+             path's 422 for an unattributable event, deliberately.
+             
+             A payment event Monacado cannot attribute is a sale it may still
+             recover by retry. A DISPUTE Monacado cannot attribute is a real
+             withdrawal whose clock is already running: telling the provider to
+             keep retrying an event that will never attribute would leave it
+             retrying forever while the response window closed, and the dispute
+             would be visible nowhere. The row is durable and the operator tool
+             surfaces it, which is the outcome that actually helps. */
+          return respond(200, {
+            received: true,
+            handled: true,
+            disputeDisposition: outcome.applied
+              ? outcome.remediationCode !== null
+                ? WEBHOOK_ERROR_CODES.disputeRemediation
+                : "RECORDED"
+              : "ALREADY_RECORDED",
+          });
+        } catch {
+          /* A genuine write failure. 500 so the provider retries, and the
+             retry replays idempotently against the event ledger. A dispute
+             webhook failure must not corrupt an already-recorded sale, and
+             nothing above this line has touched one. */
+          return respond(500, { error: WEBHOOK_ERROR_CODES.unavailable });
+        }
+      }
+    }
+
+    /* Verified, and about something else. Acknowledged so Stripe stops
+       retrying, and acted on in no way whatsoever. */
+    return respond(200, { received: true, handled: false });
+  }
 
   try {
     const finalized = await finalizeConfirmedPayment(confirmation, { db });
