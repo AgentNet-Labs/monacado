@@ -1669,6 +1669,13 @@ describeDb("1.2 — pre-live commerce controls", () => {
         "DISPUTE_EVIDENCE_ASSEMBLY_INCOMPLETE",
         "DISPUTE_EVIDENCE_DOCUMENT_SUBMISSION_NOT_IMPLEMENTED",
         "DISPUTE_DEADLINE_MONITORING_NOT_IMPLEMENTED",
+        /* Phase 1.13. The first is clearable by activating governed review
+           heuristics, which this fixture does not do. The second never clears:
+           the daily report can NOTICE and a Staff review can DECIDE, but no
+           governed way to ACT on a participant exists, so shipping the report
+           must not read as shipping fraud controls. */
+        "SELLER_RISK_REVIEW_POLICY_NOT_ACTIVE",
+        "SELLER_RISK_MITIGATION_NOT_IMPLEMENTED",
         "LIVE_PROVIDER_NOT_ENABLED",
       ]);
       expect(readiness.satisfied).toContain("REFUND_BACKLOG");

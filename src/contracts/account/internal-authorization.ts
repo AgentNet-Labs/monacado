@@ -79,6 +79,23 @@ export const PARTICIPANT_RESTRICT_CAPABILITY =
  *
  * Narrow by construction: not `admin`, not `commerce:*`, not a wildcard.
  */
+/**
+ * The capability that authorizes reading seller risk analytics and recording a
+ * Staff risk-review disposition (Phase 1.13).
+ *
+ * **Separate from `participant:restrict`, and the separation is the safeguard.**
+ * A risk reviewer inspects metrics and records a conclusion — including, at the
+ * far end, `SUSPENSION_RECOMMENDED`. Imposing anything on a participant remains
+ * a different act under a different grant, checked independently. Folding the
+ * two together would make recording a recommendation indistinguishable from
+ * having the power to carry it out, and a review that can execute its own
+ * finding is not a review.
+ *
+ * Narrow by construction: not `admin`, not `risk:*`, not a wildcard.
+ */
+export const PARTICIPANT_RISK_REVIEW_CAPABILITY =
+  "participant:risk-review" as const satisfies AccountCapability;
+
 export const PARTICIPANT_COMMERCE_APPROVE_CAPABILITY =
   "participant:commerce-approve" as const satisfies AccountCapability;
 
@@ -212,6 +229,24 @@ export function canApproveParticipantCommerce(
   subject: InternalAuthorizationSubject | null,
 ): InternalAuthorizationDecision {
   return evaluateInternalCapability(PARTICIPANT_COMMERCE_APPROVE_CAPABILITY, subject);
+}
+
+/**
+ * May this internal account read seller risk analytics and record a Staff
+ * risk-review disposition?
+ *
+ * Requires an explicit active `participant:risk-review` entitlement, on exactly
+ * the terms the three decisions above require their own. **Holding
+ * `participant:restrict` is not enough, and neither is this enough to restrict.**
+ * The two are independent grants in both directions, which is what keeps a
+ * recorded `SUSPENSION_RECOMMENDED` a recommendation: the reviewer who wrote it
+ * cannot also impose it without a second, separately-granted authority being
+ * checked against persisted state.
+ */
+export function canReviewParticipantRisk(
+  subject: InternalAuthorizationSubject | null,
+): InternalAuthorizationDecision {
+  return evaluateInternalCapability(PARTICIPANT_RISK_REVIEW_CAPABILITY, subject);
 }
 
 /** May this internal account read publication-worker operational health? */

@@ -188,6 +188,20 @@ export const ACCOUNT_CAPABILITIES = [
   "activation:review",
   "participant:restrict",
   "participant:commerce-approve",
+  /**
+   * Phase 1.13. A FIFTH NARROW GRANT, minted rather than folded in, for the
+   * reason 0M.9 gave when it minted the fourth: an existing internal capability
+   * is not a place to put a new authority merely because it is also internal.
+   *
+   * This one is narrow in an unusually important direction. It authorises
+   * READING risk analytics and RECORDING what a reviewer decided. It authorises
+   * NOTHING else — in particular it does not authorise imposing a restriction,
+   * which remains `participant:restrict` and is checked separately. That
+   * separation is the whole safeguard: a reviewer who concludes
+   * `SUSPENSION_RECOMMENDED` still cannot act on their own conclusion, so a
+   * recommendation can never become its own execution.
+   */
+  "participant:risk-review",
 ] as const;
 export const AccountCapability = z.enum(ACCOUNT_CAPABILITIES);
 export type AccountCapability = z.infer<typeof AccountCapability>;

@@ -1234,24 +1234,235 @@ describeDb("Phase 0M.R1 — versioned commercial policy and activation risk reco
       expect(restricted.participantStatus).not.toBe("SUSPENDED");
     });
 
-    it("no transaction-risk column exists anywhere", async () => {
-      const columns = await db.$queryRawUnsafe<Array<{ TABLE_NAME: string; COLUMN_NAME: string }>>(
+    /* — The authority boundary this phase actually protects —
+     *
+     * This began life as a SCHEMA-WIDE substring ban: no column anywhere could
+     * be named `riskScore`, `velocity`, `chargebackCount`, and so on. That was
+     * exactly right while no phase was permitted to compute risk analytics at
+     * all, and it caught the thing worth catching — a derived risk number
+     * quietly accruing on a commercial record.
+     *
+     * Phase 1.12 then assigned governed refund/chargeback velocity, rates, and
+     * staff review to Phase 1.13 by name (`FRAUD_AND_RISK_ANALYTICS_HANDOFF`),
+     * and 1.13 built them. A schema-wide ban now forbids the authorized
+     * architecture, and the only way to satisfy it is to misname the new fields
+     * — which trades a real protection for a euphemism and leaves the schema
+     * less legible than before.
+     *
+     * So the rule is restated as what it always meant:
+     *
+     *   RISK ANALYTICS AND RISK CONFIGURATION BELONG TO THE RISK SUBSYSTEM,
+     *   NEVER TO COMMERCIAL OR TRANSACTIONAL AUTHORITY.
+     *
+     * The scan stays GLOBAL — a future phase still cannot drop a `riskScore`
+     * onto some new unlisted table — and the exemption is a short, explicit list
+     * of the models that exist to hold exactly this, never a blanket allowance.
+     */
+
+    /**
+     * Derived risk analytics, scores, counters, labels, and enforcement
+     * thresholds. Substrings, matched against COLUMN names only.
+     *
+     * Column names rather than `table.column`, deliberately: `SellerChargebackFee`
+     * is a legitimate table whose NAME would otherwise trip a chargeback token on
+     * every one of its columns, and a test that has to special-case its own
+     * matching is a test nobody trusts.
+     */
+    const DERIVED_RISK_COLUMN_TOKENS = [
+      "riskscore",
+      "fraudscore",
+      "riskclassification",
+      "risktier",
+      "riskrating",
+      "reserveamount",
+      "payouthold",
+      "transactioncap",
+      "velocity",
+      "fraud",
+      "chargebackcount",
+      "chargebackrate",
+      "refundcount",
+      "refundrate",
+      "disputecount",
+      "disputerate",
+      "manualreview",
+      "autosuspend",
+      "autorestrict",
+      "scorethreshold",
+      "reviewthreshold",
+    ] as const;
+
+    /**
+     * The ONLY models permitted to carry risk analytics or review configuration.
+     *
+     * Four, all introduced by Phase 1.13 for precisely this purpose, and none of
+     * them authoritative over money, lifecycle, or capability. `RiskPolicy` and
+     * `RiskPolicyVersionRow` are deliberately ABSENT: those are Phase 1.2's
+     * synchronous allow/deny gate, evaluated at checkout against one Order, and
+     * a review heuristic landing there would become an automatic denial nobody
+     * authorized. The gate is protected, not exempt.
+     */
+    const RISK_SUBSYSTEM_MODELS = [
+      "SellerRiskReviewPolicy",
+      "SellerRiskReviewPolicyVersionRow",
+      "ParticipantRiskReview",
+      "ParticipantRiskReviewTriggerReason",
+    ] as const;
+
+    /**
+     * The models carrying commercial, transactional, and participant authority.
+     *
+     * Named explicitly so a failure says WHICH authority was breached, and so
+     * this list is reviewed when a new authoritative record is added.
+     */
+    const AUTHORITY_MODELS = {
+      commercialPolicy: ["CommercialPolicy", "CommercialPolicyVersionRow"],
+      transaction: [
+        "Order",
+        "TransactionEconomicSnapshot",
+        "TransactionSettlement",
+        "TransactionReversal",
+        "ProceedsObligation",
+      ],
+      postSale: [
+        "OrderRefund",
+        "OrderRefundLine",
+        "TransactionDispute",
+        "TransactionDisputeEvent",
+        "SellerChargebackFee",
+        "SellerChargebackFeePolicyVersionRow",
+      ],
+      participantAuthority: [
+        "MarketplaceParticipant",
+        "ParticipantRestriction",
+        "ParticipantCommerceApproval",
+      ],
+      transactionRiskGate: ["RiskPolicy", "RiskPolicyVersionRow"],
+    } as const;
+
+    type ColumnRow = { TABLE_NAME: string; COLUMN_NAME: string };
+
+    /**
+     * Every column that carries derived risk analytics outside the risk
+     * subsystem. Pure, so the rule itself is testable against synthetic input
+     * rather than only against whatever the schema happens to be today.
+     */
+    function derivedRiskViolations(columns: readonly ColumnRow[]): string[] {
+      const permitted = new Set<string>(RISK_SUBSYSTEM_MODELS);
+      const found: string[] = [];
+      for (const column of columns) {
+        if (permitted.has(column.TABLE_NAME)) continue;
+        const name = column.COLUMN_NAME.toLowerCase();
+        if (DERIVED_RISK_COLUMN_TOKENS.some((token) => name.includes(token))) {
+          found.push(`${column.TABLE_NAME}.${column.COLUMN_NAME}`);
+        }
+      }
+      return found;
+    }
+
+    async function schemaColumns(): Promise<ColumnRow[]> {
+      return db.$queryRawUnsafe<ColumnRow[]>(
         `SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS
           WHERE TABLE_SCHEMA = DATABASE()`,
       );
-      const names = columns.map((c) => `${c.TABLE_NAME}.${c.COLUMN_NAME}`.toLowerCase());
-      for (const forbidden of [
-        "riskscore",
-        "riskclassification",
-        "reserveamount",
-        "payouthold",
-        "transactioncap",
-        "velocity",
-        "fraud",
-        "chargebackcount",
-        "manualreview",
+    }
+
+    it("no derived risk analytics accrue outside the risk subsystem", async () => {
+      /* Still schema-wide. A new table gets no exemption by existing. */
+      expect(derivedRiskViolations(await schemaColumns())).toEqual([]);
+    });
+
+    it("keeps every commercial and transactional authority record risk-free", async () => {
+      const columns = await schemaColumns();
+      for (const [authority, models] of Object.entries(AUTHORITY_MODELS)) {
+        const scoped = columns.filter((c) => (models as readonly string[]).includes(c.TABLE_NAME));
+        /* The models must exist, or this assertion is vacuously true. */
+        expect(new Set(scoped.map((c) => c.TABLE_NAME)).size, authority).toBe(models.length);
+        expect(derivedRiskViolations(scoped), authority).toEqual([]);
+      }
+    });
+
+    it("would catch a risk column added to any protected authority model", async () => {
+      /* The rule is exercised against synthetic input, so it is proven to bite
+         rather than merely proven to pass on today's schema. */
+      for (const models of Object.values(AUTHORITY_MODELS)) {
+        for (const model of models) {
+          for (const injected of [
+            "riskScore",
+            "velocityBasisPoints",
+            "chargebackCount",
+            "fraudLabel",
+            "autoSuspendAt",
+          ]) {
+            expect(
+              derivedRiskViolations([{ TABLE_NAME: model, COLUMN_NAME: injected }]),
+              `${model}.${injected}`,
+            ).toEqual([`${model}.${injected}`]);
+          }
+        }
+      }
+    });
+
+    it("does not let the 1.2 transaction gate become a review-heuristics store", async () => {
+      /* The sharpest case. `RiskPolicyVersionRow` is a RISK table by name and is
+         still protected, because it is an ENFORCEMENT gate: a threshold there
+         denies a buyer at checkout. Review heuristics belong to the reporting
+         policy, where crossing one only asks a human to look. */
+      expect(RISK_SUBSYSTEM_MODELS as readonly string[]).not.toContain("RiskPolicyVersionRow");
+      expect(
+        derivedRiskViolations([
+          { TABLE_NAME: "RiskPolicyVersionRow", COLUMN_NAME: "chargebackRateThreshold" },
+        ]),
+      ).toEqual(["RiskPolicyVersionRow.chargebackRateThreshold"]);
+    });
+
+    it("lets the risk subsystem name risk things accurately", async () => {
+      /* The point of the correction. These are the clearest domain names for
+         what they are, and none of them is flagged merely for containing a word
+         the commercial tables may not use. */
+      const accurate = [
+        "refundCountRateReviewBasisPoints",
+        "chargebackCountRateReviewBasisPoints",
+        "velocityReviewBasisPoints",
+        "chargebackToRefundRatioReviewBasisPoints",
+      ].map((COLUMN_NAME) => ({ TABLE_NAME: "SellerRiskReviewPolicyVersionRow", COLUMN_NAME }));
+      expect(derivedRiskViolations(accurate)).toEqual([]);
+    });
+
+    it("puts the review heuristics on the dedicated risk-policy model, and nowhere else", async () => {
+      const columns = await schemaColumns();
+      const onReviewPolicy = new Set(
+        columns
+          .filter((c) => c.TABLE_NAME === "SellerRiskReviewPolicyVersionRow")
+          .map((c) => c.COLUMN_NAME),
+      );
+      /* Positive assertion: this model IS the permitted home, and it really
+         holds them — a boundary test that only forbids proves nothing about
+         where the thing legitimately lives. */
+      for (const expected of [
+        "refundCountRateReviewBasisPoints",
+        "chargebackCountRateReviewBasisPoints",
+        "chargebackToRefundRatioReviewBasisPoints",
+        "velocityReviewBasisPoints",
+        "averageTicketShiftReviewBasisPoints",
+        "volumeSpikeReviewBasisPoints",
+        "minimumRateSampleCount",
+        "minimumBaselineSampleCount",
       ]) {
-        expect(names.some((n) => n.includes(forbidden)), forbidden).toBe(false);
+        expect(onReviewPolicy, expected).toContain(expected);
+      }
+      /* And it is versioned and governed like every other policy here, so a
+         threshold change is a new row with a recorded operator behind it. */
+      for (const governance of ["policyVersion", "status", "recordedByAccountId", "effectiveFrom"]) {
+        expect(onReviewPolicy, governance).toContain(governance);
+      }
+      /* It governs REVIEW, not enforcement: no column here suspends, restricts,
+         or blocks anything. */
+      for (const column of onReviewPolicy) {
+        expect(column.toLowerCase(), column).not.toContain("suspend");
+        expect(column.toLowerCase(), column).not.toContain("restrict");
+        expect(column.toLowerCase(), column).not.toContain("block");
+        expect(column.toLowerCase(), column).not.toContain("deny");
       }
     });
 

@@ -921,6 +921,10 @@ model MarketplaceParticipant {
   /// terms belong to whoever supplies the Product.
   sellerRefundPolicy SellerRefundPolicy?
 
+  /// Staff risk reviews raised about this participant (Phase 1.13). A record of
+  /// what a human decided, never a control that decides anything.
+  riskReviews ParticipantRiskReview[]
+
   @@index([status])
 }
 
@@ -1388,6 +1392,11 @@ model ParticipantRestriction {
   /// MySQL has no partial indexes, and this is the technique
   /// `ParticipantActivation.undecidedForParticipantId` already uses.
   activeForScope String? @db.VarChar(48)
+
+  /// Staff risk reviews that recorded THIS restriction as the action a reviewer
+  /// subsequently took (Phase 1.13). Evidence of linkage after the fact; nothing
+  /// in 1.13 imposes a restriction.
+  riskReviews ParticipantRiskReview[]
 
   @@unique([participantId, activeForScope])
   @@index([participantId, status])
@@ -2664,8 +2673,13 @@ model Order {
   sellerChargebackFees       SellerChargebackFee[]
 
   @@index([buyerAccountId, placedAt])
-  @@index([sellerParticipantId, lifecycle])
-  @@index([promoterParticipantId, lifecycle])
+  /// Phase 1.13 extended both with `paidAt`. Windowed risk aggregation asks
+  /// "this seller's PAID orders between two instants", and a two-column index
+  /// forces MySQL to read every PAID order the seller ever had before filtering
+  /// by date. The two-column form is a prefix of this one, so every query the
+  /// old index served is still served.
+  @@index([sellerParticipantId, lifecycle, paidAt])
+  @@index([promoterParticipantId, lifecycle, paidAt])
   @@index([internalListingId, placedAt])
   @@index([lifecycle, placedAt])
   @@index([listingSourceRecordId, listingSourceRecordVersion])
@@ -4104,6 +4118,10 @@ model OrderRefund {
   @@index([status, nextAttemptAt])
   /// The operator's and reconciler's query.
   @@index([status, recordedAt])
+  /// Phase 1.13: the completed-refund window. A refund RATE counts on
+  /// `finalizedAt` — when the buyer's money actually went back — which is a
+  /// different instant from `recordedAt`, when Monacado committed to returning it.
+  @@index([status, finalizedAt])
   @@index([providerTransactionRef])
 }
 
@@ -4766,6 +4784,10 @@ model TransactionDispute {
   @@unique([provider, providerDisputeRef])
   /// The operator's queries: what is open, and what is running out of time.
   @@index([status, openedAt])
+  /// Phase 1.13: the finalized-chargeback window. A chargeback RATE is counted
+  /// on `closedAt` — when the loss became final — and `openedAt` cannot serve
+  /// that query, so the two windows need two indexes.
+  @@index([status, closedAt])
   @@index([status, evidenceDueBy])
   @@index([fundsState, fundsWithdrawnAt])
   @@index([orderId])
@@ -5197,4 +5219,334 @@ model SellerChargebackFeePolicyVersionRow {
   @@unique([activeMarker])
   @@index([policyId, status])
   @@index([effectiveFrom])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fraud and risk intelligence (Phase 1.13).
+//
+// Phase 1.12 wrote down what this phase owns
+// (`FRAUD_AND_RISK_ANALYTICS_HANDOFF`) and, just as deliberately, what it must
+// not become. Four boundaries carry that forward and are load-bearing here:
+//
+//   1. **NO NEW FINANCIAL AUTHORITY.** Every rate, count, velocity, ticket, and
+//      geography figure this phase reports is a DETERMINISTIC AGGREGATE over
+//      rows that already exist — Order, TransactionEconomicSnapshot,
+//      OrderRefund, TransactionDispute. There is no risk-event table, no
+//      materialised counter, and no stored rate, because a second copy of "how
+//      many sales did this seller make" is a second answer able to disagree with
+//      the first. The report is a derivative; the transactions stay
+//      authoritative. This is the projection direction CLAUDE.md mandates, and
+//      it is why a future risk model can recompute history: the source rows were
+//      never summarised away.
+//
+//   2. **THRESHOLDS ARE GOVERNED, AND THEY ARE NOT THE 1.2 GATE.**
+//      `RiskPolicyVersionRow` is 1.2's SYNCHRONOUS ALLOW/DENY gate, bound to an
+//      Order AT CHECKOUT. Review heuristics are resolved WHEN A REPORT IS RUN,
+//      possibly months later and under a different value. Phase 1.12 already
+//      settled this exact question for the chargeback fee: a value decided at a
+//      different moment than the sale belongs to its OWN policy, because putting
+//      it on the sale-time policy makes "which version applies" genuinely
+//      ambiguous. `SellerRiskReviewPolicy` is that separate policy. It is also
+//      why `NEVER_ON_RISK_POLICY` stays satisfied — no score, window, or
+//      threshold column is added to the gate.
+//
+//   3. **ATTENTION, NEVER ENFORCEMENT.** Nothing in this phase restricts,
+//      suspends, holds, or denies anything. `ParticipantRiskReview` RECORDS what
+//      a human decided; it has no writer into `MarketplaceParticipant.status`,
+//      no writer into `ParticipantRestriction`, and no path back into
+//      `evaluateTransactionRisk`. A ranking is a request for attention, and a
+//      seller suspended by arithmetic is the failure this shape exists to
+//      prevent.
+//
+//   4. **NO BUYER PII, AND NO PROSE.** Geography is read as `taxCountryCode` /
+//      `taxRegionCode` and nothing else — never a street line, postal code,
+//      name, email, or IP. There is no reviewer note column: 0M.R1 and 1.11 both
+//      named free-text reviewer fields as forbidden, and 1.11 said why in one
+//      line — "an operator commentary column is where a buyer's name eventually
+//      lands." Nuance is expressed by extending a closed vocabulary.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The governed identity of Monacado's seller risk-review heuristics (1.13).
+///
+/// One row per deployment, found by `policyKey` rather than by label — the same
+/// reason `SellerChargebackFeePolicy` is: a service resolving "the review policy"
+/// needs something stable, and a label is a display string somebody will edit.
+model SellerRiskReviewPolicy {
+  /// Opaque identity (mon:srrp:<opaque>). Immutable.
+  id String @id @db.VarChar(191)
+
+  /// The stable lookup key. UNIQUE, so "which policy governs review" is a
+  /// lookup rather than a judgement.
+  policyKey String @unique @db.VarChar(64)
+
+  /// Operational display label. NEVER an input to a ranking.
+  label String @db.VarChar(200)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  versions SellerRiskReviewPolicyVersionRow[]
+}
+
+/// One IMMUTABLE governed version of the review heuristics (Phase 1.13).
+///
+/// The shape `CommercialPolicyVersionRow` established and
+/// `SellerChargebackFeePolicyVersionRow` reused, for the reason 1.12 gave when it
+/// had to undo the alternative: "the first cut compiled $30 into the assessment
+/// path. That made the fee correct and unchangeable in one stroke." A review
+/// threshold compiled into source is the same mistake with a worse consequence —
+/// the number that decides which sellers a human looks at would change without a
+/// record of who changed it, and no past ranking could be explained afterwards.
+///
+/// THESE ARE REVIEW HEURISTICS, NOT ENFORCEMENT LIMITS. Crossing one puts a
+/// seller in front of a person. It authorises nothing, denies nothing, and
+/// restricts nothing — which is the distinction `RiskPolicyVersionRow` cannot
+/// express, because everything on that row is a gate.
+///
+/// EVERY VALUE IS AN INPUT. There is no weight curve, no model reference, no
+/// score formula, and no `autoSuspendAt`. The ranking that consumes these is
+/// plain integer arithmetic over named reasons, published in the contract.
+model SellerRiskReviewPolicyVersionRow {
+  /// Surrogate key. The meaningful identity is (policyId, policyVersion).
+  seq BigInt @id @default(autoincrement())
+
+  policyId      String @db.VarChar(191)
+  /// The exact version label. Echoed by every report produced under it, so a
+  /// ranking stays explicable after the heuristics move on.
+  policyVersion String @db.VarChar(64)
+
+  /// DRAFT | ACTIVE | RETIRED. RETIRED remains readable and remains bindable by
+  /// historical reference — a review opened under it must stay explicable.
+  status String @db.VarChar(16)
+
+  // — Sample floors. What makes a rate publishable at all. —
+
+  /// The smallest denominator a rate may be REPORTED AS A RATE under. Below it
+  /// the numerator and denominator are still reported and the rate is withheld:
+  /// "one chargeback out of one sale" is 10000 basis points and means nothing,
+  /// and a percentage with no sample size is the classic way a legitimate small
+  /// seller reaches the top of a risk list.
+  minimumRateSampleCount Int
+
+  /// The smallest number of prior-window sales a BASELINE comparison needs
+  /// before a velocity, ticket, or volume deviation is emitted at all. Below it
+  /// the report says the history is insufficient rather than calling a second
+  /// sale a spike.
+  minimumBaselineSampleCount Int
+
+  // — Review thresholds, in basis points. Attention, never action. —
+
+  /// Refund COUNT rate at or above which `REFUND_RATE_ELEVATED` is raised.
+  refundCountRateReviewBasisPoints         Int
+  /// Finalized-LOST chargeback COUNT rate at or above which
+  /// `CHARGEBACK_RATE_ELEVATED` is raised.
+  chargebackCountRateReviewBasisPoints     Int
+  /// Chargeback-to-refund COUNT ratio at or above which the ratio reason is
+  /// raised. A RATIO, not a share: it may legitimately exceed 10000.
+  chargebackToRefundRatioReviewBasisPoints Int
+
+  // — Deviation thresholds. Seller against the seller's own history. —
+
+  /// Minimum absolute movement, in basis points of the prior window, before an
+  /// order-count or commercial-value velocity change is worth a reason.
+  velocityReviewBasisPoints           Int
+  /// Minimum absolute movement before an average-ticket shift is raised.
+  averageTicketShiftReviewBasisPoints Int
+  /// Minimum ratio of observed to trailing daily baseline before a volume spike
+  /// is raised.
+  volumeSpikeReviewBasisPoints        Int
+
+  // — Geography and channel concentration. —
+
+  /// Top-jurisdiction share at or above which concentration is raised.
+  jurisdictionConcentrationReviewBasisPoints Int
+  /// Count of jurisdictions new since the baseline window at or above which a
+  /// diversity spike is raised.
+  newJurisdictionReviewCount                 Int
+  /// One promoter's share of a seller's window at or above which promoter
+  /// concentration is raised.
+  promoterConcentrationReviewBasisPoints     Int
+
+  /// The score at or above which a ranked row is flagged as warranting
+  /// attention. A REPORTING FLOOR, never an action trigger.
+  attentionScoreFloor Int
+
+  /// When this version's heuristics begin to apply. Supplied, never a clock read.
+  effectiveFrom DateTime @db.DateTime(3)
+
+  /// Who recorded it, as the durable internal Account id. Never an email and
+  /// never a display name — 0M.8's settled rule.
+  recordedByAccountId String   @db.VarChar(191)
+  recordedAt          DateTime @db.DateTime(3)
+
+  retiredAt          DateTime? @db.DateTime(3)
+  retiredByAccountId String?   @db.VarChar(191)
+
+  /// Set to `policyId` while ACTIVE and NULL otherwise, so the unique index
+  /// enforces AT MOST ONE ACTIVE VERSION per policy while permitting any number
+  /// of DRAFT and RETIRED ones. MySQL has no partial indexes; the same technique
+  /// every other governed policy in this schema uses.
+  activeMarker String? @db.VarChar(191)
+
+  rowCreatedAt DateTime @default(now()) @db.DateTime(3)
+
+  /// RESTRICT: the basis on which historical reviews were opened.
+  policy SellerRiskReviewPolicy @relation(fields: [policyId], references: [id], onDelete: Restrict)
+
+  /// Reviews opened under THIS exact version.
+  reviews ParticipantRiskReview[]
+
+  @@unique([policyId, policyVersion])
+  @@unique([activeMarker])
+  @@index([policyId, status])
+  @@index([effectiveFrom])
+}
+
+/// One Staff risk review of one participant (Phase 1.13).
+///
+/// A GOVERNED HUMAN DECISION RECORD, shaped on `ParticipantActivation` rather
+/// than on `TransactionDispute`. The dispute needed a second event table because
+/// five provider event types mutate it over weeks with no natural terminal
+/// guard; a review is opened, looked at, and closed by people, which is exactly
+/// the shape an activation already is.
+///
+/// TWO AXES, NOT ONE ENUM. `status` is where the WORK has got to; `dispositionCode`
+/// is what Monacado DECIDED. 1.11 kept adjudication and funds apart because
+/// collapsing them "would make 'has Monacado lost this money' unanswerable", and
+/// the same argument applies here: merged into one column, "has a human looked at
+/// this yet" and "what did we conclude" stop being separately answerable. MONITOR
+/// and SUSPENSION_RECOMMENDED are conclusions, not positions in a queue.
+///
+/// NOTHING HERE ENFORCES ANYTHING. `SUSPENSION_RECOMMENDED` is a recorded
+/// recommendation and no more. No participant status is written, no restriction
+/// is imposed, and no column on this row is read by the 1.2 transaction gate. A
+/// Staff member who decides to act does so through the EXISTING governed
+/// restriction authority, under its own separately-checked entitlement — two
+/// acts by two grants, so recording a recommendation can never become a silent
+/// grant of `participant:restrict`.
+///
+/// THE TRIGGER IS A REPORT COORDINATE, NEVER A COPIED SCORE. `triggerAsOf` plus
+/// `reviewPolicyId`/`reviewPolicyVersion` name the exact report that raised this
+/// review. Because the report is a deterministic function of (asOf, policy
+/// version) over immutable source rows, that coordinate REGENERATES what the
+/// reviewer saw — which a copied number could not do, and which is why no score
+/// column exists here.
+model ParticipantRiskReview {
+  /// Opaque identity (mon:prrev:<opaque>). Operational only, never published.
+  id String @id @db.VarChar(191)
+
+  /// Who is under review. RESTRICT: an audit trail for a risk decision must
+  /// never be cascade-deleted.
+  participantId String @db.VarChar(191)
+
+  /// SYSTEM (raised from a ranked report) | STAFF (opened by a person).
+  triggerSource String @db.VarChar(16)
+
+  /// The report coordinate. `triggerAsOf` is the report's exclusive upper bound;
+  /// with the policy version below it reproduces the ranking exactly.
+  triggerAsOf DateTime @db.DateTime(3)
+
+  /// The EXACT heuristics version that ranked this participant. RESTRICT on the
+  /// far side: a version some seller was actually reviewed under is not
+  /// deletable.
+  reviewPolicyId      String @db.VarChar(191)
+  reviewPolicyVersion String @db.VarChar(64)
+
+  openedAt          DateTime @db.DateTime(3)
+  /// Who opened it, as the durable internal Account id — never an email and
+  /// never a display name. NULL for a SYSTEM-raised review, the same way
+  /// `ParticipantActivation.decidedByActorId` is NULL while undecided.
+  openedByAccountId String?  @db.VarChar(191)
+
+  /// OPEN | UNDER_REVIEW | CLOSED. Forward-only; CLOSED is terminal. If the
+  /// signal recurs after a review closes, that is a NEW review with its own
+  /// instant and actor — 0M.R1's rule that "restricted, cleared, restricted
+  /// again" must read as two events rather than one row that changed its mind.
+  status String @db.VarChar(24)
+
+  /// Who is looking. Set when the review moves to UNDER_REVIEW.
+  assignedReviewerAccountId String? @db.VarChar(191)
+
+  /// The bounded conclusion. NULL until CLOSED, then required — the shape
+  /// `ProceedsRecoveryException.resolutionCode` established. A classification,
+  /// never free text.
+  dispositionCode    String?   @db.VarChar(48)
+  decidedByAccountId String?   @db.VarChar(191)
+  decidedAt          DateTime? @db.DateTime(3)
+
+  /// The restriction a Staff member subsequently imposed through the EXISTING
+  /// governed authority, if they imposed one. EVIDENCE OF LINKAGE, NEVER A
+  /// TRIGGER: this column is written after the fact by the person who acted, and
+  /// nothing in this phase reads it to decide anything.
+  resultingRestrictionId String? @db.VarChar(191)
+
+  /// Set to `participantId` while the review is not CLOSED and NULL once it is,
+  /// so the unique index enforces AT MOST ONE OPEN REVIEW PER PARTICIPANT while
+  /// permitting any number of closed ones. A re-firing daily signal is then a
+  /// refused duplicate rather than a second queue entry — the technique
+  /// `ParticipantActivation.undecidedForParticipantId` uses.
+  openForParticipantId String? @unique @db.VarChar(191)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  // RESTRICT everywhere: this is the audit trail behind a judgement about a
+  // participant. Nothing it binds to may be deleted beneath it.
+  participant            MarketplaceParticipant           @relation(fields: [participantId], references: [id], onDelete: Restrict)
+  reviewPolicyVersionRow SellerRiskReviewPolicyVersionRow @relation(fields: [reviewPolicyId, reviewPolicyVersion], references: [policyId, policyVersion], onDelete: Restrict)
+  resultingRestriction   ParticipantRestriction?          @relation(fields: [resultingRestrictionId], references: [id], onDelete: Restrict)
+
+  /// WHY this review was raised, as rows rather than a JSON blob.
+  triggerReasons ParticipantRiskReviewTriggerReason[]
+
+  @@index([participantId, openedAt])
+  @@index([status, openedAt])
+  @@index([reviewPolicyId, reviewPolicyVersion])
+}
+
+/// One bounded reason a review was raised (Phase 1.13). APPEND-ONLY.
+///
+/// A CHILD TABLE RATHER THAN A JSON COLUMN, on the reasoning
+/// `ParticipantPaymentRequirementRow` already used for outstanding requirements:
+/// bounded CATEGORY codes on a child table are enumerable, queryable, and
+/// incapable of holding a sentence. A JSON blob is where an operator eventually
+/// writes prose, and prose about a suspected seller is the worst place for it.
+///
+/// The OBSERVED and BASELINE values are stored beside the code because a reason
+/// without them is the thing this phase exists to refuse: `volumeSpike: true`
+/// tells a reviewer nothing they can check. They are stored as BIGINT counts and
+/// basis points — never as a monetary amount, and never as a score.
+model ParticipantRiskReviewTriggerReason {
+  /// Surrogate key. The meaningful identity is (reviewId, reasonCode).
+  seq BigInt @id @default(autoincrement())
+
+  reviewId String @db.VarChar(191)
+
+  /// A member of the closed review-reason vocabulary. Never free text, and never
+  /// a word implying proven wrongdoing.
+  reasonCode String @db.VarChar(64)
+
+  /// What was measured, and what it was measured against. COUNT | BASIS_POINTS.
+  /// Both are integers; neither is ever a currency amount.
+  unit          String  @db.VarChar(16)
+  observedValue BigInt
+  /// NULL only where the comparison genuinely had no baseline — a first-activity
+  /// seller — in which case the reason code says so.
+  baselineValue BigInt?
+  /// The denominator behind `observedValue`, so a reader can always see the
+  /// sample size a rate was computed on.
+  sampleSize    BigInt
+  /// The rolling window the observation covers, in days.
+  windowDays    Int
+
+  recordedAt DateTime @db.DateTime(3)
+
+  /// CASCADE, uniquely in this schema's risk tables: these rows have no meaning
+  /// apart from their review and are not themselves a financial record. Deleting
+  /// a review is not a supported operation, so this is a shape statement rather
+  /// than a path anything exercises.
+  review ParticipantRiskReview @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  @@unique([reviewId, reasonCode])
+  @@index([reasonCode])
 }

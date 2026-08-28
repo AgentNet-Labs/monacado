@@ -394,3 +394,28 @@ export const TRANSACTION_DISPUTE_ID_RE = new RegExp(`^mon:dspt:${OPAQUE_BODY}$`)
  * notice indistinguishable by identifier alone.
  */
 export const TRANSACTION_DISPUTE_EVENT_ID_RE = new RegExp(`^mon:dsevt:${OPAQUE_BODY}$`);
+
+/**
+ * Seller risk-review policy identity (`mon:srrp:<opaque>`) — Phase 1.13.
+ *
+ * Deliberately **not** `mon:rpol:`. `mon:rpol:` names Phase 1.2's synchronous
+ * transaction gate, resolved at checkout and bound to one Order; this names the
+ * heuristics that decide which sellers a HUMAN looks at, resolved when a report
+ * runs and bound to no transaction at all. One identifier space for both would
+ * let a reader take a review threshold for a gate limit — and a review threshold
+ * mistaken for a gate is an automatic denial nobody authorised.
+ */
+export const SELLER_RISK_REVIEW_POLICY_ID_RE = new RegExp(`^mon:srrp:${OPAQUE_BODY}$`);
+
+/**
+ * Participant risk-review identity (`mon:prrev:<opaque>`) — Phase 1.13.
+ *
+ * Distinct from `mon:mact:` (an activation review) and `mon:prst:` (a
+ * restriction). All three are governed judgements about a participant, and the
+ * distinction is the point: an activation decides admission, a restriction
+ * withholds capability, and this decides only whether somebody should look.
+ * Sharing a space would make "we reviewed them" and "we restricted them"
+ * indistinguishable by identifier — which is the exact conflation this phase
+ * refuses to permit.
+ */
+export const PARTICIPANT_RISK_REVIEW_ID_RE = new RegExp(`^mon:prrev:${OPAQUE_BODY}$`);
