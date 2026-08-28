@@ -259,6 +259,15 @@ export async function evaluateDisputeOperationsReadiness(
   if (backlog.observationStale > 0) blockers.push("DISPUTE_OBSERVATION_STALE");
   if (backlog.taxConsequenceUnresolved > 0) blockers.push("DISPUTE_TAX_CONSEQUENCE_UNRESOLVED");
 
+  /* A finalized loss that assessed no fee. Counted here rather than derived from
+     configuration, because the question is about ROWS: which losses went
+     unassessed, whatever the policy says today. */
+  const db = deps.db ?? getPrisma();
+  const unassessedLosses = await db.transactionDispute.count({
+    where: { status: "LOST", orderId: { not: null }, sellerChargebackFee: { is: null } },
+  });
+  if (unassessedLosses > 0) blockers.push("DISPUTE_CHARGEBACK_FEE_NOT_ASSESSED");
+
   return { healthy: blockers.length === 0 && disputeBacklogIsHealthy(backlog), blockers, backlog };
 }
 

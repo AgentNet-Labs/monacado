@@ -53,7 +53,9 @@ import {
   selectSectionsForAudience,
 } from "../src/contracts/marketplace/marketplace-policy";
 import {
-  SELLER_CHARGEBACK_FEE_POLICY,
+  SELLER_CHARGEBACK_FEE_BOOTSTRAP_DEFAULT,
+  SELLER_CHARGEBACK_FEE_POLICY_KEY,
+  SELLER_CHARGEBACK_FEE_RULES,
   chargebackFeeAppliesTo,
 } from "../src/contracts/marketplace/chargeback-fee";
 import {
@@ -974,10 +976,29 @@ describe("1.12 — the capsule and the publication posture are unchanged", () =>
   });
 });
 
-describe("1.12 — the finalized-chargeback seller fee", () => {
-  it("is thirty dollars, stated once", () => {
-    expect(SELLER_CHARGEBACK_FEE_POLICY.amountMinorUnits).toBe(3_000);
-    expect(SELLER_CHARGEBACK_FEE_POLICY.currency).toBe("USD");
+describe("1.12 — the finalized-chargeback seller fee is governed, not compiled", () => {
+  it("bootstraps at thirty dollars, as a seed rather than an authority", () => {
+    expect(SELLER_CHARGEBACK_FEE_BOOTSTRAP_DEFAULT.amountMinorUnits).toBe(3_000);
+    expect(SELLER_CHARGEBACK_FEE_BOOTSTRAP_DEFAULT.currency).toBe("USD");
+    expect(SELLER_CHARGEBACK_FEE_BOOTSTRAP_DEFAULT.policyKey).toBe(
+      SELLER_CHARGEBACK_FEE_POLICY_KEY,
+    );
+  });
+
+  it("never reads a compiled amount when assessing", () => {
+    /* THE POINT OF THIS CORRECTION. The assessment path must resolve the governed
+       policy; a fallback to the bootstrap constant would reintroduce the
+       hardcoded fee while looking governed. */
+    expect(SELLER_CHARGEBACK_FEE_RULES.compiledFallbackAtAssessment).toBe(false);
+    const code = readCode("src/server/marketplace/transaction-dispute-service.ts");
+    expect(code).not.toContain("SELLER_CHARGEBACK_FEE_BOOTSTRAP_DEFAULT");
+    expect(code).not.toContain("3_000");
+    expect(code).not.toContain("3000");
+  });
+
+  it("resolves the governing version at finalization and binds it", () => {
+    expect(SELLER_CHARGEBACK_FEE_RULES.versionResolvedAt).toBe("DISPUTE_FINALIZATION");
+    expect(SELLER_CHARGEBACK_FEE_RULES.boundToAssessment).toBe(true);
   });
 
   it("applies to a loss, and to nothing else", () => {
@@ -989,13 +1010,13 @@ describe("1.12 — the finalized-chargeback seller fee", () => {
     expect(chargebackFeeAppliesTo("NEEDS_RESPONSE")).toBe(false);
     expect(chargebackFeeAppliesTo("UNDER_REVIEW")).toBe(false);
     expect(chargebackFeeAppliesTo("CLOSED")).toBe(false);
-    expect(SELLER_CHARGEBACK_FEE_POLICY.assessedOnDisputeOpened).toBe(false);
-    expect(SELLER_CHARGEBACK_FEE_POLICY.assessedOnDisputeWon).toBe(false);
+    expect(SELLER_CHARGEBACK_FEE_RULES.assessedOnDisputeOpened).toBe(false);
+    expect(SELLER_CHARGEBACK_FEE_RULES.assessedOnDisputeWon).toBe(false);
   });
 
   it("rewrites no historical economics, and collects nothing", () => {
-    expect(SELLER_CHARGEBACK_FEE_POLICY.rewritesHistoricalEconomics).toBe(false);
-    expect(SELLER_CHARGEBACK_FEE_POLICY.collection).toBe("NOT_IMPLEMENTED");
+    expect(SELLER_CHARGEBACK_FEE_RULES.rewritesHistoricalEconomics).toBe(false);
+    expect(SELLER_CHARGEBACK_FEE_RULES.collection).toBe("NOT_IMPLEMENTED");
   });
 
   it("nets against no existing amount anywhere in the service", () => {
@@ -1009,8 +1030,29 @@ describe("1.12 — the finalized-chargeback seller fee", () => {
     expect(body).not.toContain("proceedsObligation.update");
   });
 
+  it("activation touches no assessed fee, so a change is prospective only", () => {
+    const code = readCode("src/server/marketplace/chargeback-fee-policy-service.ts");
+    const fn = code.slice(code.indexOf("export async function activateChargebackFeePolicyVersion"));
+    expect(fn).not.toContain("sellerChargebackFee.");
+  });
+
   it("stays distinct from the network's own dispute fee, which is still unbuilt", () => {
     expect(DISPUTE_EXECUTION_DEFERRAL.disputeFeeAccounting).toBe("NOT_IMPLEMENTED");
+  });
+
+  it("reuses the versioned-policy shape rather than a parallel config system", () => {
+    /* DRAFT -> ACTIVE -> RETIRED under a unique activeMarker, the same technique
+       CommercialPolicyVersionRow and SellerRefundPolicyVersionRow use. */
+    const schema = readSource("prisma/schema.prisma");
+    const block = schema.slice(schema.indexOf("model SellerChargebackFeePolicyVersionRow {"));
+    expect(block).toContain("activeMarker");
+    expect(block).toContain("@@unique([activeMarker])");
+    expect(block).toContain("@@unique([policyId, policyVersion])");
+    expect(block).toContain("recordedByAccountId");
+    /* No config file, no env var, no JSON blob. */
+    const service = readCode("src/server/marketplace/chargeback-fee-policy-service.ts");
+    expect(service).not.toContain("process.env");
+    expect(service).not.toContain("readFileSync");
   });
 });
 

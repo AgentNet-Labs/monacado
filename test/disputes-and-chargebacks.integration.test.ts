@@ -153,6 +153,13 @@ import {
   submitDisputeEvidence,
 } from "../src/server/marketplace/dispute-evidence-service";
 import { requestSellerDisputeEvidence } from "../src/server/notifications/dispute-notice-service";
+import {
+  activateChargebackFeePolicyVersion,
+  readChargebackFeePolicyVersions,
+  recordChargebackFeePolicyVersion,
+  resolveActiveChargebackFeePolicy,
+} from "../src/server/marketplace/chargeback-fee-policy-service";
+import { SELLER_CHARGEBACK_FEE_BOOTSTRAP_DEFAULT } from "../src/contracts/marketplace/chargeback-fee";
 import { enqueueDisputeNotices } from "../src/server/notifications/dispute-notice-service";
 import { evaluateLiveCommerceReadiness } from "../src/server/operations/live-commerce-readiness";
 import type { DisputeObservation } from "../src/contracts/marketplace/transaction-dispute";
@@ -2449,10 +2456,51 @@ describeDb("1.11 — disputes and chargebacks", () => {
   });
 
 
-  // — 13 · The finalized-chargeback seller fee (Phase 1.12) —
+  // — 13 · The governed seller chargeback fee (Phase 1.12) —
 
-  describe("the $30 seller fee for a finalized lost chargeback", () => {
-    it("assesses one fee when a dispute is finally lost", async () => {
+  describe("the seller fee for a finalized lost chargeback", () => {
+    /** Record and activate a fee version. The governed admin path, not a raw write. */
+    async function activateFee(version: string, amountMinorUnits: number, currency = "USD") {
+      await recordChargebackFeePolicyVersion(
+        {
+          policyVersion: version,
+          amountMinorUnits,
+          currency,
+          effectiveFrom: DISPUTE_AT,
+          recordedByAccountId: "acct-admin",
+          at: DISPUTE_AT,
+        },
+        { db },
+      );
+      return activateChargebackFeePolicyVersion(
+        { policyVersion: version, activatedByAccountId: "acct-admin", at: DISPUTE_AT },
+        { db },
+      );
+    }
+
+    async function clearFeePolicy() {
+      await db.sellerChargebackFee.deleteMany({});
+      await db.sellerChargebackFeePolicyVersionRow.deleteMany({});
+      await db.sellerChargebackFeePolicy.deleteMany({});
+    }
+
+    beforeEach(async () => {
+      await clearFeePolicy();
+    });
+
+    it("resolves the bootstrapped default to $30 USD", async () => {
+      await activateFee(
+        SELLER_CHARGEBACK_FEE_BOOTSTRAP_DEFAULT.policyVersion,
+        SELLER_CHARGEBACK_FEE_BOOTSTRAP_DEFAULT.amountMinorUnits,
+      );
+      const active = await resolveActiveChargebackFeePolicy({ db });
+      expect(active?.amountMinorUnits).toBe(3_000);
+      expect(active?.currency).toBe("USD");
+      expect(active?.policyVersion).toBe("1.0.0");
+    });
+
+    it("assesses the governed amount when a dispute is finally lost", async () => {
+      await activateFee("1.0.0", 3_000);
       const sale = await paidSale();
       const outcome = await dispute(sale, { eventKind: "CLOSED", status: "LOST" });
 
@@ -2462,12 +2510,79 @@ describeDb("1.11 — disputes and chargebacks", () => {
       expect(Number(fee.amountMinorUnits)).toBe(3_000);
       expect(fee.currency).toBe("USD");
       expect(fee.state).toBe("ASSESSED");
-      expect(fee.orderId).toBe(sale.orderId);
+      expect(fee.policyVersion).toBe("1.0.0");
       expect(fee.sellerParticipantId).toBe(sale.seller.participantId);
       expect(outcome.chargebackFeeId).toBe(fee.id);
     });
 
+    it("lets an admin create and activate a new value prospectively", async () => {
+      await activateFee("1.0.0", 3_000);
+      const next = await activateFee("1.1.0", 4_500);
+      expect(next.status).toBe("ACTIVE");
+      expect(next.amountMinorUnits).toBe(4_500);
+
+      const active = await resolveActiveChargebackFeePolicy({ db });
+      expect(active?.policyVersion).toBe("1.1.0");
+
+      /* The superseded version is retired, still readable, and its amount is
+         untouched. */
+      const versions = await readChargebackFeePolicyVersions({ db });
+      const retired = versions.find((v) => v.policyVersion === "1.0.0");
+      expect(retired?.status).toBe("RETIRED");
+      expect(retired?.amountMinorUnits).toBe(3_000);
+    });
+
+    it("leaves a fee assessed under the old value exactly as it was", async () => {
+      /* The immutability property the whole correction turns on. */
+      await activateFee("1.0.0", 3_000);
+      const sale = await paidSale();
+      const outcome = await dispute(sale, { eventKind: "CLOSED", status: "LOST" });
+
+      await activateFee("1.1.0", 9_900);
+
+      const fee = await db.sellerChargebackFee.findUniqueOrThrow({
+        where: { disputeId: outcome.disputeId },
+      });
+      expect(Number(fee.amountMinorUnits)).toBe(3_000);
+      expect(fee.policyVersion).toBe("1.0.0");
+    });
+
+    it("assesses a later loss at the new value", async () => {
+      await activateFee("1.0.0", 3_000);
+      const first = await paidSale();
+      const firstOutcome = await dispute(first, { eventKind: "CLOSED", status: "LOST" });
+
+      await activateFee("1.1.0", 4_500);
+      const second = await paidSale();
+      const secondOutcome = await dispute(second, { eventKind: "CLOSED", status: "LOST" });
+
+      const older = await db.sellerChargebackFee.findUniqueOrThrow({
+        where: { disputeId: firstOutcome.disputeId },
+      });
+      const newer = await db.sellerChargebackFee.findUniqueOrThrow({
+        where: { disputeId: secondOutcome.disputeId },
+      });
+      expect(Number(older.amountMinorUnits)).toBe(3_000);
+      expect(older.policyVersion).toBe("1.0.0");
+      expect(Number(newer.amountMinorUnits)).toBe(4_500);
+      expect(newer.policyVersion).toBe("1.1.0");
+    });
+
+    it("fails closed when no fee policy is active, rather than defaulting", async () => {
+      /* No compiled $30 anywhere. A deployment that never activated a fee charges
+         nothing and says so. */
+      const sale = await paidSale();
+      const outcome = await dispute(sale, { eventKind: "CLOSED", status: "LOST" });
+      expect(outcome.chargebackFeeId).toBeNull();
+      expect(await db.sellerChargebackFee.count({ where: { orderId: sale.orderId } })).toBe(0);
+
+      const readiness = await evaluateDisputeOperationsReadiness({ at: DISPUTE_LATER }, { db });
+      expect(readiness.blockers).toContain("DISPUTE_CHARGEBACK_FEE_NOT_ASSESSED");
+      expect(readiness.healthy).toBe(false);
+    });
+
     it("assesses no fee when the dispute is merely opened", async () => {
+      await activateFee("1.0.0", 3_000);
       const sale = await paidSale();
       const outcome = await dispute(sale);
       expect(outcome.chargebackFeeId).toBeNull();
@@ -2477,6 +2592,7 @@ describeDb("1.11 — disputes and chargebacks", () => {
     it("assesses no fee when the dispute is won", async () => {
       /* A seller who successfully defends a sale must be no worse off for having
          been disputed, or the fee becomes a tax on being a target. */
+      await activateFee("1.0.0", 3_000);
       const sale = await paidSale();
       const outcome = await dispute(sale, { eventKind: "CLOSED", status: "WON" });
       expect(outcome.chargebackFeeId).toBeNull();
@@ -2484,6 +2600,7 @@ describeDb("1.11 — disputes and chargebacks", () => {
     });
 
     it("assesses exactly one fee however often the loss is redelivered", async () => {
+      await activateFee("1.0.0", 3_000);
       const sale = await paidSale();
       const first = await dispute(sale, { eventKind: "CLOSED", status: "LOST" });
       const opened = await db.transactionDispute.findUniqueOrThrow({
@@ -2499,7 +2616,34 @@ describeDb("1.11 — disputes and chargebacks", () => {
       expect(await db.sellerChargebackFee.count({ where: { orderId: sale.orderId } })).toBe(1);
     });
 
+    it("refuses to redefine a version label with a different amount", async () => {
+      await activateFee("1.0.0", 3_000);
+      await expect(
+        recordChargebackFeePolicyVersion(
+          {
+            policyVersion: "1.0.0",
+            amountMinorUnits: 9_999,
+            currency: "USD",
+            effectiveFrom: DISPUTE_AT,
+            recordedByAccountId: "acct-admin",
+            at: DISPUTE_AT,
+          },
+          { db },
+        ),
+      ).rejects.toMatchObject({ reason: "FEE_VERSION_ALREADY_EXISTS_WITH_DIFFERENT_VALUE" });
+    });
+
+    it("permits at most one active version, enforced by the database", async () => {
+      await activateFee("1.0.0", 3_000);
+      await activateFee("1.1.0", 4_500);
+      const active = await db.sellerChargebackFeePolicyVersionRow.count({
+        where: { status: "ACTIVE" },
+      });
+      expect(active).toBe(1);
+    });
+
     it("rewrites no historical economics to make room for the fee", async () => {
+      await activateFee("1.0.0", 3_000);
       const sale = await paidSale();
       const before = await db.transactionEconomicSnapshot.findUniqueOrThrow({
         where: { id: sale.snapshotId },
@@ -2524,13 +2668,16 @@ describeDb("1.11 — disputes and chargebacks", () => {
         before.commercialRetailAmountMinorUnits,
       );
       expect(after.sellerProceedsMinorUnits).toEqual(before.sellerProceedsMinorUnits);
-      expect(after.monacadoRetainedAmountMinorUnits).toEqual(before.monacadoRetainedAmountMinorUnits);
+      expect(after.monacadoRetainedAmountMinorUnits).toEqual(
+        before.monacadoRetainedAmountMinorUnits,
+      );
       expect(afterObligations.map((o) => o.amountMinorUnits)).toEqual(
         beforeObligations.map((o) => o.amountMinorUnits),
       );
     });
 
     it("carries no buyer detail", async () => {
+      await activateFee("1.0.0", 3_000);
       const sale = await paidSale();
       await dispute(sale, { eventKind: "CLOSED", status: "LOST" });
       const fees = await db.sellerChargebackFee.findMany({ where: { orderId: sale.orderId } });
@@ -2541,5 +2688,4 @@ describeDb("1.11 — disputes and chargebacks", () => {
       expect(serialised).not.toContain("example.test");
     });
   });
-
 });

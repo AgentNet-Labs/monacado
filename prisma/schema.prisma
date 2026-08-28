@@ -5064,9 +5064,17 @@ model SellerChargebackFee {
   amountMinorUnits BigInt
   currency         String @db.VarChar(3)
 
-  /// The fee policy version this was assessed under, so a fee stays readable
-  /// after the amount changes.
-  policyVersion String @db.VarChar(32)
+  /// THE EXACT GOVERNING VERSION, bound at assessment and never re-read.
+  ///
+  /// The amount above is a SNAPSHOT of what that version said at the moment the
+  /// chargeback finalized. Both are kept: the amount so a historical assessment
+  /// stays readable without a join, and the version pair so it stays
+  /// *explicable* — "why was this seller charged that" is answerable by reading
+  /// the version, not by inferring it from the number.
+  ///
+  /// A later fee change activates a new version and touches neither column.
+  feePolicyId   String @db.VarChar(191)
+  policyVersion String @db.VarChar(64)
 
   /// ASSESSED | WAIVED | SETTLED. Only ASSESSED is written in this phase; the
   /// other two are named so the column does not change shape when an operator
@@ -5084,8 +5092,109 @@ model SellerChargebackFee {
   dispute TransactionDispute @relation(fields: [disputeId], references: [id], onDelete: Restrict)
   order   Order              @relation(fields: [orderId], references: [id], onDelete: Restrict)
 
+  /// RESTRICT: a version some seller was actually charged under is not deletable.
+  feePolicyVersion SellerChargebackFeePolicyVersionRow @relation(fields: [feePolicyId, policyVersion], references: [policyId, policyVersion], onDelete: Restrict)
+
   /// The operator's queries: what is outstanding, and against whom.
+  @@index([feePolicyId, policyVersion])
   @@index([state, assessedAt])
   @@index([sellerParticipantId, assessedAt])
   @@index([orderId])
+}
+
+/// The governed identity of Monacado's seller chargeback fee (Phase 1.12).
+///
+/// One row per deployment, found by `policyKey` rather than by label — the same
+/// reason the marketplace policy id is a pinned literal: a service resolving "the
+/// fee policy" needs something stable, and a label is an operational display
+/// string that somebody will eventually edit.
+model SellerChargebackFeePolicy {
+  /// Opaque identity (mon:cbfp:<opaque>). Immutable.
+  id String @id @db.VarChar(191)
+
+  /// The stable lookup key. UNIQUE, so "which policy is the fee policy" is a
+  /// lookup rather than a judgement.
+  policyKey String @unique @db.VarChar(64)
+
+  /// Operational display label. NEVER an input to an assessment.
+  label String @db.VarChar(200)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  versions SellerChargebackFeePolicyVersionRow[]
+}
+
+/// One IMMUTABLE governed version of the seller chargeback fee (Phase 1.12).
+///
+/// The shape `CommercialPolicyVersionRow` established and
+/// `SellerRefundPolicyVersionRow` reused, for the same reason both did: a
+/// commercial value that changes must change by publishing a new version, never
+/// by rewriting the one historical records were assessed under.
+///
+/// RETIRED STAYS READABLE. A seller charged under version 1 must remain
+/// explicable after version 2 is activated, so nothing is deleted and the amount
+/// is never edited in place. Only `status`, `retiredAt`, `retiredByAccountId`,
+/// and `activeMarker` are ever updated, and only along DRAFT -> ACTIVE ->
+/// RETIRED.
+///
+/// PROSPECTIVE ONLY. Activating a new version changes what the NEXT finalized
+/// chargeback costs. It cannot reach an assessment already made, because that
+/// assessment snapshotted both the amount and this version pair.
+model SellerChargebackFeePolicyVersionRow {
+  /// Surrogate key. The meaningful identity is (policyId, policyVersion).
+  seq BigInt @id @default(autoincrement())
+
+  policyId      String @db.VarChar(191)
+  /// The exact version label. Opaque to every assessment.
+  policyVersion String @db.VarChar(64)
+
+  /// DRAFT | ACTIVE | RETIRED. RETIRED remains readable and remains bound by
+  /// every fee assessed under it; only DRAFT was never binding.
+  status String @db.VarChar(16)
+
+  // — The governed value. Inputs only; nothing derived is stored. —
+
+  /// The fee, in minor units of `currency`. 3000 = $30.00. No floating-point
+  /// money anywhere, the rule every economics column in this schema follows.
+  amountMinorUnits BigInt
+  /// Denominated independently of any sale: this is a marketplace fee for the
+  /// work and loss a finalized chargeback creates, not a share of the disputed
+  /// transaction, so it does not float with the sale's currency.
+  currency         String @db.VarChar(3)
+
+  /// When this version's value begins to apply. Supplied, never a clock read.
+  effectiveFrom DateTime @db.DateTime(3)
+
+  /// Who recorded it, as the durable internal Account id. Never an email and
+  /// never a display name — 0M.8's settled rule.
+  recordedByAccountId String   @db.VarChar(191)
+  recordedAt          DateTime @db.DateTime(3)
+
+  /// Set when the version leaves ACTIVE. NULL while it stands.
+  retiredAt          DateTime? @db.DateTime(3)
+  retiredByAccountId String?   @db.VarChar(191)
+
+  /// Set to `policyId` while ACTIVE and NULL otherwise, so the unique index
+  /// enforces AT MOST ONE ACTIVE VERSION per policy while permitting any number
+  /// of DRAFT and RETIRED ones. MySQL has no partial indexes; the same technique
+  /// CommercialPolicyVersionRow and SellerRefundPolicyVersionRow use.
+  ///
+  /// It is what makes "what does a chargeback cost right now" a question with
+  /// exactly one answer, enforced by the database rather than by a service
+  /// remembering to retire the incumbent first.
+  activeMarker String? @db.VarChar(191)
+
+  rowCreatedAt DateTime @default(now()) @db.DateTime(3)
+
+  /// RESTRICT: the basis of historical fee assessments.
+  policy SellerChargebackFeePolicy @relation(fields: [policyId], references: [id], onDelete: Restrict)
+
+  /// Fees assessed under THIS exact version. RESTRICT on the far side.
+  assessedFees SellerChargebackFee[]
+
+  @@unique([policyId, policyVersion])
+  @@unique([activeMarker])
+  @@index([policyId, status])
+  @@index([effectiveFrom])
 }

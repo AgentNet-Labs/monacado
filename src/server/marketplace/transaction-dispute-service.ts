@@ -58,7 +58,7 @@ import {
   INITIAL_PROCEEDS_RECOVERY_STATUS,
   recoveryReasonForObligationState,
 } from "../../contracts/marketplace/proceeds-recovery";
-import { SELLER_CHARGEBACK_FEE_POLICY } from "../../contracts/marketplace/chargeback-fee";
+import { resolveActiveChargebackFeePolicy } from "./chargeback-fee-policy-service";
 import { getPrisma } from "../db/client";
 import { cryptoDisputeIdProvider, type DisputeIdProvider } from "./dispute-ids";
 import {
@@ -201,11 +201,28 @@ function rowToRecord(row: {
  * a seller who successfully defends a sale must be no worse off for having been
  * disputed, or the fee becomes a tax on being a target.
  *
+ * ## The amount comes from the governed policy, never from this file
+ *
+ * The active `SellerChargebackFeePolicyVersionRow` is resolved **at
+ * finalization**, and its amount, currency, and version pair are snapshotted onto
+ * the assessment. A later fee change activates a new version and cannot reach
+ * this row: the fee a seller was charged is explicable from the row itself,
+ * forever.
+ *
+ * ## No active policy means no fee, and a finding
+ *
+ * If nothing stands, this assesses **nothing** and returns `null`. It does not
+ * fall back to a compiled amount — a seller charged a fee no operator ever
+ * activated is worse than a fee not charged, and a silent default would be the
+ * hardcoded value this design removed, wearing a governed costume. The dispute
+ * still records in full; `evaluateDisputeOperationsReadiness` surfaces the
+ * unassessed loss as `DISPUTE_CHARGEBACK_FEE_NOT_ASSESSED`.
+ *
  * **Writes one new row and moves nothing else.** No snapshot column, no
- * obligation amount, and no payout figure is touched: netting thirty dollars out
- * of a historical amount would restate what three parties were told they earned,
- * and would do it silently. Collection is not attempted here and is not built
- * anywhere — the obligation is recorded and an operator can see it.
+ * obligation amount, and no payout figure is touched: netting a fee out of a
+ * historical amount would restate what three parties were told they earned, and
+ * would do it silently. Collection is not attempted here and is not built
+ * anywhere.
  *
  * Idempotent through the unique index on `disputeId`: a redelivered
  * `charge.dispute.closed` is the same loss, so the duplicate is swallowed rather
@@ -218,8 +235,14 @@ async function assessSellerChargebackFeeInTx(
     orderId: string;
     assessedAt: string;
     ids: DisputeIdProvider;
+    /* Resolved OUTSIDE the transaction and passed in, so the governing value is
+       read once and cannot drift between resolution and write. */
+    feePolicy: { policyId: string; policyVersion: string; amountMinorUnits: number; currency: string } | null;
   },
 ): Promise<string | null> {
+  /* Fail closed. No active governed value, no assessment. */
+  if (args.feePolicy === null) return null;
+
   const order = await tx.order.findUnique({
     where: { id: args.orderId },
     select: { sellerParticipantId: true },
@@ -236,12 +259,11 @@ async function assessSellerChargebackFeeInTx(
         disputeId: args.disputeId,
         orderId: args.orderId,
         sellerParticipantId: order.sellerParticipantId,
-        amountMinorUnits: BigInt(SELLER_CHARGEBACK_FEE_POLICY.amountMinorUnits),
-        /* USD regardless of the sale's currency: this is a marketplace fee for
-           the work and loss a finalized chargeback creates, not a share of the
-           disputed transaction, so it does not float with the sale. */
-        currency: SELLER_CHARGEBACK_FEE_POLICY.currency,
-        policyVersion: SELLER_CHARGEBACK_FEE_POLICY.policyVersion,
+        /* SNAPSHOTTED from the governing version, not recomputed later. */
+        amountMinorUnits: BigInt(args.feePolicy.amountMinorUnits),
+        currency: args.feePolicy.currency,
+        feePolicyId: args.feePolicy.policyId,
+        policyVersion: args.feePolicy.policyVersion,
         state: "ASSESSED",
         assessedAt: new Date(args.assessedAt),
       },
@@ -410,6 +432,14 @@ export async function recordDisputeObservation(
 
   const db = deps.db ?? getPrisma();
   const ids = deps.ids ?? cryptoDisputeIdProvider;
+
+  /* The governing fee value, resolved ONCE and outside the transaction.
+   *
+   * Read here rather than inside so the amount cannot drift between resolution
+   * and write, and so a deployment with no active policy is a `null` the
+   * assessment refuses on rather than a query repeated per branch. `null` is a
+   * real answer: nothing substitutes a compiled default. */
+  const activeFeePolicy = await resolveActiveChargebackFeePolicy({ db });
 
   try {
     return await db.$transaction(async (tx) => {
@@ -671,14 +701,15 @@ export async function recordDisputeObservation(
             ids,
           });
 
-          /* The seller's $30 fee, assessed on a finalized loss and on nothing
-             else. A new fact standing beside the sale, never a deduction from
-             it. */
+          /* The seller's fee, assessed on a finalized loss and on nothing else,
+             at whatever the governed policy says right now. A new fact standing
+             beside the sale, never a deduction from it. */
           chargebackFeeId = await assessSellerChargebackFeeInTx(tx, {
             disputeId,
             orderId,
             assessedAt: args.recordedAt,
             ids,
+            feePolicy: activeFeePolicy,
           });
 
           const alreadyReversed = await isSnapshotReversedIn(tx, snapshotId);

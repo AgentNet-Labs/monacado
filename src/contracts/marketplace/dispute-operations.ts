@@ -126,6 +126,16 @@ export const DISPUTE_OPERATIONS_BLOCKER_CODES = [
   "DISPUTE_TAX_CONSEQUENCE_UNRESOLVED",
   /** A lost dispute left already-paid economics with no recovery evidence. */
   "DISPUTE_RECOVERY_EVIDENCE_MISSING",
+  /**
+   * A finalized loss carries no seller fee, because no governed fee policy was
+   * active when it finalized (Phase 1.12).
+   *
+   * The visible half of failing closed. The assessment path refuses to reach for
+   * a compiled amount no operator activated, so the consequence is a fee that was
+   * never charged — and a marketplace that silently stopped charging one would
+   * never find out. An operator activates a fee version and re-runs.
+   */
+  "DISPUTE_CHARGEBACK_FEE_NOT_ASSESSED",
 ] as const;
 export const DisputeOperationsBlockerCode = z.enum(DISPUTE_OPERATIONS_BLOCKER_CODES);
 export type DisputeOperationsBlockerCode = z.infer<typeof DisputeOperationsBlockerCode>;

@@ -648,7 +648,17 @@ describeDb("Phase 0M.R1 — versioned commercial policy and activation risk reco
          the reason written down, rather than by deleting the term and losing the
          guard. Every other name containing `charge` or `chargeback` still
          fails. */
-      const legitimatelyOwned = new Set(["sellerchargebackfee"]);
+      /* Phase 1.12 (follow-up) adds the fee's GOVERNING POLICY tables to the
+         same exemption, by exact name. They are further from a ledger than the
+         fee row itself: a policy version holds one amount and one currency and
+         records nothing that happened. The prohibition this list encodes — no
+         second reversal ledger beside TransactionReversal — is untouched, and
+         every other name containing `charge` or `chargeback` still fails. */
+      const legitimatelyOwned = new Set([
+        "sellerchargebackfee",
+        "sellerchargebackfeepolicy",
+        "sellerchargebackfeepolicyversionrow",
+      ]);
       const guarded = names.filter((n) => !legitimatelyOwned.has(n));
 
       for (const forbidden of [
