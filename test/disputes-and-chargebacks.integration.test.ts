@@ -146,6 +146,13 @@ import {
   summarizeDisputeReconciliation,
 } from "../src/server/marketplace/dispute-reconciliation-service";
 import { assembleDisputeEvidenceMetadata } from "../src/server/marketplace/dispute-evidence-metadata-service";
+import {
+  approveDisputeEvidence,
+  prepareDisputeEvidence,
+  recordSellerAttestation,
+  submitDisputeEvidence,
+} from "../src/server/marketplace/dispute-evidence-service";
+import { requestSellerDisputeEvidence } from "../src/server/notifications/dispute-notice-service";
 import { enqueueDisputeNotices } from "../src/server/notifications/dispute-notice-service";
 import { evaluateLiveCommerceReadiness } from "../src/server/operations/live-commerce-readiness";
 import type { DisputeObservation } from "../src/contracts/marketplace/transaction-dispute";
@@ -473,6 +480,27 @@ async function cleanup(): Promise<void> {
       await db.transactionDisputeEvent.deleteMany({
         where: { disputeId: { in: disputeIdList } },
       });
+      /* Phase 1.12 evidence, innermost first. The join RESTRICTs to both the
+         preparation and the item, and both RESTRICT to the dispute — deliberately,
+         because evidence supports a financial claim and nothing beneath it may be
+         deleted out from under it. */
+      const preparationRows = await db.disputeEvidencePreparation.findMany({
+        where: { disputeId: { in: disputeIdList } },
+        select: { id: true },
+      });
+      const preparationIdList = preparationRows.map((r) => r.id);
+      if (preparationIdList.length > 0) {
+        await db.disputeEvidencePreparationItem.deleteMany({
+          where: { preparationId: { in: preparationIdList } },
+        });
+      }
+      await db.disputeEvidencePreparation.deleteMany({
+        where: { disputeId: { in: disputeIdList } },
+      });
+      await db.disputeEvidenceItem.deleteMany({ where: { disputeId: { in: disputeIdList } } });
+      /* The $30 fee RESTRICTs to its dispute, deliberately: a fee is a financial
+         claim and nothing beneath it may be deleted out from under it. */
+      await db.sellerChargebackFee.deleteMany({ where: { disputeId: { in: disputeIdList } } });
       await db.transactionDispute.deleteMany({ where: { id: { in: disputeIdList } } });
     }
     await db.transactionReversal.deleteMany({ where: { orderId: { in: orderIdList } } });
@@ -813,6 +841,9 @@ const disputeIds: DisputeIdProvider = {
   nextDisputeEventId: () => `mon:dsevt:${pad26(`${TAG}DSEVT${next()}`)}`,
   nextReversalId: () => `mon:txrev:${pad26(`${TAG}DTXREV${next()}`)}`,
   nextProceedsRecoveryExceptionId: () => `mon:precx:${pad26(`${TAG}DPRECX${next()}`)}`,
+  nextDisputeEvidenceItemId: () => `mon:evitm:${pad26(`${TAG}DEVITM${next()}`)}`,
+  nextDisputeEvidencePreparationId: () => `mon:evprp:${pad26(`${TAG}DEVPRP${next()}`)}`,
+  nextSellerChargebackFeeId: () => `mon:cbfee:${pad26(`${TAG}CBFEE${next()}`)}`,
 };
 
 const DISPUTE_AT = "2028-09-12T09:00:00.000Z";
@@ -2043,7 +2074,18 @@ describeDb("1.11 — disputes and chargebacks", () => {
         env: {} as Record<string, string>,
       });
       expect(readiness.ready).toBe(false);
-      expect(readiness.blockers).toContain("DISPUTE_EVIDENCE_RESPONSE_NOT_IMPLEMENTED");
+      /* 1.12 built the adapter, so the unconditional blocker is gone — replaced
+         by three that say precisely WHY a launch is still refused. The claim this
+         test makes is unchanged: no dispute response path, no launch. */
+      /* The §I ruling removed the governance blocker and 1.12 built the adapter,
+         so the launch is refused on capability alone — which is the honest
+         reason. */
+      expect(readiness.blockers).not.toContain("DISPUTE_EVIDENCE_RESPONSE_NOT_IMPLEMENTED");
+      expect(readiness.blockers).not.toContain("DISPUTE_EVIDENCE_SUBMISSION_NOT_ENABLED");
+      expect(readiness.blockers).toContain("DISPUTE_PROVIDER_MODE_TEST_ONLY");
+      expect(readiness.blockers).toContain("DISPUTE_EVIDENCE_ASSEMBLY_INCOMPLETE");
+      expect(readiness.blockers).toContain("DISPUTE_EVIDENCE_DOCUMENT_SUBMISSION_NOT_IMPLEMENTED");
+      expect(readiness.ready).toBe(false);
       expect(readiness.blockers).toContain("DISPUTE_INTAKE_NOT_CONFIGURED");
     });
 
@@ -2114,4 +2156,390 @@ describeDb("1.11 — disputes and chargebacks", () => {
       ).toBe(0);
     });
   });
+
+  // — 12 · Evidence response (Phase 1.12) —
+
+  describe("assembling, reviewing, and sending a dispute response", () => {
+    it("assembles evidence from immutable historical records alone", async () => {
+      const sale = await paidSale();
+      await recordTax(sale);
+      const outcome = await dispute(sale);
+
+      const pkg = await prepareDisputeEvidence(
+        { disputeId: outcome.disputeId, at: DISPUTE_LATER },
+        { db, ids: disputeIds },
+      );
+
+      expect(pkg.status).toBe("PREPARED");
+      expect(pkg.itemCodes).toContain("REFUND_POLICY_VERSION_BOUND_AT_PURCHASE");
+      expect(pkg.itemCodes).toContain("MARKETPLACE_POLICY_VERSION_AT_PURCHASE");
+      expect(pkg.itemCodes).toContain("SERVICE_DATE");
+      expect(pkg.approved).toBe(false);
+      expect(pkg.submitted).toBe(false);
+    });
+
+    it("cites the sale-time product version, not today's listing", async () => {
+      /* The 1.11 defect this phase corrects: the availability map pointed at the
+         stable Listing row, so a seller editing their product after a chargeback
+         silently rewrote Monacado's evidence. The pin now comes from the tax
+         transaction, which records the exact source version at sale time. */
+      const sale = await paidSale();
+      await recordTax(sale);
+      const evidence = await assembleDisputeEvidenceMetadata(sale.orderId, { db });
+      const product = evidence.find((e) => e.evidenceCode === "PRODUCT_DESCRIPTION_AT_SALE");
+      expect(product?.available).toBe(true);
+      expect(product?.monacadoRecordRef).toContain("@");
+      expect(product?.monacadoRecordRef).not.toBe(sale.orderId);
+    });
+
+    it("reports no product description where no sale-time version was pinned", async () => {
+      /* Honest rather than convenient: with no sale-time pin there is no
+         immutable description, and pointing at a mutable listing would be the
+         live-read substitution the receipt contract already refused. */
+      const sale = await paidSale();
+      await db.orderTaxTransaction.deleteMany({ where: { orderId: sale.orderId } });
+      const evidence = await assembleDisputeEvidenceMetadata(sale.orderId, { db });
+      const product = evidence.find((e) => e.evidenceCode === "PRODUCT_DESCRIPTION_AT_SALE");
+      expect(product?.available).toBe(false);
+      expect(product?.monacadoRecordRef).toBeNull();
+    });
+
+    it("does not count seller mail as buyer correspondence", async () => {
+      /* The other 1.11 defect. `SALE_RECORDED` goes to the seller, and counting it
+         would have Monacado telling a card network it held customer
+         communication it does not hold. */
+      const sale = await paidSale();
+      const evidence = await assembleDisputeEvidenceMetadata(sale.orderId, { db });
+      const communication = evidence.find((e) => e.evidenceCode === "CUSTOMER_COMMUNICATION");
+      const buyerMail = await db.outboundEmailDelivery.count({
+        where: { subjectKind: "ORDER", subjectRef: sale.orderId, audience: "BUYER" },
+      });
+      expect(communication?.available).toBe(buyerMail > 0);
+    });
+
+    it("does not transmit a seller's attestation on its own", async () => {
+      const sale = await paidSale();
+      const outcome = await dispute(sale);
+      await recordSellerAttestation(
+        {
+          disputeId: outcome.disputeId,
+          claims: ["GOODS_OR_SERVICE_SUPPLIED", "DELIVERY_EVIDENCE_HELD_OUTSIDE_MONACADO"],
+          participantId: sale.seller.participantId,
+          accountId: "acct-operator",
+          at: DISPUTE_LATER,
+        },
+        { db, ids: disputeIds },
+      );
+
+      const pkg = await prepareDisputeEvidence(
+        { disputeId: outcome.disputeId, at: DISPUTE_LATER },
+        { db, ids: disputeIds },
+      );
+      expect(pkg.attestationClaims).toContain("GOODS_OR_SERVICE_SUPPLIED");
+      /* Recorded, carried in the package — and still not approved and not sent. */
+      expect(pkg.approved).toBe(false);
+      expect(pkg.submitted).toBe(false);
+      expect(pkg.status).toBe("PREPARED");
+    });
+
+    it("refuses to submit a package no operator approved", async () => {
+      const sale = await paidSale();
+      const outcome = await dispute(sale);
+      const pkg = await prepareDisputeEvidence(
+        { disputeId: outcome.disputeId, at: DISPUTE_LATER },
+        { db, ids: disputeIds },
+      );
+
+      await expect(
+        submitDisputeEvidence(
+          { preparationId: pkg.preparationId, at: DISPUTE_LATER },
+          { db, env: {} },
+        ),
+      ).rejects.toMatchObject({ reason: "NOT_APPROVED" });
+    });
+
+    it("refuses to send a package with no provider port configured", async () => {
+      const sale = await paidSale();
+      const outcome = await dispute(sale);
+      const pkg = await prepareDisputeEvidence(
+        { disputeId: outcome.disputeId, at: DISPUTE_LATER },
+        { db, ids: disputeIds },
+      );
+      const approved = await approveDisputeEvidence(
+        { preparationId: pkg.preparationId, accountId: "acct-operator", at: DISPUTE_LATER },
+        { db },
+      );
+      expect(approved.approved).toBe(true);
+
+      /* Representment is authorised — the refusal here is capability, not
+         permission, which is exactly the distinction the §I ruling introduced. */
+      await expect(
+        submitDisputeEvidence({ preparationId: pkg.preparationId, at: DISPUTE_LATER }, { db, env: {} }),
+      ).rejects.toMatchObject({ reason: "PROVIDER_NOT_CONFIGURED" });
+
+      const row = await db.disputeEvidencePreparation.findUniqueOrThrow({
+        where: { id: pkg.preparationId },
+      });
+      expect(row.status).toBe("SUBMISSION_REFUSED");
+      expect(row.failureCode).toBe("PROVIDER_NOT_CONFIGURED");
+      expect(row.submittedAt).toBeNull();
+    });
+
+    it("invalidates an approval that a provider event has overtaken", async () => {
+      const sale = await paidSale();
+      const outcome = await dispute(sale);
+      const pkg = await prepareDisputeEvidence(
+        { disputeId: outcome.disputeId, at: DISPUTE_LATER },
+        { db, ids: disputeIds },
+      );
+      await approveDisputeEvidence(
+        { preparationId: pkg.preparationId, accountId: "acct-operator", at: DISPUTE_LATER },
+        { db },
+      );
+
+      /* The SAME dispute moves underneath the approval — same provider dispute
+         reference, a later provider instant. */
+      const opened = await db.transactionDispute.findUniqueOrThrow({
+        where: { id: outcome.disputeId },
+        select: { providerDisputeRef: true },
+      });
+      await dispute(
+        sale,
+        {
+          eventKind: "UPDATED",
+          providerDisputeRef: opened.providerDisputeRef,
+          providerEventId: `evt_${pad26(`${TAG}SUPER${next()}`)}`,
+          occurredAt: "2028-09-14T09:00:00.000Z",
+        },
+        "2028-09-14T09:00:00.000Z",
+      );
+
+      await expect(
+        submitDisputeEvidence(
+          { preparationId: pkg.preparationId, at: "2028-09-15T09:00:00.000Z" },
+          { db, env: {} },
+        ),
+      ).rejects.toMatchObject({ reason: "SUPERSEDED_BY_PROVIDER_EVENT" });
+
+      const row = await db.disputeEvidencePreparation.findUniqueOrThrow({
+        where: { id: pkg.preparationId },
+      });
+      expect(row.status).toBe("SUPERSEDED");
+    });
+
+    it("refuses to prepare once the deadline has passed", async () => {
+      const sale = await paidSale();
+      const outcome = await dispute(sale);
+      await expect(
+        prepareDisputeEvidence(
+          { disputeId: outcome.disputeId, at: "2029-01-01T00:00:00.000Z" },
+          { db, ids: disputeIds },
+        ),
+      ).rejects.toMatchObject({ reason: "DEADLINE_PASSED" });
+    });
+
+    it("refuses to prepare when the bank permits no response", async () => {
+      const sale = await paidSale();
+      const outcome = await dispute(sale, { responsePermitted: false, evidenceDueBy: null });
+      await expect(
+        prepareDisputeEvidence(
+          { disputeId: outcome.disputeId, at: DISPUTE_LATER },
+          { db, ids: disputeIds },
+        ),
+      ).rejects.toMatchObject({ reason: "RESPONSE_NOT_PERMITTED" });
+    });
+
+    it("returns the same preparation rather than opening a second answer", async () => {
+      const sale = await paidSale();
+      const outcome = await dispute(sale);
+      const first = await prepareDisputeEvidence(
+        { disputeId: outcome.disputeId, at: DISPUTE_LATER },
+        { db, ids: disputeIds },
+      );
+      const second = await prepareDisputeEvidence(
+        { disputeId: outcome.disputeId, at: DISPUTE_LATER },
+        { db, ids: disputeIds },
+      );
+      expect(second.preparationId).toBe(first.preparationId);
+      expect(
+        await db.disputeEvidencePreparation.count({ where: { disputeId: outcome.disputeId } }),
+      ).toBe(1);
+    });
+
+    it("asks the seller for evidence, and records the obligation", async () => {
+      const sale = await paidSale();
+      const outcome = await dispute(sale);
+      const requested = await requestSellerDisputeEvidence(
+        { disputeId: outcome.disputeId, requestId: "req-1", at: DISPUTE_LATER },
+        { db, notificationIds },
+      );
+      expect(requested.obligationId).not.toBeNull();
+
+      const delivery = await db.outboundEmailDelivery.findFirst({
+        where: {
+          subjectKind: "ORDER",
+          subjectRef: sale.orderId,
+          purpose: "DISPUTE_EVIDENCE_REQUESTED",
+        },
+      });
+      expect(delivery).not.toBeNull();
+      expect(delivery?.audience).toBe("SELLER");
+    });
+
+    it("writes no provider-owned dispute state when a response is prepared", async () => {
+      const sale = await paidSale();
+      const outcome = await dispute(sale);
+      const before = await db.transactionDispute.findUniqueOrThrow({
+        where: { id: outcome.disputeId },
+      });
+      await prepareDisputeEvidence(
+        { disputeId: outcome.disputeId, at: DISPUTE_LATER },
+        { db, ids: disputeIds },
+      );
+      const after = await db.transactionDispute.findUniqueOrThrow({
+        where: { id: outcome.disputeId },
+      });
+      /* The webhook remains the only writer of every one of these. */
+      expect(after.status).toBe(before.status);
+      expect(after.fundsState).toBe(before.fundsState);
+      expect(after.evidenceSubmissionCount).toBe(before.evidenceSubmissionCount);
+      expect(after.evidenceStagedAtProvider).toBe(before.evidenceStagedAtProvider);
+      expect(after.lastProviderEventAt.toISOString()).toBe(before.lastProviderEventAt.toISOString());
+    });
+
+    it("leaks no buyer detail through the evidence package", async () => {
+      const sale = await paidSale();
+      await recordTax(sale);
+      const outcome = await dispute(sale);
+      const pkg = await prepareDisputeEvidence(
+        { disputeId: outcome.disputeId, at: DISPUTE_LATER },
+        { db, ids: disputeIds },
+      );
+      const serialised = JSON.stringify(pkg);
+      expect(serialised).not.toContain("Synthetic Buyer");
+      expect(serialised).not.toContain("example.test");
+    });
+
+    it("stores no evidence value, only pointers and bounded claims", async () => {
+      const sale = await paidSale();
+      await recordTax(sale);
+      const outcome = await dispute(sale);
+      await prepareDisputeEvidence(
+        { disputeId: outcome.disputeId, at: DISPUTE_LATER },
+        { db, ids: disputeIds },
+      );
+      const items = await db.disputeEvidenceItem.findMany({
+        where: { disputeId: outcome.disputeId },
+      });
+      expect(items.length).toBeGreaterThan(0);
+      const serialised = JSON.stringify(items);
+      expect(serialised).not.toContain("Synthetic Buyer");
+      expect(serialised).not.toContain("example.test");
+      for (const item of items) {
+        /* Either a citation or a bounded claim — never both, and never neither.
+           Asserted as a strict exclusive-or: an item carrying BOTH a source
+           reference and an attestation would be a stored claim sitting beside the
+           record it purports to describe, which is exactly the second-answer
+           problem 1.11 refused an evidence table over. */
+        const cited = item.sourceRef !== null && item.sourceRef !== "";
+        const claimed = item.attestationClaim !== null;
+        expect(cited, `${item.id} carries neither a citation nor a claim`).toBe(!claimed);
+      }
+    });
+  });
+
+
+  // — 13 · The finalized-chargeback seller fee (Phase 1.12) —
+
+  describe("the $30 seller fee for a finalized lost chargeback", () => {
+    it("assesses one fee when a dispute is finally lost", async () => {
+      const sale = await paidSale();
+      const outcome = await dispute(sale, { eventKind: "CLOSED", status: "LOST" });
+
+      const fee = await db.sellerChargebackFee.findUniqueOrThrow({
+        where: { disputeId: outcome.disputeId },
+      });
+      expect(Number(fee.amountMinorUnits)).toBe(3_000);
+      expect(fee.currency).toBe("USD");
+      expect(fee.state).toBe("ASSESSED");
+      expect(fee.orderId).toBe(sale.orderId);
+      expect(fee.sellerParticipantId).toBe(sale.seller.participantId);
+      expect(outcome.chargebackFeeId).toBe(fee.id);
+    });
+
+    it("assesses no fee when the dispute is merely opened", async () => {
+      const sale = await paidSale();
+      const outcome = await dispute(sale);
+      expect(outcome.chargebackFeeId).toBeNull();
+      expect(await db.sellerChargebackFee.count({ where: { orderId: sale.orderId } })).toBe(0);
+    });
+
+    it("assesses no fee when the dispute is won", async () => {
+      /* A seller who successfully defends a sale must be no worse off for having
+         been disputed, or the fee becomes a tax on being a target. */
+      const sale = await paidSale();
+      const outcome = await dispute(sale, { eventKind: "CLOSED", status: "WON" });
+      expect(outcome.chargebackFeeId).toBeNull();
+      expect(await db.sellerChargebackFee.count({ where: { orderId: sale.orderId } })).toBe(0);
+    });
+
+    it("assesses exactly one fee however often the loss is redelivered", async () => {
+      const sale = await paidSale();
+      const first = await dispute(sale, { eventKind: "CLOSED", status: "LOST" });
+      const opened = await db.transactionDispute.findUniqueOrThrow({
+        where: { id: first.disputeId },
+        select: { providerDisputeRef: true },
+      });
+      await dispute(sale, {
+        eventKind: "CLOSED",
+        status: "LOST",
+        providerDisputeRef: opened.providerDisputeRef,
+        providerEventId: `evt_${pad26(`${TAG}REDEL${next()}`)}`,
+      });
+      expect(await db.sellerChargebackFee.count({ where: { orderId: sale.orderId } })).toBe(1);
+    });
+
+    it("rewrites no historical economics to make room for the fee", async () => {
+      const sale = await paidSale();
+      const before = await db.transactionEconomicSnapshot.findUniqueOrThrow({
+        where: { id: sale.snapshotId },
+      });
+      const beforeObligations = await db.proceedsObligation.findMany({
+        where: { snapshotId: sale.snapshotId },
+        orderBy: { id: "asc" },
+      });
+
+      await dispute(sale, { eventKind: "CLOSED", status: "LOST" });
+
+      const after = await db.transactionEconomicSnapshot.findUniqueOrThrow({
+        where: { id: sale.snapshotId },
+      });
+      const afterObligations = await db.proceedsObligation.findMany({
+        where: { snapshotId: sale.snapshotId },
+        orderBy: { id: "asc" },
+      });
+
+      /* Not one figure moves. The fee stands beside the sale, never inside it. */
+      expect(after.commercialRetailAmountMinorUnits).toEqual(
+        before.commercialRetailAmountMinorUnits,
+      );
+      expect(after.sellerProceedsMinorUnits).toEqual(before.sellerProceedsMinorUnits);
+      expect(after.monacadoRetainedAmountMinorUnits).toEqual(before.monacadoRetainedAmountMinorUnits);
+      expect(afterObligations.map((o) => o.amountMinorUnits)).toEqual(
+        beforeObligations.map((o) => o.amountMinorUnits),
+      );
+    });
+
+    it("carries no buyer detail", async () => {
+      const sale = await paidSale();
+      await dispute(sale, { eventKind: "CLOSED", status: "LOST" });
+      const fees = await db.sellerChargebackFee.findMany({ where: { orderId: sale.orderId } });
+      const serialised = JSON.stringify(fees, (_k, v) =>
+        typeof v === "bigint" ? v.toString() : v,
+      );
+      expect(serialised).not.toContain("Synthetic Buyer");
+      expect(serialised).not.toContain("example.test");
+    });
+  });
+
 });

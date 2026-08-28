@@ -39,6 +39,12 @@ export interface DisputeIdProvider {
   nextReversalId(): string;
   /** The recovery exception a dispute raises against an already-paid claim. */
   nextProceedsRecoveryExceptionId(): string;
+  /** One item of evidence assembled for a dispute (Phase 1.12). */
+  nextDisputeEvidenceItemId(): string;
+  /** One governed evidence package prepared for a dispute (Phase 1.12). */
+  nextDisputeEvidencePreparationId(): string;
+  /** The seller fee a finalized lost chargeback assesses (Phase 1.12). */
+  nextSellerChargebackFeeId(): string;
 }
 
 export const cryptoDisputeIdProvider: DisputeIdProvider = {
@@ -46,4 +52,7 @@ export const cryptoDisputeIdProvider: DisputeIdProvider = {
   nextDisputeEventId: () => `mon:dsevt:${randomOpaqueBody()}`,
   nextReversalId: () => `mon:txrev:${randomOpaqueBody()}`,
   nextProceedsRecoveryExceptionId: () => `mon:precx:${randomOpaqueBody()}`,
+  nextDisputeEvidenceItemId: () => `mon:evitm:${randomOpaqueBody()}`,
+  nextDisputeEvidencePreparationId: () => `mon:evprp:${randomOpaqueBody()}`,
+  nextSellerChargebackFeeId: () => `mon:cbfee:${randomOpaqueBody()}`,
 };

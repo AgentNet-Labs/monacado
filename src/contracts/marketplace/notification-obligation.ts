@@ -194,6 +194,23 @@ export const DISPUTE_NOTIFICATION_CONTEXT_CODES = [
   "DISPUTE_WON",
   "DISPUTE_LOST",
   "DISPUTE_RECOVERY_REQUIRED",
+  /* Phase 1.12. Three added, and three the phase deliberately did NOT add.
+  
+     `DISPUTE_EVIDENCE_REQUIRED` already exists above and already means "a seller
+     owes us facts", so 1.12 reuses it rather than minting a synonym; what 1.12
+     adds is an EMAIL against it, which is a delivery concern rather than a code.
+  
+     There is no "operator package ready" code, because the recipient would be
+     Monacado, which holds no participant record — and 1.9 and 1.11 both refused
+     to fabricate one. It is a row in `dispute:evidence:status` instead.
+  
+     There is no per-deadline reminder code either. No dispute worker exists and
+     `deadlineSweepWorker` stays NOT_IMPLEMENTED, so a code nothing could raise
+     would be a promise. `DISPUTE_EVIDENCE_REQUEST_UNANSWERED` is raised by an
+     operator's own `prepare` run, which is a pull rather than a sweep. */
+  "DISPUTE_EVIDENCE_REQUEST_UNANSWERED",
+  "DISPUTE_EVIDENCE_SUBMITTED",
+  "DISPUTE_EVIDENCE_SUBMISSION_FAILED",
 ] as const;
 export const DisputeNotificationContextCode = z.enum(DISPUTE_NOTIFICATION_CONTEXT_CODES);
 export type DisputeNotificationContextCode = z.infer<typeof DisputeNotificationContextCode>;

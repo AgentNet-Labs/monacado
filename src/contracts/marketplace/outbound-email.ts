@@ -125,6 +125,26 @@ export const OUTBOUND_EMAIL_PURPOSES = [
    * deliberately emails nobody.
    */
   "DISPUTE_RECORDED",
+  /**
+   * A seller's request for the facts of a disputed sale (Phase 1.12).
+   *
+   * The one message in this phase that asks a participant for something rather
+   * than telling them what happened. It carries a single-use link to a bounded
+   * checklist — never a reply-to address and never a free-text form, because
+   * there is nowhere in this repository that prose about a dispute may be stored.
+   */
+  "DISPUTE_EVIDENCE_REQUESTED",
+  /**
+   * A seller's or promoter's notice that Monacado answered a dispute on their
+   * sale (Phase 1.12).
+   *
+   * **There is deliberately no failure counterpart.** A submission that a
+   * provider refused is not a fact a seller can act on, and telling them one
+   * would invite exactly the direct-to-network contact the marketplace policy
+   * forbids. The failure raises an obligation with no delivery, which is how
+   * `DISPUTE_EVIDENCE_REQUIRED` is already handled.
+   */
+  "DISPUTE_EVIDENCE_SUBMITTED",
   /** Proof-of-control for an email contact. Owed to nobody; obligation-free. */
   "EMAIL_VERIFICATION",
 ] as const;

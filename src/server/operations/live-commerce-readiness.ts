@@ -181,7 +181,22 @@ export const LIVE_READINESS_BLOCKER_CODES = [
    * might have won, so 1.11 refuses to let intake alone read as chargeback
    * readiness. Cleared only by a phase that builds the response path.
    */
-  "DISPUTE_EVIDENCE_RESPONSE_NOT_IMPLEMENTED",
+  /* Phase 1.12, restated after the §I ruling. The old
+     `DISPUTE_EVIDENCE_RESPONSE_NOT_IMPLEMENTED` and its governance sibling are
+     both gone: representment is authorised and the adapter exists, so what is
+     left are capability and configuration gaps that name themselves. */
+  "DISPUTE_EVIDENCE_ASSEMBLY_NOT_IMPLEMENTED",
+  "DISPUTE_OPERATOR_REVIEW_NOT_IMPLEMENTED",
+  "DISPUTE_EVIDENCE_SUBMISSION_NOT_IMPLEMENTED",
+  "DISPUTE_EVIDENCE_SUBMISSION_NOT_CONFIGURED",
+  /** Disputes can be answered in TEST mode only (Phase 1.12). */
+  "DISPUTE_PROVIDER_MODE_TEST_ONLY",
+  /** Whole classes of sale cannot be evidenced at all (Phase 1.12). */
+  "DISPUTE_EVIDENCE_ASSEMBLY_INCOMPLETE",
+  /** No document can be submitted, because no object storage exists (Phase 1.12). */
+  "DISPUTE_EVIDENCE_DOCUMENT_SUBMISSION_NOT_IMPLEMENTED",
+  /** Nothing watches a response deadline (Phase 1.12). */
+  "DISPUTE_DEADLINE_MONITORING_NOT_IMPLEMENTED",
   /**
    * The dispute book is not in a defensible state (Phase 1.11).
    *
@@ -349,11 +364,16 @@ export async function evaluateLiveCommerceReadiness(
      `evaluateDisputeReadiness` makes no network call, reads no credential
      value, and touches no row. */
   const disputes = evaluateDisputeReadiness(at, env);
+  /* Mapped member by member, and exhaustively.
+   *
+   * This was a bare `else` that funnelled every unrecognised dispute blocker into
+   * `DISPUTE_EVIDENCE_RESPONSE_NOT_IMPLEMENTED`. That was harmless while three
+   * codes existed and exactly one of them was the fallback; 1.12 adds three more,
+   * and the old shape would have reported "no evidence adapter" for a deployment
+   * whose real problem was an unopened governance gate — sending an operator to
+   * build something that already exists. */
   for (const blocker of disputes.blockers) {
-    if (blocker === "DISPUTE_INTAKE_NOT_CONFIGURED") blockers.push("DISPUTE_INTAKE_NOT_CONFIGURED");
-    else if (blocker === "DISPUTE_WEBHOOK_NOT_VERIFIABLE") {
-      blockers.push("DISPUTE_WEBHOOK_NOT_VERIFIABLE");
-    } else blockers.push("DISPUTE_EVIDENCE_RESPONSE_NOT_IMPLEMENTED");
+    blockers.push(blocker);
   }
   for (const ok of disputes.satisfied) satisfied.push(ok);
 

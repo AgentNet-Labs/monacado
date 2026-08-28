@@ -1644,19 +1644,31 @@ describeDb("1.2 — pre-live commerce controls", () => {
          * declares no Stripe block, so no dispute event could arrive. Configure
          * one and it clears.
          *
-         * `DISPUTE_EVIDENCE_RESPONSE_NOT_IMPLEMENTED` is reported BY
-         * CONSTRUCTION and no configuration clears it, exactly as
-         * `LIVE_PROVIDER_NOT_ENABLED` is. That is the point of the control: a
-         * marketplace that records disputes and cannot answer them loses every
-         * one it might have won, so intake alone must not read as chargeback
-         * readiness.
+         * Phase 1.12 replaced the single unconditional
+         * `DISPUTE_EVIDENCE_RESPONSE_NOT_IMPLEMENTED` with dimensions that fail
+         * for different reasons, because building the adapter cleared the first
+         * question without answering the rest. The governance blocker is GONE —
+         * the §I ruling resolved it, and a readiness report claiming Monacado is
+         * unauthorised to represent would now be false. What remains is
+         * capability and configuration: `SUBMISSION_NOT_CONFIGURED` because the
+         * fixture declares no Stripe block, and `PROVIDER_MODE_TEST_ONLY`,
+         * `ASSEMBLY_INCOMPLETE`, `DOCUMENT_SUBMISSION_NOT_IMPLEMENTED`, and
+         * `DEADLINE_MONITORING_NOT_IMPLEMENTED` reported BY CONSTRUCTION, exactly
+         * as `LIVE_PROVIDER_NOT_ENABLED` is. That is still the point of the
+         * control: a marketplace that records disputes and cannot fully answer
+         * them loses every one it might have won, so a built and authorised port
+         * must not read as chargeback readiness.
          *
          * `DISPUTE_WEBHOOK_NOT_VERIFIABLE` is absent because it is conditional
          * on intake being configured at all — one gap is reported once.
          * `DISPUTE_BACKLOG` is satisfied because an empty book is a healthy
          * one, on `REFUND_BACKLOG`'s terms. */
         "DISPUTE_INTAKE_NOT_CONFIGURED",
-        "DISPUTE_EVIDENCE_RESPONSE_NOT_IMPLEMENTED",
+        "DISPUTE_EVIDENCE_SUBMISSION_NOT_CONFIGURED",
+        "DISPUTE_PROVIDER_MODE_TEST_ONLY",
+        "DISPUTE_EVIDENCE_ASSEMBLY_INCOMPLETE",
+        "DISPUTE_EVIDENCE_DOCUMENT_SUBMISSION_NOT_IMPLEMENTED",
+        "DISPUTE_DEADLINE_MONITORING_NOT_IMPLEMENTED",
         "LIVE_PROVIDER_NOT_ENABLED",
       ]);
       expect(readiness.satisfied).toContain("REFUND_BACKLOG");

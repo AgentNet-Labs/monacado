@@ -1,7 +1,9 @@
 /**
- * What Monacado holds that could answer a dispute (Phase 1.11) — SERVER ONLY.
+ * What Monacado holds that could answer a dispute (Phase 1.11, corrected in
+ * 1.12) — SERVER ONLY.
  *
- * **Derived, never stored.** There is deliberately no dispute-evidence table.
+ * **Derived, never stored.** There is deliberately no dispute-evidence table for
+ * anything in this map.
  *
  * Every entry below already exists as an authoritative record. Copying them into
  * an evidence table would create a second answer able to disagree with the
@@ -12,6 +14,44 @@
  *
  * So this returns **availability and a reference**, never a value. An operator
  * assembling a response follows the references to the authoritative rows.
+ *
+ * ## Three corrections this phase makes to 1.11
+ *
+ * 1.11 shipped this map with three claims that were wrong in ways that only
+ * matter once something acts on them. 1.12 is that something, so they are fixed
+ * here rather than recorded.
+ *
+ * 1. **`PRODUCT_DESCRIPTION_AT_SALE` was a mutable pointer.** It reported
+ *    `available: true` against `Order.internalListingId` — the *stable* Listing
+ *    row, whose current source version moves every time the seller edits.
+ *    Following it resolves what the listing says **today**, and the bound
+ *    `ListingSourceRecordVersionRow` carries placement and price only, with no
+ *    title or description at all. A seller who edited a product after a
+ *    chargeback would have silently rewritten Monacado's evidence.
+ *    `RECEIPT_LINE_DESCRIPTION_GAP` already ruled `liveReadSubstitution:
+ *    "REFUSED"` for exactly this, and this file contradicted it.
+ *
+ *    The Order still binds no Product source version, so the honest answer is
+ *    **conditional**: the tax transaction recorded for the sale pins the exact
+ *    Product source version whose classification produced the rate, and that
+ *    pin is a sale-time fact rather than a live read. Where it exists, the
+ *    description is evidenceable; where it does not, this reports `false`
+ *    rather than pointing at something mutable.
+ *
+ * 2. **`CUSTOMER_COMMUNICATION` counted mail sent to the seller.** The query
+ *    filtered on subject alone, and `SALE_RECORDED` mail goes to the seller and
+ *    the promoter. A sale where only the seller was emailed reported that
+ *    Monacado held buyer correspondence. Submitting that to a card network as
+ *    customer communication would be a false statement to a bank. It now filters
+ *    on `audience: "BUYER"`.
+ *
+ * 3. **`RECEIPT_AND_DELIVERY_PROOF` overstated what the status means.**
+ *    `OutboundEmailDelivery.status === "DELIVERED"` means an email provider
+ *    accepted responsibility for the message, not that it reached an inbox. That
+ *    is still real evidence — Monacado sent the receipt and a provider took it —
+ *    but it is *send-and-accept* proof. Where a provider event genuinely
+ *    confirms delivery, the reference points at that event instead, so an
+ *    operator can tell the strong case from the ordinary one.
  *
  * ## Two entries that can never be satisfied
  *
@@ -54,7 +94,6 @@ export async function assembleDisputeEvidenceMetadata(
       sellerRefundPolicyVersion: true,
       marketplacePolicyId: true,
       marketplacePolicyVersion: true,
-      internalListingId: true,
     },
   });
   /* No Order, no evidence. An empty list rather than a list of `false`s: the
@@ -63,18 +102,32 @@ export async function assembleDisputeEvidenceMetadata(
      different and weaker claim. */
   if (order === null) return [];
 
-  /* The single most valuable thing Monacado holds: provable delivery of a
+  /* The single most valuable thing Monacado holds: provable dispatch of a
      receipt to the cardholder's own address. The DELIVERY row is referenced, not
      its destination — `OutboundEmailDelivery` stores a digest rather than an
      address, which is precisely why referencing it is safe. */
   const receiptDelivery = await db.outboundEmailDelivery.findFirst({
     where: { subjectKind: "ORDER", subjectRef: orderId, purpose: "ORDER_CONFIRMATION" },
     orderBy: { createdAt: "asc" },
-    select: { id: true, status: true },
+    select: { id: true, status: true, providerMessageRef: true },
   });
 
+  /* The stronger claim, where the provider made it. A delivery event is the
+     provider's own confirmation rather than its acceptance, and referencing it
+     lets an operator tell a strong representment from an ordinary one. */
+  const confirmedDelivery =
+    receiptDelivery?.providerMessageRef == null
+      ? null
+      : await db.providerEmailEvent.findFirst({
+          where: { providerMessageRef: receiptDelivery.providerMessageRef, eventType: "DELIVERED" },
+          orderBy: { occurredAt: "asc" },
+          select: { id: true },
+        });
+
+  /* BUYER ONLY. Filtering on the subject alone counted seller and promoter mail
+     as buyer correspondence — see correction 2 in this module's header. */
   const communicationCount = await db.outboundEmailDelivery.count({
-    where: { subjectKind: "ORDER", subjectRef: orderId },
+    where: { subjectKind: "ORDER", subjectRef: orderId, audience: "BUYER" },
   });
 
   /* Referenced by Order, and ONLY by Order. This row carries the seller support
@@ -86,11 +139,18 @@ export async function assembleDisputeEvidenceMetadata(
     select: { orderId: true },
   });
 
+  /* The sale-time Product source version, pinned by the tax transaction rather
+     than joined through a mutable listing pointer. See correction 1. */
+  const taxTransaction = await db.orderTaxTransaction.findUnique({
+    where: { orderId },
+    select: { productSourceRecordId: true, productSourceRecordVersion: true },
+  });
+
   const out: DisputeEvidenceAvailability[] = [
     {
       evidenceCode: "RECEIPT_AND_DELIVERY_PROOF",
       available: receiptDelivery !== null && receiptDelivery.status === "DELIVERED",
-      monacadoRecordRef: receiptDelivery?.id ?? null,
+      monacadoRecordRef: confirmedDelivery?.id ?? receiptDelivery?.id ?? null,
     },
     {
       evidenceCode: "CUSTOMER_COMMUNICATION",
@@ -115,8 +175,11 @@ export async function assembleDisputeEvidenceMetadata(
     },
     {
       evidenceCode: "PRODUCT_DESCRIPTION_AT_SALE",
-      available: true,
-      monacadoRecordRef: order.internalListingId,
+      available: taxTransaction !== null,
+      monacadoRecordRef:
+        taxTransaction === null
+          ? null
+          : `${taxTransaction.productSourceRecordId}@${taxTransaction.productSourceRecordVersion}`,
     },
     {
       evidenceCode: "SERVICE_DATE",

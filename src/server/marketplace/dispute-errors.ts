@@ -27,7 +27,8 @@ export type DisputeErrorCode =
   | "INVALID_DISPUTE_TRANSITION"
   | "DISPUTE_REMEDIATION_REQUIRED"
   | "CORRUPT_DISPUTE_RECORD"
-  | "DISPUTE_PERSISTENCE_FAILURE";
+  | "DISPUTE_PERSISTENCE_FAILURE"
+  | "DISPUTE_EVIDENCE_REFUSED";
 
 export class DisputeError extends Error {
   readonly code: DisputeErrorCode;
@@ -96,5 +97,23 @@ export class DisputePersistenceFailureError extends DisputeError {
     super("DISPUTE_PERSISTENCE_FAILURE", "A dispute operation could not be completed", internalCause);
     this.name = "DisputePersistenceFailureError";
     this.operation = operation;
+  }
+}
+
+/**
+ * Monacado will not prepare, approve, or send this evidence package (Phase 1.12).
+ *
+ * Carries a bounded reason and nothing else — no provider text, no deadline, no
+ * amount, and no buyer. The five rules at the head of this module apply here
+ * with one addition: an evidence refusal is read by an operator deciding whether
+ * to chase a seller or accept a loss, and a reason that carried prose about the
+ * sale would be prose about the cardholder.
+ */
+export class DisputeEvidenceRefusedError extends DisputeError {
+  readonly reason: string;
+  constructor(reason: string) {
+    super("DISPUTE_EVIDENCE_REFUSED", "That dispute evidence action was refused");
+    this.name = "DisputeEvidenceRefusedError";
+    this.reason = reason;
   }
 }

@@ -103,6 +103,13 @@ export const POLICY_SECTION_KEYS = [
   "REFUND_REQUESTS",
   "PURCHASE_RECEIPTS",
   "REFUND_EFFECT_ON_PROCEEDS",
+  /* Phase 1.12 — dispute governance. Additive for the same reason 1.10's members
+     were: 1.0.0 and 1.1.0 carry none of these keys, so their canonical JSON and
+     their content hashes are untouched by adding them. A version is a document,
+     not an enum. */
+  "DISPUTES_AND_CHARGEBACKS",
+  "DISPUTE_EVIDENCE_AND_COOPERATION",
+  "DISPUTE_EFFECT_ON_PROCEEDS",
   "POLICY_CHANGES",
 ] as const;
 export const PolicySectionKey = z.enum(POLICY_SECTION_KEYS);

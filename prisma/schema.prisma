@@ -2661,6 +2661,7 @@ model Order {
   /// At most one, written with the policy binding in the same transaction.
   refundContactEvidence      OrderRefundContactEvidence?
   disputes                   TransactionDispute[]
+  sellerChargebackFees       SellerChargebackFee[]
 
   @@index([buyerAccountId, placedAt])
   @@index([sellerParticipantId, lifecycle])
@@ -4753,11 +4754,14 @@ model TransactionDispute {
 
   // RESTRICT everywhere: a dispute is a financial claim against a sale. Nothing
   // it binds to may be deleted beneath it.
-  order              Order?                       @relation(fields: [orderId], references: [id], onDelete: Restrict)
-  snapshot           TransactionEconomicSnapshot? @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
-  reversal           TransactionReversal?         @relation(fields: [reversalId], references: [id], onDelete: Restrict)
-  events             TransactionDisputeEvent[]
-  recoveryExceptions ProceedsRecoveryException[]
+  order                       Order?                       @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  snapshot                    TransactionEconomicSnapshot? @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
+  reversal                    TransactionReversal?         @relation(fields: [reversalId], references: [id], onDelete: Restrict)
+  events                      TransactionDisputeEvent[]
+  recoveryExceptions          ProceedsRecoveryException[]
+  disputeEvidenceItems        DisputeEvidenceItem[]
+  disputeEvidencePreparations DisputeEvidencePreparation[]
+  sellerChargebackFee         SellerChargebackFee?
 
   @@unique([provider, providerDisputeRef])
   /// The operator's queries: what is open, and what is running out of time.
@@ -4804,4 +4808,284 @@ model TransactionDisputeEvent {
 
   @@unique([provider, providerEventId])
   @@index([disputeId, occurredAt])
+}
+
+/// One item of evidence assembled for one dispute (Phase 1.12).
+///
+/// APPEND-ONLY. A correction supersedes rather than rewrites: `supersedesItemId`
+/// names the item this replaces, so "what did we believe when we submitted" stays
+/// answerable after somebody improves the answer. Nothing here is deleted.
+///
+/// TWO KINDS OF ROW, discriminated by `sourceKind`:
+///
+///   MONACADO_RECORD / MONACADO_DERIVATION — `sourceTable` + `sourceRef`, and NO
+///     attestation. The value is read from the cited record at render time, so
+///     the item can never drift from the record it describes. This is how 1.11's
+///     "derived, never stored" decision survives into a phase that must record
+///     what it sent.
+///   SELLER_ATTESTATION — `attestationClaim` from a CLOSED vocabulary, and NO
+///     source reference. There is no free-text column anywhere on this model:
+///     `NEVER_ON_TRANSACTION_DISPUTE` forbids a note or an operator comment on a
+///     dispute, and a prose column here would be the same table by another name.
+///
+/// A row carrying both, or neither, is refused by the service and by a test.
+model DisputeEvidenceItem {
+  /// Opaque identity (mon:evitm:<opaque>). Deliberately NOT a mon:ds… form:
+  /// mon:dspt: names the dispute and mon:dsevt: names what the PROVIDER said, and
+  /// an item of Monacado's own evidence must not be mistakable for either.
+  id String @id @db.VarChar(191)
+
+  /// The dispute this answers. An evidence item with no dispute is a note, and
+  /// this is not a notes table.
+  disputeId String @db.VarChar(191)
+
+  /// A member of DISPUTE_EVIDENCE_CODES. Reused rather than restated, so the
+  /// availability map and the assembled response cannot name one thing two ways.
+  evidenceCode String @db.VarChar(48)
+
+  /// MONACADO_RECORD | MONACADO_DERIVATION | SELLER_ATTESTATION.
+  sourceKind String @db.VarChar(32)
+
+  // — Record-backed items. NULL on an attestation. —
+
+  /// The authoritative table, from a CLOSED Monacado vocabulary — never a raw
+  /// model name read from a schema at runtime, which would let a rename silently
+  /// orphan historical evidence.
+  sourceTable      String?   @db.VarChar(64)
+  /// The row's own identity. An OPAQUE pointer: compared, never decomposed, and
+  /// never rendered to a provider in place of the value it points at.
+  sourceRef        String?   @db.VarChar(191)
+  /// WHEN THE SOURCE WAS OBSERVED. Not decoration: an email delivery's status is
+  /// legitimately mutable, and an item that recorded no observation instant could
+  /// not tell an operator that what it cited has since moved.
+  sourceObservedAt DateTime? @db.DateTime(3)
+
+  // — Seller attestations. NULL on a record-backed item. —
+
+  /// A member of SELLER_ATTESTATION_CLAIMS. A bounded claim, never prose.
+  attestationClaim String? @db.VarChar(48)
+
+  // — Provenance —
+
+  /// SYSTEM | SELLER | OPERATOR. A record-backed item is SYSTEM; an attestation
+  /// never is, because a system asserts no facts about conduct.
+  assertedByKind String @db.VarChar(16)
+
+  /// The acting account, as the durable internal Account id. NEVER an email —
+  /// the rule MarketplacePolicyVersionRow.recordedByAccountId already follows.
+  /// NULL for SYSTEM.
+  assertedByAccountId     String? @db.VarChar(191)
+  /// The seller whose attestation this is. NULL otherwise. Kept so an assertion
+  /// stays attributable to the participant after the account that made it is
+  /// disabled.
+  assertedByParticipantId String? @db.VarChar(191)
+
+  /// The instant of assertion. Supplied, never a clock read.
+  assertedAt DateTime @db.DateTime(3)
+
+  // — Validation —
+
+  /// UNVALIDATED | VALIDATED | REJECTED | SOURCE_UNREADABLE.
+  validationState String  @db.VarChar(24)
+  /// Why, from a CLOSED vocabulary. No free-form reviewer note — an operator
+  /// commentary column is where a buyer's name eventually lands.
+  validationCode  String? @db.VarChar(48)
+
+  /// The item this one replaces. A correction is a NEW row; nothing is edited.
+  supersedesItemId String? @db.VarChar(191)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  dispute      TransactionDispute               @relation(fields: [disputeId], references: [id], onDelete: Restrict)
+  supersedes   DisputeEvidenceItem?             @relation("DisputeEvidenceSupersedes", fields: [supersedesItemId], references: [id], onDelete: Restrict)
+  supersededBy DisputeEvidenceItem[]            @relation("DisputeEvidenceSupersedes")
+  preparations DisputeEvidencePreparationItem[]
+
+  /// ONE citation of one record per code per dispute. MySQL treats each NULL in a
+  /// unique index as distinct, so attestation rows — whose sourceRef is NULL — are
+  /// unconstrained and may be superseded freely, while citing the same record
+  /// twice under one code is refused by the database rather than by a service
+  /// remembering to check.
+  @@unique([disputeId, evidenceCode, sourceRef])
+  @@index([disputeId, validationState])
+  @@index([sourceTable, sourceRef])
+  @@index([assertedByParticipantId])
+}
+
+/// One governed response Monacado prepared for one dispute (Phase 1.12).
+///
+/// SEPARATE FROM THE ITEMS for the reason 1.11 needed two tables: an item is what
+/// Monacado holds, and a preparation is what Monacado DID about it. A provider
+/// permits a response to be revised until the deadline, so collapsing them would
+/// make "what did we send the first time" unanswerable the moment anybody
+/// improved the answer.
+///
+/// SEPARATE FROM THE PROVIDER'S POSTURE COLUMNS, which is the load-bearing
+/// decision. `TransactionDispute.evidenceSubmissionCount` and its four neighbours
+/// are the PROVIDER's assertion, overwritten wholesale on every applied webhook
+/// delivery. Writing Monacado's own conduct there would be erased by the next
+/// delivery and would put a Monacado claim in a column documented as provider
+/// posture. The two are kept apart precisely so they can DISAGREE — a divergence
+/// between them is a reconciliation finding, not a bug to design away.
+model DisputeEvidencePreparation {
+  /// Opaque identity (mon:evprp:<opaque>).
+  id String @id @db.VarChar(191)
+
+  disputeId String @db.VarChar(191)
+
+  /// Monotonic per dispute, starting at 1. DURABLE, because it feeds the
+  /// idempotency key: a crash-then-retry must reuse the key rather than mint a
+  /// fresh request against a one-shot endpoint.
+  revision Int
+
+  /// PREPARED | APPROVED | SUBMITTED | SUPERSEDED | SUBMISSION_REFUSED.
+  status String @db.VarChar(24)
+
+  /// EMPTY | PARTIAL | SUBSTANTIVE. What the package is worth, judged when it was
+  /// assembled, so an operator reading it later sees what was known then.
+  completeness String @db.VarChar(16)
+
+  /// Whether this preparation would END the response or merely stage it. Recorded
+  /// rather than inferred: the provider's own flag defaults to ending it, and a
+  /// column that could not distinguish the two would make "did we finalise" a
+  /// question answerable only by asking the provider.
+  finalSubmission Boolean @default(true)
+
+  /// THE OBSERVATION THIS APPROVAL RESTS ON. Copied from the dispute's
+  /// `lastProviderEventAt` when the package was prepared. A provider event
+  /// arriving afterwards invalidates the approval, and without this column an
+  /// ageing approval silently becomes authorisation to send something nobody
+  /// reviewed.
+  basedOnProviderEventAt DateTime @db.DateTime(3)
+
+  /// Who approved sending it, as the durable internal Account id. NEVER an email.
+  /// NULL until approved — and a NULL here is what stops seller-supplied data
+  /// reaching a provider on its own.
+  approvedByAccountId String?   @db.VarChar(191)
+  approvedAt          DateTime? @db.DateTime(3)
+
+  /// The provider's submission counter AFTER the call. The only proof finality
+  /// took: the provider's own has-evidence flag reports staging, not submission.
+  providerSubmissionCountAfter Int?
+  /// Monacado's view of whether this went in after the deadline, computed against
+  /// the deadline known at the time. The provider keeps its own.
+  submittedPastDue             Boolean @default(false)
+
+  /// The last normalised failure, from a closed vocabulary. NO PROVIDER TEXT, no
+  /// exception message, no raw payload.
+  failureCode  String? @db.VarChar(48)
+  attemptCount Int     @default(0)
+
+  /// Stable per (dispute, revision, finality). UNIQUE so a duplicate logical
+  /// request is refused by the database, not by a service remembering.
+  idempotencyKey String @unique @db.VarChar(191)
+
+  preparedAt  DateTime  @db.DateTime(3)
+  submittedAt DateTime? @db.DateTime(3)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  dispute TransactionDispute               @relation(fields: [disputeId], references: [id], onDelete: Restrict)
+  items   DisputeEvidencePreparationItem[]
+
+  /// One preparation per revision per dispute.
+  @@unique([disputeId, revision])
+  @@index([status, preparedAt])
+  @@index([disputeId, preparedAt])
+}
+
+/// Which items one preparation carried (Phase 1.12). APPEND-ONLY.
+///
+/// A join rather than a column on the item, because a response may be revised and
+/// the same citation goes in twice. Without this row, "what did revision 1
+/// contain" stops being answerable the moment revision 2 exists — which is the
+/// first question a lost-dispute post-mortem asks.
+///
+/// Surrogate key and no minted identity: the meaningful identity is the pair. The
+/// same judgement OrderRefundLine makes.
+model DisputeEvidencePreparationItem {
+  seq BigInt @id @default(autoincrement())
+
+  preparationId String @db.VarChar(191)
+  itemId        String @db.VarChar(191)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+
+  preparation DisputeEvidencePreparation @relation(fields: [preparationId], references: [id], onDelete: Restrict)
+  item        DisputeEvidenceItem        @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  /// One row per item per preparation. Carrying the same item twice in one
+  /// response is a duplicate, and the database refuses it.
+  @@unique([preparationId, itemId])
+  @@index([itemId])
+}
+
+/// One $30 fee assessed against a seller for a finalized lost chargeback
+/// (Phase 1.12).
+///
+/// A NEW GOVERNED FACT, not a correction. `TransactionEconomicSnapshot` is frozen
+/// at sale time and nothing here touches it: netting a fee out of a historical
+/// amount would restate what three parties were told they earned, and would do it
+/// silently. The fee points at the dispute that caused it and stands beside the
+/// sale rather than inside it.
+///
+/// NOT THE NETWORK'S OWN DISPUTE FEE, which Monacado also incurs and which
+/// `DISPUTE_EXECUTION_DEFERRAL.disputeFeeAccounting` still records as unbuilt.
+/// That is a Monacado cost with no ledger to land in; this is a marketplace fee
+/// Monacado charges a seller. Two directions of money that share a word.
+///
+/// COLLECTION IS DEFERRED. Nothing nets this against a payout, deducts it from a
+/// balance, or invoices anybody — clawback, offset, and payout execution are all
+/// still unbuilt, and a fee that quietly executed against proceeds would be the
+/// settlement engine this phase has no business building. The obligation is
+/// recorded and visible; discharging it belongs to `0M.T2`.
+model SellerChargebackFee {
+  /// Opaque identity (mon:cbfee:<opaque>).
+  id String @id @db.VarChar(191)
+
+  /// The dispute that caused it. UNIQUE: one finalized loss, one fee. A
+  /// redelivered `charge.dispute.closed` is the same loss, not a second one, and
+  /// the database refuses the duplicate rather than a service remembering to.
+  disputeId String @unique @db.VarChar(191)
+
+  orderId String @db.VarChar(191)
+
+  /// Who owes it, as the durable participant id. Copied at assessment rather
+  /// than joined, so the fee stays attributable after the Order's seller
+  /// relationships are read differently.
+  sellerParticipantId String @db.VarChar(191)
+
+  /// USD minor units, denominated in USD regardless of the sale's own currency:
+  /// this is a marketplace fee for the work and loss a finalized chargeback
+  /// creates, not a share of the disputed transaction, so it does not float with
+  /// the sale.
+  amountMinorUnits BigInt
+  currency         String @db.VarChar(3)
+
+  /// The fee policy version this was assessed under, so a fee stays readable
+  /// after the amount changes.
+  policyVersion String @db.VarChar(32)
+
+  /// ASSESSED | WAIVED | SETTLED. Only ASSESSED is written in this phase; the
+  /// other two are named so the column does not change shape when an operator
+  /// waiver and collection land.
+  state String @db.VarChar(16)
+
+  /// The instant Monacado assessed it. Supplied, never a clock read.
+  assessedAt DateTime @db.DateTime(3)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  // RESTRICT: a fee is a financial claim. Nothing it binds to may be deleted
+  // beneath it.
+  dispute TransactionDispute @relation(fields: [disputeId], references: [id], onDelete: Restrict)
+  order   Order              @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  /// The operator's queries: what is outstanding, and against whom.
+  @@index([state, assessedAt])
+  @@index([sellerParticipantId, assessedAt])
+  @@index([orderId])
 }

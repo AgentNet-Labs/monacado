@@ -58,6 +58,7 @@ import {
   INITIAL_PROCEEDS_RECOVERY_STATUS,
   recoveryReasonForObligationState,
 } from "../../contracts/marketplace/proceeds-recovery";
+import { SELLER_CHARGEBACK_FEE_POLICY } from "../../contracts/marketplace/chargeback-fee";
 import { getPrisma } from "../db/client";
 import { cryptoDisputeIdProvider, type DisputeIdProvider } from "./dispute-ids";
 import {
@@ -95,6 +96,8 @@ export interface DisputeIntakeOutcome {
   heldObligationIds: string[];
   /** Recovery exceptions raised by this event. */
   raisedRecoveryExceptionIds: string[];
+  /** The $30 seller fee a finalized loss assessed, or NULL where none applied. */
+  chargebackFeeId: string | null;
   /** Recovery exceptions closed by this event (a won dispute). */
   closedRecoveryExceptionIds: string[];
 }
@@ -190,6 +193,66 @@ function rowToRecord(row: {
  * was actually paid stays recorded as paid; refusing to record it would make the
  * ledger wrong rather than safe.
  */
+/**
+ * Assess the seller's chargeback fee for a finalized loss (Phase 1.12).
+ *
+ * Called on `LOST` and nowhere else. Opening a dispute is the cardholder's act
+ * rather than a finding against the seller, and a won dispute vindicates them —
+ * a seller who successfully defends a sale must be no worse off for having been
+ * disputed, or the fee becomes a tax on being a target.
+ *
+ * **Writes one new row and moves nothing else.** No snapshot column, no
+ * obligation amount, and no payout figure is touched: netting thirty dollars out
+ * of a historical amount would restate what three parties were told they earned,
+ * and would do it silently. Collection is not attempted here and is not built
+ * anywhere — the obligation is recorded and an operator can see it.
+ *
+ * Idempotent through the unique index on `disputeId`: a redelivered
+ * `charge.dispute.closed` is the same loss, so the duplicate is swallowed rather
+ * than assessed twice.
+ */
+async function assessSellerChargebackFeeInTx(
+  tx: Tx,
+  args: {
+    disputeId: string;
+    orderId: string;
+    assessedAt: string;
+    ids: DisputeIdProvider;
+  },
+): Promise<string | null> {
+  const order = await tx.order.findUnique({
+    where: { id: args.orderId },
+    select: { sellerParticipantId: true },
+  });
+  /* No seller, no fee. An Order Monacado cannot attribute to a participant is a
+     reconciliation problem, and inventing a debtor would be worse than the gap. */
+  if (order === null) return null;
+
+  const id = args.ids.nextSellerChargebackFeeId();
+  try {
+    await tx.sellerChargebackFee.create({
+      data: {
+        id,
+        disputeId: args.disputeId,
+        orderId: args.orderId,
+        sellerParticipantId: order.sellerParticipantId,
+        amountMinorUnits: BigInt(SELLER_CHARGEBACK_FEE_POLICY.amountMinorUnits),
+        /* USD regardless of the sale's currency: this is a marketplace fee for
+           the work and loss a finalized chargeback creates, not a share of the
+           disputed transaction, so it does not float with the sale. */
+        currency: SELLER_CHARGEBACK_FEE_POLICY.currency,
+        policyVersion: SELLER_CHARGEBACK_FEE_POLICY.policyVersion,
+        state: "ASSESSED",
+        assessedAt: new Date(args.assessedAt),
+      },
+    });
+    return id;
+  } catch {
+    /* Already assessed. One finalized loss, one fee. */
+    return null;
+  }
+}
+
 async function raiseDisputeRecoveryExceptionsInTx(
   tx: Tx,
   args: {
@@ -384,6 +447,7 @@ export async function recordDisputeObservation(
           reversalId: record.reversalId,
           heldObligationIds: [],
           raisedRecoveryExceptionIds: [],
+          chargebackFeeId: null,
           closedRecoveryExceptionIds: [],
         };
       }
@@ -507,6 +571,7 @@ export async function recordDisputeObservation(
             reversalId: record.reversalId,
             heldObligationIds: [],
             raisedRecoveryExceptionIds: [],
+            chargebackFeeId: null,
             closedRecoveryExceptionIds: [],
           };
         }
@@ -561,6 +626,7 @@ export async function recordDisputeObservation(
       let reversalId: string | null = priorReversalId;
       const heldObligationIds: string[] = [];
       let raisedRecoveryExceptionIds: string[] = [];
+      let chargebackFeeId: string | null = null;
       let closedRecoveryExceptionIds: string[] = [];
       let alreadyReversedByRefund = false;
 
@@ -602,6 +668,16 @@ export async function recordDisputeObservation(
             orderId,
             snapshotId,
             raisedAt: args.recordedAt,
+            ids,
+          });
+
+          /* The seller's $30 fee, assessed on a finalized loss and on nothing
+             else. A new fact standing beside the sale, never a deduction from
+             it. */
+          chargebackFeeId = await assessSellerChargebackFeeInTx(tx, {
+            disputeId,
+            orderId,
+            assessedAt: args.recordedAt,
             ids,
           });
 
@@ -698,6 +774,7 @@ export async function recordDisputeObservation(
         reversalId,
         heldObligationIds,
         raisedRecoveryExceptionIds,
+        chargebackFeeId,
         closedRecoveryExceptionIds,
       };
     });

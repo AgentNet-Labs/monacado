@@ -233,3 +233,180 @@ export async function recordDisputeOperationalObligation(
   );
   return obligation.obligationId;
 }
+
+/**
+ * Ask the seller for the facts of a disputed sale (Phase 1.12).
+ *
+ * The obligation `recordDisputeOperationalObligation` already raises, now with a
+ * message against it. That function existed in 1.11 with **no caller** — the
+ * record for "the seller owes us something" was built and never used, so a seller
+ * was never actually asked. This is the caller.
+ *
+ * The context code is reused rather than replaced: `DISPUTE_EVIDENCE_REQUIRED`
+ * already means exactly this, and a synonym would have made two rows for one
+ * obligation.
+ *
+ * **The discriminator is not the bare dispute reference.** Asking again is a NEW
+ * message rather than a duplicate to suppress — a seller who lost the first one
+ * needs the second — so the request id joins the key, the way a re-issued email
+ * verification challenge already does.
+ */
+export async function requestSellerDisputeEvidence(
+  args: { disputeId: string; requestId: string; at?: string },
+  deps: DisputeNoticeDeps = {},
+): Promise<{ obligationId: string | null; delivered: boolean }> {
+  const db = deps.db ?? getPrisma();
+  const at = args.at ?? new Date().toISOString();
+
+  const dispute = await db.transactionDispute.findUnique({
+    where: { id: args.disputeId },
+    select: { orderId: true, providerDisputeRef: true },
+  });
+  /* An unattributed dispute notifies nobody and fabricates no participant —
+     1.11's rule, which every code added since has had to keep. */
+  if (dispute === null || dispute.orderId === null) return { obligationId: null, delivered: false };
+
+  const order = await db.order.findUnique({
+    where: { id: dispute.orderId },
+    select: { sellerParticipantId: true },
+  });
+  if (order === null) return { obligationId: null, delivered: false };
+
+  const obligationId = await recordDisputeOperationalObligation(
+    { disputeId: args.disputeId, at },
+    deps,
+  );
+
+  const enqueued = await enqueueEmailDelivery(
+    {
+      purpose: "DISPUTE_EVIDENCE_REQUESTED",
+      audience: "SELLER",
+      recipientParticipantId: order.sellerParticipantId,
+      obligationId: await obligationIdFor(db, {
+        recipientParticipantId: order.sellerParticipantId,
+        category: "OPERATIONAL_ACTION_REQUIRED",
+        orderId: dispute.orderId,
+        contextCode: "DISPUTE_EVIDENCE_REQUIRED",
+      }),
+      subjectKind: "ORDER",
+      subjectRef: dispute.orderId,
+      discriminator: `${dispute.providerDisputeRef}:${args.requestId}`,
+      now: at,
+    },
+    deps,
+  );
+  return { obligationId, delivered: enqueued.delivery !== null };
+}
+
+/**
+ * Tell the seller and any promoter that Monacado answered the dispute
+ * (Phase 1.12).
+ *
+ * Symmetric to the opening notice for the reason 1.11 gave: a promoter's
+ * commission turns on the same sale, and telling one party but not the other
+ * would leave the promoter's economics moving for reasons they cannot see.
+ */
+export async function recordDisputeEvidenceSubmittedNotice(
+  args: { disputeId: string; at?: string },
+  deps: DisputeNoticeDeps = {},
+): Promise<{ obligationIds: string[] }> {
+  const db = deps.db ?? getPrisma();
+  const notificationIds = deps.notificationIds ?? cryptoParticipantIdProvider;
+  const at = args.at ?? new Date().toISOString();
+
+  const dispute = await db.transactionDispute.findUnique({
+    where: { id: args.disputeId },
+    select: { orderId: true, providerDisputeRef: true },
+  });
+  if (dispute === null || dispute.orderId === null) return { obligationIds: [] };
+
+  const order = await db.order.findUnique({
+    where: { id: dispute.orderId },
+    select: { sellerParticipantId: true, promoterParticipantId: true },
+  });
+  if (order === null) return { obligationIds: [] };
+
+  const participants: Array<{ id: string; audience: "SELLER" | "PROMOTER" }> = [
+    { id: order.sellerParticipantId, audience: "SELLER" },
+  ];
+  if (order.promoterParticipantId !== null) {
+    participants.push({ id: order.promoterParticipantId, audience: "PROMOTER" });
+  }
+
+  const obligationIds: string[] = [];
+  for (const participant of participants) {
+    const obligation = await db.$transaction((tx) =>
+      upsertObligationInTx(tx, {
+        id: notificationIds.nextObligationId(),
+        recipientParticipantId: participant.id,
+        category: "REFUND_OR_CHARGEBACK",
+        subject: { kind: "ORDER", ref: dispute.orderId!, versionRef: null },
+        contextCode: "DISPUTE_EVIDENCE_SUBMITTED",
+        createdAt: at,
+      }),
+    );
+    obligationIds.push(obligation.obligationId);
+
+    await enqueueEmailDelivery(
+      {
+        purpose: "DISPUTE_EVIDENCE_SUBMITTED",
+        audience: participant.audience,
+        recipientParticipantId: participant.id,
+        obligationId: await obligationIdFor(db, {
+          recipientParticipantId: participant.id,
+          category: "REFUND_OR_CHARGEBACK",
+          orderId: dispute.orderId!,
+          contextCode: "DISPUTE_EVIDENCE_SUBMITTED",
+        }),
+        subjectKind: "ORDER",
+        subjectRef: dispute.orderId!,
+        discriminator: dispute.providerDisputeRef,
+        now: at,
+      },
+      deps,
+    );
+  }
+  return { obligationIds };
+}
+
+/**
+ * A submission failed permanently: record that an operator must act
+ * (Phase 1.12).
+ *
+ * **An obligation, and deliberately no email.** 1.9's precedent, restated: a
+ * provider-side failure is not a fact a seller can act on, and telling them
+ * would invite exactly the direct-to-network contact the marketplace policy
+ * forbids.
+ */
+export async function recordDisputeEvidenceSubmissionFailure(
+  args: { disputeId: string; at?: string },
+  deps: DisputeNoticeDeps = {},
+): Promise<string | null> {
+  const db = deps.db ?? getPrisma();
+  const notificationIds = deps.notificationIds ?? cryptoParticipantIdProvider;
+  const at = args.at ?? new Date().toISOString();
+
+  const dispute = await db.transactionDispute.findUnique({
+    where: { id: args.disputeId },
+    select: { orderId: true },
+  });
+  if (dispute === null || dispute.orderId === null) return null;
+
+  const order = await db.order.findUnique({
+    where: { id: dispute.orderId },
+    select: { sellerParticipantId: true },
+  });
+  if (order === null) return null;
+
+  const obligation = await db.$transaction((tx) =>
+    upsertObligationInTx(tx, {
+      id: notificationIds.nextObligationId(),
+      recipientParticipantId: order.sellerParticipantId,
+      category: "OPERATIONAL_ACTION_REQUIRED",
+      subject: { kind: "ORDER", ref: dispute.orderId!, versionRef: null },
+      contextCode: "DISPUTE_EVIDENCE_SUBMISSION_FAILED",
+      createdAt: at,
+    }),
+  );
+  return obligation.obligationId;
+}

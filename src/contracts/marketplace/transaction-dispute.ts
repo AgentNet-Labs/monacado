@@ -521,14 +521,30 @@ export const NEVER_ON_TRANSACTION_DISPUTE = [
  * dashboard, and `dispute:status` tells the operator exactly which evidence
  * Monacado holds and where.
  */
-export const DisputeEvidenceSubmissionRequest = z.strictObject({
-  disputeId: TransactionDisputeId,
-  providerDisputeRef: z.string().min(1).max(191),
-});
-export type DisputeEvidenceSubmissionRequest = z.infer<typeof DisputeEvidenceSubmissionRequest>;
-
-export interface DisputeEvidenceSubmissionPort {
-  submit(request: DisputeEvidenceSubmissionRequest): Promise<never>;
+/**
+ * **Superseded by Phase 1.12.** The real request shape, result union, failure
+ * vocabulary, and port live in `dispute-evidence.ts`; this placeholder is kept
+ * only so a reader arriving at the seam above is sent to them rather than to
+ * nothing.
+ *
+ * One of 1.11's four stated reasons for deferring was **factually wrong**, and
+ * correcting it is what let 1.12 proceed. Reason 1 claims every evidence field is
+ * typed `string | File` and needs a file upload. That describes the provider's
+ * RESPONSE object, which expands file objects on read. On the REQUEST object
+ * every field is a plain string: nine take a file identifier and stay
+ * unreachable, and eighteen are ordinary text. Text-only submission needs no
+ * object storage, and several usable fields are direct projections of immutable
+ * Monacado records.
+ *
+ * Reasons 2, 3, and 4 stand, and 1.12 answers each rather than dismissing it:
+ * buyer PII is refused outright by `NEVER_SUBMITTED_TO_PROVIDER`; one-shot
+ * irreversibility is met with an operator approval gate and a pre-flight
+ * submission-count guard; and the §I ruling is met by building the capability
+ * and **leaving the send gated**, so no representment policy is taken by
+ * implementation.
+ */
+export interface DisputeEvidenceSubmissionPortPlaceholder {
+  readonly supersededBy: "src/contracts/marketplace/dispute-evidence.ts";
 }
 
 /**
@@ -538,22 +554,45 @@ export interface DisputeEvidenceSubmissionPort {
  * the absence is a value, not a silence.
  */
 export const DISPUTE_EVIDENCE_SUBMISSION_SEAM = {
-  /** Nothing in this repository submits evidence to a provider. */
-  evidenceSubmission: "NOT_IMPLEMENTED",
-  /** Nothing accepts, stores, or serves a dispute evidence document. */
+  /**
+   * Built in 1.12 — text evidence, TEST mode, and **authorised**. The §I ruling
+   * this seam once waited on is resolved; see `MONACADO_REPRESENTMENT_RULING`.
+   */
+  evidenceSubmission: "IMPLEMENTED_TEXT_ONLY_TEST_MODE",
+  /** Still nothing accepts, stores, or serves a dispute evidence document. */
   documentStorage: "NOT_IMPLEMENTED",
-  /** Nothing closes (accepts) a dispute through the provider. */
+  /** Still nothing closes (accepts) a dispute through the provider. */
   disputeAcceptance: "NOT_IMPLEMENTED",
-  /** Nothing calls the provider to re-read dispute state. */
-  providerLookup: "NOT_IMPLEMENTED",
+  /**
+   * 1.12 reads the dispute back before submitting. Not a reconciliation sweep —
+   * a pre-flight guard on one dispute, because the provider's own submission
+   * counter is the only reliable way to learn that a dispute has already been
+   * answered before spending the one answer available.
+   */
+  providerLookup: "IMPLEMENTED_PRE_FLIGHT_ONLY",
   /** Routine reconciliation answers from local records alone. */
   routineReconciliation: "LOCAL_RECORDS_ONLY",
-  /** Where an operator responds to a dispute today. */
-  operatorResponsePath: "PROVIDER_DASHBOARD",
+  /**
+   * Where an operator responds to a dispute now.
+   *
+   * MONACADO'S OWN COMMANDS, not the provider's dashboard. An operator prepares
+   * a package, approves it, and sends it through `dispute:evidence:submit`. The
+   * dashboard remains available to a human and is no longer the only route.
+   */
+  operatorResponsePath: "MONACADO_OPERATOR_APPROVED_SUBMISSION",
   /** Whose phase it is. */
   owner: "T2_SETTLEMENT_AND_PAYOUT",
-  /** The ruling that must precede it. */
-  requiresRuling: "MONACADO_MOR_BUSINESS_MODEL_SECTION_I",
+  /**
+   * **RESOLVED.** 1.11 recorded that §I had to rule before evidence could be
+   * submitted. It has: `MONACADO_REPRESENTMENT_RULING` states that Monacado
+   * always responds, the seller is heard but does not represent, and Monacado
+   * owns the decision and the submission.
+   *
+   * 1.11's committed record of what was undecided at the time is NOT rewritten —
+   * this is the later fact that supersedes it, which is the same discipline the
+   * dispute ledger itself follows.
+   */
+  rulingResolvedBy: "MONACADO_REPRESENTMENT_RULING",
   /** What 1.11 guarantees instead. */
   guaranteedNow: [
     "A_PROVIDER_DISPUTE_IS_DURABLY_RECORDED_BEFORE_ANY_DEADLINE_RUNS",
@@ -630,10 +669,13 @@ export const REQUIRED_MARKETPLACE_POLICY_DISPUTE_VERSION = {
     "RISK_CLASSIFICATIONS_ARE_PRIVATE_AND_ARE_NEVER_DISCLOSED_OR_PUBLISHED",
     "CONTESTING_OR_ACCEPTING_A_DISPUTE_IS_NOT_A_WAIVER_OF_RECOVERY",
   ],
-  requiringARuling: [
-    "PASS_THROUGH_OF_NETWORK_IMPOSED_DISPUTE_COSTS_TO_A_SELLER",
-    "WHETHER_1_1_0_IS_ACTIVATED_BEFORE_A_DISPUTE_VERSION_IS_PUBLISHED",
-  ],
+  /**
+   * Seller economic consequence is RESOLVED: a finalized lost chargeback carries
+   * a $30 seller fee (`SELLER_CHARGEBACK_FEE_POLICY`). What remains open is only
+   * the activation sequencing, which is an operator act rather than a policy
+   * question.
+   */
+  requiringARuling: ["WHETHER_1_1_0_IS_ACTIVATED_BEFORE_A_DISPUTE_VERSION_IS_PUBLISHED"],
   rulingOwner: "MONACADO_MOR_BUSINESS_MODEL_SECTION_I",
   requiresReacceptanceDecision: "OWNER_OF_MARKETPLACE_TERMS",
 } as const;
@@ -652,3 +694,65 @@ export const REQUIRED_MARKETPLACE_POLICY_DISPUTE_VERSION = {
  * externally-adjudicated path.
  */
 export const DISPUTE_LANGUAGE_ON_RECEIPT = "NOT_INCLUDED" as const;
+
+/**
+ * Fraud and risk analytics: **Phase 1.13 owns all of it** (recorded in 1.12).
+ *
+ * Written down here because 1.12 is where the raw material lands, and a phase
+ * that produced the inputs without naming their consumer is how a metric ends up
+ * being invented twice with two denominators.
+ *
+ * **1.12 implements none of this**, and that is deliberate rather than
+ * incidental: every item below is a *judgement about a participant* rather than a
+ * fact about a transaction, and this repository keeps those apart. There are no
+ * thresholds, no scores, and no automatic suspension anywhere in 1.12 — a rate
+ * computed without a stated denominator and a window is a number that looks like
+ * evidence, and acting on one automatically is how a legitimate seller gets
+ * suspended by arithmetic.
+ */
+export const FRAUD_AND_RISK_ANALYTICS_HANDOFF = {
+  owner: "PHASE_1_13",
+  ownedByThatPhase: [
+    "REFUND_RATE",
+    "CHARGEBACK_RATE",
+    "CHARGEBACK_TO_REFUND_RATE",
+    /* Stated as two entries rather than one. A rate is a number and a lie until
+       both are fixed: the window it covers and what it was divided by. Phases
+       that recorded "chargeback rate" alone are how two dashboards end up
+       disagreeing while both are arithmetically correct. */
+    "EXPLICIT_ROLLING_WINDOWS",
+    "NUMERATORS_AND_DENOMINATORS",
+    "SELLER_ATTRIBUTION",
+    "SELLER_BY_PROMOTER_ATTRIBUTION",
+    "TRANSACTION_REFUND_AND_CHARGEBACK_VELOCITY",
+    "AVERAGE_TICKET_VERSUS_GOVERNED_VERTICAL_NORMS",
+    "GEOGRAPHIC_DIVERSITY_AND_ANOMALIES",
+    "UNEXPECTED_VOLUME_SPIKES",
+    /* Distinct from SELLER_BY_PROMOTER_ATTRIBUTION: attribution answers "whose
+       sale was this", concentration answers "is one promoter carrying an
+       implausible share of a seller's disputes". Different question, different
+       denominator. */
+    "PROMOTER_CONCENTRATION_AND_ANOMALY",
+    "DAILY_TOP_10_AND_TOP_100_SELLER_RISK_REVIEW",
+    "EXPLAINABLE_REVIEW_REASONS",
+    "STAFF_MITIGATION_WORKFLOW_UP_TO_SUSPENSION",
+  ],
+  /** What 1.12 does instead: preserve what 1.13 will need to attribute. */
+  attributionPreservedBy1_12: [
+    "TRANSACTION_DISPUTE_BINDS_ORDER_AND_SNAPSHOT",
+    "PROCEEDS_RECOVERY_EXCEPTION_NAMES_PARTICIPANT_AND_PARTY_AND_CAUSE_KIND",
+    "SELLER_CHARGEBACK_FEE_NAMES_THE_SELLER_AND_THE_CAUSING_DISPUTE",
+    "ORDER_REFUND_AND_DISPUTE_ARE_DISTINCT_FACTS_SO_A_RATE_CAN_TELL_THEM_APART",
+    "DISPUTE_OPENED_WON_AND_LOST_ARE_SEPARATELY_DATED",
+  ],
+  /** Explicitly absent from 1.12, and not by oversight. */
+  notImplementedHere: [
+    "SCORING_THRESHOLDS",
+    "AUTOMATIC_SUSPENSION",
+    "RISK_TIERS",
+    /* Named explicitly. A score nobody can explain is the one thing a
+       suspension workflow must never rest on. */
+    "OPAQUE_FRAUD_SCORE",
+    "RATE_COMPUTATION",
+  ],
+} as const;

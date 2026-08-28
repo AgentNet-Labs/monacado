@@ -508,6 +508,79 @@ export function renderParticipantDisputeRecorded(order: OrderRecord): {
   };
 }
 
+/**
+ * A seller is asked for the facts of a disputed sale (Phase 1.12).
+ *
+ * The one message in this phase that asks rather than tells.
+ *
+ * **It carries no link and no form.** A self-service page would need a bearer
+ * token, a single-use challenge row, and a public route, and a half-built
+ * credential path is worse than none — so the seller is directed to the support
+ * channel that already exists, and an operator records what they supply as a
+ * bounded attestation. The tokenized page is recorded as deferred rather than
+ * approximated.
+ *
+ * It also states the two things a seller most needs and is most likely to get
+ * wrong: that the deadline is the network's rather than Monacado's, and that
+ * contacting the bank themselves makes the response worse rather than better.
+ */
+export function renderParticipantDisputeEvidenceRequested(order: OrderRecord): {
+  subject: string;
+  body: string;
+} {
+  return {
+    subject: "Monacado needs the facts of a disputed sale",
+    body: [
+      "A payment dispute has been raised against a sale recorded to your",
+      "account, and Monacado needs facts about it that only you hold.",
+      "",
+      `Order reference: ${order.orderId}`,
+      "",
+      "Please tell your Monacado support contact what was supplied, when, and",
+      "how it was made available to the buyer, along with any support or",
+      "correspondence that followed.",
+      "",
+      "The date this is needed by follows the deadline the buyer's payment",
+      "network imposes on Monacado. It is shorter than an ordinary support",
+      "enquiry allows for and Monacado cannot extend it.",
+      "",
+      "Please do not contact the buyer's bank or card issuer. Monacado is the",
+      "only party to the dispute, and a second account of the same sale reaching",
+      "the network is worse than none.",
+      "",
+      "— Monacado",
+    ].join("\n"),
+  };
+}
+
+/**
+ * A seller or promoter is told Monacado answered the dispute (Phase 1.12).
+ *
+ * States only that a response was submitted — never what it contained, and never
+ * a prediction of the outcome. The bank decides, and a message that implied
+ * otherwise would be setting an expectation Monacado cannot meet.
+ */
+export function renderParticipantDisputeEvidenceSubmitted(order: OrderRecord): {
+  subject: string;
+  body: string;
+} {
+  return {
+    subject: "Monacado has responded to a payment dispute",
+    body: [
+      "Monacado has submitted a response to the payment dispute raised against a",
+      "sale recorded to your account.",
+      "",
+      `Order reference: ${order.orderId}`,
+      "",
+      "The buyer's bank decides the outcome, and Monacado cannot say when it",
+      "will do so or what it will decide. Proceeds attributable to this sale",
+      "remain unpayable while the dispute is open.",
+      "",
+      "— Monacado",
+    ].join("\n"),
+  };
+}
+
 // — Triggers —
 
 /**

@@ -67,6 +67,11 @@ import { REFUND_REFUSAL_CODES } from "../src/contracts/marketplace/order-refund"
 import { CAPSULE_VISIBILITY_POLICY, capsuleVisibilityFor } from "../src/contracts/capsule/visibility";
 import { OUTBOUND_EMAIL_PURPOSES } from "../src/contracts/marketplace/outbound-email";
 import {
+  MONACADO_MARKETPLACE_POLICY_V1_1,
+  MONACADO_MARKETPLACE_POLICY_V1_1_HASH,
+} from "../src/contracts/marketplace/marketplace-policy-content";
+import { selectSection } from "../src/contracts/marketplace/marketplace-policy";
+import {
   DISPUTE_NOTIFICATION_CONTEXT_CODES,
   NOTIFICATION_CATEGORIES,
 } from "../src/contracts/marketplace/notification-obligation";
@@ -656,18 +661,48 @@ describe("1.11 — operator actions are derived, not decided in three places", (
 
 describe("1.11 — evidence submission is a declared seam, not an implementation", () => {
   it("states every unbuilt half as a checkable value", () => {
-    expect(DISPUTE_EVIDENCE_SUBMISSION_SEAM.evidenceSubmission).toBe("NOT_IMPLEMENTED");
+    /* Two halves moved in 1.12 and two did not, and the pairing is the point:
+       submission is built but gated, provider lookup is a pre-flight guard rather
+       than a sweep, and both document storage and dispute acceptance remain
+       untouched. */
+    expect(DISPUTE_EVIDENCE_SUBMISSION_SEAM.evidenceSubmission).toBe(
+      "IMPLEMENTED_TEXT_ONLY_TEST_MODE",
+    );
+    expect(DISPUTE_EVIDENCE_SUBMISSION_SEAM.providerLookup).toBe("IMPLEMENTED_PRE_FLIGHT_ONLY");
     expect(DISPUTE_EVIDENCE_SUBMISSION_SEAM.documentStorage).toBe("NOT_IMPLEMENTED");
     expect(DISPUTE_EVIDENCE_SUBMISSION_SEAM.disputeAcceptance).toBe("NOT_IMPLEMENTED");
-    expect(DISPUTE_EVIDENCE_SUBMISSION_SEAM.providerLookup).toBe("NOT_IMPLEMENTED");
-    expect(DISPUTE_EVIDENCE_SUBMISSION_SEAM.operatorResponsePath).toBe("PROVIDER_DASHBOARD");
+    /* The operator now answers through Monacado's own approved-submission path,
+       not the provider's dashboard. */
+    expect(DISPUTE_EVIDENCE_SUBMISSION_SEAM.operatorResponsePath).toBe(
+      "MONACADO_OPERATOR_APPROVED_SUBMISSION",
+    );
   });
 
-  it("exports no submission adapter anywhere", () => {
+  it("keeps the intake adapter free of any write to a dispute", () => {
+    /* NARROWED, not dropped. 1.12's submission adapter is a SEPARATE module, so
+       the module that receives a provider's statement still cannot answer it —
+       which is what this assertion was really protecting. */
     const adapter = readSource("src/server/payments/stripe-dispute-adapter.ts");
     expect(adapter).not.toContain("disputes.update");
     expect(adapter).not.toContain("disputes.close");
     expect(adapter).not.toContain("files.create");
+  });
+
+  it("closes no dispute and uploads no file, in either adapter", () => {
+    /* The two deferrals that must survive 1.12. Accepting a dispute is an
+       irreversible acceptance of loss, and no object storage exists — so neither
+       adapter may reach either capability. */
+    /* `readCode` rather than `readSource`: the 1.12 adapter EXPLAINS in prose why
+       it has no close path, and a well-explained decision must not be
+       indistinguishable from a violation of it. */
+    for (const path of [
+      "src/server/payments/stripe-dispute-adapter.ts",
+      "src/server/payments/stripe-dispute-evidence-adapter.ts",
+    ]) {
+      const code = readCode(path);
+      expect(code, path).not.toContain("disputes.close");
+      expect(code, path).not.toContain("files.create");
+    }
   });
 
   it("names the evidence Monacado can never supply today", () => {
@@ -800,11 +835,32 @@ describe("1.11 — readiness does not claim chargeback readiness", () => {
     MONACADO_STRIPE_CANCEL_URL: "https://monacado.test/checkout/result",
   } as Record<string, string>;
 
-  it("reports evidence response as unimplemented no matter how well configured", () => {
+  it("still refuses to claim chargeback readiness, now for the right reasons", () => {
+    /* 1.11 asserted one unconditional blocker. 1.12 built the adapter and the §I
+       ruling authorised the send, so both the capability blocker and the
+       governance one clear — and this test exists to make sure clearing them did
+       not turn the gate green. Representment being authorised is not the same as
+       being able to answer every dispute. */
     const report = evaluateDisputeReadiness(AT, READY_ENV);
-    expect(report.blockers).toContain("DISPUTE_EVIDENCE_RESPONSE_NOT_IMPLEMENTED");
+    expect(report.representmentAuthorised).toBe(true);
+    expect(report.providerSubmissionImplemented).toBe(true);
+    expect(report.blockers).not.toContain("DISPUTE_EVIDENCE_RESPONSE_NOT_IMPLEMENTED");
+
     expect(report.ready).toBe(false);
-    expect(report.evidenceResponseImplemented).toBe(false);
+    expect(report.blockers).toContain("DISPUTE_PROVIDER_MODE_TEST_ONLY");
+    expect(report.blockers).toContain("DISPUTE_EVIDENCE_ASSEMBLY_INCOMPLETE");
+    expect(report.blockers).toContain("DISPUTE_EVIDENCE_DOCUMENT_SUBMISSION_NOT_IMPLEMENTED");
+  });
+
+  it("cannot be made ready by configuration alone, however complete", () => {
+    /* The load-bearing one. `DISPUTE_EVIDENCE_ASSEMBLY_INCOMPLETE` is read from a
+       frozen constant, so no environment can clear it while whole classes of sale
+       remain unevidenceable — and it never encoded the governance hold, which is
+       why it survives the ruling that removed the hold. */
+    const report = evaluateDisputeReadiness(AT, READY_ENV);
+    expect(report.ready).toBe(false);
+    expect(report.evidenceAssemblyComplete).toBe(false);
+    expect(report.blockers).toContain("DISPUTE_EVIDENCE_ASSEMBLY_INCOMPLETE");
   });
 
   it("blocks when nothing could receive a dispute at all", () => {
@@ -846,7 +902,18 @@ describe("1.11 — readiness does not claim chargeback readiness", () => {
     expect(DISPUTE_CAPABILITY_IMPLEMENTATION.chargebackAccounting).toBe(
       "IMPLEMENTED_FULL_SCOPE_ONLY",
     );
-    expect(DISPUTE_CAPABILITY_IMPLEMENTATION.evidenceSubmissionAdapter).toBe("NOT_IMPLEMENTED");
+    /* Deliberately not a bare "IMPLEMENTED". The value is read by readiness, and
+       a word that flattened test-mode-only, text-only, and gated into one would
+       be how a partial capability gets reported as a complete one. */
+    expect(DISPUTE_CAPABILITY_IMPLEMENTATION.evidenceSubmissionAdapter).toBe(
+      "IMPLEMENTED_TEXT_ONLY_TEST_MODE",
+    );
+    /* Unchanged, and both must stay so: accepting a loss is irreversible, and no
+       object storage exists. */
+    expect(DISPUTE_CAPABILITY_IMPLEMENTATION.disputeAcceptanceAdapter).toBe("NOT_IMPLEMENTED");
+    expect(DISPUTE_CAPABILITY_IMPLEMENTATION.disputeEvidenceDocumentStorage).toBe(
+      "NOT_IMPLEMENTED",
+    );
   });
 
   it("makes no plan-dependent scheduling claim", () => {
@@ -1052,9 +1119,25 @@ describe("1.11 — policy and receipt disposition", () => {
   });
 
   it("leaves Marketplace Policy 1.1.0's bytes untouched", () => {
-    const content = readSource("src/contracts/marketplace/marketplace-policy-content.ts");
-    expect(content).not.toContain("DISPUTES_AND_CHARGEBACKS");
-    expect(content).not.toContain("DISPUTE_EFFECT_ON_PROCEEDS");
+    /* Asserted against 1.1.0's own content hash and its own section list rather
+       than by scanning the file for a substring.
+       
+       The substring form was a proxy for this claim and stopped being true for a
+       benign reason the moment 1.12 shipped a SECOND document in the same module.
+       The hash is what the claim actually rests on: it is pinned wherever 1.1.0
+       has been recorded, and a single character moving in its prose would change
+       it and make every later bootstrap of that version refuse. This is strictly
+       stronger than the scan it replaces. */
+    expect(MONACADO_MARKETPLACE_POLICY_V1_1_HASH).toBe(
+      "sha256:b0a48644c8c146e2247d20de20140f6e124435401cad1ce096140ca5128e74b6",
+    );
+    for (const key of [
+      "DISPUTES_AND_CHARGEBACKS",
+      "DISPUTE_EVIDENCE_AND_COOPERATION",
+      "DISPUTE_EFFECT_ON_PROCEEDS",
+    ] as const) {
+      expect(selectSection(MONACADO_MARKETPLACE_POLICY_V1_1, key)).toBeNull();
+    }
   });
 });
 

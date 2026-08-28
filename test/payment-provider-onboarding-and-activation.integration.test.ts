@@ -1432,6 +1432,25 @@ describeDb("Phase 0M.8 — payment-provider onboarding and governed activation",
       );
       const names = tables.map((t) => t.TABLE_NAME.toLowerCase());
 
+      /* Phase 1.12 narrows `charge`/`chargeback` by exactly ONE table, and by
+         name rather than by substring: `SellerChargebackFee`.
+         
+         The reason those terms are on this list is stated above — a `chargeback`
+         table appearing would mean somebody had built a SECOND REVERSAL LEDGER
+         beside `TransactionReversal`. That reason does not reach this row.
+         `SellerChargebackFee` records a marketplace FEE Monacado charges a seller
+         when a dispute is finally lost; it posts nothing, reverses nothing, and
+         nets against nothing. `TransactionReversal` remains the only place a
+         reversal is recorded, and a chargeback remains a KIND on it.
+         
+         Narrowed the way 1.7 narrowed `taxtransaction` and 1.9 narrowed
+         `refund`: by naming the one table a later phase legitimately owns, with
+         the reason written down, rather than by deleting the term and losing the
+         guard. Every other name containing `charge` or `chargeback` still
+         fails. */
+      const legitimatelyOwned = new Set(["sellerchargebackfee"]);
+      const guarded = names.filter((n) => !legitimatelyOwned.has(n));
+
       for (const forbidden of [
         "charge",
         "paymentintent",
@@ -1452,9 +1471,10 @@ describeDb("Phase 0M.8 — payment-provider onboarding and governed activation",
            table would still mean a second ledger had appeared. */
         "riskdecision",
       ]) {
-        expect(names.some((n) => n.includes(forbidden)), `${forbidden} table must not exist`).toBe(
-          false,
-        );
+        expect(
+          guarded.some((n) => n.includes(forbidden)),
+          `${forbidden} table must not exist`,
+        ).toBe(false);
       }
     });
 

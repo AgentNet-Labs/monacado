@@ -91,6 +91,7 @@ import {
   LATEST_MARKETPLACE_POLICY_VERSION,
   MARKETPLACE_POLICY_VERSION_1,
   MARKETPLACE_POLICY_VERSION_1_1,
+  MARKETPLACE_POLICY_VERSION_1_2,
   MONACADO_MARKETPLACE_POLICY_ID,
   MONACADO_MARKETPLACE_POLICY_V1_1_HASH,
   MONACADO_MARKETPLACE_POLICY_V1_HASH,
@@ -834,7 +835,7 @@ describeDb("1.10 — marketplace refund governance and receipts", () => {
           now: NOW,
           activate: false,
           mode: "APPLY",
-          policyVersion: "1.2.0",
+          policyVersion: "9.9.9",
         },
         { db },
       );
@@ -846,7 +847,7 @@ describeDb("1.10 — marketplace refund governance and receipts", () => {
         applied: false,
       });
       expect(
-        await getMarketplacePolicyVersion(MONACADO_MARKETPLACE_POLICY_ID, "1.2.0", { db }),
+        await getMarketplacePolicyVersion(MONACADO_MARKETPLACE_POLICY_ID, "9.9.9", { db }),
       ).toBeNull();
     });
 
@@ -1333,7 +1334,10 @@ describeDb("1.10 — marketplace refund governance and receipts", () => {
     });
 
     it("ships the version this deployment says it ships", () => {
-      expect(LATEST_MARKETPLACE_POLICY_VERSION).toBe(MARKETPLACE_POLICY_VERSION_1_1);
+      /* 1.12 shipped 1.2.0, so the newest SHIPPED version moved. What governs is
+         still whichever version the database says is ACTIVE, and shipping a newer
+         one activates nothing. */
+      expect(LATEST_MARKETPLACE_POLICY_VERSION).toBe(MARKETPLACE_POLICY_VERSION_1_2);
     });
   });
 });

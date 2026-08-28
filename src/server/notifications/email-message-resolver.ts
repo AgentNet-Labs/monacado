@@ -69,6 +69,8 @@ import {
   renderBuyerRefundCompleted,
   renderParticipantRefundRecorded,
   renderParticipantDisputeRecorded,
+  renderParticipantDisputeEvidenceRequested,
+  renderParticipantDisputeEvidenceSubmitted,
   renderParticipantSaleRecorded,
 } from "./transactional-notice-service";
 
@@ -143,7 +145,9 @@ async function resolveOrderMessage(
   if (
     delivery.purpose === "SALE_RECORDED" ||
     delivery.purpose === "REFUND_RECORDED" ||
-    delivery.purpose === "DISPUTE_RECORDED"
+    delivery.purpose === "DISPUTE_RECORDED" ||
+    delivery.purpose === "DISPUTE_EVIDENCE_REQUESTED" ||
+    delivery.purpose === "DISPUTE_EVIDENCE_SUBMITTED"
   ) {
     if (delivery.recipientParticipantId === null) return unresolvable("RECIPIENT_UNRESOLVABLE");
     const participant = await db.marketplaceParticipant.findUnique({
@@ -157,7 +161,11 @@ async function resolveOrderMessage(
         ? renderParticipantSaleRecorded(order)
         : delivery.purpose === "REFUND_RECORDED"
           ? renderParticipantRefundRecorded(order)
-          : renderParticipantDisputeRecorded(order);
+          : delivery.purpose === "DISPUTE_RECORDED"
+            ? renderParticipantDisputeRecorded(order)
+            : delivery.purpose === "DISPUTE_EVIDENCE_REQUESTED"
+              ? renderParticipantDisputeEvidenceRequested(order)
+              : renderParticipantDisputeEvidenceSubmitted(order);
     return { resolved: true, destination: address, subject, text: body };
   }
 

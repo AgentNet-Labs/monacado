@@ -23,6 +23,7 @@ import {
   MARKETPLACE_POLICY_REACCEPTANCE,
   MARKETPLACE_POLICY_VERSION_1,
   MARKETPLACE_POLICY_VERSION_1_1,
+  MARKETPLACE_POLICY_VERSION_1_2,
   MONACADO_MARKETPLACE_POLICY_ID,
   MONACADO_MARKETPLACE_POLICY_V1,
   MONACADO_MARKETPLACE_POLICY_V1_1,
@@ -103,7 +104,7 @@ describe("1.10 · Marketplace Policy 1.1.0", () => {
   });
 
   it("is the newest shipped version, and both versions stay resolvable", () => {
-    expect(LATEST_MARKETPLACE_POLICY_VERSION).toBe(MARKETPLACE_POLICY_VERSION_1_1);
+    expect(LATEST_MARKETPLACE_POLICY_VERSION).toBe(MARKETPLACE_POLICY_VERSION_1_2);
     /* A superseded version must stay readable: every receipt for every sale made
        under it resolves through this map. */
     expect(marketplacePolicyDocument(MARKETPLACE_POLICY_VERSION_1)).not.toBeNull();
@@ -705,7 +706,7 @@ describe("1.10 · the bootstrap command selects a shipped version", () => {
   it("refuses a version it does not ship rather than defaulting to one", () => {
     /* A mistyped version is a mistake about which terms are being published.
        Publishing different ones instead is the worst reading of it. */
-    expect(() => parseCommandOptions(["--version=1.2.0"], env)).toThrow(BootstrapUsageError);
+    expect(() => parseCommandOptions(["--version=9.9.9"], env)).toThrow(BootstrapUsageError);
     expect(() => parseCommandOptions(["--version="], env)).toThrow(BootstrapUsageError);
   });
 });
