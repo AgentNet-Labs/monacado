@@ -142,6 +142,15 @@ async function cleanup(): Promise<void> {
      vanish because a row above it did — so an acceptance left behind would block
      the participant delete below. */
   await deleteParticipantPolicyRows(db, `mon:mpart:${TAG}`);
+  /* Phase 1.14 — imposing or lifting a restriction now raises a notice
+     obligation in the same transaction, and the obligation's recipient FK is
+     RESTRICT. It comes off before the restriction it names and the participant
+     it is owed to. */
+  await db.notificationObligation.deleteMany({
+    where: { recipientParticipantId: { startsWith: `mon:mpart:${TAG}` } },
+  });
+  await db.participantReconsideration.deleteMany({ where: owned });
+  await db.participantSuspension.deleteMany({ where: owned });
   await db.participantRestriction.deleteMany({ where: owned });
   await db.participantPaymentRequirementRow.deleteMany({
     where: { paymentAccount: { is: owned } },
@@ -908,7 +917,7 @@ describeDb("Phase 0M.R1 — versioned commercial policy and activation risk reco
       const snapshot = await liftParticipantRestriction(
         {
           restrictionId: first.restriction.restrictionId,
-          reasonCode: "POLICY_ELIGIBILITY_RESTRICTION",
+          reasonCode: "ELIGIBILITY_RESTORED",
           actingAccountId: RESTRICTOR,
           liftedAt: LATEST,
         },
@@ -926,7 +935,7 @@ describeDb("Phase 0M.R1 — versioned commercial policy and activation risk reco
       const snapshot = await liftParticipantRestriction(
         {
           restrictionId: only.restriction.restrictionId,
-          reasonCode: "POLICY_ELIGIBILITY_RESTRICTION",
+          reasonCode: "ELIGIBILITY_RESTORED",
           actingAccountId: RESTRICTOR,
           liftedAt: LATEST,
         },
@@ -948,7 +957,7 @@ describeDb("Phase 0M.R1 — versioned commercial policy and activation risk reco
       const snapshot = await liftParticipantRestriction(
         {
           restrictionId: only.restriction.restrictionId,
-          reasonCode: "POLICY_ELIGIBILITY_RESTRICTION",
+          reasonCode: "ELIGIBILITY_RESTORED",
           actingAccountId: RESTRICTOR,
           liftedAt: LATEST,
         },
@@ -965,7 +974,7 @@ describeDb("Phase 0M.R1 — versioned commercial policy and activation risk reco
       await liftParticipantRestriction(
         {
           restrictionId: only.restriction.restrictionId,
-          reasonCode: "COMMERCIAL_ELIGIBILITY_RESTRICTION",
+          reasonCode: "ELIGIBILITY_RESTORED",
           actingAccountId: RESTRICTOR,
           liftedAt: LATEST,
         },
@@ -977,7 +986,7 @@ describeDb("Phase 0M.R1 — versioned commercial policy and activation risk reco
       expect(history[0]!.status).toBe("LIFTED");
       expect(history[0]!.liftedAt).toBe(LATEST);
       expect(history[0]!.liftedByAccountId).toBe(RESTRICTOR);
-      expect(history[0]!.liftedReasonCode).toBe("COMMERCIAL_ELIGIBILITY_RESTRICTION");
+      expect(history[0]!.liftedReasonCode).toBe("ELIGIBILITY_RESTORED");
       // The imposition survives intact.
       expect(history[0]!.imposedAt).toBe(LATER);
       expect(history[0]!.imposedByAccountId).toBe(RESTRICTOR);
@@ -989,7 +998,7 @@ describeDb("Phase 0M.R1 — versioned commercial policy and activation risk reco
       await liftParticipantRestriction(
         {
           restrictionId: first.restriction.restrictionId,
-          reasonCode: "POLICY_ELIGIBILITY_RESTRICTION",
+          reasonCode: "ELIGIBILITY_RESTORED",
           actingAccountId: RESTRICTOR,
           liftedAt: LATEST,
         },
@@ -1008,7 +1017,7 @@ describeDb("Phase 0M.R1 — versioned commercial policy and activation risk reco
       const only = await restrict(participantId);
       const lift = {
         restrictionId: only.restriction.restrictionId,
-        reasonCode: "POLICY_ELIGIBILITY_RESTRICTION" as const,
+        reasonCode: "ELIGIBILITY_RESTORED" as const,
         actingAccountId: RESTRICTOR,
         liftedAt: LATEST,
       };
@@ -1091,7 +1100,7 @@ describeDb("Phase 0M.R1 — versioned commercial policy and activation risk reco
         liftParticipantRestriction(
           {
             restrictionId: only.restriction.restrictionId,
-            reasonCode: "POLICY_ELIGIBILITY_RESTRICTION",
+            reasonCode: "ELIGIBILITY_RESTORED",
             actingAccountId: unentitled,
             liftedAt: LATEST,
           },
@@ -1133,7 +1142,7 @@ describeDb("Phase 0M.R1 — versioned commercial policy and activation risk reco
         liftParticipantRestriction(
           {
             restrictionId: only.restriction.restrictionId,
-            reasonCode: "POLICY_ELIGIBILITY_RESTRICTION",
+            reasonCode: "ELIGIBILITY_RESTORED",
             actingAccountId: accountId,
             liftedAt: LATEST,
           },
@@ -1208,7 +1217,7 @@ describeDb("Phase 0M.R1 — versioned commercial policy and activation risk reco
       await liftParticipantRestriction(
         {
           restrictionId: only.restriction.restrictionId,
-          reasonCode: "POLICY_ELIGIBILITY_RESTRICTION",
+          reasonCode: "ELIGIBILITY_RESTORED",
           actingAccountId: RESTRICTOR,
           liftedAt: LATEST,
         },
@@ -1538,7 +1547,7 @@ describeDb("Phase 0M.R1 — versioned commercial policy and activation risk reco
       const only = await restrict(participantId);
       const lift = {
         restrictionId: only.restriction.restrictionId,
-        reasonCode: "POLICY_ELIGIBILITY_RESTRICTION" as const,
+        reasonCode: "ELIGIBILITY_RESTORED" as const,
         actingAccountId: RESTRICTOR,
         liftedAt: LATEST,
       };

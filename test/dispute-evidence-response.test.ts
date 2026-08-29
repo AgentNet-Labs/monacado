@@ -37,7 +37,7 @@ import { evaluateDisputeReadiness } from "../src/server/operations/dispute-readi
 import { DISPUTE_EVIDENCE_CODES_NEVER_AVAILABLE } from "../src/contracts/marketplace/dispute-operations";
 import {
   LATEST_MARKETPLACE_POLICY_VERSION,
-  MARKETPLACE_POLICY_REACCEPTANCE,
+  MARKETPLACE_POLICY_ONBOARDING_ACCEPTANCE,
   MARKETPLACE_POLICY_VERSION_1_2,
   MONACADO_MARKETPLACE_POLICY_V1,
   MONACADO_MARKETPLACE_POLICY_V1_1,
@@ -846,7 +846,7 @@ describe("1.12 — Marketplace Policy 1.2.0 stands beside 1.1.0, not on it", () 
   });
 
   it("keeps every shipped version readable, and ends with policy changes", () => {
-    for (const version of ["1.0.0", "1.1.0", "1.2.0"]) {
+    for (const version of ["1.0.0", "1.1.0", "1.2.0", "1.3.0"]) {
       expect(marketplacePolicyDocument(version)).not.toBeNull();
     }
     expect(marketplacePolicyDocument("9.9.9")).toBeNull();
@@ -854,9 +854,17 @@ describe("1.12 — Marketplace Policy 1.2.0 stands beside 1.1.0, not on it", () 
     expect(keys[keys.length - 1]).toBe("POLICY_CHANGES");
   });
 
-  it("becomes the latest shipped version and requires reacceptance", () => {
-    expect(LATEST_MARKETPLACE_POLICY_VERSION).toBe(MARKETPLACE_POLICY_VERSION_1_2);
-    expect(MARKETPLACE_POLICY_REACCEPTANCE.get("1.2.0")).toBe(true);
+  it("ships as a version of its own and requires reacceptance", () => {
+    /* Re-scoped in Phase 1.14, which shipped 1.3.0 and took "is the latest"
+       with it. That clause was never this phase's claim to make — 1.12's claim
+       is that 1.2.0 EXISTS as a distinct version requiring fresh acceptance, and
+       that stays true forever. Re-pinning the literal to 1.3.0 here would have
+       made this suite assert something about a phase it does not describe. */
+    expect(marketplacePolicyDocument(MARKETPLACE_POLICY_VERSION_1_2)).not.toBeNull();
+    expect(MARKETPLACE_POLICY_ONBOARDING_ACCEPTANCE.get("1.2.0")).toBe(true);
+    /* And superseding it did not unship it: every receipt for every sale made
+       under 1.2.0 still resolves. */
+    expect(LATEST_MARKETPLACE_POLICY_VERSION).not.toBe(MARKETPLACE_POLICY_VERSION_1_2);
   });
 });
 

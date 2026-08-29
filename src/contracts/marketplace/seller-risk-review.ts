@@ -582,7 +582,19 @@ export const MARKETPLACE_POLICY_RISK_TERMS_REQUIRED = {
     "SUSPENDING_A_PARTICIPANT_ON_RISK_GROUNDS",
     "NOTICE_AND_APPEAL_FOR_A_PARTICIPANT_LEVEL_RISK_DECISION",
   ],
-  requiresReacceptance: true,
+  /**
+   * How the future version is accepted.
+   *
+   * CORRECTED IN PHASE 1.14. This said `requiresReacceptance: true`, whose
+   * ordinary reading is that an already-active participant must affirmatively
+   * accept again before they may keep trading. That is not Monacado's rule and
+   * no code path ever enforced it: a new participant accepts the version in
+   * force at onboarding, and an existing one accepts an updated version by
+   * continuing to use Monacado after it takes effect, having had notice. Both
+   * modes are named rather than collapsed into a flag that states only one of
+   * them — and states it wrongly.
+   */
+  acceptanceModes: ["EXPLICIT_ONBOARDING", "CONTINUED_USE_AFTER_EFFECTIVE_NOTICE"],
   createdOrActivatedByThisPhase: "NONE",
 } as const;
 

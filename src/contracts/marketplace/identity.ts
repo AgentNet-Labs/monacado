@@ -419,3 +419,24 @@ export const SELLER_RISK_REVIEW_POLICY_ID_RE = new RegExp(`^mon:srrp:${OPAQUE_BO
  * refuses to permit.
  */
 export const PARTICIPANT_RISK_REVIEW_ID_RE = new RegExp(`^mon:prrev:${OPAQUE_BODY}$`);
+
+/**
+ * Governed participant suspension identity (`mon:psus:<opaque>`) — Phase 1.14.
+ *
+ * Deliberately **not** `mon:prst:`. A restriction withholds one named capability
+ * and leaves the participant able to correct the work that caused it; a
+ * suspension withdraws admission and withholds that too. One identifier space for
+ * both would let a reader take the milder for the heavier — which is exactly the
+ * conflation Phase 0M.8 refused to permit when it declined to write the status at
+ * all.
+ */
+export const PARTICIPANT_SUSPENSION_ID_RE = new RegExp(`^mon:psus:${OPAQUE_BODY}$`);
+
+/**
+ * Participant reconsideration identity (`mon:prrcn:<opaque>`) — Phase 1.14.
+ *
+ * Distinct from `mon:prrev:` (a Staff risk review). A review is Monacado looking
+ * at a participant; a reconsideration is a participant asking Monacado to look
+ * again at one decision. Different subject, different author, different record.
+ */
+export const PARTICIPANT_RECONSIDERATION_ID_RE = new RegExp(`^mon:prrcn:${OPAQUE_BODY}$`);

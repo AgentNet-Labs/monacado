@@ -40,7 +40,8 @@
  * | tax reversal not configured | *(1.9)* a refunded sale whose tax stands reported overstates what was collected |
  * | refund backlog unhealthy | *(1.9)* refunds stuck, or refunded sales whose tax was never reversed |
  * | risk review heuristics not active | *(1.13)* nobody would be watching refund and chargeback rates at all |
- * | seller risk mitigation not implemented | *(1.13)* the report notices and a human decides, but no governed way to ACT on a participant exists |
+ * | participant mitigation policy not active | *(1.14)* the ACTIVE marketplace terms do not authorise acting on a participant; shipping 1.3.0 does not clear it, activating it does |
+ * | participant mitigation not granted | *(1.14)* the mechanism exists and nobody is entitled to use it |
  * | live provider not enabled | the deliberate gate above |
  *
  * ## Why `1.9` added four rather than folding into `REVERSAL_ACCOUNTING`
@@ -75,6 +76,9 @@ import { evaluateDisputeOperationsReadiness } from "../marketplace/dispute-opera
 import { isMailEnabled } from "../notifications/mail-port";
 import { getActiveRiskPolicyVersion } from "../risk/risk-policy-service";
 import { resolveActiveReviewPolicy } from "../risk/seller-risk-review-policy-service";
+import { getActiveMarketplacePolicyVersion } from "../policy/marketplace-policy-service";
+import { MONACADO_MARKETPLACE_POLICY_ID } from "../../contracts/marketplace/marketplace-policy-content";
+import { policyVersionAuthorizesParticipantMitigation } from "../../contracts/marketplace/participant-mitigation";
 import { getPrisma } from "../db/client";
 
 type Db = ReturnType<typeof getPrisma>;
@@ -219,22 +223,30 @@ export const LIVE_READINESS_BLOCKER_CODES = [
    */
   "SELLER_RISK_REVIEW_POLICY_NOT_ACTIVE",
   /**
-   * Risk REPORTING exists; participant-level MITIGATION does not (Phase 1.13).
+   * The terms authorising participant-level mitigation are not ACTIVE (1.14).
    *
-   * Reported by construction, and deliberately never clearable by configuration
-   * — the posture `DISPUTE_DEADLINE_MONITORING_NOT_IMPLEMENTED` takes, for a
-   * sharper reason. A daily ranked report plus a Staff review record is a
-   * capability to NOTICE and to DECIDE. It is not a capability to ACT: no
-   * participant suspension path exists in this repository, and Marketplace
-   * Policy 1.2.0 authorises per-transaction risk decisions only, saying nothing
-   * about restricting or suspending a participant on risk grounds.
+   * SPLIT FROM 1.13's SINGLE `SELLER_RISK_MITIGATION_NOT_IMPLEMENTED`, which
+   * named two independent conditions at once — no mechanism existed, AND the
+   * governing terms did not authorise one. 1.14 built the mechanism, so a single
+   * blocker would now have to be either wrong or unclearable. Two codes let each
+   * half clear on its own evidence, which is the shape 1.12 used when it split
+   * one dispute-evidence blocker into five.
    *
-   * This blocker exists so that shipping the report cannot be mistaken for
-   * shipping fraud controls. A generated list of risky sellers with nothing
-   * governed to do about them is exactly the overstatement an honest readiness
-   * document has to refuse.
+   * READS THE ACTIVE ROW, never `LATEST_MARKETPLACE_POLICY_VERSION` — which is
+   * documented as "not an assertion that it governs anything". Shipping 1.3.0
+   * clears nothing; activating it does. That distinction is the entire reason
+   * this code exists rather than a boolean about what the deployment contains.
    */
-  "SELLER_RISK_MITIGATION_NOT_IMPLEMENTED",
+  "PARTICIPANT_MITIGATION_POLICY_NOT_ACTIVE",
+  /**
+   * No account can actually perform participant-level mitigation (1.14).
+   *
+   * The mechanism exists in code; this asks whether anybody is entitled to use
+   * it. A governed authority nobody holds is a capability on paper — and a
+   * readiness report that cleared on the code's existence alone would be making
+   * exactly the claim this dimension was created to refuse.
+   */
+  "PARTICIPANT_MITIGATION_NOT_GRANTED",
   /** Live provider support does not exist. Cleared only by a reviewed phase. */
   "LIVE_PROVIDER_NOT_ENABLED",
 ] as const;
@@ -429,10 +441,34 @@ export async function evaluateLiveCommerceReadiness(
     blockers.push("SELLER_RISK_REVIEW_POLICY_NOT_ACTIVE");
   }
 
-  /* Reported by construction, and never satisfied. See the code's own comment:
-     noticing and deciding are built; acting on a participant is neither
-     implemented nor authorised by the current marketplace terms. */
-  blockers.push("SELLER_RISK_MITIGATION_NOT_IMPLEMENTED");
+  /* Phase 1.14 — participant-level mitigation, in two honest halves.
+   *
+   * Rows and grants, not source. The mechanism shipping tells us nothing about
+   * whether this deployment may lawfully use it or has anybody entitled to. */
+  try {
+    const activePolicy = await getActiveMarketplacePolicyVersion(
+      MONACADO_MARKETPLACE_POLICY_ID,
+      { db },
+    );
+    if (!policyVersionAuthorizesParticipantMitigation(activePolicy?.policyVersion ?? null)) {
+      blockers.push("PARTICIPANT_MITIGATION_POLICY_NOT_ACTIVE");
+    } else {
+      satisfied.push("PARTICIPANT_MITIGATION_POLICY");
+    }
+  } catch {
+    /* A control that cannot be read has not passed. */
+    blockers.push("PARTICIPANT_MITIGATION_POLICY_NOT_ACTIVE");
+  }
+
+  try {
+    const granted = await db.accountEntitlement.count({
+      where: { capability: { in: ["participant:restrict", "participant:suspend"] }, status: "ACTIVE" },
+    });
+    if (granted === 0) blockers.push("PARTICIPANT_MITIGATION_NOT_GRANTED");
+    else satisfied.push("PARTICIPANT_MITIGATION_GRANTED");
+  } catch {
+    blockers.push("PARTICIPANT_MITIGATION_NOT_GRANTED");
+  }
 
   // — Live provider —
   /* Reported by construction. STRIPE_MODES has one member, so no configuration

@@ -243,6 +243,44 @@ export function canApproveParticipantCommerce(
  * cannot also impose it without a second, separately-granted authority being
  * checked against persisted state.
  */
+/**
+ * The capability that authorizes suspending a participant and reinstating them
+ * (Phase 1.14).
+ *
+ * **Separate from `participant:restrict`, and strictly wider.** A restriction
+ * withholds one named commercial capability and may never reach drafting or
+ * `activation:submit`, because a participant has to be able to answer it. A
+ * suspension withholds those as well. Folding the two together would widen every
+ * existing restrictor's authority to include removing somebody's ability to
+ * respond — a change nobody scoped.
+ *
+ * **Separate from `participant:risk-review` in both directions.** The reviewer
+ * who records `SUSPENSION_RECOMMENDED` still cannot carry it out, which is what
+ * keeps a recommendation a recommendation.
+ *
+ * It authorizes the undo as well as the act, on `participant:restrict`'s
+ * precedent: an authority that can suspend but not reinstate would leave an
+ * adverse action nobody can reverse.
+ */
+export const PARTICIPANT_SUSPEND_CAPABILITY =
+  "participant:suspend" as const satisfies AccountCapability;
+
+/**
+ * May this internal account suspend a participant, or reinstate a suspended one?
+ *
+ * Requires an explicit active `participant:suspend` entitlement, on exactly the
+ * terms every decision above requires its own. **Holding `participant:restrict`
+ * is not enough, and neither is `participant:risk-review`** — all three are
+ * independent grants, and the subject has no field capable of carrying a
+ * marketplace role, a participant, or an ownership relation, so none of those can
+ * confer it either.
+ */
+export function canSuspendParticipant(
+  subject: InternalAuthorizationSubject | null,
+): InternalAuthorizationDecision {
+  return evaluateInternalCapability(PARTICIPANT_SUSPEND_CAPABILITY, subject);
+}
+
 export function canReviewParticipantRisk(
   subject: InternalAuthorizationSubject | null,
 ): InternalAuthorizationDecision {

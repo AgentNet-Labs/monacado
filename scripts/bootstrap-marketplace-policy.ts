@@ -291,7 +291,12 @@ export function formatReport(outcome: PolicyBootstrapOutcome): string {
     `  source hash:      ${outcome.sourceHash ?? "(none)"}`,
     `  persisted hash:   ${outcome.persistedHash ?? "(none)"}`,
     `  persisted state:  ${outcome.persistedState}`,
-    `  reacceptance:     ${outcome.requiresReacceptance ? "required" : "not required"}`,
+    /* Named for what the flag governs. "reacceptance: required" read as though an
+       already-active participant had to click Accept again before trading, which
+       is not Monacado's rule: for them an updated version takes effect after
+       notice and continued use is the acceptance. The flag has only ever meant
+       that a NEW participant accepts this version at onboarding. */
+    `  onboarding accept: ${outcome.requiresReacceptance ? "required" : "not required"}`,
     `  standing active:  ${outcome.standingActiveVersion ?? "(none)"}`,
     `  action:           ${outcome.action}`,
     `  applied:          ${outcome.applied ? "yes" : "no"}`,

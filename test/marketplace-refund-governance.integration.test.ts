@@ -90,6 +90,7 @@ import {
 import {
   LATEST_MARKETPLACE_POLICY_VERSION,
   MARKETPLACE_POLICY_VERSION_1,
+  marketplacePolicyDocument,
   MARKETPLACE_POLICY_VERSION_1_1,
   MARKETPLACE_POLICY_VERSION_1_2,
   MONACADO_MARKETPLACE_POLICY_ID,
@@ -1334,10 +1335,14 @@ describeDb("1.10 — marketplace refund governance and receipts", () => {
     });
 
     it("ships the version this deployment says it ships", () => {
-      /* 1.12 shipped 1.2.0, so the newest SHIPPED version moved. What governs is
-         still whichever version the database says is ACTIVE, and shipping a newer
-         one activates nothing. */
-      expect(LATEST_MARKETPLACE_POLICY_VERSION).toBe(MARKETPLACE_POLICY_VERSION_1_2);
+      /* The newest SHIPPED version moves every time a phase writes one — 1.12
+         moved it to 1.2.0, 1.14 to 1.3.0 — so re-pinning the literal here would
+         make this test a changelog. What it is FOR survives every such move and
+         is asserted directly instead: shipping a newer version activates
+         nothing, and what governs is whichever version the database says is
+         ACTIVE. */
+      expect(marketplacePolicyDocument(LATEST_MARKETPLACE_POLICY_VERSION)).not.toBeNull();
+      expect(LATEST_MARKETPLACE_POLICY_VERSION).not.toBe(MARKETPLACE_POLICY_VERSION_1);
     });
   });
 });

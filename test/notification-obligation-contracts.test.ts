@@ -305,7 +305,28 @@ describe("0M.N1 · the vocabulary stays closed and 0M.9-ready", () => {
     ]) {
       expect(NOTIFICATION_CATEGORIES).toContain(future);
     }
-    expect([...IMPLEMENTED_NOTIFICATION_CATEGORIES]).toEqual(["OFFER_CHANGE"]);
+    /* Corrected in Phase 1.14. This asserted `["OFFER_CHANGE"]` long after
+       producers had landed for four more categories, so a constant whose entire
+       job is to say what is real had become the least reliable statement in the
+       module — and a test was pinning it there. What the assertion is FOR is
+       that the list names only categories something actually produces, so that
+       is what it now checks. */
+    expect([...IMPLEMENTED_NOTIFICATION_CATEGORIES]).toEqual([
+      "OFFER_CHANGE",
+      "SALE_RECORDED",
+      "PAYMENT_FAILED",
+      "REFUND_OR_CHARGEBACK",
+      "OPERATIONAL_ACTION_REQUIRED",
+      "PARTICIPANT_STANDING_CHANGED",
+    ]);
+    /* Still a strict subset: naming a category here that nothing raises would be
+       the same overclaim in the other direction. */
+    for (const implemented of IMPLEMENTED_NOTIFICATION_CATEGORIES) {
+      expect(NOTIFICATION_CATEGORIES, implemented).toContain(implemented);
+    }
+    expect(IMPLEMENTED_NOTIFICATION_CATEGORIES.length).toBeLessThan(
+      NOTIFICATION_CATEGORIES.length,
+    );
   });
 
   it("refuses an unknown category or subject kind", () => {
@@ -334,6 +355,11 @@ describe("0M.N1 · the vocabulary stays closed and 0M.9-ready", () => {
       "PAYMENT",
       "PAYOUT",
       "REVIEW",
+      /* Phase 1.14. The subject is the DECISION, never the participant: two
+         decisions about one participant must produce two obligations, and a
+         participant-keyed subject would collapse them into one and silently lose
+         the second. */
+      "PARTICIPANT_DECISION",
     ]);
   });
 });

@@ -51,6 +51,7 @@ import {
 import {
   closeParticipantRiskReview,
   openParticipantRiskReview,
+  readParticipantRiskReviews,
   readOpenRiskReviews,
 } from "../src/server/risk/participant-risk-review-service";
 import {
@@ -968,6 +969,52 @@ d("1.13 · staff review records a decision and performs none", () => {
     /* Two events, not one row that changed its mind. */
     const second = await openParticipantRiskReview(open, { db });
     expect(second.id).not.toBe(first.id);
+  });
+
+  it("reconstructs the basis an observation was actually measured against", async () => {
+    /* Phase 1.14 correction. This was reconstituted on read as the constant
+       `POLICY_THRESHOLD`, so a review raised by a velocity spike — which is
+       measured against the seller's OWN PRIOR WINDOW — read back forever as
+       though it had been compared to a governed threshold. Harmless while the
+       review enforced nothing; an audit defect the moment a restriction cites
+       the review as its basis. */
+    const seller = await seedParticipant(["SELLER"]);
+    const policy = (await resolveActiveReviewPolicy({ db }))!;
+    const opened = await openParticipantRiskReview(
+      {
+        participantId: seller,
+        triggerSource: "SYSTEM",
+        triggerAsOf: AS_OF,
+        reviewPolicyId: policy.policyId,
+        reviewPolicyVersion: policy.policyVersion,
+        reasons: [
+          {
+            code: "ORDER_VELOCITY_SPIKE",
+            unit: "COUNT",
+            observed: 90n,
+            baseline: 12n,
+            sampleSize: 90n,
+            windowDays: 30,
+            comparison: "SELLER_PRIOR_WINDOW",
+            weight: 15,
+          },
+        ],
+        openedAt: NOW,
+        actingAccountId: null,
+      },
+      { db },
+    );
+    expect(opened.triggerReasons[0]!.comparison).toBe("SELLER_PRIOR_WINDOW");
+
+    /* And it survives a round trip through the database, which is the property
+       an appeal months later actually depends on. */
+    const readBack = await readParticipantRiskReviews(
+      { participantId: seller, actingAccountId: graph.reviewerAccountId },
+      { db },
+    );
+    expect(readBack[0]!.triggerReasons[0]!.comparison).toBe("SELLER_PRIOR_WINDOW");
+    expect(readBack[0]!.triggerReasons[0]!.observed).toBe(90n);
+    expect(readBack[0]!.triggerReasons[0]!.baseline).toBe(12n);
   });
 
   it("refuses a caller who does not hold participant:risk-review", async () => {

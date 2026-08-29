@@ -113,13 +113,37 @@ export const NOTIFICATION_CATEGORIES = [
   "REVIEW_ELIGIBILITY",
   /** Monacado requires an operational action from the participant. */
   "OPERATIONAL_ACTION_REQUIRED",
+  /**
+   * Phase 1.14 — a governed decision about a participant's own standing was
+   * imposed or lifted.
+   *
+   * A NEW MEMBER RATHER THAN A REUSE OF `OPERATIONAL_ACTION_REQUIRED`, which is
+   * already taken and means the opposite thing: that category is MONACADO'S OWN
+   * operator backlog, raised against a participant record only because Monacado
+   * has none of its own, and it sends nobody a message. Filing a
+   * participant-facing adverse notice into the operator queue would make both
+   * unreadable.
+   */
+  "PARTICIPANT_STANDING_CHANGED",
 ] as const;
 export const NotificationCategory = z.enum(NOTIFICATION_CATEGORIES);
 export type NotificationCategory = z.infer<typeof NotificationCategory>;
 
-/** The categories this phase has a producer for. Asserted by a test. */
+/**
+ * The categories a producer actually exists for. Asserted by a test.
+ *
+ * CORRECTED IN PHASE 1.14. This said `["OFFER_CHANGE"]` long after producers had
+ * landed for four more, so a constant whose entire job is to say what is real had
+ * become the least reliable statement in the module. Adding a category without
+ * fixing it would have deepened a claim that was already false.
+ */
 export const IMPLEMENTED_NOTIFICATION_CATEGORIES = [
   "OFFER_CHANGE",
+  "SALE_RECORDED",
+  "PAYMENT_FAILED",
+  "REFUND_OR_CHARGEBACK",
+  "OPERATIONAL_ACTION_REQUIRED",
+  "PARTICIPANT_STANDING_CHANGED",
 ] as const satisfies readonly NotificationCategory[];
 
 // — Subject —
@@ -137,6 +161,13 @@ export const NOTIFICATION_SUBJECT_KINDS = [
   "PAYMENT",
   "PAYOUT",
   "REVIEW",
+  /**
+   * Phase 1.14. The subject is the DECISION, never the participant — see
+   * `notificationObligationKey`. Two decisions about one participant must produce
+   * two obligations, and a participant-keyed subject would collapse them into
+   * one, silently losing the second.
+   */
+  "PARTICIPANT_DECISION",
 ] as const;
 export const NotificationSubjectKind = z.enum(NOTIFICATION_SUBJECT_KINDS);
 export type NotificationSubjectKind = z.infer<typeof NotificationSubjectKind>;
@@ -215,9 +246,27 @@ export const DISPUTE_NOTIFICATION_CONTEXT_CODES = [
 export const DisputeNotificationContextCode = z.enum(DISPUTE_NOTIFICATION_CONTEXT_CODES);
 export type DisputeNotificationContextCode = z.infer<typeof DisputeNotificationContextCode>;
 
+/**
+ * What happened to a participant's standing (Phase 1.14).
+ *
+ * Bounded, and each names an EVENT rather than an allegation. A notice states
+ * what Monacado decided and the category of problem it concerns; it never states
+ * the observation, rate, threshold, score, or ranking behind it.
+ */
+export const PARTICIPANT_DECISION_CONTEXT_CODES = [
+  "RESTRICTION_IMPOSED",
+  "RESTRICTION_LIFTED",
+  "SUSPENSION_IMPOSED",
+  "SUSPENSION_LIFTED",
+  "RECONSIDERATION_DECIDED",
+] as const;
+export const ParticipantDecisionContextCode = z.enum(PARTICIPANT_DECISION_CONTEXT_CODES);
+export type ParticipantDecisionContextCode = z.infer<typeof ParticipantDecisionContextCode>;
+
 export const NotificationContextCode = z.union([
   OfferBusinessChangeCategory,
   DisputeNotificationContextCode,
+  ParticipantDecisionContextCode,
 ]);
 export type NotificationContextCode = z.infer<typeof NotificationContextCode>;
 

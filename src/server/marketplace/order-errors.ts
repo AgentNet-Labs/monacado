@@ -166,8 +166,14 @@ export class MarketplacePolicyUnavailableError extends OrderServiceError {
  * The seller has no usable support contact right now (Phase 1.3 correction).
  *
  * Activation checks this once; a mailbox can stop working the day after. Selling
- * on behalf of a seller nobody can reach produces a buyer with a problem and no
- * destination for it, so new sales stop until a verified address is restored.
+ * a seller's product when nobody can reach that seller produces a buyer with a
+ * problem and no destination for it, so new sales stop until a verified address
+ * is restored.
+ *
+ * The wording matters. Monacado sells as PRINCIPAL — it is the merchant of
+ * record and contracts with the buyer itself — so it never sells "on behalf of"
+ * a seller, and a comment that said so described a facilitator this marketplace
+ * deliberately is not.
  *
  * Carries **no address and no reason detail** — an error that echoed which
  * mailbox failed would put a seller's private operational address into every log

@@ -359,7 +359,10 @@ describe("1.1 · delivery is evidence, never the obligation", () => {
     expect(NOTIFICATION_CATEGORIES).toContain("ORDER_CANCELLED");
     /* An additive member — the change 0M.N1 said its vocabulary was built to
        take. This phase creates DELIVERIES of it, never obligations. */
-    expect([...IMPLEMENTED_NOTIFICATION_CATEGORIES]).toEqual(["OFFER_CHANGE"]);
+    /* Updated in Phase 1.14 alongside the constant it reads. What this test is
+       really asserting is unchanged and still true: ORDER_CANCELLED is a
+       category with deliveries and no obligation producer. */
+    expect([...IMPLEMENTED_NOTIFICATION_CATEGORIES]).not.toContain("ORDER_CANCELLED");
   });
 });
 

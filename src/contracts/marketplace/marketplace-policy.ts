@@ -110,6 +110,12 @@ export const POLICY_SECTION_KEYS = [
   "DISPUTES_AND_CHARGEBACKS",
   "DISPUTE_EVIDENCE_AND_COOPERATION",
   "DISPUTE_EFFECT_ON_PROCEEDS",
+  /* Phase 1.14 — participant-level risk governance. Additive on exactly the
+     terms 1.10's and 1.12's members were: 1.0.0, 1.1.0, and 1.2.0 carry none of
+     these keys, so their canonical JSON and their content hashes are untouched
+     by adding them. A version is a document, not an enum. */
+  "MARKETPLACE_INTEGRITY_AND_RISK_REVIEW",
+  "PARTICIPANT_RESTRICTIONS_AND_SUSPENSION",
   "POLICY_CHANGES",
 ] as const;
 export const PolicySectionKey = z.enum(POLICY_SECTION_KEYS);
@@ -287,6 +293,21 @@ export const MarketplacePolicyVersionRecord = z.strictObject({
    * on the version rather than deciding it at read time means the judgement is
    * made once, by whoever published the version, and is auditable afterwards.
    */
+  /**
+   * LEGACY, AND NARROWER THAN ITS NAME.
+   *
+   * A published column (`0M` policy-acceptance migration) that no decision path
+   * reads: no commerce gate, no checkout check, no activation branch consults
+   * it. It is written and displayed, and that is all it has ever done.
+   *
+   * What it means, precisely: a NEW participant must explicitly accept this
+   * version at onboarding. What it does NOT mean, and never did: that an
+   * already-active participant must affirmatively accept again before trading.
+   * Monacado's rule for them is continued use after the effective date, and
+   * `POLICY_ACCEPTANCE_MODES` is the accurate statement. The column stays
+   * because it is published; the ambiguity does not, because the mode above
+   * says what is true.
+   */
   requiresReacceptance: z.boolean(),
   effectiveFrom: z.iso.datetime(),
   recordedByAccountId: z.string().min(1).max(191),
@@ -295,6 +316,50 @@ export const MarketplacePolicyVersionRecord = z.strictObject({
   retiredAt: z.iso.datetime().nullable(),
 });
 export type MarketplacePolicyVersionRecord = z.infer<typeof MarketplacePolicyVersionRecord>;
+
+/**
+ * How a version's acceptance is obtained, per version.
+ *
+ * REPLACES A BOOLEAN THAT MEANT TWO THINGS. The persisted
+ * `requiresReacceptance` column answered "does this version need accepting" with
+ * a single flag, and the natural reading of that flag — that an already-active
+ * participant must click Accept again before trading — was never Monacado's
+ * rule and was never enforced by any code path. A field whose ordinary reading
+ * states a rule the business does not have is worse than no field, because the
+ * next person to build on it will implement the rule it implies.
+ *
+ * So the authoritative statement is a MODE, and the two modes are the two
+ * genuinely different situations:
+ *
+ *   - a participant joining now, who is asked to accept the terms in force;
+ *   - a participant already trading, for whom an updated version takes effect
+ *     after notice, and whose continued use is the acceptance.
+ *
+ * Both are real acceptances. The second is not a weaker form of the first — it
+ * is the one the policy actually describes for existing participants, and
+ * recording it as such is what makes it evidenced rather than assumed.
+ */
+export const POLICY_ACCEPTANCE_MODES = [
+  /** A new participant explicitly accepts the version in force at onboarding. */
+  "EXPLICIT_ONBOARDING",
+  /**
+   * An existing participant accepts by continuing to use Monacado after the
+   * version takes effect, having been given notice.
+   */
+  "CONTINUED_USE_AFTER_EFFECTIVE_NOTICE",
+] as const;
+export const PolicyAcceptanceMode = z.enum(POLICY_ACCEPTANCE_MODES);
+export type PolicyAcceptanceMode = z.infer<typeof PolicyAcceptanceMode>;
+
+/**
+ * Every version needs accepting by a NEW participant at onboarding, and no
+ * version obliges an existing one to accept again. Stated as a function rather
+ * than repeated per version, because it has never varied and a per-version flag
+ * invites somebody to vary it by accident.
+ */
+export function acceptanceModesFor(): readonly PolicyAcceptanceMode[] {
+  return POLICY_ACCEPTANCE_MODES;
+}
 
 // — Acceptance —
 
@@ -309,6 +374,23 @@ export const ACCEPTANCE_MECHANISMS = [
   "ONBOARDING_AFFIRMATION",
   /** Recorded by an authorised Monacado operator on the participant's behalf. */
   "OPERATOR_RECORDED",
+  /**
+   * The participant kept trading after an updated version took effect, having
+   * been given notice of it.
+   *
+   * This is Monacado's governing rule for an ALREADY-ACTIVE participant, and it
+   * is a real acceptance rather than a lesser one: the policy says that
+   * continued use after the effective date constitutes acceptance, so the
+   * qualifying act IS the agreement. It is recorded here as its own mechanism,
+   * not disguised as an affirmation nobody made — "how did they agree" is
+   * exactly the question a dispute turns on, and an acceptance that claimed a
+   * click that never happened would be the worst possible answer to it.
+   *
+   * `acceptedAt` is the instant of the qualifying act, and
+   * `acceptedByAccountId` is the account that performed it — so the acceptance
+   * remains attributable to a person, not merely inferred from silence.
+   */
+  "CONTINUED_USE_AFTER_NOTICE",
 ] as const;
 export const AcceptanceMechanism = z.enum(ACCEPTANCE_MECHANISMS);
 export type AcceptanceMechanism = z.infer<typeof AcceptanceMechanism>;

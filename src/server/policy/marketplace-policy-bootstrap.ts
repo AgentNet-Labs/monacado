@@ -58,7 +58,7 @@ import {
   MONACADO_MARKETPLACE_POLICY_ID,
   MARKETPLACE_POLICY_CONTENT_REFS,
   MARKETPLACE_POLICY_DOCUMENTS,
-  MARKETPLACE_POLICY_REACCEPTANCE,
+  MARKETPLACE_POLICY_ONBOARDING_ACCEPTANCE,
   marketplacePolicyContentHash,
 } from "../../contracts/marketplace/marketplace-policy-content";
 import type {
@@ -270,7 +270,7 @@ const resolveShipped = (
   return {
     document,
     contentRef,
-    requiresReacceptance: MARKETPLACE_POLICY_REACCEPTANCE.get(version) ?? true,
+    requiresReacceptance: MARKETPLACE_POLICY_ONBOARDING_ACCEPTANCE.get(version) ?? true,
   };
 };
 

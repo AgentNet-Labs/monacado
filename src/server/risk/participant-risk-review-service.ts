@@ -113,6 +113,7 @@ function toRecord(row: {
     baselineValue: bigint | null;
     sampleSize: bigint;
     windowDays: number;
+    comparison: string;
   }[];
 }): ParticipantRiskReviewRecord {
   return {
@@ -129,11 +130,18 @@ function toRecord(row: {
       baseline: r.baselineValue,
       sampleSize: r.sampleSize,
       windowDays: r.windowDays as RiskReviewReason["windowDays"],
-      /* Not persisted: the comparison basis and the weight are properties of the
-         heuristics version, which the row names, rather than facts about this
-         participant. Reconstituted from the vocabulary rather than stored, so a
-         review can never disagree with the policy it cites. */
-      comparison: "POLICY_THRESHOLD",
+      /* PERSISTED as of Phase 1.14, correcting a real defect. This was previously
+         reconstituted as the constant `POLICY_THRESHOLD`, so a review raised by a
+         velocity spike — measured against the seller's own prior window — read
+         back forever as though it had been measured against a governed threshold.
+         Harmless while the review enforced nothing; an audit defect the moment a
+         restriction cites the review as its basis. */
+      comparison: r.comparison as RiskReviewReason["comparison"],
+      /* Still not persisted, and correctly so: the weight is a property of the
+         published ranking arithmetic, not a fact about this participant, so
+         storing it would let a review disagree with the vocabulary it cites. It
+         is reported as zero because a stored reason is evidence of what was
+         observed, never an input to a fresh ranking. */
       weight: 0,
     })),
     openedAt: row.openedAt.toISOString(),
@@ -218,6 +226,7 @@ export async function openParticipantRiskReview(
             baselineValue: r.baseline,
             sampleSize: r.sampleSize,
             windowDays: r.windowDays,
+            comparison: r.comparison,
             recordedAt,
           })),
         },

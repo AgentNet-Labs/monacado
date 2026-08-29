@@ -925,6 +925,13 @@ model MarketplaceParticipant {
   /// what a human decided, never a control that decides anything.
   riskReviews ParticipantRiskReview[]
 
+  /// Governed suspensions of this participant (Phase 1.14). Evidence behind a
+  /// status, never a deletion of identity, roles, orders, or history.
+  suspensions ParticipantSuspension[]
+
+  /// Requests to reconsider an adverse decision about this participant (1.14).
+  reconsiderations ParticipantReconsideration[]
+
   @@index([status])
 }
 
@@ -1393,14 +1400,58 @@ model ParticipantRestriction {
   /// `ParticipantActivation.undecidedForParticipantId` already uses.
   activeForScope String? @db.VarChar(48)
 
+  // — Phase 1.14: the governed basis this restriction was imposed under. —
+  //
+  // IDENTITY REFERENCES, NEVER ANALYTICS. Neither column holds a score, a rate,
+  // a counter, or a threshold; the 0M.R2 prohibition above is untouched. They
+  // record WHO decided and UNDER WHICH TERMS, which is the pair an appeal months
+  // later has to be answered on.
+
+  /// The Staff risk review this restriction was imposed on the strength of, when
+  /// there was one. NULL for a restriction imposed on operational grounds that
+  /// never involved risk analytics, and NULL for an emergency act taken before a
+  /// review could be completed.
+  ///
+  /// A REFERENCE TO A JUDGEMENT, NEVER TO A NUMBER. The review names the report
+  /// coordinate that regenerates what the reviewer saw; copying a score here
+  /// would make an analytics figure the standing justification for withholding
+  /// somebody's livelihood, which is the inversion Phase 1.13 exists to prevent.
+  riskReviewId String? @db.VarChar(191)
+
+  /// The EXACT Marketplace Policy version that authorised this act.
+  ///
+  /// Bound at imposition and never re-read, on the discipline an Order already
+  /// follows for the terms that governed a purchase. A participant restricted in
+  /// March under 1.3.0 who asks for reconsideration in September must be answered
+  /// on 1.3.0, not on whatever is current by then — and Monacado's own authority
+  /// to have acted at all is only checkable against the version it acted under.
+  ///
+  /// NULLABLE because the columns are additive over restrictions imposed before
+  /// participant-level terms existed. NOTHING BACKFILLS THEM: stamping today's
+  /// terms onto a historical act would assert an authority nobody held at the
+  /// time. Every restriction imposed from now on binds one, and the service
+  /// REFUSES an act it cannot bind.
+  marketplacePolicyId      String? @db.VarChar(191)
+  marketplacePolicyVersion String? @db.VarChar(64)
+
   /// Staff risk reviews that recorded THIS restriction as the action a reviewer
   /// subsequently took (Phase 1.13). Evidence of linkage after the fact; nothing
   /// in 1.13 imposes a restriction.
   riskReviews ParticipantRiskReview[]
 
+  /// RESTRICT: the review that justified an act is never deleted beneath it.
+  riskReview                  ParticipantRiskReview?       @relation("RestrictionImposedUnderReview", fields: [riskReviewId], references: [id], onDelete: Restrict)
+  /// RESTRICT: the terms an act was taken under are never deleted beneath it.
+  marketplacePolicyVersionRow MarketplacePolicyVersionRow? @relation(fields: [marketplacePolicyId, marketplacePolicyVersion], references: [policyId, policyVersion], onDelete: Restrict)
+
+  /// Requests to reconsider THIS restriction (Phase 1.14).
+  reconsiderations ParticipantReconsideration[]
+
   @@unique([participantId, activeForScope])
   @@index([participantId, status])
   @@index([status, scope])
+  @@index([riskReviewId])
+  @@index([marketplacePolicyId, marketplacePolicyVersion])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2976,9 +3027,11 @@ model MarketplacePolicyVersionRow {
   createdAt DateTime @default(now()) @db.DateTime(3)
   updatedAt DateTime @updatedAt @db.DateTime(3)
 
-  policy      MarketplacePolicy             @relation(fields: [policyId], references: [id], onDelete: Restrict)
-  acceptances ParticipantPolicyAcceptance[]
-  orders      Order[]
+  policy                  MarketplacePolicy             @relation(fields: [policyId], references: [id], onDelete: Restrict)
+  acceptances             ParticipantPolicyAcceptance[]
+  orders                  Order[]
+  participantRestrictions ParticipantRestriction[]
+  participantSuspensions  ParticipantSuspension[]
 
   @@unique([policyId, policyVersion])
   @@unique([activeMarker])
@@ -5476,8 +5529,16 @@ model ParticipantRiskReview {
 
   /// The restriction a Staff member subsequently imposed through the EXISTING
   /// governed authority, if they imposed one. EVIDENCE OF LINKAGE, NEVER A
-  /// TRIGGER: this column is written after the fact by the person who acted, and
-  /// nothing in this phase reads it to decide anything.
+  /// TRIGGER: written after the fact by the person who acted, and nothing reads
+  /// it to decide anything.
+  ///
+  /// LEGACY AS OF PHASE 1.14, left in place rather than removed. It can only ever
+  /// name a restriction imposed BEFORE the review closed, because it is written
+  /// in the same update that sets CLOSED — which inverts the order the workflow
+  /// actually runs in, and is single-valued where one decision may touch several
+  /// scopes. Phase 1.14 records the linkage the other way, on the restriction
+  /// itself, where the consequence names its basis. Nothing in 1.14 writes or
+  /// reads this column; the 1.13 rows carrying it keep their evidence.
   resultingRestrictionId String? @db.VarChar(191)
 
   /// Set to `participantId` while the review is not CLOSED and NULL once it is,
@@ -5498,6 +5559,13 @@ model ParticipantRiskReview {
 
   /// WHY this review was raised, as rows rather than a JSON blob.
   triggerReasons ParticipantRiskReviewTriggerReason[]
+
+  /// Restrictions imposed ON THE STRENGTH OF this review (Phase 1.14). The
+  /// consequence names its basis; this is the far side of that reference.
+  imposedRestrictions ParticipantRestriction[] @relation("RestrictionImposedUnderReview")
+
+  /// Suspensions imposed on the strength of this review (Phase 1.14).
+  imposedSuspensions ParticipantSuspension[] @relation("SuspensionImposedUnderReview")
 
   @@index([participantId, openedAt])
   @@index([status, openedAt])
@@ -5538,6 +5606,17 @@ model ParticipantRiskReviewTriggerReason {
   sampleSize    BigInt
   /// The rolling window the observation covers, in days.
   windowDays    Int
+  /// WHAT `baselineValue` WAS DRAWN FROM. SELLER_PRIOR_WINDOW |
+  /// SELLER_TRAILING_DAILY | POLICY_THRESHOLD.
+  ///
+  /// Added in Phase 1.14, correcting a real defect. Phase 1.13 did not persist
+  /// this and reconstituted it on read as the constant `POLICY_THRESHOLD`, so a
+  /// review raised by a velocity spike — measured against the seller's own prior
+  /// window — read back forever as though it had been measured against a governed
+  /// threshold. That was harmless while the review enforced nothing. It stops
+  /// being harmless the moment a restriction cites the review as its basis,
+  /// because the record would then misstate what was compared against what.
+  comparison    String  @db.VarChar(32)
 
   recordedAt DateTime @db.DateTime(3)
 
@@ -5549,4 +5628,232 @@ model ParticipantRiskReviewTriggerReason {
 
   @@unique([reviewId, reasonCode])
   @@index([reasonCode])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Governed participant-level mitigation (Phase 1.14).
+//
+// Phase 1.13 built explainable risk intelligence and a Staff review record that
+// ENFORCES NOTHING, and recorded exactly what would have to exist before a
+// participant-level consequence could be operated. This is that: the authority
+// to act, and the authority to undo it.
+//
+// Five boundaries are load-bearing:
+//
+//   1. **A RECOMMENDATION STILL ENFORCES NOTHING.** No column here is written by
+//      reading a `ParticipantRiskReview.dispositionCode`, a review score, or a
+//      report row. `SUSPENSION_RECOMMENDED` remains a conclusion a person
+//      recorded; a suspension is a separate act by a separately-entitled person.
+//      The two are linked by a reference, never by a trigger.
+//
+//   2. **THE TERMS ARE BOUND TO THE ACT.** Every act names the exact Marketplace
+//      Policy version that authorised it, under a RESTRICT foreign key, on the
+//      discipline an Order already follows for the terms that governed a
+//      purchase. Monacado's authority to have acted is only checkable against
+//      the version it acted under, and a participant asking for reconsideration
+//      months later must be answered on the terms that were in force — not on
+//      whatever is current by then.
+//
+//   3. **SUSPENSION IS NOT A RESTRICTION WITH A LOUDER NAME.** Phase 0M.8
+//      refused to write `SUSPENDED` because "the status has no machine-readable
+//      content to write", and that refusal named its own discharge condition.
+//      0M.R1 supplied it for `RESTRICTED`. This supplies it for `SUSPENDED`, and
+//      the difference is real and already enforced: `DRAFTING_PARTICIPANT_STATUSES`
+//      includes `RESTRICTED` and excludes `SUSPENDED`, so a restriction withholds
+//      commerce while leaving the participant able to correct the work that
+//      caused it, and a suspension withholds that too.
+//
+//   4. **NOTHING IS IRREVERSIBLE.** Every act here has an undo built in the same
+//      phase, by the same grant, preserving the original row untouched. Shipping
+//      an adverse action with no path back would be worse than shipping none.
+//      Reinstatement RECONCILES rather than assumes: a participant with standing
+//      restrictions returns to `RESTRICTED`, not to `ACTIVE`.
+//
+//   5. **NO PROSE, AND NO ANALYTICS.** There is no note, rationale, narrative, or
+//      free-text column on any table below, for the reason 0M.R1 and 1.11 both
+//      gave and 1.13 quoted: an operator commentary column is where a buyer's
+//      name eventually lands. There is likewise no score, rate, counter, tier, or
+//      threshold — a restriction justified by a stored number would make the
+//      arithmetic authoritative over the person, which is the inversion this
+//      whole line of work exists to prevent.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One governed suspension of one participant (Phase 1.14).
+///
+/// THE MACHINE-READABLE CONTENT `SUSPENDED` LACKED. Phase 0M.8 refused to write
+/// the status because nothing expressed what it withheld; this row is that
+/// statement, and the status is derived from it exactly as `RESTRICTED` is
+/// derived from an active `ParticipantRestriction`.
+///
+/// IT IS NOT A SCOPE. `RESTRICTABLE_CAPABILITIES` deliberately excludes drafting
+/// and `activation:submit` — "a participant must be able to answer a restriction;
+/// restricting the answer would make the restriction unappealable" — so a
+/// suspension is structurally inexpressible as a set of restriction rows, however
+/// many of them there are. It withholds a strictly wider thing, which is why it
+/// needs a wider grant and its own record.
+///
+/// TWO STATES AND NO DELETE, on `ParticipantRestriction`'s terms. `LIFTED` is
+/// terminal; re-suspending is a NEW row with its own instant and actor, so
+/// "suspended, reinstated, suspended again" reads as two events rather than one
+/// row that changed its mind. There is NO EXPIRY: a suspension that lapsed on its
+/// own would be a policy decision nothing here makes.
+model ParticipantSuspension {
+  /// Opaque identity (mon:psus:<opaque>). Distinct from `mon:prst:` — a
+  /// restriction withholds a named capability, a suspension withdraws admission,
+  /// and one identifier space for both would let a reader take the milder for the
+  /// heavier.
+  id String @id @db.VarChar(191)
+
+  participantId String @db.VarChar(191)
+
+  /// Bounded classification, never free text and never private content. Drawn
+  /// from the suspension vocabulary, which is separate from the restriction
+  /// vocabulary because withdrawing admission is a different act from withholding
+  /// one capability.
+  reasonCode String @db.VarChar(48)
+
+  /// ACTIVE | LIFTED. LIFTED is terminal.
+  status String @db.VarChar(16)
+
+  /// The status the participant held immediately before this suspension.
+  ///
+  /// Recorded so reinstatement RESTORES rather than guesses. It is not by itself
+  /// the reinstatement target: if restrictions still stand when the suspension is
+  /// lifted, the participant returns to `RESTRICTED` regardless of what this says,
+  /// because a participant at `ACTIVE` holding active restrictions is exactly the
+  /// divergence `restrictedStatusIsSupported` exists to prevent.
+  statusBeforeSuspension String @db.VarChar(24)
+
+  imposedAt          DateTime @db.DateTime(3)
+  /// The durable internal Account identity, per 0M.8's settled actor rule. The
+  /// account `participant:suspend` was evaluated against and the account recorded
+  /// here are ONE value, so the audit actor is the authorized actor by
+  /// construction rather than by convention.
+  imposedByAccountId String   @db.VarChar(191)
+
+  liftedAt          DateTime? @db.DateTime(3)
+  liftedByAccountId String?   @db.VarChar(191)
+  /// Drawn from the LIFT vocabulary, which is separate from the imposition
+  /// vocabulary: "why we suspended" and "why we stopped" are different questions.
+  liftedReasonCode  String?   @db.VarChar(48)
+
+  /// The Staff risk review this was imposed on the strength of, when there was
+  /// one. NULL for an emergency act taken before a review could be completed, and
+  /// NULL where the grounds never involved risk analytics at all.
+  riskReviewId String? @db.VarChar(191)
+
+  /// The EXACT Marketplace Policy version that authorised this act. NOT NULL:
+  /// unlike a restriction, no suspension predates participant-level terms, so
+  /// there is no historical row to accommodate and no reason to permit an
+  /// unexplainable one.
+  marketplacePolicyId      String @db.VarChar(191)
+  marketplacePolicyVersion String @db.VarChar(64)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  /// Set to `participantId` while ACTIVE and NULL once lifted, so the unique
+  /// index enforces AT MOST ONE ACTIVE SUSPENSION PER PARTICIPANT while permitting
+  /// any number of lifted ones. A second suspension attempt is then a refused
+  /// duplicate rather than a second row, enforced by MySQL rather than by a
+  /// service remembering to look. The technique
+  /// `ParticipantRestriction.activeForScope` already uses.
+  activeForParticipantId String? @unique @db.VarChar(191)
+
+  // RESTRICT everywhere: this is the evidence behind a status a participant held.
+  participant                 MarketplaceParticipant      @relation(fields: [participantId], references: [id], onDelete: Restrict)
+  riskReview                  ParticipantRiskReview?      @relation("SuspensionImposedUnderReview", fields: [riskReviewId], references: [id], onDelete: Restrict)
+  marketplacePolicyVersionRow MarketplacePolicyVersionRow @relation(fields: [marketplacePolicyId, marketplacePolicyVersion], references: [policyId, policyVersion], onDelete: Restrict)
+
+  /// Requests to reconsider THIS suspension (Phase 1.14).
+  reconsiderations ParticipantReconsideration[]
+
+  @@index([participantId, imposedAt])
+  @@index([status, imposedAt])
+  @@index([riskReviewId])
+  @@index([marketplacePolicyId, marketplacePolicyVersion])
+}
+
+/// One request to reconsider one adverse decision (Phase 1.14).
+///
+/// RECONSIDERATION, NEVER APPEAL. There is no external body, no arbitration, no
+/// independent panel, and no deadline — so the record is named for what it is.
+/// The only structural independence Monacado can offer is that the person who
+/// decides is not the participant: `RestrictionSelfActionNotPermittedError`
+/// already refuses self-action on the imposing side, and the same refusal applies
+/// here.
+///
+/// BOUND TO THE DECISION, NOT TO THE PARTICIPANT. Exactly one of
+/// `restrictionId` / `suspensionId` is set, so "which decision are you
+/// contesting" has one answer, and 0M.R1's rule that a re-imposition is a new
+/// event carries through: a new adverse decision carries a fresh reconsideration
+/// right rather than reopening a settled one.
+///
+/// WHY NOT A `ParticipantRiskReview`. That record requires a report coordinate —
+/// a NOT NULL composite key into a review-heuristics version, plus a `triggerAsOf`
+/// — because the coordinate IS its meaning: it regenerates the ranking a reviewer
+/// saw. A participant contesting an eligibility restriction was never in any
+/// ranking, and supplying a coordinate would fabricate one. Its
+/// `openForParticipantId` unique marker would also make a live risk review and a
+/// filed reconsideration mutually exclusive, which is a functional collision
+/// rather than a stylistic one.
+///
+/// NO PROSE. Grounds and remediation are bounded codes. A participant with a
+/// circumstance the vocabulary does not cover reaches
+/// `CIRCUMSTANCE_NOT_COVERED_BY_THESE_CODES`, which is a real loss of
+/// expressiveness and a deliberate one: it makes vocabulary inadequacy COUNTABLE,
+/// so the fix is a reviewable extension rather than a text box nobody governs.
+model ParticipantReconsideration {
+  /// Opaque identity (mon:prrcn:<opaque>).
+  id String @id @db.VarChar(191)
+
+  participantId String @db.VarChar(191)
+
+  /// EXACTLY ONE of these is set. A service invariant rather than a database
+  /// one: MySQL has no partial check the schema could carry, and a CHECK
+  /// constraint Prisma cannot express would be an invariant nobody could read.
+  restrictionId String? @db.VarChar(191)
+  suspensionId  String? @db.VarChar(191)
+
+  /// The account that asked — the participant's own, never a Staff account.
+  requestedByAccountId String   @db.VarChar(191)
+  requestedAt          DateTime @db.DateTime(3)
+
+  /// Why the participant says the decision should not stand. A bounded code.
+  groundCode           String  @db.VarChar(48)
+  /// What the participant asserts they have done about it, if anything. Bounded,
+  /// and modelled on the seller attestation claims 1.11 used for the same problem:
+  /// a participant still has to be able to say "I fixed it", and a checklist of
+  /// bounded claims says it without a text box.
+  remediationClaimCode String? @db.VarChar(48)
+
+  /// RECEIVED | UNDER_REVIEW | DECIDED. Forward-only; DECIDED is terminal.
+  status String @db.VarChar(24)
+
+  assignedReviewerAccountId String? @db.VarChar(191)
+
+  /// The bounded outcome. NULL until DECIDED, then required.
+  determinationCode  String?   @db.VarChar(64)
+  decidedByAccountId String?   @db.VarChar(191)
+  decidedAt          DateTime? @db.DateTime(3)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  /// Set to the contested decision's id while the request is not DECIDED and NULL
+  /// once it is, so at most one reconsideration is open per decision. A
+  /// participant filing twice is refused by the database rather than by a service
+  /// remembering to check.
+  openForDecisionId String? @unique @db.VarChar(191)
+
+  // RESTRICT everywhere: a contested decision is never deleted beneath the
+  // request contesting it.
+  participant MarketplaceParticipant  @relation(fields: [participantId], references: [id], onDelete: Restrict)
+  restriction ParticipantRestriction? @relation(fields: [restrictionId], references: [id], onDelete: Restrict)
+  suspension  ParticipantSuspension?  @relation(fields: [suspensionId], references: [id], onDelete: Restrict)
+
+  @@index([participantId, requestedAt])
+  @@index([status, requestedAt])
+  @@index([restrictionId])
+  @@index([suspensionId])
 }

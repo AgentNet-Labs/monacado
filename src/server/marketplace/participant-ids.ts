@@ -88,3 +88,25 @@ export const PARTICIPANT_ID_PATTERNS = {
   restriction: PARTICIPANT_RESTRICTION_ID_RE,
   obligation: NOTIFICATION_OBLIGATION_ID_RE,
 } as const;
+
+/**
+ * Identity for Phase 1.14's governed mitigation records — SERVER ONLY.
+ *
+ * A SEPARATE PROVIDER rather than two more members on `ParticipantIdProvider`,
+ * on the convention every other domain here already follows. Widening the shared
+ * interface would oblige every existing test double that mints a participant to
+ * also mint a suspension, which is a change to twenty call sites to serve two.
+ *
+ * A suspension id encodes nothing — not a participant, a reason, or an ordering.
+ */
+export interface ParticipantMitigationIdProvider {
+  nextSuspensionId(): string;
+  nextReconsiderationId(): string;
+  nextObligationId(): string;
+}
+
+export const cryptoParticipantMitigationIdProvider: ParticipantMitigationIdProvider = {
+  nextSuspensionId: () => `mon:psus:${randomOpaqueBody()}`,
+  nextReconsiderationId: () => `mon:prrcn:${randomOpaqueBody()}`,
+  nextObligationId: () => `mon:nobl:${randomOpaqueBody()}`,
+};

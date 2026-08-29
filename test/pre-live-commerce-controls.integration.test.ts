@@ -1669,13 +1669,21 @@ describeDb("1.2 — pre-live commerce controls", () => {
         "DISPUTE_EVIDENCE_ASSEMBLY_INCOMPLETE",
         "DISPUTE_EVIDENCE_DOCUMENT_SUBMISSION_NOT_IMPLEMENTED",
         "DISPUTE_DEADLINE_MONITORING_NOT_IMPLEMENTED",
-        /* Phase 1.13. The first is clearable by activating governed review
-           heuristics, which this fixture does not do. The second never clears:
-           the daily report can NOTICE and a Staff review can DECIDE, but no
-           governed way to ACT on a participant exists, so shipping the report
-           must not read as shipping fraud controls. */
+        /* Phase 1.13 — clearable by activating governed review heuristics, which
+           this fixture does not do. */
         "SELLER_RISK_REVIEW_POLICY_NOT_ACTIVE",
-        "SELLER_RISK_MITIGATION_NOT_IMPLEMENTED",
+        /* Phase 1.14 split 1.13's single `SELLER_RISK_MITIGATION_NOT_IMPLEMENTED`
+           into its two independent halves, because 1.14 built the mechanism and a
+           combined code would now have to be either wrong or unclearable.
+           
+           The first reads the ACTIVE marketplace policy row, not the newest
+           version shipped: this fixture activates 1.0.0, so shipping 1.3.0
+           clears nothing — which is the distinction between writing terms and
+           governing under them, and the reason the code exists at all. The second
+           asks whether anybody actually holds the entitlement, since a governed
+           authority nobody has is a capability on paper. */
+        "PARTICIPANT_MITIGATION_POLICY_NOT_ACTIVE",
+        "PARTICIPANT_MITIGATION_NOT_GRANTED",
         "LIVE_PROVIDER_NOT_ENABLED",
       ]);
       expect(readiness.satisfied).toContain("REFUND_BACKLOG");

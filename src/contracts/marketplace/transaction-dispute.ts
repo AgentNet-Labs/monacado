@@ -737,6 +737,37 @@ export const FRAUD_AND_RISK_ANALYTICS_HANDOFF = {
     "EXPLAINABLE_REVIEW_REASONS",
     "STAFF_MITIGATION_WORKFLOW_UP_TO_SUSPENSION",
   ],
+  /**
+   * What 1.13 actually shipped, and what it did not (recorded in Phase 1.14).
+   *
+   * `ownedByThatPhase` above was written before 1.13 ran and stayed unchanged
+   * after it, so the repository carried a committed statement that a shipped
+   * phase owned something it had not built: 1.13 delivered the analytics and the
+   * Staff review record, and pushed `SELLER_RISK_MITIGATION_NOT_IMPLEMENTED`
+   * unconditionally to say in the readiness report that it had built no
+   * mitigation. Both statements were committed and only one was true.
+   *
+   * Rather than rewrite the handoff — which would erase the record that the
+   * scope was ever assigned that way — the split is recorded beside it.
+   */
+  deliveredByPhase1_13: [
+    "REFUND_RATE",
+    "CHARGEBACK_RATE",
+    "CHARGEBACK_TO_REFUND_RATE",
+    "EXPLICIT_ROLLING_WINDOWS",
+    "NUMERATORS_AND_DENOMINATORS",
+    "SELLER_ATTRIBUTION",
+    "SELLER_BY_PROMOTER_ATTRIBUTION",
+    "TRANSACTION_REFUND_AND_CHARGEBACK_VELOCITY",
+    "AVERAGE_TICKET_VERSUS_GOVERNED_VERTICAL_NORMS",
+    "GEOGRAPHIC_DIVERSITY_AND_ANOMALIES",
+    "UNEXPECTED_VOLUME_SPIKES",
+    "PROMOTER_CONCENTRATION_AND_ANOMALY",
+    "DAILY_TOP_10_AND_TOP_100_SELLER_RISK_REVIEW",
+    "EXPLAINABLE_REVIEW_REASONS",
+  ],
+  /** Deferred by 1.13 and delivered by 1.14, under Marketplace Policy 1.3.0. */
+  deliveredByPhase1_14: ["STAFF_MITIGATION_WORKFLOW_UP_TO_SUSPENSION"],
   /** What 1.12 does instead: preserve what 1.13 will need to attribute. */
   attributionPreservedBy1_12: [
     "TRANSACTION_DISPUTE_BINDS_ORDER_AND_SNAPSHOT",

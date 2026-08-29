@@ -202,6 +202,23 @@ export const ACCOUNT_CAPABILITIES = [
    * recommendation can never become its own execution.
    */
   "participant:risk-review",
+  /**
+   * Phase 1.14. A SIXTH NARROW GRANT, and the widest-reaching one yet, which is
+   * precisely why it is minted rather than folded into `participant:restrict`.
+   *
+   * A restriction withholds a named commercial capability and is structurally
+   * forbidden from reaching drafting or `activation:submit` — a participant must
+   * be able to answer a restriction. A suspension withholds those too. Reusing
+   * the restrict grant would silently hand every current restrictor the power to
+   * remove a participant's ability to answer their own case, which is the exact
+   * "silent widening" this vocabulary was split to prevent.
+   *
+   * It authorises suspending AND reinstating, on the precedent
+   * `participant:restrict` sets by authorising both imposing and lifting: an
+   * authority that can start an adverse action but not end it is worse than one
+   * that can do neither.
+   */
+  "participant:suspend",
 ] as const;
 export const AccountCapability = z.enum(ACCOUNT_CAPABILITIES);
 export type AccountCapability = z.infer<typeof AccountCapability>;

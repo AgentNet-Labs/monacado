@@ -8,6 +8,7 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { MITIGATION_CODE_FORBIDDEN_TERMS } from "../src/contracts/marketplace/participant-mitigation";
 import {
   COMMERCIAL_POLICY_VERSION_TRANSITIONS,
   CommercialPolicyVersionRecord,
@@ -448,7 +449,28 @@ describe("0M.R1 · restriction reasons are bounded classifications", () => {
       "PROVIDER_REQUIREMENT_UNRESOLVED",
       "COMMERCIAL_ELIGIBILITY_RESTRICTION",
       "MANUAL_OPERATIONAL_RESTRICTION",
+      /* Phase 1.14 — risk-derived grounds, admissible only once Marketplace
+         Policy 1.3.0 is the ACTIVE version. Each names the MEASUREMENT rather
+         than a conclusion: `EXCESSIVE_CHARGEBACKS` was rejected because
+         "excessive" is a judgement these metrics cannot support. */
+      "CHARGEBACK_RATE_ELEVATED",
+      "REFUND_RATE_ELEVATED",
+      "PROMOTER_CHANNEL_ANOMALY",
+      "UNUSUAL_TRANSACTION_ACTIVITY",
+      "REQUESTED_INFORMATION_OUTSTANDING",
     ]);
+  });
+
+  it("names no conclusion about the participant", () => {
+    /* The property the exact list above stands for. A restriction is a decision
+       about standing in a marketplace, and the policy says in terms that it is
+       not a finding of fraud, dishonesty, or any legal wrong — so no code may
+       say one, and the word would follow the participant through every screen. */
+    for (const code of RESTRICTION_REASON_CODES) {
+      for (const forbidden of MITIGATION_CODE_FORBIDDEN_TERMS) {
+        expect(code, `${code}/${forbidden}`).not.toContain(forbidden);
+      }
+    }
   });
 
   it("carries no value — every code is a classification", () => {
@@ -526,13 +548,13 @@ describe("0M.R1 · restriction lifecycle preserves history", () => {
       status: "LIFTED",
       liftedAt: NOW,
       liftedByAccountId: ACCOUNT,
-      liftedReasonCode: "POLICY_ELIGIBILITY_RESTRICTION",
+      liftedReasonCode: "ELIGIBILITY_RESTORED",
     });
     expect(lifted.imposedAt).toBe(NOW);
     expect(lifted.imposedByAccountId).toBe(ACCOUNT);
     expect(lifted.liftedAt).toBe(NOW);
     expect(lifted.liftedByAccountId).toBe(ACCOUNT);
-    expect(lifted.liftedReasonCode).toBe("POLICY_ELIGIBILITY_RESTRICTION");
+    expect(lifted.liftedReasonCode).toBe("ELIGIBILITY_RESTORED");
   });
 
   it("carries no expiry — a self-lapsing restriction is nobody's decision here", () => {

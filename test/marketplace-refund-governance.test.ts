@@ -20,7 +20,7 @@ import { describe, expect, it } from "vitest";
 import {
   MARKETPLACE_POLICY_CONTENT_REFS,
   MARKETPLACE_POLICY_DOCUMENTS,
-  MARKETPLACE_POLICY_REACCEPTANCE,
+  MARKETPLACE_POLICY_ONBOARDING_ACCEPTANCE,
   MARKETPLACE_POLICY_VERSION_1,
   MARKETPLACE_POLICY_VERSION_1_1,
   MARKETPLACE_POLICY_VERSION_1_2,
@@ -103,12 +103,16 @@ describe("1.10 · Marketplace Policy 1.1.0", () => {
     );
   });
 
-  it("is the newest shipped version, and both versions stay resolvable", () => {
-    expect(LATEST_MARKETPLACE_POLICY_VERSION).toBe(MARKETPLACE_POLICY_VERSION_1_2);
-    /* A superseded version must stay readable: every receipt for every sale made
-       under it resolves through this map. */
+  it("stays resolvable after later versions supersede it", () => {
+    /* Re-scoped in Phase 1.14. The property worth asserting was never "1.2.0 is
+       newest" — a claim every later phase falsifies — but that a SUPERSEDED
+       version stays readable, because every receipt for every sale made under it
+       resolves through this map. 1.2.0 has now joined that set, which makes the
+       assertion stronger rather than weaker. */
     expect(marketplacePolicyDocument(MARKETPLACE_POLICY_VERSION_1)).not.toBeNull();
     expect(marketplacePolicyDocument(MARKETPLACE_POLICY_VERSION_1_1)).not.toBeNull();
+    expect(marketplacePolicyDocument(MARKETPLACE_POLICY_VERSION_1_2)).not.toBeNull();
+    expect(marketplacePolicyDocument(LATEST_MARKETPLACE_POLICY_VERSION)).not.toBeNull();
     expect(marketplacePolicyDocument("9.9.9")).toBeNull();
   });
 
@@ -117,7 +121,7 @@ describe("1.10 · Marketplace Policy 1.1.0", () => {
       expect(MARKETPLACE_POLICY_CONTENT_REFS.get(version)).toBe(`marketplace-policy/${version}`);
       /* Both shipped versions require it: 1.0.0 because nothing preceded it,
          1.1.0 because it adds obligations a seller did not previously carry. */
-      expect(MARKETPLACE_POLICY_REACCEPTANCE.get(version)).toBe(true);
+      expect(MARKETPLACE_POLICY_ONBOARDING_ACCEPTANCE.get(version)).toBe(true);
     }
   });
 

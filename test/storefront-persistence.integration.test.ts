@@ -75,6 +75,14 @@ async function cleanup(): Promise<void> {
   await db.participantActivation.deleteMany({});
   await db.participantProfile.deleteMany({});
   await db.marketplaceRoleAssignment.deleteMany({});
+  /* Phase 1.14 — a governed decision about a participant now raises a notice
+     obligation, whose recipient FK is RESTRICT. A suite that wipes participants
+     globally must wipe this too, or it is blocked by any decision another suite
+     legitimately recorded. */
+  await db.notificationObligation.deleteMany({});
+  await db.participantReconsideration.deleteMany({});
+  await db.participantSuspension.deleteMany({});
+  await db.participantRestriction.deleteMany({});
   await db.marketplaceParticipant.deleteMany({});
   await db.accountEntitlement.deleteMany({});
   await db.accountSession.deleteMany({});

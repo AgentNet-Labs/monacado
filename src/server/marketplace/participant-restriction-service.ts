@@ -58,6 +58,14 @@ import {
 import { isValidParticipantTransition } from "../../contracts/marketplace/lifecycle";
 import type { ParticipantStatus } from "../../contracts/marketplace/participant";
 import { getPrisma } from "../db/client";
+import { assertParticipantMitigationAuthorizedInTx } from "./participant-mitigation-policy";
+import { ParticipantMitigationNotAuthorizedByPolicyError } from "./participant-mitigation-errors";
+import { recordParticipantDecisionNoticeInTx } from "./participant-mitigation-notice";
+import {
+  cryptoParticipantMitigationIdProvider,
+  type ParticipantMitigationIdProvider,
+} from "./participant-ids";
+import { RISK_DERIVED_RESTRICTION_REASON_CODES } from "../../contracts/marketplace/participant-restriction";
 import { resolveInternalAuthorizationSubject } from "../account/internal-authorization-service";
 import { cryptoParticipantIdProvider, type ParticipantIdProvider } from "./participant-ids";
 import { ParticipantNotFoundError } from "./participant-errors";
@@ -76,6 +84,8 @@ import { restrictionRowToRecord } from "./participant-restriction-mapper";
 type Db = ReturnType<typeof getPrisma>;
 
 export interface RestrictionServiceDeps {
+  /** Phase 1.14 — identity for the notice obligation raised with each decision. */
+  mitigationIds?: ParticipantMitigationIdProvider;
   db?: Db;
   ids?: ParticipantIdProvider;
 }
@@ -95,7 +105,13 @@ function isDomainError(error: unknown): boolean {
     error instanceof RestrictionAlreadyLiftedError ||
     error instanceof RestrictionActorNotAuthorizedError ||
     error instanceof RestrictionSelfActionNotPermittedError ||
-    error instanceof CorruptRestrictionRecordError
+    error instanceof CorruptRestrictionRecordError ||
+    /* Phase 1.14. A governance refusal is a domain answer, not a storage
+       failure. Without this the catch-all below would rewrap "the active terms
+       do not authorise this" as `RestrictionPersistenceFailureError`, and an
+       operator would go looking at the database for a problem that is in the
+       policy. */
+    error instanceof ParticipantMitigationNotAuthorizedByPolicyError
   );
 }
 
@@ -139,7 +155,8 @@ export async function imposeParticipantRestriction(
 ): Promise<RestrictionSnapshot> {
   const parsed = ImposeParticipantRestrictionInput.safeParse(input);
   if (!parsed.success) throw inputError(parsed.error);
-  const { participantId, scope, reasonCode, actingAccountId, imposedAt } = parsed.data;
+  const { participantId, scope, reasonCode, actingAccountId, imposedAt, riskReviewId } =
+    parsed.data;
 
   const db = deps.db ?? getPrisma();
   const ids = deps.ids ?? cryptoParticipantIdProvider;
@@ -148,8 +165,26 @@ export async function imposeParticipantRestriction(
 
   await assertRestrictionAuthority(db, actingAccountId);
 
+  const obligationId = (deps.mitigationIds ?? cryptoParticipantMitigationIdProvider)
+    .nextObligationId();
+
   try {
     return await db.$transaction(async (tx) => {
+      /* Phase 1.14 — the terms have to authorise acting on a PARTICIPANT before
+         a risk-derived restriction may be imposed at all.
+         
+         Scoped to risk-derived grounds deliberately. `participant:restrict`
+         predates participant-level risk terms and is governed as an operational
+         authority: withholding commerce because underwriting is incomplete, or
+         because a provider requirement is outstanding, was always within
+         Monacado's operational remit and 1.13's recorded gap does not reach it.
+         What needed new terms was restricting somebody BECAUSE OF WHAT THE RISK
+         ANALYTICS SAID, and that is exactly the set gated here. */
+      const risky = (RISK_DERIVED_RESTRICTION_REASON_CODES as readonly string[]).includes(
+        reasonCode,
+      );
+      const governing = risky ? await assertParticipantMitigationAuthorizedInTx(tx) : null;
+
       const participant = await tx.marketplaceParticipant.findUnique({
         where: { id: participantId },
       });
@@ -171,10 +206,27 @@ export async function imposeParticipantRestriction(
           // (participantId, activeForScope) is what enforces at most one active
           // restriction per scope, since MySQL has no partial indexes.
           activeForScope: scope,
+          /* The consequence names its basis (Phase 1.14). Neither column is read
+             to decide anything; both exist so an appeal can be answered. */
+          riskReviewId,
+          marketplacePolicyId: governing?.policyId ?? null,
+          marketplacePolicyVersion: governing?.policyVersion ?? null,
         },
       });
 
       await reconcileStatusInTx(tx, participantId, participant.status as ParticipantStatus);
+
+      /* One insert more in the same transaction, for the reason 0M.9 gave: a
+         participant restricted with no notice owed, and a notice for a
+         restriction that rolled back, are both worse than this. */
+      await recordParticipantDecisionNoticeInTx(tx, {
+        participantId,
+        decisionId: restrictionId,
+        contextCode: "RESTRICTION_IMPOSED",
+        obligationId,
+        at: imposedAt,
+      });
+
       return await readSnapshotInTx(tx, participantId, restrictionId);
     });
   } catch (error) {
@@ -206,6 +258,8 @@ export async function liftParticipantRestriction(
 
   const db = deps.db ?? getPrisma();
   const at = new Date(liftedAt);
+  const liftObligationId = (deps.mitigationIds ?? cryptoParticipantMitigationIdProvider)
+    .nextObligationId();
 
   await assertRestrictionAuthority(db, actingAccountId);
 
@@ -237,6 +291,18 @@ export async function liftParticipantRestriction(
       if (claimed.count !== 1) throw new RestrictionAlreadyLiftedError();
 
       await reconcileStatusInTx(tx, row.participantId, participant.status as ParticipantStatus);
+
+      /* A participant told commerce stopped is told when it resumes. A distinct
+         context code, so the two obligations key differently and the second is
+         never collapsed into the first. */
+      await recordParticipantDecisionNoticeInTx(tx, {
+        participantId: row.participantId,
+        decisionId: restrictionId,
+        contextCode: "RESTRICTION_LIFTED",
+        obligationId: liftObligationId,
+        at: liftedAt,
+      });
+
       return await readSnapshotInTx(tx, row.participantId, restrictionId);
     });
   } catch (error) {

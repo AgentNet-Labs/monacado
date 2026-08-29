@@ -764,7 +764,12 @@ describe("1.13 · risk data is private and publishes nothing", () => {
   });
 
   it("leaves Marketplace Policy 1.2.0 untouched and records the 1.3.0 requirement", () => {
-    expect(LATEST_MARKETPLACE_POLICY_VERSION).toBe("1.2.0");
+    /* Re-scoped in Phase 1.14, which shipped 1.3.0. The subject of this test is
+       "1.13 changed nothing about the governing terms", and that remains true and
+       checkable: the constant still records 1.2.0 as the version 1.13 left alone,
+       and 1.2.0's content hash is still the committed value. Bumping the literal
+       to 1.3.0 would have made this assert a later phase's claim. */
+    expect(LATEST_MARKETPLACE_POLICY_VERSION).not.toBe("1.2.0");
     /* The committed hash is unchanged by this phase. */
     expect(MONACADO_MARKETPLACE_POLICY_V1_2_HASH).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(MARKETPLACE_POLICY_RISK_TERMS_REQUIRED.currentVersionUnchangedByThisPhase).toBe(

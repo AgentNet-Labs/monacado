@@ -139,9 +139,113 @@ export const RESTRICTION_REASON_CODES = [
   "COMMERCIAL_ELIGIBILITY_RESTRICTION",
   /** An operator imposed this deliberately outside the categories above. */
   "MANUAL_OPERATIONAL_RESTRICTION",
+
+  // — Phase 1.14: risk-derived grounds. —
+  //
+  // ADDITIVE, and named for the MEASUREMENT rather than for a conclusion about
+  // the participant. `EXCESSIVE_CHARGEBACKS` was considered and rejected:
+  // "excessive" is a judgement, and `ELEVATED` is the word Phase 1.13 already
+  // chose for the same observation, so a recommendation and the act that follows
+  // it read as one story rather than two.
+  //
+  // None of these establishes misconduct. An elevated rate is as consistent with
+  // a seller being defrauded as with anything they did, which is why no member
+  // here contains the word fraud — and a test walks the list to prove it.
+
+  /** Finalized chargebacks are elevated against the governed review threshold. */
+  "CHARGEBACK_RATE_ELEVATED",
+  /** Completed refunds are elevated against the governed review threshold. */
+  "REFUND_RATE_ELEVATED",
+  /**
+   * Adverse outcomes are concentrated in one seller-and-promoter relationship
+   * rather than spread across the participant's activity. Evidence about the
+   * RELATIONSHIP; it does not by itself make either party answerable for the
+   * other's conduct.
+   */
+  "PROMOTER_CHANNEL_ANOMALY",
+  /**
+   * Volume, value, ticket size, or geography moved sharply against the
+   * participant's own recent history. Observational, and deliberately vague about
+   * cause, because the measurement is.
+   */
+  "UNUSUAL_TRANSACTION_ACTIVITY",
+  /**
+   * Monacado asked the participant for information and it has not arrived.
+   *
+   * "Outstanding" rather than "not provided": mail goes missing, and a code that
+   * reads as refusal would be a finding this record cannot support. Distinct from
+   * `UNDERWRITING_REVIEW_REQUIRED`, which says MONACADO is the one still working.
+   */
+  "REQUESTED_INFORMATION_OUTSTANDING",
 ] as const;
 export const RestrictionReasonCode = z.enum(RESTRICTION_REASON_CODES);
 export type RestrictionReasonCode = z.infer<typeof RestrictionReasonCode>;
+
+/**
+ * Why a restriction was LIFTED, as its own closed vocabulary (Phase 1.14).
+ *
+ * Separate from the imposition vocabulary, correcting a real defect. Until now
+ * `liftedReasonCode` was typed as a `RestrictionReasonCode` — the five
+ * *why-we-restricted* codes — so a lift could record who and when but had no
+ * honest way to say why. There was no code meaning "the requirement was met", no
+ * code meaning "we reconsidered and reversed it", and no code meaning "we should
+ * not have imposed it". A lift recorded as `UNDERWRITING_REVIEW_REQUIRED` reads
+ * as though the restriction were still warranted.
+ *
+ * "Why we restricted" and "why we stopped" are different questions, and one
+ * vocabulary answering both answers neither.
+ *
+ * The column is already `VARCHAR(48)` and nullable, so this is a contracts-only
+ * correction with no migration.
+ */
+export const RESTRICTION_LIFT_REASON_CODES = [
+  /** The condition behind the restriction is satisfied. */
+  "REQUIREMENT_SATISFIED",
+  /** The participant again meets the eligibility policy that was withheld. */
+  "ELIGIBILITY_RESTORED",
+  /** The outstanding payment-provider requirement has been resolved. */
+  "PROVIDER_REQUIREMENT_RESOLVED",
+  /** Monacado reconsidered the decision and reversed it. */
+  "LIFTED_ON_RECONSIDERATION",
+  /**
+   * The restriction should not have been imposed. Recorded plainly rather than
+   * dressed as a cure: a marketplace that cannot say it got one wrong will
+   * eventually record every reversal as though the participant had changed.
+   */
+  "IMPOSED_IN_ERROR",
+  /** Replaced by a narrower restriction, which is a lift plus a new imposition. */
+  "SUPERSEDED_BY_A_NARROWER_RESTRICTION",
+] as const;
+export const RestrictionLiftReasonCode = z.enum(RESTRICTION_LIFT_REASON_CODES);
+export type RestrictionLiftReasonCode = z.infer<typeof RestrictionLiftReasonCode>;
+
+/**
+ * The reason codes that make a restriction a RISK decision (Phase 1.14).
+ *
+ * Named so a test can assert the set rather than infer it, and so the governance
+ * gate has one place to read.
+ *
+ * WHY THE GATE IS SCOPED RATHER THAN TOTAL. `participant:restrict` predates
+ * participant-level risk terms and is governed as an operational authority:
+ * withholding commerce because underwriting is incomplete, or because a
+ * payment-provider requirement is outstanding, was always within Monacado's
+ * operational remit, and Phase 1.13's recorded gap does not reach it. What
+ * genuinely needed new terms was restricting a participant BECAUSE OF WHAT THE
+ * RISK ANALYTICS SAID — `RESTRICTING_SELLING_CAPABILITY_ON_RISK_GROUNDS`, in the
+ * words of the constant that recorded the gap. This is that set.
+ *
+ * Gating every restriction would have been the easier line to write and the
+ * wrong one: it would have made a deployment unable to complete underwriting
+ * until it had activated a policy version about risk monitoring, which is an
+ * authority nobody claimed was missing.
+ */
+export const RISK_DERIVED_RESTRICTION_REASON_CODES = [
+  "CHARGEBACK_RATE_ELEVATED",
+  "REFUND_RATE_ELEVATED",
+  "PROMOTER_CHANNEL_ANOMALY",
+  "UNUSUAL_TRANSACTION_ACTIVITY",
+  "REQUESTED_INFORMATION_OUTSTANDING",
+] as const satisfies readonly RestrictionReasonCode[];
 
 // — Lifecycle —
 
@@ -183,7 +287,15 @@ export const ParticipantRestrictionRecord = z.strictObject({
   liftedAt: z.iso.datetime().nullable(),
   liftedByAccountId: AccountId.nullable(),
   /** Why it was lifted. Bounded, from the same closed vocabulary. */
-  liftedReasonCode: RestrictionReasonCode.nullable(),
+  /**
+   * Why it was lifted, from the LIFT vocabulary (Phase 1.14).
+   *
+   * Previously typed as a `RestrictionReasonCode`, which meant a lift could only
+   * be recorded as one of the five reasons a restriction is IMPOSED — so "we
+   * lifted it because underwriting review is required" was the closest a record
+   * could get to saying the requirement had been met.
+   */
+  liftedReasonCode: RestrictionLiftReasonCode.nullable(),
 
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
@@ -257,14 +369,30 @@ export const ImposeParticipantRestrictionInput = z.strictObject({
   /** The acting internal account — authorization principal AND audit actor. */
   actingAccountId: AccountId,
   imposedAt: z.iso.datetime(),
+  /**
+   * The Staff risk review this is imposed on the strength of, when there is one
+   * (Phase 1.14).
+   *
+   * A REFERENCE TO A JUDGEMENT, NEVER TO A NUMBER, and never a trigger: nothing
+   * reads a review to decide that a restriction should exist. It is supplied by
+   * the person acting, so the consequence names its basis and an appeal months
+   * later can be answered from the record.
+   *
+   * OPTIONAL, and its absence covers two ordinary cases: a restriction imposed on
+   * operational grounds that never involved risk analytics, and an emergency act
+   * taken before a review could be completed. What its absence never waives is
+   * authorization.
+   */
+  riskReviewId: z.string().min(1).max(191).nullable().default(null),
 });
 export type ImposeParticipantRestrictionInput = z.infer<
   typeof ImposeParticipantRestrictionInput
 >;
 
+
 export const LiftParticipantRestrictionInput = z.strictObject({
   restrictionId: ParticipantRestrictionId,
-  reasonCode: RestrictionReasonCode,
+  reasonCode: RestrictionLiftReasonCode,
   actingAccountId: AccountId,
   liftedAt: z.iso.datetime(),
 });
