@@ -932,6 +932,11 @@ model MarketplaceParticipant {
   /// Requests to reconsider an adverse decision about this participant (1.14).
   reconsiderations ParticipantReconsideration[]
 
+  /// The participant's own terminal closure (Phase 1.17). At most one — closure
+  /// is terminal, so this is a 0..1 relation enforced by a unique participantId
+  /// on the far side rather than by a service remembering to look.
+  closure ParticipantClosure?
+
   @@index([status])
 }
 
@@ -5856,4 +5861,76 @@ model ParticipantReconsideration {
   @@index([status, requestedAt])
   @@index([restrictionId])
   @@index([suspensionId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Participant closure (Phase 1.17).
+//
+// The terminal lifecycle act, and the last participant status write that had no
+// governance. `advanceParticipantStatus` could reach CLOSED from ACTIVE,
+// RESTRICTED, SUSPENDED, or UNDER_REVIEW with no acting account, no
+// authorization, no reason, and no record — the only status-affecting act in
+// this subsystem carrying none of the four disciplines every other one carries.
+//
+// WHOSE ACT IT IS. Closure is the participant's own decision to stop. The
+// repository has said so three times (0M.5's draft-writable justification,
+// 0M.8's refusal to close on a REJECTED activation, and 1.14's statement that a
+// suspension "is not a deletion, a closure, or a release from anything already
+// owed"), and Marketplace Policy 1.3.0 gives Monacado no power to end a
+// participant's participation. So there is no Staff closure and no
+// `participant:close` entitlement: authorization is OWNERSHIP, checked against
+// `MarketplaceParticipant.accountId`, which is `@unique`.
+//
+// WHAT IT DOES NOT TOUCH. Not the participant record, roles, orders, receipts,
+// entitlements, refunds, disputes, tax records, proceeds accounting, accepted
+// policy versions, or any standing restriction or suspension. Closure withdraws
+// a participant from FUTURE activity and discharges nothing already owed in
+// either direction — Monacado remains merchant of record for every completed
+// purchase, and still owes what those sales earned.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One participant's own terminal closure (Phase 1.17).
+model ParticipantClosure {
+  /// Opaque identity (mon:pcls:<opaque>). Deliberately not `mon:psus:` or
+  /// `mon:prst:`: those name adverse acts Monacado takes against a participant,
+  /// and one identifier space for both would let a reader take a person's
+  /// decision to leave for a decision made about them.
+  id String @id @db.VarChar(191)
+
+  /// UNIQUE: closure is terminal, so a participant closes at most once. Enforced
+  /// by MySQL rather than by a service remembering to check — the same reason
+  /// `ParticipantSuspension.activeForParticipantId` claims a marker.
+  participantId String @unique @db.VarChar(191)
+
+  /// The account that closed it — the participant's OWN, never a Staff account.
+  ///
+  /// Both the authorization principal and the audit actor, one value, per 0M.8's
+  /// settled rule: two identities could disagree, and this row would then name
+  /// someone who was never checked. The service asserts it equals the
+  /// participant's `accountId`.
+  closedByAccountId String @db.VarChar(191)
+
+  /// The participant's own bounded account of their own decision. Never free
+  /// text, and never a Monacado characterisation of the departure — there is no
+  /// member meaning "closed ahead of enforcement" and there must never be one.
+  reasonCode String @db.VarChar(48)
+
+  /// The status held immediately before closure.
+  ///
+  /// Recorded because it is the one fact closure destroys and the only one that
+  /// answers "what was this participant when they left" — in particular whether
+  /// they were RESTRICTED or SUSPENDED at the time, which the mitigation rows
+  /// corroborate but do not date to this instant.
+  statusBeforeClosure String @db.VarChar(24)
+
+  closedAt DateTime @db.DateTime(3)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+
+  // RESTRICT: the record of why a participant left must never be cascade-deleted,
+  // and `MarketplaceParticipant` is already RESTRICT from `Account` for the same
+  // reason — a participant anchors commercial history.
+  participant MarketplaceParticipant @relation(fields: [participantId], references: [id], onDelete: Restrict)
+
+  @@index([closedAt])
 }

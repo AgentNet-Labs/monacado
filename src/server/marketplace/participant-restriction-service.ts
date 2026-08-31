@@ -57,6 +57,8 @@ import {
 } from "../../contracts/account/internal-authorization";
 import { isValidParticipantTransition } from "../../contracts/marketplace/lifecycle";
 import type { ParticipantStatus } from "../../contracts/marketplace/participant";
+import { isTerminalParticipantStatus } from "../../contracts/marketplace/participant-closure";
+import { ParticipantLifecycleTerminatedError } from "./participant-closure-errors";
 import { getPrisma } from "../db/client";
 import { assertParticipantMitigationAuthorizedInTx } from "./participant-mitigation-policy";
 import { ParticipantMitigationNotAuthorizedByPolicyError } from "./participant-mitigation-errors";
@@ -151,7 +153,10 @@ function isDomainError(error: unknown): boolean {
        do not authorise this" as `RestrictionPersistenceFailureError`, and an
        operator would go looking at the database for a problem that is in the
        policy. */
-    error instanceof ParticipantMitigationNotAuthorizedByPolicyError
+    error instanceof ParticipantMitigationNotAuthorizedByPolicyError ||
+    /* Phase 1.17. Same reasoning: "this participant has closed" is a domain
+       answer about lifecycle, not a storage fault. */
+    error instanceof ParticipantLifecycleTerminatedError
   );
 }
 
@@ -242,6 +247,18 @@ export async function imposeParticipantRestriction(
       if (participant === null) throw new ParticipantNotFoundError();
       if (participant.accountId === actingAccountId) {
         throw new RestrictionSelfActionNotPermittedError();
+      }
+      /* PHASE 1.17. A terminal participant acquires no new mitigation.
+         `suspendParticipant` has refused a CLOSED target since 1.14 and this did
+         not, which was an unjustified asymmetry in the wrong direction: the
+         heavier act refused and the lighter one proceeded. Restricting a
+         participant who has ended their participation withholds a capability
+         they no longer have, and raises a notice telling somebody who has closed
+         their account that something was taken from them. Existing rows are
+         untouched by this and stay exactly as they were — closure does not lift
+         them, and this does not delete them. */
+      if (isTerminalParticipantStatus(participant.status as ParticipantStatus)) {
+        throw new ParticipantLifecycleTerminatedError();
       }
 
       await tx.participantRestriction.create({

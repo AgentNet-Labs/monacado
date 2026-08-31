@@ -932,6 +932,11 @@ d("1.13 · staff review records a decision and performs none", () => {
     });
     expect(statusAfter.status).toBe(statusBefore.status);
     expect(statusAfter.status).not.toBe("SUSPENDED");
+    /* Phase 1.17 — and no risk signal reaches TERMINAL lifecycle either. Closure
+       is the participant's own act; there is no path from a recommendation to it,
+       and no internal entitlement that could take one. */
+    expect(statusAfter.status).not.toBe("CLOSED");
+    expect(await db.participantClosure.count({ where: { participantId: seller } })).toBe(0);
     /* And no restriction was created by any of it. */
     expect(await db.participantRestriction.count({ where: { participantId: seller } })).toBe(0);
   });

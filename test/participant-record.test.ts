@@ -110,17 +110,30 @@ describe("participant profile completeness (derived, never stored)", () => {
 });
 
 describe("draft-only scope", () => {
-  it("permits writing only DRAFT, PROFILE_INCOMPLETE, PROFILE_COMPLETE, and CLOSED", () => {
+  it("permits writing only DRAFT, PROFILE_INCOMPLETE, and PROFILE_COMPLETE", () => {
     expect([...DRAFT_WRITABLE_PARTICIPANT_STATUSES]).toEqual([
       "DRAFT",
       "PROFILE_INCOMPLETE",
       "PROFILE_COMPLETE",
-      "CLOSED",
     ]);
   });
 
-  it("refuses every status that requires a governed activation decision", () => {
-    for (const status of ["UNDER_REVIEW", "ACTIVE", "RESTRICTED", "SUSPENDED"] as const) {
+  /* PHASE 1.17 ADDED `CLOSED` TO THIS LOOP, and it is the assertion the phase
+     turns on. 0M.5 admitted CLOSED to the writable set for the one case that
+     needs no decision — a draft giving up — but the gate reads only the TARGET
+     status, and the 0M.1 table reaches CLOSED from ACTIVE, RESTRICTED,
+     SUSPENDED, and UNDER_REVIEW too. So the member admitted for the narrow case
+     authorised the wide one: the single irreversible act in this subsystem was
+     also the only one reachable with no actor, no authorization, and no record.
+     Closure is now `closeParticipant`, on the participant's own authority. */
+  it("refuses every status that requires a governed decision, closure included", () => {
+    for (const status of [
+      "UNDER_REVIEW",
+      "ACTIVE",
+      "RESTRICTED",
+      "SUSPENDED",
+      "CLOSED",
+    ] as const) {
       expect(isDraftWritableParticipantStatus(status)).toBe(false);
     }
   });

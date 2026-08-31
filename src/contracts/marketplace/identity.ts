@@ -440,3 +440,15 @@ export const PARTICIPANT_SUSPENSION_ID_RE = new RegExp(`^mon:psus:${OPAQUE_BODY}
  * again at one decision. Different subject, different author, different record.
  */
 export const PARTICIPANT_RECONSIDERATION_ID_RE = new RegExp(`^mon:prrcn:${OPAQUE_BODY}$`);
+
+/**
+ * Participant closure identity (`mon:pcls:<opaque>`) — Phase 1.17.
+ *
+ * Deliberately **not** `mon:psus:` and not `mon:prst:`. Those name adverse acts
+ * Monacado takes against a participant; this names the participant's own act of
+ * ending their participation. Sharing an identifier space with either would let
+ * a reader take a person's decision to leave for a decision made about them,
+ * which is the same conflation `mon:psus:` was minted to avoid one step further
+ * out.
+ */
+export const PARTICIPANT_CLOSURE_ID_RE = new RegExp(`^mon:pcls:${OPAQUE_BODY}$`);

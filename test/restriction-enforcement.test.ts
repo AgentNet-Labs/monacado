@@ -360,6 +360,17 @@ describe("status consistency may improve; enforcement still depends on rows", ()
     }
   });
 
+  it("the transacting seam also asks the terminal-lifecycle question", () => {
+    /* PHASE 1.17. Mitigation rows cannot answer it: a CLOSED participant may
+       carry none, and on a PROMOTED sale the seller is not the controller whose
+       status listing eligibility reads — so before this, a closed seller was
+       refused by nothing. Asserted as WIRING rather than as behaviour because the
+       behaviour is proven against the database elsewhere; what can silently
+       regress is the call disappearing from the seam. */
+    const src = read("src/server/payments/executable-checkout-service.ts");
+    expect(src).toContain("assertParticipantLifecycleIsLive");
+  });
+
   it("the standing reader consults mitigation rows and never participant status", () => {
     const src = read(STANDING_SERVICE);
     expect(src).toContain("participantSuspension");

@@ -39,6 +39,7 @@ import {
   RECONSIDERATION_GROUND_CODES,
   RECONSIDERATION_REMEDIATION_CLAIM_CODES,
   RECONSIDERATION_STATUSES,
+  RETIRED_RECONSIDERATION_DETERMINATIONS,
   SUSPENSION_LIFT_REASON_CODES,
   SUSPENSION_PRESERVES,
   SUSPENSION_REASON_CODES,
@@ -55,7 +56,12 @@ import {
   RESTRICTION_LIFT_REASON_CODES,
   RESTRICTION_REASON_CODES,
   RISK_DERIVED_RESTRICTION_REASON_CODES,
+  reconcileParticipantStatusForRestrictions,
 } from "../src/contracts/marketplace/participant-restriction";
+import {
+  CLOSURE_PRESERVES,
+  PARTICIPANT_CLOSURE_REASON_CODES,
+} from "../src/contracts/marketplace/participant-closure";
 import {
   DRAFTING_PARTICIPANT_STATUSES,
   PARTICIPANT_STATUSES,
@@ -94,6 +100,8 @@ const readExecutableCode = (path: string): string =>
 
 /** The server modules that actually execute a mitigation act. */
 const PHASE_SERVER_FILES = [
+  "src/server/marketplace/participant-closure-service.ts",
+  "src/server/marketplace/participant-closure-errors.ts",
   "src/server/marketplace/participant-suspension-service.ts",
   "src/server/marketplace/participant-reconsideration-service.ts",
   "src/server/marketplace/participant-mitigation-policy.ts",
@@ -103,6 +111,10 @@ const PHASE_SERVER_FILES = [
 
 const PHASE_FILES = [
   "src/contracts/marketplace/participant-mitigation.ts",
+  /* Phase 1.17 joins the existing scans rather than adding a fourth set. */
+  "src/contracts/marketplace/participant-closure.ts",
+  "src/server/marketplace/participant-closure-service.ts",
+  "src/server/marketplace/participant-closure-errors.ts",
   "src/server/marketplace/participant-suspension-service.ts",
   "src/server/marketplace/participant-reconsideration-service.ts",
   "src/server/marketplace/participant-mitigation-policy.ts",
@@ -387,6 +399,8 @@ describe("1.14 · suspension is not a restriction with a louder name", () => {
       ...RECONSIDERATION_GROUND_CODES,
       ...RECONSIDERATION_REMEDIATION_CLAIM_CODES,
       ...RECONSIDERATION_DETERMINATIONS,
+      ...RETIRED_RECONSIDERATION_DETERMINATIONS,
+      ...PARTICIPANT_CLOSURE_REASON_CODES,
     ];
     for (const code of every) {
       for (const forbidden of MITIGATION_CODE_FORBIDDEN_TERMS) {
@@ -508,6 +522,21 @@ describe("1.14 · suspension is not a restriction with a louder name", () => {
         }),
       ).toBeNull();
     }
+
+    /* PHASE 1.17 — THE OTHER RECONCILER, named here beside the first so the rule
+       reads as one rule. Terminal lifecycle dominates mitigation in BOTH
+       directions: neither lifting the last restriction nor reinstating a
+       suspension may bring a closed participant back. Reopening is a new
+       admission decision with its own record, not a side effect of an
+       unrelated act finishing. */
+    for (const count of [0, 1, 3]) {
+      expect(
+        reconcileParticipantStatusForRestrictions({
+          currentStatus: "CLOSED",
+          activeRestrictionCount: count,
+        }),
+      ).toBeNull();
+    }
   });
 
   it("is never SUSPENDED without evidence", () => {
@@ -525,7 +554,16 @@ describe("1.14 · suspension is not a restriction with a louder name", () => {
       "AUDIT_EVIDENCE",
     ]) {
       expect(SUSPENSION_PRESERVES as readonly string[], preserved).toContain(preserved);
+      /* PHASE 1.17. Closure preserves everything suspension preserves, and the
+         list is deliberately the SAME rather than shorter: closure is heavier in
+         what it withdraws and exactly as light in what it discharges. Monacado
+         stays merchant of record for every completed purchase, and still owes
+         what those sales earned, whether the participant was suspended or has
+         left entirely. */
+      expect(CLOSURE_PRESERVES as readonly string[], preserved).toContain(preserved);
     }
+    /* The one thing closure preserves that suspension has no reason to name. */
+    expect(CLOSURE_PRESERVES as readonly string[]).toContain("ACCEPTED_POLICY_VERSIONS");
   });
 
   it("refuses a score, a note, or buyer data on any mitigation input", () => {
@@ -610,7 +648,27 @@ describe("1.14 · reconsideration is bounded and honest about its limits", () =>
       }
     }
     expect(RECONSIDERATION_DETERMINATIONS).toContain("UPHELD");
-    expect(RECONSIDERATION_DETERMINATIONS).toContain("DECISION_LIFTED_ON_RECONSIDERATION");
+
+    /* PHASE 1.17. The member this test used to assert was the one member of a
+       vocabulary documented as "every member is honest about what it performs"
+       that was not. `DECISION_LIFTED_ON_RECONSIDERATION` said the decision HAD
+       BEEN LIFTED; `decideReconsideration` writes a determination and touches no
+       mitigation row, which the service says in terms and an integration test
+       below proves. A participant could hold a notice naming their restriction
+       lifted while the row was still ACTIVE and every seam still refused them. */
+    expect(RECONSIDERATION_DETERMINATIONS).toContain("LIFT_DIRECTED_ON_RECONSIDERATION");
+    expect(RECONSIDERATION_DETERMINATIONS).not.toContain("DECISION_LIFTED_ON_RECONSIDERATION");
+
+    /* No WRITABLE determination may claim a completed act. The retired member is
+       deliberately exempt: it is retained so historical rows stay readable, and
+       nothing can write one. */
+    for (const determination of RECONSIDERATION_DETERMINATIONS) {
+      expect(determination, determination).not.toMatch(/(^|_)LIFTED_ON_/);
+      expect(determination, determination).not.toMatch(/(^|_)REINSTATED/);
+    }
+    expect(RETIRED_RECONSIDERATION_DETERMINATIONS).toContain(
+      "DECISION_LIFTED_ON_RECONSIDERATION",
+    );
   });
 
   it("admits an out-of-vocabulary ground so inadequacy is countable", () => {

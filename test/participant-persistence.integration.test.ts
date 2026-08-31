@@ -307,11 +307,22 @@ describe.skipIf(!RUN)("marketplace participant persistence (disposable MySQL)", 
     ).rejects.toBeInstanceOf(InvalidParticipantTransitionError);
   });
 
-  it("refuses every status that would require a governed activation decision", async () => {
+  it("refuses every status that would require a governed decision, closure included", async () => {
     const { snapshot } = await seedDraft([]);
     const id = snapshot.participant.participantId;
 
-    for (const status of ["UNDER_REVIEW", "ACTIVE", "RESTRICTED", "SUSPENDED"] as const) {
+    /* PHASE 1.17 ADDED `CLOSED`. It was the omission that left the phase gate's
+       central claim untested in either direction: the gate reads only the TARGET
+       status, and CLOSED was writable from every non-terminal state, so the one
+       irreversible act here was reachable with no actor and no record. Closure is
+       now `closeParticipant`, on the participant's own authority. */
+    for (const status of [
+      "UNDER_REVIEW",
+      "ACTIVE",
+      "RESTRICTED",
+      "SUSPENDED",
+      "CLOSED",
+    ] as const) {
       const error = await advanceParticipantStatus(id, status, { db }).catch((e) => e);
       expect(error).toBeInstanceOf(ActivationNotPermittedInPhaseError);
       expect(error.attempted).toBe(status);

@@ -85,6 +85,8 @@ import {
   RestrictionSelfActionNotPermittedError,
 } from "../src/server/marketplace/participant-restriction-errors";
 import { ParticipantNotFoundError, ActivationNotPermittedInPhaseError } from "../src/server/marketplace/participant-errors";
+import { assertParticipantLifecycleIsLive } from "../src/server/marketplace/participant-closure-service";
+import { ParticipantLifecycleTerminatedError } from "../src/server/marketplace/participant-closure-errors";
 import { COMMERCIAL_POLICY_ID_PATTERN } from "../src/server/marketplace/commercial-policy-ids";
 import { PARTICIPANT_ID_PATTERNS } from "../src/server/marketplace/participant-ids";
 import type { ParticipantIdProvider } from "../src/server/marketplace/participant-ids";
@@ -1666,6 +1668,51 @@ describeDb("Phase 0M.R1 — versioned commercial policy and activation risk reco
       await expect(
         assertParticipantMayPerform(db, participantId, []),
       ).rejects.toMatchObject({ denialCode: "PARTICIPANT_SUSPENDED" });
+    });
+
+    it("refuses a closed party, whom no mitigation row would have caught", async () => {
+      /* PHASE 1.17 — THE GAP CLOSURE OPENED, and why the check is here and not
+         inside the standing service.
+      
+         `readParticipantStanding` reads mitigation ROWS and deliberately never
+         reads participant status, so a CLOSED participant carrying no active
+         restriction or suspension was refused by nothing. On a SELLER-DIRECT
+         sale listing eligibility catches it, because the controller IS the
+         seller. On a PROMOTED sale the controller is the PROMOTER, so the party
+         whose goods are sold and who is owed proceeds was checked by neither —
+         verbatim the shape of the gap Phase 1.15 closed for suspension, one axis
+         further out.
+      
+         The 1.15 ban on reading status stands untouched, and it is right: status
+         is DERIVED from those rows, so reading it back would answer a
+         scope-exact question with the coarsest fact available. `CLOSED` is not
+         such a projection — no mitigation act can produce it — so it is an
+         INDEPENDENT authoritative fact, asked as its own precondition beside the
+         standing gate rather than folded into it. */
+      const seller = await seedActivatedParticipant();
+      const live = await seedActivatedParticipant();
+
+      /* Arranged directly: the governed closure path is proven in the mitigation
+         integration suite, and what this asserts is the ENFORCEMENT consequence
+         of the state, however it was reached. */
+      await db.marketplaceParticipant.update({
+        where: { id: seller.participantId },
+        data: { status: "CLOSED" },
+      });
+
+      /* The standing gate still permits them — there is no row to find. That is
+         the whole point, and it is why a second precondition exists. */
+      await assertPartiesMayTransact(db, [
+        { participantId: seller.participantId, role: "SELLER" },
+      ]);
+
+      await expect(
+        assertParticipantLifecycleIsLive(db, seller.participantId),
+      ).rejects.toBeInstanceOf(ParticipantLifecycleTerminatedError);
+
+      /* And it is narrow: a live participant passes, so this withholds nothing
+         from anybody who has not ended their own participation. */
+      await assertParticipantLifecycleIsLive(db, live.participantId);
     });
 
     it("does not restrict a promoter because a seller was restricted", async () => {

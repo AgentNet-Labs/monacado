@@ -107,14 +107,28 @@ const ActorId = AccountId;
  * activation row, so it must not be able to produce the status one would
  * justify.
  *
- * CLOSED is included because closing a draft that was never activated needs no
- * activation decision — it is the participant giving up, not Monacado ruling.
+ * PHASE 1.17 REMOVED `CLOSED`, AND THE REASON IT WAS HERE IS WHY IT HAD TO GO.
+ * 0M.5 admitted it on the ground that "closing a draft that was never activated
+ * needs no activation decision — it is the participant giving up, not Monacado
+ * ruling". Both halves of that are still true of a DRAFT. Neither is true of the
+ * function this constant gates: `advanceParticipantStatus` checks only the
+ * TARGET status, and the 0M.1 table reaches `CLOSED` from `ACTIVE`,
+ * `RESTRICTED`, `SUSPENDED`, and `UNDER_REVIEW` as well. So the member admitted
+ * for the narrow case authorised the wide one, and any caller could
+ * irreversibly close an admitted, restricted, or suspended participant with no
+ * actor, no authorization, and no record of who did it or why.
+ *
+ * Closure is now its own governed act — `closeParticipant` in
+ * `participant-closure-service` — which takes the participant's own account as
+ * both the authorization principal and the audit actor, records a bounded reason
+ * and the status it closed from, and raises the notice every other standing
+ * change raises. This constant is once again what its name says: the statuses a
+ * DRAFT-phase write may produce.
  */
 export const DRAFT_WRITABLE_PARTICIPANT_STATUSES = [
   "DRAFT",
   "PROFILE_INCOMPLETE",
   "PROFILE_COMPLETE",
-  "CLOSED",
 ] as const satisfies readonly ParticipantStatus[];
 
 export function isDraftWritableParticipantStatus(status: ParticipantStatus): boolean {

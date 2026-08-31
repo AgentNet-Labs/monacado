@@ -110,3 +110,23 @@ export const cryptoParticipantMitigationIdProvider: ParticipantMitigationIdProvi
   nextReconsiderationId: () => `mon:prrcn:${randomOpaqueBody()}`,
   nextObligationId: () => `mon:nobl:${randomOpaqueBody()}`,
 };
+
+/**
+ * Identity for Phase 1.17's governed closure record — SERVER ONLY.
+ *
+ * A THIRD SEPARATE PROVIDER, on the convention `ParticipantMitigationIdProvider`
+ * set and for the reason it recorded: widening a shared interface would oblige
+ * every existing test double that mints a participant to also mint a closure,
+ * which is a change to twenty call sites to serve one.
+ *
+ * A closure id encodes nothing — not a participant, a reason, or an ordering.
+ */
+export interface ParticipantClosureIdProvider {
+  nextClosureId(): string;
+  nextObligationId(): string;
+}
+
+export const cryptoParticipantClosureIdProvider: ParticipantClosureIdProvider = {
+  nextClosureId: () => `mon:pcls:${randomOpaqueBody()}`,
+  nextObligationId: () => `mon:nobl:${randomOpaqueBody()}`,
+};

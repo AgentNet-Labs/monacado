@@ -259,6 +259,21 @@ export const PARTICIPANT_DECISION_CONTEXT_CODES = [
   "SUSPENSION_IMPOSED",
   "SUSPENSION_LIFTED",
   "RECONSIDERATION_DECIDED",
+  /**
+   * Phase 1.17. The participant closed their own participation.
+   *
+   * The odd one out here, and deliberately kept in the same family rather than
+   * given its own: the other five are Monacado's decisions ABOUT a participant,
+   * this one is the participant's decision about themselves. It belongs with
+   * them because the obligation model's question is "what happened to this
+   * participant's standing", and closure is the largest possible answer to it.
+   *
+   * Monacado still owes the notice, and that is not a formality. It is the
+   * participant's own durable record, in their own account, that the closure
+   * happened and when — the thing they would need if they ever disputed that it
+   * did.
+   */
+  "PARTICIPANT_CLOSED",
 ] as const;
 export const ParticipantDecisionContextCode = z.enum(PARTICIPANT_DECISION_CONTEXT_CODES);
 export type ParticipantDecisionContextCode = z.infer<typeof ParticipantDecisionContextCode>;

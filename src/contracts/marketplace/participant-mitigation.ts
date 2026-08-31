@@ -344,16 +344,78 @@ export function isValidReconsiderationTransition(
  * There is no `ESCALATED`, no `REFERRED`, and no `EXTERNAL_REVIEW`: nothing
  * outside Monacado exists to escalate to, and a vocabulary member promising one
  * would be the policy over-claiming through the back door.
+ *
+ * PHASE 1.17 MADE THAT FIRST SENTENCE TRUE. It was not.
+ * `DECISION_LIFTED_ON_RECONSIDERATION` said the decision HAD BEEN LIFTED, while
+ * `decideReconsideration` writes a determination and performs no lift — a fact
+ * the same service states in terms ("This records a determination; it does not
+ * perform the lift") and an existing test already proves. A participant could
+ * therefore hold a notice of a determination naming their restriction lifted
+ * while `ParticipantRestriction.status` was still `ACTIVE` and every enforcement
+ * seam still refused them.
+ *
+ * `LIFT_DIRECTED_ON_RECONSIDERATION` names what the act actually is: Monacado
+ * has determined the decision should not stand, and the lift follows as its own
+ * governed act under its own actor and instant. That is not a workaround for a
+ * missing capability — it is the two-event model Marketplace Policy 1.3.0
+ * already describes, which says Monacado "records a determination" and,
+ * separately, that "a restriction or a suspension ends when Monacado lifts it"
+ * and that "lifting is a recorded decision with its own moment, its own acting
+ * account, and its own classification". The lift vocabularies have carried
+ * `LIFTED_ON_RECONSIDERATION` since 1.14 for exactly this purpose; until now
+ * nothing pointed at it.
+ *
+ * `DIRECTED` rather than `RECOMMENDED`: the decider holds the lifting
+ * entitlement itself. `RECOMMENDED` is the word reserved for
+ * `participant:risk-review`, which explicitly cannot carry out what it records,
+ * and borrowing it here would understate this authority as badly as the old
+ * member overstated it.
+ *
+ * WHAT IS STILL NOT GUARANTEED, said plainly: nothing makes the directed lift
+ * happen. A determination of `LIFT_DIRECTED_ON_RECONSIDERATION` standing beside
+ * a restriction still `ACTIVE` a month later is a real failure mode. It is now
+ * at least COUNTABLE — that pair is a query — where before it was invisible
+ * because the label asserted the lift had already occurred.
  */
 export const RECONSIDERATION_DETERMINATIONS = [
   "UPHELD",
-  "DECISION_LIFTED_ON_RECONSIDERATION",
+  "LIFT_DIRECTED_ON_RECONSIDERATION",
   "REMEDIATION_REQUIRED_BEFORE_FURTHER_RECONSIDERATION",
   "WITHDRAWN_BY_PARTICIPANT",
   "SUPERSEDED_DECISION_ALREADY_LIFTED",
 ] as const;
 export const ReconsiderationDetermination = z.enum(RECONSIDERATION_DETERMINATIONS);
 export type ReconsiderationDetermination = z.infer<typeof ReconsiderationDetermination>;
+
+/**
+ * Determinations no path writes any more, retained so stored rows stay readable.
+ *
+ * ADDITIVE, NEVER A REWRITE. `determinationCode` is a plain `VARCHAR(64)`
+ * bounded in the application layer, so narrowing the writable vocabulary cannot
+ * invalidate a row that already holds the old value — but `toSnapshot` casts
+ * rather than parses, so without this the READ type would quietly lie about any
+ * such row. Rewriting the stored value instead would destroy the record of what
+ * Monacado actually recorded at the time, which is the opposite of what an audit
+ * trail is for.
+ */
+export const RETIRED_RECONSIDERATION_DETERMINATIONS = [
+  "DECISION_LIFTED_ON_RECONSIDERATION",
+] as const;
+export const RetiredReconsiderationDetermination = z.enum(
+  RETIRED_RECONSIDERATION_DETERMINATIONS,
+);
+export type RetiredReconsiderationDetermination = z.infer<
+  typeof RetiredReconsiderationDetermination
+>;
+
+/**
+ * Every determination a STORED row may legitimately hold — writable plus
+ * retired. The read type; `DecideReconsiderationInput` stays bound to the
+ * writable set, so nothing can write a retired member.
+ */
+export type StoredReconsiderationDetermination =
+  | ReconsiderationDetermination
+  | RetiredReconsiderationDetermination;
 
 export const RequestReconsiderationInput = z
   .strictObject({

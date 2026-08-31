@@ -9,17 +9,28 @@
  * Four properties shape everything below:
  *
  *   1. **Drafting only, enforced structurally.** `advanceParticipantStatus`
- *      refuses UNDER_REVIEW, ACTIVE, RESTRICTED, and SUSPENDED — not because the
- *      0M.1 transition table forbids them, but because reaching them is a
- *      governed activation decision that belongs on a `ParticipantActivation`
- *      row, and this phase writes none. A phase that could set ACTIVE without
- *      recording who decided it would make the audit table decorative.
+ *      refuses UNDER_REVIEW, ACTIVE, RESTRICTED, SUSPENDED, and CLOSED — not
+ *      because the 0M.1 transition table forbids them, but because reaching each
+ *      is a governed act that belongs on its own evidence row, and this phase
+ *      writes none. A phase that could set ACTIVE without recording who decided
+ *      it would make the audit table decorative.
  *
  *      **Phase 0M.8 did not lift this gate.** It added `activation-service`,
  *      which writes UNDER_REVIEW and ACTIVE *together with* the activation row,
  *      in one transaction. The draft path stays exactly as narrow as it was, so
  *      there remains no way to reach either status without the audit evidence —
  *      which is stronger than widening this function would have been.
+ *
+ *      **Phase 1.17 found the gate was narrower than this claim.** CLOSED was a
+ *      member of the draft-writable set, admitted by 0M.5 for the one case where
+ *      it needs no decision — a draft giving up — and the gate reads only the
+ *      TARGET, so it authorised every other case too: any caller could
+ *      irreversibly close an ACTIVE, RESTRICTED, SUSPENDED, or UNDER_REVIEW
+ *      participant with no actor, no authorization, and no record. Closure is now
+ *      `closeParticipant` in `participant-closure-service`, authorized by the
+ *      participant's own account and recorded on `ParticipantClosure`. The same
+ *      target-only blindness let this function withdraw a participant from
+ *      review; gate 2 on the function below closes that half.
  *
  *   2. **The 0M.1 logic is used, never restated.** Transitions come from
  *      `isValidParticipantTransition` / `isValidRoleAssignmentTransition`,
@@ -382,18 +393,32 @@ export async function getParticipantProfile(
 /**
  * Move a participant between DRAFT-phase statuses.
  *
- * Two gates, in this order, and the order is the point:
+ * Three gates, in this order, and the order is the point:
  *
  *   1. **Is the target writable through the DRAFT path at all?** UNDER_REVIEW,
- *      ACTIVE, RESTRICTED, and SUSPENDED are refused with
+ *      ACTIVE, RESTRICTED, SUSPENDED, and CLOSED are refused with
  *      `ActivationNotPermittedInPhaseError` — a boundary, not a domain rule, and
  *      named differently so nobody reads it as "impossible". UNDER_REVIEW and
  *      ACTIVE are reached through `activation-service` (0M.8), which records who
- *      decided them; RESTRICTED and SUSPENDED are reachable from nowhere until
- *      `0M.R1` gives them a restriction scope.
- *   2. **Does the 0M.1 transition table permit it?** Checked second, so an
- *      attempt to jump DRAFT → PROFILE_COMPLETE is reported as the illegal
- *      transition it is rather than being masked by the phase gate.
+ *      decided them; RESTRICTED and SUSPENDED through the governed mitigation
+ *      services, which record the evidence behind them; CLOSED through
+ *      `closeParticipant` (1.17), which records the participant's own decision.
+ *   2. **Is the SOURCE one this path may move at all?** Phase 1.17. A status
+ *      gate that reads only the target is a gate on half the transition, and
+ *      both halves of what this function could reach turned out to matter:
+ *      `CLOSED` was writable from every admitted state, and `UNDER_REVIEW` is a
+ *      source from which `PROFILE_INCOMPLETE` is a legal target — so this
+ *      function could reproduce the exact effect of a
+ *      `MORE_INFORMATION_REQUIRED` decision with no reviewer, no entitlement,
+ *      and no `ParticipantActivation` decision row. That did not merely bypass
+ *      the review; it STRANDED the participant, because the undecided activation
+ *      keeps its `undecidedForParticipantId` marker and afterwards resubmission
+ *      hits a unique violation, approval finds no activation under review, and
+ *      `MORE_INFORMATION_REQUIRED` fails its own transition check. A participant
+ *      under review is moved by the review, and by nothing else.
+ *   3. **Does the 0M.1 transition table permit it?** Checked last, so an attempt
+ *      to jump DRAFT → PROFILE_COMPLETE is reported as the illegal transition it
+ *      is rather than being masked by a phase gate.
  */
 export async function advanceParticipantStatus(
   participantId: string,
@@ -412,6 +437,11 @@ export async function advanceParticipantStatus(
       if (row === null) throw new ParticipantNotFoundError();
 
       const from = row.status as ParticipantStatus;
+      if (from === "UNDER_REVIEW") {
+        /* Reported as the phase boundary it is: leaving review is a governed
+           decision, and `decideParticipantActivation` is where it lives. */
+        throw new ActivationNotPermittedInPhaseError(to);
+      }
       if (!isValidParticipantTransition(from, to)) {
         throw new InvalidParticipantTransitionError(from, to);
       }

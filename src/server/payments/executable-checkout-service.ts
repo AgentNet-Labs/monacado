@@ -56,6 +56,7 @@ import type {
 import { riskAllowed, type RiskDecision } from "../../contracts/marketplace/transaction-risk";
 import { evaluateTransactionRisk } from "../risk/transaction-risk-service";
 import { assertPartiesMayTransact } from "../marketplace/participant-standing-service";
+import { assertParticipantLifecycleIsLive } from "../marketplace/participant-closure-service";
 import { TransactionDeniedByRiskError } from "../risk/risk-errors";
 import { recordOrderTaxEvidence } from "../tax/tax-evidence-service";
 import { taxCalculationIdempotencyKey } from "../tax/tax-idempotency";
@@ -209,12 +210,43 @@ export async function beginCheckout(
    * enforcement is inferred across parties: a restriction on the seller is not a
    * restriction on the promoter, and a Seller×Promoter risk anomaly is evidence
    * about a relationship, never a decision against someone. */
-  await assertPartiesMayTransact(deps.db ?? getPrisma(), [
-    { participantId: prepared.sellerParticipantId, role: "SELLER" },
+  const transactingParties = [
+    { participantId: prepared.sellerParticipantId, role: "SELLER" as const },
     ...(prepared.promoterParticipantId === null
       ? []
       : [{ participantId: prepared.promoterParticipantId, role: "PROMOTER" as const }]),
-  ]);
+  ];
+
+  await assertPartiesMayTransact(deps.db ?? getPrisma(), transactingParties);
+
+  /* — 2a-ii. Terminal lifecycle, per party (Phase 1.17). —
+   *
+   * A SECOND AND SEPARATE QUESTION, and it has to be asked here because neither
+   * existing gate reaches it. `evaluateListingPurchasability` refuses a
+   * non-ACTIVE CONTROLLING participant — but on a promoted Listing the
+   * controller is the PROMOTER, so a closed SELLER passed it, which is the
+   * Phase 1.15 gap one axis further out. And `assertPartiesMayTransact` reads
+   * `ParticipantRestriction` and `ParticipantSuspension` only, deliberately, so
+   * a closed participant carrying no active mitigation row was refused by
+   * nothing at all.
+   *
+   * NOT folded into the standing service, and that is the ruling rather than a
+   * convenience. Phase 1.15 forbids that module from reading
+   * `MarketplaceParticipant`, because status is DERIVED from the very rows it
+   * reads — asking it back would answer a scope-exact question with the coarsest
+   * fact available. `CLOSED` is not such a projection: no mitigation act can
+   * produce it, so it is an independent authoritative fact and consulting it is
+   * not the circularity that ban prohibits. The standing service keeps its
+   * guarantee untouched and this asks the lifecycle question next to it.
+   *
+   * FUTURE COMMERCE ONLY, on the same terms as the gate above. This runs before
+   * any Order row exists and never reaches a completed sale, a refund, a
+   * dispute, a tax correction, or a recorded obligation. Monacado remains
+   * merchant of record for everything already sold by a participant who has
+   * since closed, and still owes what those sales earned. */
+  for (const party of transactingParties) {
+    await assertParticipantLifecycleIsLive(deps.db ?? getPrisma(), party.participantId);
+  }
 
   /* — 2b. Commerce readiness, BEFORE tax and BEFORE anything is written. —
    *

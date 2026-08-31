@@ -32,6 +32,12 @@ import {
   getParticipantRestrictionHistory,
 } from "../src/server/marketplace/participant-restriction-service";
 import { isParticipantSuspended } from "../src/server/marketplace/participant-standing-service";
+import { closeParticipant } from "../src/server/marketplace/participant-closure-service";
+import {
+  ParticipantAlreadyClosedError,
+  ParticipantClosureNotFoundError,
+  ParticipantLifecycleTerminatedError,
+} from "../src/server/marketplace/participant-closure-errors";
 import { createDraftStorefront } from "../src/server/marketplace/storefront-service";
 import {
   getParticipantSuspensionHistory,
@@ -205,6 +211,7 @@ async function cleanup(): Promise<void> {
       where: { recipientParticipantId: { in: ids } },
     });
     await db.participantReconsideration.deleteMany({ where: { participantId: { in: ids } } });
+    await db.participantClosure.deleteMany({ where: { participantId: { in: ids } } });
     await db.participantSuspension.deleteMany({ where: { participantId: { in: ids } } });
     await db.participantRestriction.deleteMany({ where: { participantId: { in: ids } } });
     await db.participantActivation.deleteMany({ where: { participantId: { in: ids } } });
@@ -873,6 +880,59 @@ d("1.14 · governed participant mitigation (integration)", () => {
       expect(history[0]!.liftedAt).toBeNull();
       expect(await participantStatus(participantId)).toBe(before);
     });
+
+    /* PHASE 1.17 — THE HALF THE TEST ABOVE NEVER REACHED.
+    
+       That one proves FILING performs no lift. The over-claim was on the
+       DETERMINATION: `DECISION_LIFTED_ON_RECONSIDERATION` asserted the decision
+       had been lifted while `decideReconsideration` touches no mitigation row, so
+       a participant could hold a notice naming their restriction lifted while
+       every enforcement seam still refused them. The label now says what the act
+       is — a lift DIRECTED — and this asserts the two-event story end to end:
+       deciding leaves the restriction standing, and the separate governed lift is
+       what actually ends it. */
+    it("directs a lift without performing one, and the lift is its own act", async () => {
+      const participantId = await seedParticipant();
+      const imposed = await restrict(participantId);
+      const restrictionId = imposed.restriction.restrictionId;
+
+      const filed = await ask(participantId, restrictionId, await accountOf(participantId));
+      const decided = await decideReconsideration(
+        {
+          reconsiderationId: filed.reconsiderationId,
+          determinationCode: "LIFT_DIRECTED_ON_RECONSIDERATION",
+          actingAccountId: actors.restrictor,
+          decidedAt: LATER,
+        },
+        { db },
+      );
+      expect(decided.determinationCode).toBe("LIFT_DIRECTED_ON_RECONSIDERATION");
+
+      /* THE DECISION ALONE CHANGES NOTHING OPERATIONAL. This is the assertion the
+         old vocabulary made impossible to state honestly. */
+      const afterDecision = await getParticipantRestrictionHistory(participantId, { db });
+      expect(afterDecision[0]!.status).toBe("ACTIVE");
+      expect(afterDecision[0]!.liftedAt).toBeNull();
+      expect(await participantStatus(participantId)).toBe("RESTRICTED");
+
+      /* The lift is a separate governed act with its own actor and instant, and
+         names the reconsideration as its cause through a reason code that has
+         existed since 1.14 for exactly this handoff. */
+      await liftParticipantRestriction(
+        {
+          restrictionId,
+          reasonCode: "LIFTED_ON_RECONSIDERATION",
+          actingAccountId: actors.restrictor,
+          liftedAt: LATER,
+        },
+        { db },
+      );
+
+      const afterLift = await getParticipantRestrictionHistory(participantId, { db });
+      expect(afterLift[0]!.status).toBe("LIFTED");
+      expect(afterLift[0]!.liftedAt).not.toBeNull();
+      expect(await participantStatus(participantId)).toBe("ACTIVE");
+    });
   });
 
   describe("1.16 · admission is never granted by mitigation", () => {
@@ -1229,6 +1289,167 @@ d("1.14 · governed participant mitigation (integration)", () => {
       const participantId = await seedParticipant();
       await suspend(participantId);
       expect(await db.participantRestriction.count({ where: { participantId } })).toBe(0);
+    });
+  });
+
+  /* PHASE 1.17 — GOVERNED TERMINAL CLOSURE.
+  
+     Before this, `advanceParticipantStatus` could move an ACTIVE, RESTRICTED,
+     SUSPENDED, or UNDER_REVIEW participant to CLOSED with no actor, no
+     authorization, no reason, and no record — the only irreversible act in this
+     subsystem, and the only one carrying none of the disciplines every other one
+     carries. The contract and persistence tests prove that path is shut; this
+     proves the governed replacement behaves, and that closure neither lifts a
+     standing decision nor is undone by one. */
+  describe("1.17 · terminal closure is governed, and settles nothing", () => {
+    beforeEach(async () => {
+      await activatePolicy(MARKETPLACE_POLICY_VERSION_1_3);
+    });
+
+    const ownerOf = async (participantId: string): Promise<string> =>
+      (
+        await db.marketplaceParticipant.findUniqueOrThrow({
+          where: { id: participantId },
+          select: { accountId: true },
+        })
+      ).accountId;
+
+    const close = async (participantId: string, actingAccountId: string) =>
+      closeParticipant(
+        {
+          participantId,
+          actingAccountId,
+          reasonCode: "NO_LONGER_TRADING_ON_MONACADO",
+          closedAt: LATER,
+        },
+        { db },
+      );
+
+    it("refuses a closer who is not the participant, and tells them nothing", async () => {
+      const participantId = await seedParticipant();
+      const stranger = await seedParticipant();
+
+      /* NOT-FOUND, deliberately — the same answer a non-existent participant
+         gets, so an unauthorized caller learns neither that the participant
+         exists nor what standing it holds. Staff entitlements confer nothing
+         here either: no published term gives Monacado power to close somebody. */
+      for (const actor of [await ownerOf(stranger), actors.restrictor, actors.suspender]) {
+        await expect(close(participantId, actor)).rejects.toBeInstanceOf(
+          ParticipantClosureNotFoundError,
+        );
+      }
+      expect(await participantStatus(participantId)).toBe("ACTIVE");
+      expect(await db.participantClosure.count({ where: { participantId } })).toBe(0);
+    });
+
+    it("records the actor, the reason, and the status it closed from", async () => {
+      const participantId = await seedParticipant();
+      const owner = await ownerOf(participantId);
+      await restrict(participantId);
+      expect(await participantStatus(participantId)).toBe("RESTRICTED");
+
+      const closed = await close(participantId, owner);
+
+      expect(closed.closedByAccountId).toBe(owner);
+      expect(closed.reasonCode).toBe("NO_LONGER_TRADING_ON_MONACADO");
+      /* The one fact closure destroys, and the reason the column exists: what
+         this participant WAS when they left. */
+      expect(closed.statusBeforeClosure).toBe("RESTRICTED");
+      expect(await participantStatus(participantId)).toBe("CLOSED");
+
+      /* Monacado owes the notice, keyed on the CLOSURE and never the
+         participant — the obligation key hashes the subject, and using the
+         participant would collide with every other standing notice. */
+      const obligations = await db.notificationObligation.findMany({
+        where: { recipientParticipantId: participantId, contextCode: "PARTICIPANT_CLOSED" },
+      });
+      expect(obligations).toHaveLength(1);
+      expect(obligations[0]!.subjectRef).toBe(closed.closureId);
+
+      /* CLOSING IS NOT EXONERATING. The restriction stands exactly as it did:
+         the decision was never withdrawn, and marking it LIFTED would have meant
+         choosing a lift reason that is a false statement about a closure and
+         naming an account as having lifted what nobody lifted. */
+      const history = await getParticipantRestrictionHistory(participantId, { db });
+      expect(history[0]!.status).toBe("ACTIVE");
+      expect(history[0]!.liftedAt).toBeNull();
+      expect(history[0]!.liftedByAccountId).toBeNull();
+    });
+
+    it("keeps a suspension standing, and is not undone by reinstating it", async () => {
+      const participantId = await seedParticipant();
+      const owner = await ownerOf(participantId);
+      const imposed = await suspend(participantId);
+      expect(await participantStatus(participantId)).toBe("SUSPENDED");
+
+      const closed = await close(participantId, owner);
+      expect(closed.statusBeforeClosure).toBe("SUSPENDED");
+
+      /* Closing did not silently reinstate. */
+      const stillActive = await db.participantSuspension.findUniqueOrThrow({
+        where: { id: imposed.suspensionId },
+      });
+      expect(stillActive.status).toBe("ACTIVE");
+      expect(stillActive.liftedAt).toBeNull();
+
+      /* And the reverse — reinstatement does not revive a closed participant.
+         Reopening is a new admission decision with its own record, never a side
+         effect of an unrelated act finishing. */
+      await reinstateParticipant(
+        {
+          suspensionId: imposed.suspensionId,
+          reasonCode: "REQUIREMENT_SATISFIED",
+          actingAccountId: actors.suspender,
+          reinstatedAt: LATER,
+        },
+        { db },
+      );
+      expect(await participantStatus(participantId)).toBe("CLOSED");
+    });
+
+    it("is not revived by lifting the last restriction, and never closes twice", async () => {
+      const participantId = await seedParticipant();
+      const owner = await ownerOf(participantId);
+      const imposed = await restrict(participantId);
+      await close(participantId, owner);
+
+      await liftParticipantRestriction(
+        {
+          restrictionId: imposed.restriction.restrictionId,
+          reasonCode: "REQUIREMENT_SATISFIED",
+          actingAccountId: actors.restrictor,
+          liftedAt: LATER,
+        },
+        { db },
+      );
+      /* RESTRICTED + 0 would ordinarily reconcile to ACTIVE. Terminal dominates. */
+      expect(await participantStatus(participantId)).toBe("CLOSED");
+
+      await expect(close(participantId, owner)).rejects.toBeInstanceOf(
+        ParticipantAlreadyClosedError,
+      );
+      expect(await db.participantClosure.count({ where: { participantId } })).toBe(1);
+    });
+
+    it("acquires no new mitigation once closed, and keeps its identity and roles", async () => {
+      const participantId = await seedParticipant();
+      const owner = await ownerOf(participantId);
+      await close(participantId, owner);
+
+      /* The asymmetry 1.17 also fixed: `suspendParticipant` has refused a CLOSED
+         target since 1.14 and `imposeParticipantRestriction` did not, so the
+         heavier act refused while the lighter one proceeded. */
+      await expect(restrict(participantId)).rejects.toBeInstanceOf(
+        ParticipantLifecycleTerminatedError,
+      );
+      expect(await db.participantRestriction.count({ where: { participantId } })).toBe(0);
+
+      /* Closure is not a deletion. Identity and roles survive, because completed
+         commerce is anchored to them and Monacado remains merchant of record for
+         every purchase already made. */
+      const roles = await db.marketplaceRoleAssignment.findMany({ where: { participantId } });
+      expect(roles.length).toBeGreaterThan(0);
+      expect(await db.marketplaceParticipant.count({ where: { id: participantId } })).toBe(1);
     });
   });
 });

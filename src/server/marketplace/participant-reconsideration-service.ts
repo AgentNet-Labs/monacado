@@ -36,12 +36,37 @@
  * one: it makes vocabulary inadequacy countable, so the remedy is a reviewable
  * extension rather than a text box nobody governs.
  *
- * ## Deciding is the imposing authority
+ * ## Deciding requires the imposing authority
  *
- * A determination of `DECISION_LIFTED_ON_RECONSIDERATION` *is* a lift, so it is
- * gated on the entitlement the lift already requires — `participant:restrict` for
+ * A determination of `LIFT_DIRECTED_ON_RECONSIDERATION` DIRECTS a lift, so it is
+ * gated on the entitlement the lift itself requires — `participant:restrict` for
  * a restriction, `participant:suspend` for a suspension. Reconsideration is not a
  * side door around either.
+ *
+ * PHASE 1.17 CORRECTED THIS PARAGRAPH, NOT THE RULE IT STATES. It used to say
+ * the determination *is* a lift, which contradicted `decideReconsideration`'s own
+ * documentation two hundred lines below ("This records a determination; it does
+ * not perform the lift") and the service's actual behaviour, which touches no
+ * mitigation row. The gating is unchanged and was always right; only the claim
+ * about what the determination performs was false. The vocabulary now says
+ * `LIFT_DIRECTED_` rather than `DECISION_LIFTED_`, so a participant can no longer
+ * hold a notice of a determination naming their restriction lifted while the row
+ * is still `ACTIVE` and every enforcement seam still refuses them.
+ *
+ * ## Two events, because the policy says two events
+ *
+ * Marketplace Policy 1.3.0 states them separately: Monacado "considers what is
+ * submitted and records a determination", and — its own sentence — "a restriction
+ * or a suspension ends when Monacado lifts it. Lifting is a recorded decision
+ * with its own moment, its own acting account, and its own classification." The
+ * lift vocabularies have carried `LIFTED_ON_RECONSIDERATION` since 1.14 for
+ * exactly this handoff.
+ *
+ * WHAT IS STILL NOT GUARANTEED. Nothing here makes the directed lift happen. A
+ * `LIFT_DIRECTED_ON_RECONSIDERATION` standing beside a restriction still `ACTIVE`
+ * a month later is a real failure mode, and it is named rather than hidden: it is
+ * now COUNTABLE, because that pair is a query. Under the old label it was
+ * invisible, since the record asserted the lift had already occurred.
  */
 
 import "../server-only";
@@ -50,8 +75,8 @@ import {
   DecideReconsiderationInput,
   RequestReconsiderationInput,
   isValidReconsiderationTransition,
-  type ReconsiderationDetermination,
   type ReconsiderationStatus,
+  type StoredReconsiderationDetermination,
 } from "../../contracts/marketplace/participant-mitigation";
 import {
   canRestrictParticipant,
@@ -89,7 +114,13 @@ export interface ReconsiderationSnapshot {
   groundCode: string;
   remediationClaimCode: string | null;
   status: ReconsiderationStatus;
-  determinationCode: ReconsiderationDetermination | null;
+  /**
+   * WIDER THAN THE WRITABLE VOCABULARY, on purpose (Phase 1.17). A stored row may
+   * hold a retired determination; `DecideReconsiderationInput` stays bound to the
+   * writable set, so nothing can put one there now, and a historical row stays
+   * readable rather than being cast into a type that no longer describes it.
+   */
+  determinationCode: StoredReconsiderationDetermination | null;
   decidedByAccountId: string | null;
   decidedAt: string | null;
   requestedAt: string;
@@ -116,7 +147,7 @@ function toSnapshot(row: {
     groundCode: row.groundCode,
     remediationClaimCode: row.remediationClaimCode,
     status: row.status as ReconsiderationStatus,
-    determinationCode: row.determinationCode as ReconsiderationDetermination | null,
+    determinationCode: row.determinationCode as StoredReconsiderationDetermination | null,
     decidedByAccountId: row.decidedByAccountId,
     decidedAt: row.decidedAt?.toISOString() ?? null,
     requestedAt: row.requestedAt.toISOString(),
