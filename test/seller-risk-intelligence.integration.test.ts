@@ -33,6 +33,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { createAccount } from "../src/server/account/account-service";
 import { grantAccountEntitlement } from "../src/server/account/account-entitlement-service";
+import { imposeParticipantRestriction } from "../src/server/marketplace/participant-restriction-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
 import {
   aggregateWindow,
@@ -488,6 +489,18 @@ async function cleanup(): Promise<void> {
   });
   await db.commercialPolicy.deleteMany({ where: { id: { startsWith: `mon:cpol:${TAG}` } } });
   if (participantIds.length > 0) {
+    /* Phase 1.15 — the resulting-restriction integrity tests impose real
+       restrictions, which raise notice obligations and are referenced by risk
+       reviews. Every FK here is RESTRICT, so children go before parents. */
+    await db.notificationObligation.deleteMany({
+      where: { recipientParticipantId: { in: participantIds } },
+    });
+    await db.participantReconsideration.deleteMany({
+      where: { participantId: { in: participantIds } },
+    });
+    await db.participantRestriction.deleteMany({
+      where: { participantId: { in: participantIds } },
+    });
     await db.marketplaceRoleAssignment.deleteMany({
       where: { participantId: { in: participantIds } },
     });
@@ -921,6 +934,119 @@ d("1.13 · staff review records a decision and performs none", () => {
     expect(statusAfter.status).not.toBe("SUSPENDED");
     /* And no restriction was created by any of it. */
     expect(await db.participantRestriction.count({ where: { participantId: seller } })).toBe(0);
+  });
+
+  it("refuses to name a restriction belonging to a different participant", async () => {
+    /* Phase 1.15 integrity correction. `resultingRestrictionId` is foreign-keyed
+       to `ParticipantRestriction.id` and nothing more, so the database could only
+       prove the restriction exists — of SOMEBODY. It is the one column linking a
+       review to the act a reviewer took, and a review of A resolving to B's
+       restriction corrupts that link in both directions: A's review appears to
+       have had a consequence it did not, and B's restriction acquires a
+       justification that was never about them. */
+    const subject = await seedParticipant(["SELLER"]);
+    const stranger = await seedParticipant(["SELLER"]);
+    const policy = (await resolveActiveReviewPolicy({ db }))!;
+
+    const restrictor = await seedAccount();
+    await grantAccountEntitlement(
+      { accountId: restrictor, capability: "participant:restrict", grantedAt: NOW },
+      { db },
+    );
+    const strangersRestriction = await imposeParticipantRestriction(
+      {
+        participantId: stranger,
+        scope: "payout:receive",
+        reasonCode: "UNDERWRITING_REVIEW_REQUIRED",
+        actingAccountId: restrictor,
+        imposedAt: NOW,
+      },
+      { db },
+    );
+
+    const opened = await openParticipantRiskReview(
+      {
+        participantId: subject,
+        triggerSource: "SYSTEM",
+        triggerAsOf: AS_OF,
+        reviewPolicyId: policy.policyId,
+        reviewPolicyVersion: policy.policyVersion,
+        reasons,
+        openedAt: NOW,
+        actingAccountId: null,
+      },
+      { db },
+    );
+
+    await expect(
+      closeParticipantRiskReview(
+        {
+          reviewId: opened.id,
+          dispositionCode: "COMMERCIAL_RESTRICTION_RECOMMENDED",
+          actingAccountId: graph.reviewerAccountId,
+          decidedAt: NOW,
+          resultingRestrictionId: strangersRestriction.restriction.restrictionId,
+        },
+        { db },
+      ),
+    ).rejects.toMatchObject({ code: "RISK_REVIEW_RESTRICTION_PARTICIPANT_MISMATCH" });
+
+    /* The review is untouched — still OPEN, still naming no consequence. */
+    const row = await db.participantRiskReview.findUniqueOrThrow({ where: { id: opened.id } });
+    expect(row.status).toBe("OPEN");
+    expect(row.resultingRestrictionId).toBeNull();
+
+    /* The stranger's restriction is untouched too. */
+    const theirs = await db.participantRestriction.findUniqueOrThrow({
+      where: { id: strangersRestriction.restriction.restrictionId },
+    });
+    expect(theirs.participantId).toBe(stranger);
+    expect(theirs.status).toBe("ACTIVE");
+  });
+
+  it("accepts a restriction belonging to the participant under review", async () => {
+    const subject = await seedParticipant(["SELLER"]);
+    const policy = (await resolveActiveReviewPolicy({ db }))!;
+    const restrictor = await seedAccount();
+    await grantAccountEntitlement(
+      { accountId: restrictor, capability: "participant:restrict", grantedAt: NOW },
+      { db },
+    );
+    const own = await imposeParticipantRestriction(
+      {
+        participantId: subject,
+        scope: "payout:receive",
+        reasonCode: "UNDERWRITING_REVIEW_REQUIRED",
+        actingAccountId: restrictor,
+        imposedAt: NOW,
+      },
+      { db },
+    );
+    const opened = await openParticipantRiskReview(
+      {
+        participantId: subject,
+        triggerSource: "SYSTEM",
+        triggerAsOf: AS_OF,
+        reviewPolicyId: policy.policyId,
+        reviewPolicyVersion: policy.policyVersion,
+        reasons,
+        openedAt: NOW,
+        actingAccountId: null,
+      },
+      { db },
+    );
+
+    const closed = await closeParticipantRiskReview(
+      {
+        reviewId: opened.id,
+        dispositionCode: "COMMERCIAL_RESTRICTION_RECOMMENDED",
+        actingAccountId: graph.reviewerAccountId,
+        decidedAt: NOW,
+        resultingRestrictionId: own.restriction.restrictionId,
+      },
+      { db },
+    );
+    expect(closed.resultingRestrictionId).toBe(own.restriction.restrictionId);
   });
 
   it("refuses a second open review for the same participant", async () => {

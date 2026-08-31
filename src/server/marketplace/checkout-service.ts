@@ -254,9 +254,20 @@ async function requirePurchasable(
     },
   });
 
-  /* A promoted Listing's commercial selectability comes from the EXACT accepted
-     Offer version, never the Offer's current one. */
+  /* A promoted Listing's accepted TERMS come from the EXACT accepted Offer
+     version, never the Offer's current one. That binding is historical and
+     immutable, and nothing here rewrites it.
+
+     Its CURRENT commercial authorization is a different question with a
+     different source — Phase 1.15, Ruling 1. The accepted version row is frozen
+     and reads ACTIVE/AVAILABLE forever, which is correct for a historical
+     record and wrong as a standing permission: a Seller who ended or withdrew
+     their Offer went on selling through every promoted Listing bound to an
+     earlier version. The stable `Offer` row is the Seller's current answer, and
+     it is resolved by the SAME `offerSourceRecordId` the dependency already
+     names, so no new identity is invented. */
   let offer: { lifecycle: string; availability: string } | undefined;
+  let currentOffer: { lifecycle: string; availability: string } | undefined;
   if (placement.listingType === "PROMOTED") {
     const offerRow = await db.offerSourceRecordVersionRow.findUnique({
       where: {
@@ -268,6 +279,15 @@ async function requirePurchasable(
     });
     if (offerRow !== null) {
       offer = { lifecycle: offerRow.lifecycle, availability: offerRow.availability };
+    }
+    const stableOffer = await db.offer.findUnique({
+      where: { offerSourceRecordId: placement.offerDependency.offerSourceRecordId },
+    });
+    if (stableOffer !== null) {
+      currentOffer = {
+        lifecycle: stableOffer.lifecycle,
+        availability: stableOffer.availability,
+      };
     }
   }
 
@@ -283,6 +303,7 @@ async function requirePurchasable(
     controllingParticipantStatus: controller.status as never,
     controllingRoleStatus: (role?.status ?? "NONE") as never,
     ...(offer === undefined ? {} : { offer: offer as never }),
+    ...(currentOffer === undefined ? {} : { currentOffer: currentOffer as never }),
     ...(placement.listingType === "PROMOTED"
       ? { upstreamReviewState: placement.upstreamReviewState }
       : {}),

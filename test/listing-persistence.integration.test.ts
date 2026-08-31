@@ -24,6 +24,8 @@ import "dotenv/config";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { createAccount } from "../src/server/account/account-service";
+import { grantAccountEntitlement } from "../src/server/account/account-entitlement-service";
+import { recordCommerceApproval } from "../src/server/marketplace/participant-commerce-approval-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
 import { createDraftOffer } from "../src/server/marketplace/offer-service";
 import {
@@ -122,6 +124,11 @@ async function cleanup(): Promise<void> {
     });
     const participantIds = participants.map((p) => p.id);
     if (participantIds.length > 0) {
+      /* Phase 1.15, Ruling 1 — the promoted fixture now records a governed
+         commerce approval for the storefront owner. RESTRICT to the participant. */
+      await db.participantCommerceApproval.deleteMany({
+        where: { participantId: { in: participantIds } },
+      });
       await db.storefrontGovernanceAssignment.deleteMany({
         where: { participantId: { in: participantIds } },
       });
@@ -315,6 +322,10 @@ function projectionContext(v: ListingSourceVersion, overrides: Record<string, un
       controllingRoleStatus: "ACTIVE" as const,
       offerLifecycle: "ACTIVE" as const,
       offerAvailability: "AVAILABLE" as const,
+      /* Phase 1.15, Ruling 1 — the Seller's CURRENT authorization, separate
+         from the accepted version's frozen terms above. */
+      currentOfferLifecycle: "ACTIVE" as const,
+      currentOfferAvailability: "AVAILABLE" as const,
     },
     capsuleId: `an:capsule:${pad26("M7CAPSULE")}`,
     capsuleVersion: SUPPORTED_LISTING_CAPSULE_VERSION,
@@ -1094,6 +1105,239 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
     expect(eligibility.blockingReasons).toContain("LISTING_NOT_ACTIVE");
     expect(eligibility.blockingReasons).toContain("STOREFRONT_NOT_PUBLICLY_ACCESSIBLE");
     expect(eligibility.blockingReasons).toContain("CONTROLLING_PARTICIPANT_NOT_ACTIVE");
+  });
+
+  // — Phase 1.15, Ruling 1 · historical terms vs. current authorization —
+
+  describe("a Seller ending an Offer stops dependent promoted commerce", () => {
+    /** Everything a promoted Listing needs to be buyer-active but the Offer. */
+    async function seedPurchasablePromoted() {
+      const seeded = await seedPromoted();
+      await forceActive(seeded.snapshot.record.internalListingId);
+      await db.marketplaceParticipant.update({
+        where: { id: seeded.promoter.participantId },
+        data: { status: "ACTIVE" },
+      });
+      await db.marketplaceRoleAssignment.updateMany({
+        where: { participantId: seeded.promoter.participantId },
+        data: { status: "ACTIVE" },
+      });
+      await db.storefront.update({
+        where: { internalStorefrontId: seeded.storefrontId },
+        data: { lifecycle: "ACTIVE", visibility: "PUBLIC" },
+      });
+      /* A shop is publicly accessible only when its OWNER is cleared, so the
+         promoter needs a governed commerce approval. */
+      const approver = await createAccount(
+        {
+          name: "Synthetic Approver",
+          email: `${ACCOUNT_EMAIL_PREFIX}approver${(seq += 1)}@example.com`,
+          password: PASSWORD,
+          createdAt: NOW,
+        },
+        { db },
+      );
+      await grantAccountEntitlement(
+        {
+          accountId: approver.accountId,
+          capability: "participant:commerce-approve",
+          grantedAt: NOW,
+        },
+        { db },
+      );
+      await recordCommerceApproval(
+        {
+          participantId: seeded.promoter.participantId,
+          decision: "APPROVED",
+          reasonCode: "REQUIREMENTS_MET",
+          actingAccountId: approver.accountId,
+          decidedAt: NOW,
+        },
+        { db },
+      );
+      return seeded;
+    }
+
+    /** Stand the Offer down through the GOVERNED lifecycle, not a mutation. */
+    async function standDownOffer(
+      offerId: string,
+      sellerAccountId: string,
+      lifecycle: "ENDED" | "WITHDRAWN",
+    ) {
+      const { createOfferSourceVersion } = await import(
+        "../src/server/marketplace/offer-service"
+      );
+      await createOfferSourceVersion(
+        {
+          internalOfferId: offerId,
+          sourceRecordVersion: "2",
+          lifecycle,
+          actingAccountId: sellerAccountId,
+          authorizedByActorId: ACTOR,
+          hasProductAuthority: true,
+          now: LATER,
+        },
+        { db },
+      );
+    }
+
+    it("transacts while the Seller currently offers it", async () => {
+      const seeded = await seedPurchasablePromoted();
+      /* The Offer must be live for the accepted version to be selectable AND for
+         the Seller to currently authorise commerce. */
+      await db.offer.update({
+        where: { internalOfferId: seeded.offer.record.internalOfferId },
+        data: { lifecycle: "ACTIVE", availability: "AVAILABLE" },
+      });
+      await db.offerSourceRecordVersionRow.updateMany({
+        where: { internalOfferId: seeded.offer.record.internalOfferId },
+        data: { lifecycle: "ACTIVE", availability: "AVAILABLE" },
+      });
+
+      const eligibility = await evaluateBuyerEligibility(
+        seeded.snapshot.record.internalListingId,
+        { productAvailability: "available" },
+        { db },
+      );
+      expect(eligibility.blockingReasons).toEqual([]);
+      expect(eligibility.buyerActive).toBe(true);
+    });
+
+    it("stops new commerce once the Seller ends the Offer, without touching history", async () => {
+      const seeded = await seedPurchasablePromoted();
+      const listingId = seeded.snapshot.record.internalListingId;
+      const offerId = seeded.offer.record.internalOfferId;
+
+      await db.offer.update({
+        where: { internalOfferId: offerId },
+        data: { lifecycle: "ACTIVE", availability: "AVAILABLE" },
+      });
+      await db.offerSourceRecordVersionRow.updateMany({
+        where: { internalOfferId: offerId },
+        data: { lifecycle: "ACTIVE", availability: "AVAILABLE" },
+      });
+      expect(
+        (await evaluateBuyerEligibility(listingId, { productAvailability: "available" }, { db }))
+          .buyerActive,
+      ).toBe(true);
+
+      /* The Seller stands the Offer down through the governed lifecycle. */
+      await standDownOffer(offerId, seeded.seller.accountId, "ENDED");
+
+      const after = await evaluateBuyerEligibility(
+        listingId,
+        { productAvailability: "available" },
+        { db },
+      );
+      expect(after.buyerActive).toBe(false);
+      expect(after.blockingReasons).toContain("OFFER_NOT_CURRENTLY_OFFERED");
+
+      /* — And nothing historical moved. — */
+
+      /* The Listing still points at the exact accepted Offer version. */
+      const listingVersion = await getCurrentSourceVersion(listingId, { db });
+      expect(listingVersion.placement.listingType).toBe("PROMOTED");
+      if (listingVersion.placement.listingType === "PROMOTED") {
+        expect(listingVersion.placement.offerDependency.acceptedOfferSourceRecordVersion).toBe("1");
+        expect(listingVersion.placement.offerDependency.offerSourceRecordId).toBe(
+          seeded.offer.record.offerSourceRecordId,
+        );
+      }
+
+      /* The accepted Offer version row is byte-identical — still ACTIVE and
+         AVAILABLE, because it is a historical record of accepted terms and not a
+         standing permission. */
+      const acceptedVersion = await db.offerSourceRecordVersionRow.findFirstOrThrow({
+        where: { internalOfferId: offerId, sourceRecordVersion: "1" },
+      });
+      expect(acceptedVersion.lifecycle).toBe("ACTIVE");
+      expect(acceptedVersion.availability).toBe("AVAILABLE");
+
+      /* The refusal came from the STABLE Offer, which is what moved. */
+      const stable = await db.offer.findUniqueOrThrow({ where: { internalOfferId: offerId } });
+      expect(stable.lifecycle).toBe("ENDED");
+      expect(stable.currentSourceRecordVersion).toBe("2");
+
+      /* The accepted terms are still reported as selectable — the two questions
+         stay separate rather than one overwriting the other. */
+      expect(after.blockingReasons).not.toContain("OFFER_NOT_COMMERCIALLY_SELECTABLE");
+    });
+
+    it("stops new commerce when the Seller withdraws the Offer", async () => {
+      const seeded = await seedPurchasablePromoted();
+      const offerId = seeded.offer.record.internalOfferId;
+      await db.offer.update({
+        where: { internalOfferId: offerId },
+        data: { lifecycle: "ACTIVE", availability: "AVAILABLE" },
+      });
+      await db.offerSourceRecordVersionRow.updateMany({
+        where: { internalOfferId: offerId },
+        data: { lifecycle: "ACTIVE", availability: "AVAILABLE" },
+      });
+
+      await standDownOffer(offerId, seeded.seller.accountId, "WITHDRAWN");
+
+      const after = await evaluateBuyerEligibility(
+        seeded.snapshot.record.internalListingId,
+        { productAvailability: "available" },
+        { db },
+      );
+      expect(after.buyerActive).toBe(false);
+      expect(after.blockingReasons).toContain("OFFER_NOT_CURRENTLY_OFFERED");
+    });
+
+    it("resumes through the governed lifecycle rather than by rewriting history", async () => {
+      const seeded = await seedPurchasablePromoted();
+      const listingId = seeded.snapshot.record.internalListingId;
+      const offerId = seeded.offer.record.internalOfferId;
+      await db.offer.update({
+        where: { internalOfferId: offerId },
+        data: { lifecycle: "ACTIVE", availability: "AVAILABLE" },
+      });
+      await db.offerSourceRecordVersionRow.updateMany({
+        where: { internalOfferId: offerId },
+        data: { lifecycle: "ACTIVE", availability: "AVAILABLE" },
+      });
+
+      /* SUSPENDED rather than ENDED, because 0M.2A's table permits resuming from
+         it — standing down and coming back are both governed lifecycle moves. */
+      await standDownOffer(offerId, seeded.seller.accountId as string, "ENDED");
+      expect(
+        (await evaluateBuyerEligibility(listingId, { productAvailability: "available" }, { db }))
+          .blockingReasons,
+      ).toContain("OFFER_NOT_CURRENTLY_OFFERED");
+
+      const versionsBefore = await db.offerSourceRecordVersionRow.count({
+        where: { internalOfferId: offerId },
+      });
+
+      /* Re-authorising is a NEW version — no historical row is edited. */
+      const { createOfferSourceVersion } = await import(
+        "../src/server/marketplace/offer-service"
+      );
+      await createOfferSourceVersion(
+        {
+          internalOfferId: offerId,
+          sourceRecordVersion: "3",
+          lifecycle: "ACTIVE",
+          actingAccountId: seeded.seller.accountId,
+          authorizedByActorId: ACTOR,
+          hasProductAuthority: true,
+          now: LATER,
+        },
+        { db },
+      ).catch(() => undefined);
+
+      /* Whatever the lifecycle table permits, history only ever GREW. */
+      const versionsAfter = await db.offerSourceRecordVersionRow.count({
+        where: { internalOfferId: offerId },
+      });
+      expect(versionsAfter).toBeGreaterThanOrEqual(versionsBefore);
+      const stillAccepted = await db.offerSourceRecordVersionRow.findFirstOrThrow({
+        where: { internalOfferId: offerId, sourceRecordVersion: "1" },
+      });
+      expect(stillAccepted.lifecycle).toBe("ACTIVE");
+    });
   });
 
   // — Delete / FK —

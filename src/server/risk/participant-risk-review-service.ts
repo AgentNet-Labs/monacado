@@ -63,6 +63,7 @@ import { getPrisma } from "../db/client";
 import {
   RiskReviewAlreadyOpenError,
   RiskReviewNotAuthorizedError,
+  RiskReviewRestrictionParticipantMismatchError,
   RiskReviewTransitionError,
   SellerRiskRequestError,
 } from "./seller-risk-errors";
@@ -313,6 +314,28 @@ export async function closeParticipantRiskReview(
   if (current === null) throw new SellerRiskRequestError("No such risk review");
   if (!isValidRiskReviewTransition(current.status as RiskReviewStatus, "CLOSED")) {
     throw new RiskReviewTransitionError(`A review at ${current.status} cannot move to CLOSED`);
+  }
+
+  /* Phase 1.15 — the consequence must belong to the participant it concerns.
+   *
+   * `resultingRestrictionId` is foreign-keyed to `ParticipantRestriction.id` and
+   * nothing else, so the database could only prove the restriction exists — of
+   * somebody. This is the column that links a review to the act a reviewer took,
+   * and a review of A naming B's restriction corrupts that link in both
+   * directions: A's review looks to have had a consequence it did not, and B's
+   * restriction acquires a justification that was never about them.
+   *
+   * A read rather than a composite foreign key, which would require a redundant
+   * unique on `(id, participantId)` and a duplicated participant column on the
+   * review — schema redesign for something one lookup settles. */
+  if (input.resultingRestrictionId != null) {
+    const restriction = await db.participantRestriction.findUnique({
+      where: { id: input.resultingRestrictionId },
+      select: { participantId: true },
+    });
+    if (restriction === null || restriction.participantId !== current.participantId) {
+      throw new RiskReviewRestrictionParticipantMismatchError();
+    }
   }
 
   const updated = await db.participantRiskReview.update({

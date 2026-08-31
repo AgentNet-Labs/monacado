@@ -41,9 +41,13 @@ import {
 } from "../../contracts/marketplace/storefront-record";
 import {
   INITIAL_STOREFRONT_LIFECYCLE_STATE,
+  canActivateStorefrontRecord,
   canCreateStorefrontRecord,
   canEditStorefrontPresentation,
+  canIncreaseStorefrontExposure,
+  canResumeStorefrontRecord,
   isStorefrontLive,
+  isExposureIncrease,
   isValidStorefrontLifecycleTransition,
   materialChangesBetween,
   type MaterialStorefrontField,
@@ -53,6 +57,10 @@ import {
   type StorefrontSourceVersion,
 } from "../../contracts/marketplace/storefront-source";
 import { getPrisma } from "../db/client";
+import { assertStorefrontMayBecomeOperational } from "./participant-standing-service";
+import { ParticipantActionNotPermittedError } from "./participant-standing-errors";
+import { readReadinessIn } from "./payment-account-service";
+import { resolveCommerceApproval } from "./participant-commerce-approval-service";
 import {
   cryptoStorefrontIdProvider,
   type StorefrontIdProvider,
@@ -114,6 +122,11 @@ function inputError(error: {
 /** Errors that must escape a catch block unwrapped rather than be disguised. */
 function isDomainError(error: unknown): boolean {
   return (
+    /* Phase 1.15 — a governed standing refusal is a DOMAIN answer, not an
+       outage. Wrapped as a persistence failure it would read to a caller as
+       though the database had broken, and the bounded denial code the seam
+       produced would be lost. */
+    error instanceof ParticipantActionNotPermittedError ||
     error instanceof StorefrontNotFoundError ||
     error instanceof StorefrontVersionNotFoundError ||
     error instanceof StorefrontNotAuthorizedError ||
@@ -463,20 +476,6 @@ export async function createStorefrontSourceVersion(
 
       const superOwners = await activeSuperOwnerCount(tx, data.internalStorefrontId);
 
-      requireAllowed(
-        canEditStorefrontPresentation({
-          owner: facts.owner,
-          actor: facts.actor,
-          storefrontId: data.internalStorefrontId,
-          lifecycle: current.lifecycle,
-          visibility: current.visibility,
-          activeSuperOwnerCardinality: superOwnerCardinality(superOwners),
-          /* Supplied, never stored. Editing does not depend on it, and passing
-             the conservative value keeps the decision honest. */
-          goLiveApproval: "NOT_APPROVED",
-        }),
-      );
-
       const next = {
         ownerParticipantId: current.ownerParticipantId,
         lifecycle: data.lifecycle ?? current.lifecycle,
@@ -497,6 +496,90 @@ export async function createStorefrontSourceVersion(
       );
       if (changed.length === 0) throw new NoMaterialChangeError();
 
+      /* — Governance authorization, routed by what this version actually DOES. —
+       *
+       * Phase 1.15, Ruling 2. Every lifecycle and visibility move used to be
+       * authorized by `canEditStorefrontPresentation`, a PRESENTATION decision
+       * that admits an `ADMIN` and reads neither the owner's standing nor
+       * Monacado's go-live determination. The authoritative source model (§7) is
+       * explicit that an `ADMIN` may not "activate the Storefront" or "make it
+       * publicly visible", and records the boundary as data in
+       * `SUPER_OWNER_EXCLUSIVE_AUTHORITIES`. The decisions enforcing it already
+       * existed and were simply never called.
+       *
+       * Three branches, narrowest first:
+       *
+       *   - taking the Storefront live, or resuming it — `SUPER_OWNER` only,
+       *     exactly one active `SUPER_OWNER` appointed, owner admitted and
+       *     payable, and go-live APPROVED;
+       *   - widening exposure toward the public — the same authority, for the
+       *     same reason: §7 names making a Storefront publicly visible as an
+       *     act an `ADMIN` may not perform;
+       *   - everything else — presentation, and standing DOWN — stays exactly as
+       *     it was. `ADMIN` keeps every operational authority it legitimately
+       *     holds, and nothing here requires an intact commerce gate to close or
+       *     hide a shop.
+       *
+       * `SUPER_OWNER` inherits every `ADMIN` permission, so a version that both
+       * edits presentation and goes live is correctly judged by the stronger
+       * gate rather than by both. */
+      const becomingOperational =
+        next.lifecycle === "ACTIVE" && current.lifecycle !== "ACTIVE";
+      const wideningExposure = isExposureIncrease(current.visibility, next.visibility);
+
+      /* Payment readiness is READ for the go-live branch rather than taken from
+         the mapper's default. `toStorefrontOwnerFacts` reports the initial value
+         by construction, documented on the premise that "no payment record
+         exists (0M.8 owns that axis)" — which was true when it was written and
+         is not now. Left as-is, the authority the source model specifies could
+         never pass, which would be a different defect rather than a fix.
+
+         Go-live approval is likewise resolved rather than assumed: the
+         presentation branch keeps passing the conservative NOT_APPROVED, because
+         editing does not depend on it. */
+      const operationalRequest = async () => ({
+        owner: {
+          ...facts.owner,
+          paymentReadiness: await readReadinessIn(tx, current.ownerParticipantId),
+        },
+        actor: facts.actor,
+        storefrontId: data.internalStorefrontId,
+        lifecycle: current.lifecycle,
+        visibility: current.visibility,
+        activeSuperOwnerCardinality: superOwnerCardinality(superOwners),
+        goLiveApproval: await resolveCommerceApproval(tx, current.ownerParticipantId),
+      });
+
+      if (becomingOperational) {
+        const request = await operationalRequest();
+        requireAllowed(
+          current.lifecycle === "SUSPENDED"
+            ? canResumeStorefrontRecord(request)
+            : canActivateStorefrontRecord(request),
+        );
+      } else if (wideningExposure) {
+        requireAllowed(
+          canIncreaseStorefrontExposure({
+            ...(await operationalRequest()),
+            targetVisibility: next.visibility,
+          }),
+        );
+      } else {
+        requireAllowed(
+          canEditStorefrontPresentation({
+            owner: facts.owner,
+            actor: facts.actor,
+            storefrontId: data.internalStorefrontId,
+            lifecycle: current.lifecycle,
+            visibility: current.visibility,
+            activeSuperOwnerCardinality: superOwnerCardinality(superOwners),
+            /* Supplied, never stored. Editing does not depend on it, and passing
+               the conservative value keeps the decision honest. */
+            goLiveApproval: "NOT_APPROVED",
+          }),
+        );
+      }
+
       if (
         next.lifecycle !== current.lifecycle &&
         !isValidStorefrontLifecycleTransition(current.lifecycle, next.lifecycle)
@@ -504,6 +587,34 @@ export async function createStorefrontSourceVersion(
         throw new StorefrontNotAuthorizedError("storefront:record:create", [
           "STOREFRONT_LIFECYCLE_TRANSITION_NOT_PERMITTED",
         ]);
+      }
+
+      /* Phase 1.15 — `storefront:activate` reaches the act it is named for.
+       *
+       * Until now this scope had NO reader of any kind, and the operation it
+       * names was the least protected one in the repository: every lifecycle and
+       * visibility move ran through `canEditStorefrontPresentation`, a
+       * PRESENTATION decision that reads the actor's governance assignment and
+       * never the owner's standing. A suspended owner could take a shop live.
+       *
+       * Two branches, and only these two: becoming operationally reachable
+       * (`→ ACTIVE`), and widening exposure toward the public. Standing a
+       * Storefront down — suspending, closing, or narrowing visibility — is never
+       * gated, on the Storefront source model's own reasoning: an owner who
+       * cannot be paid must still be able to stop trading.
+       *
+       * Gates the operational EFFECT, not the authorship. The source version is
+       * still minted and presentation edits still land; what is refused is the
+       * field value that makes the shop reachable. A restricted owner may still
+       * correct the work that caused the restriction, which is exactly why
+       * `RESTRICTED` is a drafting status.
+       *
+       * NOTE — this does not touch WHICH GOVERNANCE ROLE may activate. That
+       * question (the source model reserves activation to an active SUPER_OWNER;
+       * this path admits an ADMIN) is a separate authorization defect, surfaced
+       * rather than resolved here. */
+      if (becomingOperational || wideningExposure) {
+        await assertStorefrontMayBecomeOperational(tx, current.ownerParticipantId);
       }
 
       await tx.storefrontSourceRecordVersionRow.create({

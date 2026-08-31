@@ -122,10 +122,27 @@ export const ListingUpstreamState = z.strictObject({
     "SUSPENDED",
     "REVOKED",
   ]),
-  /** Promoted Listings only. */
+  /** Promoted Listings only — the EXACT accepted Offer version's terms. */
   offerLifecycle: z.enum(["DRAFT", "ACTIVE", "SUSPENDED", "ENDED", "WITHDRAWN"]).optional(),
-  /** Promoted Listings only. */
+  /** Promoted Listings only — the EXACT accepted Offer version's terms. */
   offerAvailability: z.enum(["AVAILABLE", "TEMPORARILY_UNAVAILABLE"]).optional(),
+  /**
+   * Promoted Listings only — the Offer's CURRENT stable state (Phase 1.15,
+   * Ruling 1).
+   *
+   * Separate from the two above, which describe the immutable accepted version.
+   * A Seller who ends or withdraws their Offer stops new commerce, and a capsule
+   * projected from the frozen version alone would keep presenting a Listing as
+   * purchasable after the Seller stopped offering it.
+   *
+   * Supplied, like every other upstream fact here — the projection reaches no
+   * database.
+   */
+  currentOfferLifecycle: z
+    .enum(["DRAFT", "ACTIVE", "SUSPENDED", "ENDED", "WITHDRAWN"])
+    .optional(),
+  /** Promoted Listings only — the Offer's CURRENT stable state. */
+  currentOfferAvailability: z.enum(["AVAILABLE", "TEMPORARILY_UNAVAILABLE"]).optional(),
 });
 export type ListingUpstreamState = z.infer<typeof ListingUpstreamState>;
 
@@ -396,6 +413,15 @@ export function listingSourceRecordToCapsuleProjection(input: {
           offer: {
             lifecycle: context.upstream.offerLifecycle as OfferLifecycleState,
             availability: context.upstream.offerAvailability as OfferAvailability,
+          },
+        }
+      : {}),
+    ...(context.upstream.currentOfferLifecycle !== undefined &&
+    context.upstream.currentOfferAvailability !== undefined
+      ? {
+          currentOffer: {
+            lifecycle: context.upstream.currentOfferLifecycle as OfferLifecycleState,
+            availability: context.upstream.currentOfferAvailability as OfferAvailability,
           },
         }
       : {}),

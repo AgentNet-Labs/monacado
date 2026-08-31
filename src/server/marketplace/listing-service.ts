@@ -82,6 +82,8 @@ import type { MarketplaceSubject } from "../../contracts/marketplace/participant
 import type { GeneralAvailabilityState } from "../../contracts/product/product.capsule";
 import { getPrisma } from "../db/client";
 import { toMarketplaceSubject } from "./participant-mapper";
+import { assertListingMayBecomeOperational } from "./participant-standing-service";
+import { ParticipantActionNotPermittedError } from "./participant-standing-errors";
 import { versionRowToSourceVersion as offerVersionRowToSourceVersion } from "./offer-mapper";
 import { cryptoListingIdProvider, type ListingIdProvider } from "./listing-ids";
 import {
@@ -134,6 +136,11 @@ function inputError(error: {
 /** Errors that must escape a catch block unwrapped rather than be disguised. */
 function isDomainError(error: unknown): boolean {
   return (
+    /* Phase 1.15 — a governed standing refusal is a DOMAIN answer, not an
+       outage. Wrapped as a persistence failure it would read to a caller as
+       though the database had broken, and the bounded denial code the seam
+       produced would be lost. */
+    error instanceof ParticipantActionNotPermittedError ||
     error instanceof ListingNotFoundError ||
     error instanceof ListingVersionNotFoundError ||
     error instanceof ListingNotAuthorizedError ||
@@ -516,9 +523,16 @@ export async function evaluateBuyerEligibility(
       },
     });
 
-    /* Promoted Listings need the accepted Offer's own commercial state. It is
-       read from the EXACT accepted version, never from the Offer's current one. */
+    /* Promoted Listings need the accepted Offer's own commercial state, read
+       from the EXACT accepted version and never from the Offer's current one.
+
+       And, separately, whether the Seller CURRENTLY offers it at all — Phase
+       1.15, Ruling 1. Resolved from the stable `Offer` record by the same
+       `offerSourceRecordId` the dependency names, so this read agrees with the
+       checkout seam rather than reporting a Listing buyable that checkout would
+       refuse. */
     let offer: { lifecycle: string; availability: string } | undefined;
+    let currentOffer: { lifecycle: string; availability: string } | undefined;
     if (placement.listingType === "PROMOTED") {
       const offerRow = await db.offerSourceRecordVersionRow.findUnique({
         where: {
@@ -530,6 +544,15 @@ export async function evaluateBuyerEligibility(
       });
       if (offerRow !== null) {
         offer = { lifecycle: offerRow.lifecycle, availability: offerRow.availability };
+      }
+      const stableOffer = await db.offer.findUnique({
+        where: { offerSourceRecordId: placement.offerDependency.offerSourceRecordId },
+      });
+      if (stableOffer !== null) {
+        currentOffer = {
+          lifecycle: stableOffer.lifecycle,
+          availability: stableOffer.availability,
+        };
       }
     }
 
@@ -545,6 +568,7 @@ export async function evaluateBuyerEligibility(
       controllingParticipantStatus: controller.status as never,
       controllingRoleStatus: (role?.status ?? "NONE") as never,
       ...(offer === undefined ? {} : { offer: offer as never }),
+      ...(currentOffer === undefined ? {} : { currentOffer: currentOffer as never }),
       ...(placement.listingType === "PROMOTED"
         ? { upstreamReviewState: placement.upstreamReviewState }
         : {}),
@@ -937,6 +961,28 @@ export async function createListingSourceVersion(
         throw new ListingNotAuthorizedError(decision.capability, [
           "PARTICIPANT_STATUS_NOT_ELIGIBLE",
         ]);
+      }
+
+      /* Phase 1.15 — going live is not a drafting act.
+       *
+       * `decideForBranch` above returns a DRAFTING capability, and `RESTRICTED`
+       * is a deliberate member of `DRAFTING_PARTICIPANT_STATUSES` so a restricted
+       * participant can correct the work that caused the restriction. Correct for
+       * drafting, and wrong for this: `DRAFT → ACTIVE` puts new items in front of
+       * buyers, and it was authorized by nothing else. A restricted participant
+       * could keep listing while every other commerce gate refused them.
+       *
+       * Deliberately NOT a new scope. Taking a Listing live is the broad act of
+       * participating in the marketplace, which admission already governs — a
+       * `listing:activate` scope would be a fourth name for the question
+       * `RESTRICTED` and `SUSPENDED` answer, and a name is not a control. Any
+       * active restriction refuses it; suspension refuses it harder.
+       *
+       * Only the going-live branch. Suspending, ending, or withdrawing a Listing
+       * stays available, on the same reasoning as the Offer and Storefront
+       * stand-down paths. */
+      if (nextLifecycle === "ACTIVE" && current.lifecycle !== "ACTIVE") {
+        await assertListingMayBecomeOperational(tx, current.controllingParticipantId);
       }
 
       await tx.listingSourceRecordVersionRow.create({

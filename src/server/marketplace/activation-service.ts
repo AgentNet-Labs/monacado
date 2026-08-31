@@ -99,6 +99,7 @@ import {
   InvalidParticipantTransitionError,
   ParticipantNotFoundError,
   ParticipantPersistenceFailureError,
+  ParticipantSuspendedError,
   RestrictionScopeNotAvailableInPhaseError,
 } from "./participant-errors";
 import { activationRowToRecord, toMarketplaceSubject } from "./participant-mapper";
@@ -135,6 +136,7 @@ function isDomainError(error: unknown): boolean {
     error instanceof ActivationNotSubmittedError ||
     error instanceof ActivationAlreadyDecidedError ||
     error instanceof ActivationPrerequisitesNotMetError ||
+    error instanceof ParticipantSuspendedError ||
     error instanceof ActivationReviewerNotAuthorizedError ||
     error instanceof ActivationSelfReviewNotPermittedError ||
     error instanceof IncoherentActivationDecisionError ||
@@ -361,6 +363,11 @@ export async function decideParticipantActivation(
       if (pending === null) throw new ActivationNotSubmittedError();
 
       if (decision === "APPROVED") {
+        /* Phase 1.15 — suspension dominates an approval. Checked before the
+           prerequisites so a suspended participant is answered by the fact that
+           actually governs them, rather than by whichever onboarding item
+           happens to be outstanding. */
+        await assertNotSuspended(tx, participantId);
         await assertApprovable(tx, participantId, participant.status as ParticipantStatus);
       }
 
@@ -382,6 +389,7 @@ export async function decideParticipantActivation(
       if (claimed.count !== 1) throw new ActivationAlreadyDecidedError();
 
       const nextStatus = participantStatusAfterDecision(decision);
+
       if (nextStatus !== null) {
         assertPhaseWritable(nextStatus);
         const from = participant.status as ParticipantStatus;
@@ -453,6 +461,44 @@ function assertPhaseWritable(status: ParticipantStatus): void {
  * from a second copy of the rule and never from a stored column that does not
  * exist.
  */
+/**
+ * An activation review may not restore admission a suspension withdrew
+ * (Phase 1.15).
+ *
+ * `participantStatusAfterDecision` answers only what the REVIEW decided, and an
+ * approval wrote `ACTIVE` unconditionally. Against an active suspension that was
+ * a governed decision undone by an unrelated one, and it left the participant in
+ * a state nothing could repair: the suspension row keeps its
+ * `activeForParticipantId` marker, so the participant read `ACTIVE`, still
+ * carried an ACTIVE suspension, and could never be suspended again because the
+ * unique marker was already claimed.
+ *
+ * REFUSED RATHER THAN RECONCILED. Landing the participant on `SUSPENDED` would
+ * have been the other repair, and this phase declines to make it: `0M.8`'s
+ * `assertPhaseWritable` deliberately refuses to write `RESTRICTED` or
+ * `SUSPENDED` from an activation review at all, and reinterpreting a committed
+ * refusal is not something an enforcement phase should do quietly. Refusing the
+ * approval reaches the same safety through the authority that already exists —
+ * reinstatement is the act that restores admission, with its own actor, reason,
+ * and record.
+ *
+ * Restrictions are deliberately NOT refused here. An approved participant
+ * carrying restrictions still lands `ACTIVE`, which is a status/evidence
+ * inconsistency worth correcting — but not an enforcement gap, because every
+ * Phase 1.15 seam reads the governed restriction ROWS rather than the derived
+ * status. The payout hold, the checkout gate, and the go-live gates all still
+ * fire.
+ */
+async function assertNotSuspended(
+  tx: Prisma.TransactionClient,
+  participantId: string,
+): Promise<void> {
+  const suspensions = await tx.participantSuspension.count({
+    where: { participantId, status: "ACTIVE" },
+  });
+  if (suspensions > 0) throw new ParticipantSuspendedError();
+}
+
 async function assertApprovable(
   tx: Prisma.TransactionClient,
   participantId: string,

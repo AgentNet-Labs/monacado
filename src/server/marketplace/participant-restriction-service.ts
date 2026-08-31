@@ -78,7 +78,9 @@ import {
   RestrictionNotFoundError,
   RestrictionPersistenceFailureError,
   RestrictionSelfActionNotPermittedError,
+  RestrictionScopeNotEnforceableError,
 } from "./participant-restriction-errors";
+import { isEnforceableRestrictionScope } from "../../contracts/marketplace/restriction-enforcement";
 import { restrictionRowToRecord } from "./participant-restriction-mapper";
 
 type Db = ReturnType<typeof getPrisma>;
@@ -157,6 +159,16 @@ export async function imposeParticipantRestriction(
   if (!parsed.success) throw inputError(parsed.error);
   const { participantId, scope, reasonCode, actingAccountId, imposedAt, riskReviewId } =
     parsed.data;
+
+  /* Phase 1.15 — a scope with no production reader is refused rather than
+     recorded. Checked BEFORE authorization and before any participant read, so
+     an unenforceable scope is answered the same way for every caller and
+     discloses nothing about the target. See
+     `RestrictionScopeNotEnforceableError` for why an unenforced consequence is
+     worse than an admitted gap. */
+  if (!isEnforceableRestrictionScope(scope)) {
+    throw new RestrictionScopeNotEnforceableError(scope);
+  }
 
   const db = deps.db ?? getPrisma();
   const ids = deps.ids ?? cryptoParticipantIdProvider;

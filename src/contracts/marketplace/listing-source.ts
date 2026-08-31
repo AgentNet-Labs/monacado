@@ -1002,9 +1002,66 @@ export const LISTING_BLOCKING_REASONS = [
   "CONTROLLING_ROLE_NOT_ACTIVE",
   "OFFER_NOT_COMMERCIALLY_SELECTABLE",
   "OFFER_VERSION_REVIEW_REQUIRED",
+  /**
+   * The Seller no longer offers this commercially (Phase 1.15, Ruling 1).
+   *
+   * DISTINCT FROM `OFFER_NOT_COMMERCIALLY_SELECTABLE`, and the distinction is
+   * the whole correction. That code answers "were the accepted TERMS sellable
+   * when the promoter accepted them", read from the exact immutable version the
+   * Listing binds. This one answers "does the Seller CURRENTLY authorise new
+   * commerce under that Offer", read from the Offer's stable record.
+   *
+   * Two questions, two sources, and conflating them is what let a Seller end or
+   * withdraw an Offer while dependent promoted Listings kept selling: the bound
+   * version row is frozen and reads `ACTIVE`/`AVAILABLE` forever, exactly as an
+   * immutable historical record should.
+   *
+   * Describes the OFFER, not the participant — so it is safe on a public
+   * surface, on the same footing as the other Offer and Listing codes.
+   */
+  "OFFER_NOT_CURRENTLY_OFFERED",
 ] as const;
 export const ListingBlockingReason = z.enum(LISTING_BLOCKING_REASONS);
 export type ListingBlockingReason = z.infer<typeof ListingBlockingReason>;
+
+/**
+ * The blocking reasons that describe a PARTICIPANT rather than a Listing
+ * (Phase 1.15).
+ *
+ * Both are bounded codes, and bounded is not the same as public. Because any
+ * active restriction reconciles a participant to `RESTRICTED` and a suspension
+ * to `SUSPENDED`, either of these returned on a public surface tells an
+ * anonymous visitor — per listing, on demand — that this participant's
+ * marketplace standing has been withheld. That makes a public failure path a
+ * probe for a seller's account standing.
+ *
+ * The other five describe the *thing being sold* or the shop it sits in, which
+ * a buyer is entitled to know about. `STOREFRONT_NOT_PUBLICLY_ACCESSIBLE` sits
+ * on the safe side deliberately: it conflates lifecycle, visibility, and go-live
+ * approval into one code, so it identifies no particular cause — the coarseness
+ * is the protection.
+ *
+ * Operators read the specific reasons from the governed records, where they hold
+ * the entitlement to.
+ */
+export const PARTICIPANT_STANDING_BLOCKING_REASONS = [
+  "CONTROLLING_PARTICIPANT_NOT_ACTIVE",
+  "CONTROLLING_ROLE_NOT_ACTIVE",
+] as const satisfies readonly ListingBlockingReason[];
+
+/**
+ * The subset of blocking reasons safe to show a buyer.
+ *
+ * Order-preserving and total: every input code is either kept or dropped, and
+ * nothing is rewritten into a different code. A caller that shows the result
+ * discloses no participant standing.
+ */
+export function publicSafeBlockingReasons(
+  reasons: readonly string[],
+): readonly string[] {
+  const withheld: readonly string[] = PARTICIPANT_STANDING_BLOCKING_REASONS;
+  return reasons.filter((r) => !withheld.includes(r));
+}
 
 export interface ListingBuyerEligibility {
   buyerActive: boolean;
@@ -1034,8 +1091,33 @@ export function evaluateListingBuyerEligibility(input: {
   storefrontExposure: StorefrontExposure;
   controllingParticipantStatus: ParticipantStatus;
   controllingRoleStatus: RoleAssignmentStatus;
-  /** Promoted Listings only. */
+  /**
+   * Promoted Listings only — the EXACT accepted Offer version.
+   *
+   * The historical, immutable terms the promoter accepted. Supplies what the
+   * sale is priced on, and answers whether those terms were commercially
+   * selectable. Never the Offer's current state.
+   */
   offer?: {
+    lifecycle: OfferLifecycleState;
+    availability: OfferAvailability;
+  };
+  /**
+   * Promoted Listings only — the Offer's CURRENT stable state (Phase 1.15,
+   * Ruling 1).
+   *
+   * The Seller's standing authorization for new commerce under this Offer,
+   * read from the stable `Offer` record rather than from any version row. A
+   * Seller who ends or withdraws their Offer stops new dependent sales through
+   * this input, without anything rewriting the accepted version the Listing
+   * binds or the Listing version that binds it.
+   *
+   * OPTIONAL, and its absence is treated as a REFUSAL for a promoted Listing
+   * rather than a pass — a promoted sale whose upstream Offer cannot be resolved
+   * is not one Monacado can stand behind. Silence reads as "no", which is the
+   * rule `goLiveApproval` already follows.
+   */
+  currentOffer?: {
     lifecycle: OfferLifecycleState;
     availability: OfferAvailability;
   };
@@ -1060,6 +1142,20 @@ export function evaluateListingBuyerEligibility(input: {
       input.offer.lifecycle === "ACTIVE" &&
       input.offer.availability === "AVAILABLE";
     if (!offerSelectable) reasons.push("OFFER_NOT_COMMERCIALLY_SELECTABLE");
+
+    /* Phase 1.15, Ruling 1 — the accepted version supplies the TERMS; the stable
+       Offer supplies CURRENT AUTHORIZATION for new commerce. Both must hold.
+
+       Reported separately from the line above rather than folded into it: an
+       operator reading "the accepted terms were not selectable" about a Seller
+       who simply withdrew their Offer last week would look for a problem in the
+       promoter's acceptance, which is the wrong place entirely. */
+    const currentlyOffered =
+      input.currentOffer !== undefined &&
+      input.currentOffer.lifecycle === "ACTIVE" &&
+      input.currentOffer.availability === "AVAILABLE";
+    if (!currentlyOffered) reasons.push("OFFER_NOT_CURRENTLY_OFFERED");
+
     if (input.upstreamReviewState === "REVIEW_REQUIRED") {
       reasons.push("OFFER_VERSION_REVIEW_REQUIRED");
     }

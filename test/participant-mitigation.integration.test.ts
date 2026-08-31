@@ -45,6 +45,7 @@ import {
   ParticipantAlreadySuspendedError,
   ParticipantMitigationNotAuthorizedByPolicyError,
   ReconsiderationNotAvailableError,
+  ReconsiderationNotFoundError,
   SuspensionActorNotAuthorizedError,
   SuspensionAlreadyLiftedError,
   SuspensionSelfActionNotPermittedError,
@@ -690,6 +691,176 @@ d("1.14 · governed participant mitigation (integration)", () => {
           { db },
         ),
       ).rejects.toBeInstanceOf(SuspensionActorNotAuthorizedError);
+    });
+  });
+
+  describe("only the participant may ask for reconsideration", () => {
+    /* Phase 1.15. The schema states the invariant of `requestedByAccountId` —
+       "the account that asked — the participant's own, never a Staff account" —
+       and nothing enforced it: knowing a participant id was enough to file.
+
+       Reconsideration is ONE-SHOT per decision, so an unrelated account filing
+       first would permanently consume the participant's only chance to contest a
+       restriction or suspension. */
+    beforeEach(async () => {
+      await activatePolicy(MARKETPLACE_POLICY_VERSION_1_3);
+    });
+
+    const accountOf = async (participantId: string): Promise<string> =>
+      (
+        await db.marketplaceParticipant.findUniqueOrThrow({
+          where: { id: participantId },
+          select: { accountId: true },
+        })
+      ).accountId;
+
+    const ask = (participantId: string, restrictionId: string, requestedByAccountId: string) =>
+      requestReconsideration(
+        {
+          participantId,
+          restrictionId,
+          requestedByAccountId,
+          requestedAt: LATER,
+          groundCode: "ELIGIBILITY_CONDITION_NOW_MET",
+        },
+        { db },
+      );
+
+    it("permits the participant's own account", async () => {
+      const participantId = await seedParticipant();
+      const imposed = await restrict(participantId);
+
+      const filed = await ask(
+        participantId,
+        imposed.restriction.restrictionId,
+        await accountOf(participantId),
+      );
+      expect(filed.status).toBe("RECEIVED");
+    });
+
+    it("refuses an unrelated account holding no participant at all", async () => {
+      const participantId = await seedParticipant();
+      const imposed = await restrict(participantId);
+
+      await expect(
+        ask(participantId, imposed.restriction.restrictionId, actors.unentitled),
+      ).rejects.toBeInstanceOf(ReconsiderationNotFoundError);
+    });
+
+    it("refuses an account belonging to a DIFFERENT participant", async () => {
+      const participantId = await seedParticipant();
+      const stranger = await seedParticipant();
+      const imposed = await restrict(participantId);
+
+      await expect(
+        ask(participantId, imposed.restriction.restrictionId, await accountOf(stranger)),
+      ).rejects.toBeInstanceOf(ReconsiderationNotFoundError);
+    });
+
+    it("refuses a Staff account despite its mitigation entitlements", async () => {
+      /* Staff capability authorizes DECIDING a reconsideration, never standing in
+         for the participant's own request. Both grants are tried. */
+      const participantId = await seedParticipant();
+      const imposed = await restrict(participantId);
+
+      for (const staff of [actors.restrictor, actors.suspender, actors.reviewer]) {
+        await expect(
+          ask(participantId, imposed.restriction.restrictionId, staff),
+        ).rejects.toBeInstanceOf(ReconsiderationNotFoundError);
+      }
+    });
+
+    it("writes nothing and does not consume the one-shot opportunity", async () => {
+      /* THE LOAD-BEARING TEST. A refused attempt must leave the remedy intact. */
+      const participantId = await seedParticipant();
+      const stranger = await seedParticipant();
+      const imposed = await restrict(participantId);
+      const restrictionId = imposed.restriction.restrictionId;
+
+      await expect(
+        ask(participantId, restrictionId, await accountOf(stranger)),
+      ).rejects.toBeInstanceOf(ReconsiderationNotFoundError);
+      await expect(
+        ask(participantId, restrictionId, actors.unentitled),
+      ).rejects.toBeInstanceOf(ReconsiderationNotFoundError);
+
+      /* No row was created by either attempt — for the target OR the stranger. */
+      expect(await readParticipantReconsiderations(participantId, { db })).toHaveLength(0);
+      expect(await readParticipantReconsiderations(stranger, { db })).toHaveLength(0);
+      expect(await db.participantReconsideration.count({ where: { restrictionId } })).toBe(0);
+
+      /* And the participant may still exercise the remedy afterwards. */
+      const filed = await ask(participantId, restrictionId, await accountOf(participantId));
+      expect(filed.status).toBe("RECEIVED");
+      expect(await readParticipantReconsiderations(participantId, { db })).toHaveLength(1);
+    });
+
+    it("enforces the same rule on the suspension path", async () => {
+      const participantId = await seedParticipant();
+      const stranger = await seedParticipant();
+      const imposed = await suspend(participantId);
+
+      const askSuspension = (requestedByAccountId: string) =>
+        requestReconsideration(
+          {
+            participantId,
+            suspensionId: imposed.suspensionId,
+            requestedByAccountId,
+            requestedAt: LATER,
+            groundCode: "CIRCUMSTANCE_NOT_COVERED_BY_THESE_CODES",
+          },
+          { db },
+        );
+
+      await expect(askSuspension(await accountOf(stranger))).rejects.toBeInstanceOf(
+        ReconsiderationNotFoundError,
+      );
+      await expect(askSuspension(actors.suspender)).rejects.toBeInstanceOf(
+        ReconsiderationNotFoundError,
+      );
+      expect(await readParticipantReconsiderations(participantId, { db })).toHaveLength(0);
+
+      /* Still available to the participant. */
+      const filed = await askSuspension(await accountOf(participantId));
+      expect(filed.status).toBe("RECEIVED");
+    });
+
+    it("keeps the existing same-participant target check intact", async () => {
+      /* Requester authorization is ADDITIVE. A participant asking about somebody
+         else's decision is still refused, and with the same not-found answer, so
+         neither check discloses the other's subject. */
+      const participantId = await seedParticipant();
+      const stranger = await seedParticipant();
+      const strangersRestriction = await restrict(stranger);
+
+      await expect(
+        ask(
+          participantId,
+          strangersRestriction.restriction.restrictionId,
+          await accountOf(participantId),
+        ),
+      ).rejects.toBeInstanceOf(ReconsiderationNotFoundError);
+
+      expect(await readParticipantReconsiderations(participantId, { db })).toHaveLength(0);
+      expect(await readParticipantReconsiderations(stranger, { db })).toHaveLength(0);
+    });
+
+    it("performs no lift or reinstatement by itself", async () => {
+      const participantId = await seedParticipant();
+      const imposed = await restrict(participantId);
+      const before = await participantStatus(participantId);
+
+      await ask(
+        participantId,
+        imposed.restriction.restrictionId,
+        await accountOf(participantId),
+      );
+
+      /* Filing changes nothing about the decision or the participant. */
+      const history = await getParticipantRestrictionHistory(participantId, { db });
+      expect(history[0]!.status).toBe("ACTIVE");
+      expect(history[0]!.liftedAt).toBeNull();
+      expect(await participantStatus(participantId)).toBe(before);
     });
   });
 

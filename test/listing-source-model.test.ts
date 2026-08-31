@@ -1145,6 +1145,8 @@ describe("30-33. the promoted Listing binds one exact Offer version", () => {
       eligibilityInput({
         listingType: "PROMOTED",
         offer: { lifecycle: "ACTIVE", availability: "AVAILABLE" },
+        /* Phase 1.15, Ruling 1 — the Seller must also CURRENTLY offer it. */
+        currentOffer: { lifecycle: "ACTIVE", availability: "AVAILABLE" },
         upstreamReviewState: "ACCEPTED_CURRENT_VERSION",
       }),
     );
@@ -1247,8 +1249,49 @@ describe("34-37. upstream states block a Listing", () => {
     expect(result.blockingReasons).not.toContain("OFFER_VERSION_REVIEW_REQUIRED");
   });
 
+  it("separates the accepted TERMS from the Seller's CURRENT authorization", () => {
+    /* Phase 1.15, Ruling 1. The accepted Offer version is immutable and reads
+       ACTIVE/AVAILABLE forever — correct for a historical record of what the
+       promoter agreed to, and wrong as a standing permission. A Seller who ends
+       or withdraws their Offer must stop new dependent sales without anything
+       rewriting that version. */
+    const sellerStoppedOffering = evaluateListingBuyerEligibility(
+      eligibilityInput({
+        listingType: "PROMOTED",
+        offer: { lifecycle: "ACTIVE", availability: "AVAILABLE" },
+        currentOffer: { lifecycle: "ENDED", availability: "AVAILABLE" },
+        upstreamReviewState: "ACCEPTED_CURRENT_VERSION",
+      }),
+    );
+    expect(sellerStoppedOffering.buyerActive).toBe(false);
+    expect(sellerStoppedOffering.blockingReasons).toContain("OFFER_NOT_CURRENTLY_OFFERED");
+    /* The accepted terms are still reported as selectable — one question does not
+       overwrite the other. */
+    expect(sellerStoppedOffering.blockingReasons).not.toContain(
+      "OFFER_NOT_COMMERCIALLY_SELECTABLE",
+    );
+
+    /* Absence is a refusal, not a pass: a promoted sale whose upstream Offer
+       cannot be resolved is not one Monacado can stand behind. */
+    const unresolvable = evaluateListingBuyerEligibility(
+      eligibilityInput({
+        listingType: "PROMOTED",
+        offer: { lifecycle: "ACTIVE", availability: "AVAILABLE" },
+        upstreamReviewState: "ACCEPTED_CURRENT_VERSION",
+      }),
+    );
+    expect(unresolvable.blockingReasons).toContain("OFFER_NOT_CURRENTLY_OFFERED");
+
+    /* And a SELLER_DIRECT Listing is untouched by any of it. */
+    const sellerDirect = evaluateListingBuyerEligibility(eligibilityInput());
+    expect(sellerDirect.blockingReasons).not.toContain("OFFER_NOT_CURRENTLY_OFFERED");
+  });
+
   it("names bounded reasons only", () => {
-    expect(LISTING_BLOCKING_REASONS).toHaveLength(7);
+    /* Eight since Phase 1.15, Ruling 1 added `OFFER_NOT_CURRENTLY_OFFERED`:
+       the accepted version supplies the TERMS, the stable Offer supplies CURRENT
+       authorization, and the two are reported separately. */
+    expect(LISTING_BLOCKING_REASONS).toHaveLength(8);
     for (const reason of LISTING_BLOCKING_REASONS) {
       expect(reason).toMatch(/^[A-Z_]+$/);
     }

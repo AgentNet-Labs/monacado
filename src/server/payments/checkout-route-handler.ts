@@ -65,6 +65,8 @@ import { resolveTaxPort } from "../tax/tax-adapters";
 import type { TaxEvidenceIdProvider } from "../tax/tax-calculation-ids";
 import { TaxError } from "../tax/tax-errors";
 import { TransactionDeniedByRiskError, RiskError } from "../risk/risk-errors";
+import { buyerSafeRiskDenialReasons } from "../../contracts/marketplace/transaction-risk";
+import { ParticipantActionNotPermittedError } from "../marketplace/participant-standing-errors";
 import { BasketFulfillmentError } from "../../contracts/marketplace/basket-fulfillment";
 import { beginCheckout } from "./executable-checkout-service";
 import { createStripeBuyerPaymentAdapter } from "./stripe-buyer-payment-adapter";
@@ -473,15 +475,39 @@ export async function handleBeginCheckoutRequest(
     if (error instanceof ListingNotPurchasableError) {
       return refuse(409, CHECKOUT_ERROR_CODES.notPurchasable);
     }
-    /* Phase 1.2 — a governed refusal, not an outage. The bounded reason codes
-       are safe to return: they name a control, never an amount or a party. */
+    /* Phase 1.2 — a governed refusal, not an outage.
+     *
+     * Phase 1.15 correction: the claim that these "name a control, never an
+     * amount or a party" was not true of four of the seven. `SELLER_RESTRICTED`,
+     * `PROMOTER_RESTRICTED`, `SELLER_NOT_COMMERCE_APPROVED`, and
+     * `SELLER_PAYMENT_NOT_READY` each name a counterparty and something withheld
+     * from them — and because a checkout request names one Listing, returning one
+     * of them to an unauthenticated poster disclosed that specific participant's
+     * standing. The vocabulary is documented as safe to surface TO AN OPERATOR;
+     * this is a buyer.
+     *
+     * The transaction-shaped reasons still travel, so a buyer who hit the amount
+     * ceiling still learns why. */
     if (error instanceof TransactionDeniedByRiskError) {
       return {
         status: 409,
         headers: { ...CHECKOUT_HEADERS },
-        body: { error: CHECKOUT_ERROR_CODES.riskDenied, reasonCodes: error.reasonCodes },
+        body: {
+          error: CHECKOUT_ERROR_CODES.riskDenied,
+          reasonCodes: buyerSafeRiskDenialReasons(error.reasonCodes),
+        },
         redirectTo: null,
       };
+    }
+    /* Phase 1.15 — the participant-standing gate refused this sale.
+     *
+     * Answered as an availability outcome and nothing more. The denial code
+     * distinguishing suspension from restriction, and the capability withheld,
+     * are both deliberately dropped here: they are an operator's facts, read from
+     * the governed records by someone entitled to them, never something a buyer
+     * learns by attempting a purchase. */
+    if (error instanceof ParticipantActionNotPermittedError) {
+      return refuse(409, CHECKOUT_ERROR_CODES.notPurchasable);
     }
     /* Tax could not be established. Monacado refuses to sell rather than sell
        untaxed — the difference is a liability nobody recorded. */

@@ -710,6 +710,13 @@ async function seedPromoted() {
     where: { offerSourceRecordId: offer.record.offerSourceRecordId },
     data: { lifecycle: "ACTIVE", availability: "AVAILABLE" },
   });
+  /* Phase 1.15, Ruling 1 — the accepted version is the historical terms; the
+     stable Offer row is the Seller's standing authorization for new commerce.
+     Both must hold for a promoted Listing to sell. */
+  await db.offer.update({
+    where: { internalOfferId: offer.record.internalOfferId },
+    data: { lifecycle: "ACTIVE", availability: "AVAILABLE" },
+  });
 
   const listing = await createPromotedListing(
     {

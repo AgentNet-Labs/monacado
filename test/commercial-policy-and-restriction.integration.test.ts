@@ -54,6 +54,15 @@ import {
   recordCommercialPolicyVersion,
 } from "../src/server/marketplace/commercial-policy-service";
 import {
+  readParticipantStanding,
+  assertParticipantMayPerform,
+  assertPartiesMayTransact,
+} from "../src/server/marketplace/participant-standing-service";
+import {
+  MONACADO_MARKETPLACE_POLICY_ID,
+  MARKETPLACE_POLICY_VERSION_1,
+} from "../src/contracts/marketplace/marketplace-policy-content";
+import {
   getParticipantRestrictionHistory,
   hasActiveRestrictions,
   imposeParticipantRestriction,
@@ -1590,4 +1599,202 @@ describeDb("Phase 0M.R1 — versioned commercial policy and activation risk reco
       expect(active[0]!.policyVersion).toBe("2");
     });
   });
+
+  // — Phase 1.15 · enforcement seams read governed standing —
+
+  describe("1.15 · restriction enforcement", () => {
+    /* Suspensions are ARRANGED as rows rather than imposed through
+       `suspendParticipant`: that service requires Marketplace Policy 1.3.0 to be
+       ACTIVE, and this suite governs under 1.0.0. Phase 1.14's suite exercises
+       the suspension service; what is under test here is whether the enforcement
+       readers SEE one. */
+    const arrangeSuspension = async (participantId: string): Promise<void> => {
+      await db.participantSuspension.create({
+        data: {
+          id: `mon:psus:${TAG.toLowerCase()}${(seq += 1)}`.slice(0, 60),
+          participantId,
+          reasonCode: "ADVERSE_OUTCOME_LEVEL_UNSUSTAINABLE",
+          status: "ACTIVE",
+          statusBeforeSuspension: "ACTIVE",
+          imposedAt: new Date(LATER),
+          imposedByAccountId: RESTRICTOR,
+          marketplacePolicyId: MONACADO_MARKETPLACE_POLICY_ID,
+          marketplacePolicyVersion: MARKETPLACE_POLICY_VERSION_1,
+          activeForParticipantId: participantId,
+        },
+      });
+    };
+
+    it("reports the governed records, not the derived status", async () => {
+      const { participantId } = await seedActivatedParticipant();
+      expect(await readParticipantStanding(db, participantId)).toEqual({
+        suspended: false,
+        activeScopes: [],
+      });
+
+      await restrict(participantId, { scope: "offer:publish" });
+      const restricted = await readParticipantStanding(db, participantId);
+      expect(restricted.suspended).toBe(false);
+      expect(restricted.activeScopes).toEqual(["offer:publish"]);
+
+      await arrangeSuspension(participantId);
+      expect((await readParticipantStanding(db, participantId)).suspended).toBe(true);
+    });
+
+    it("refuses the action a scope names, and permits the ones it does not", async () => {
+      const { participantId } = await seedActivatedParticipant();
+      await restrict(participantId, { scope: "offer:publish" });
+
+      await expect(
+        assertParticipantMayPerform(db, participantId, ["offer:publish"]),
+      ).rejects.toMatchObject({ denialCode: "ACTION_RESTRICTED" });
+
+      /* Scope means scope: a different capability is untouched. */
+      await assertParticipantMayPerform(db, participantId, ["payout:receive"]);
+    });
+
+    it("lets suspension dominate a scoped restriction", async () => {
+      const { participantId } = await seedActivatedParticipant();
+      await restrict(participantId, { scope: "payout:receive" });
+      await arrangeSuspension(participantId);
+
+      await expect(
+        assertParticipantMayPerform(db, participantId, ["payout:receive"]),
+      ).rejects.toMatchObject({ denialCode: "PARTICIPANT_SUSPENDED" });
+
+      /* And it reaches an action no restriction covers at all. */
+      await expect(
+        assertParticipantMayPerform(db, participantId, []),
+      ).rejects.toMatchObject({ denialCode: "PARTICIPANT_SUSPENDED" });
+    });
+
+    it("does not restrict a promoter because a seller was restricted", async () => {
+      /* Independence, at the seam. Two participants, two sets of records, and no
+         inference between them — a Seller x Promoter anomaly is evidence about a
+         relationship, never a decision against a party. */
+      const seller = await seedActivatedParticipant();
+      const promoter = await seedActivatedParticipant();
+      await restrict(seller.participantId, { scope: "offer:publish" });
+
+      await expect(
+        assertPartiesMayTransact(db, [
+          { participantId: seller.participantId, role: "SELLER" },
+        ]),
+      ).rejects.toMatchObject({ denialCode: "ACTION_RESTRICTED" });
+
+      await assertPartiesMayTransact(db, [
+        { participantId: promoter.participantId, role: "PROMOTER" },
+      ]);
+    });
+
+    it("does not restrict a seller because a promoter was restricted", async () => {
+      const seller = await seedActivatedParticipant();
+      const promoter = await seedActivatedParticipant();
+      await restrict(promoter.participantId, { scope: "payout:receive" });
+
+      await expect(
+        assertPartiesMayTransact(db, [
+          { participantId: promoter.participantId, role: "PROMOTER" },
+        ]),
+      ).rejects.toMatchObject({ denialCode: "ACTION_RESTRICTED" });
+
+      await assertPartiesMayTransact(db, [
+        { participantId: seller.participantId, role: "SELLER" },
+      ]);
+    });
+
+    it("does not block a promoter on a capability a promoter never exercises", async () => {
+      /* `offer:publish` is a seller's capability. The pre-1.15 checkout gate read
+         one flat scope list for both parties and refused this promoter. */
+      const { participantId } = await seedActivatedParticipant();
+      await restrict(participantId, { scope: "offer:publish" });
+
+      await assertPartiesMayTransact(db, [
+        { participantId, role: "PROMOTER" },
+      ]);
+    });
+
+    it("keeps other restrictions standing when one is lifted", async () => {
+      const { participantId } = await seedActivatedParticipant();
+      await restrict(participantId, { scope: "offer:publish" });
+      await restrict(participantId, { scope: "payout:receive" });
+
+      const [first] = await db.participantRestriction.findMany({
+        where: { participantId, status: "ACTIVE", scope: "offer:publish" },
+      });
+      await liftParticipantRestriction(
+        {
+          restrictionId: first!.id,
+          reasonCode: "REQUIREMENT_SATISFIED",
+          actingAccountId: RESTRICTOR,
+          liftedAt: LATER,
+        },
+        deps(),
+      );
+
+      const standing = await readParticipantStanding(db, participantId);
+      expect(standing.activeScopes).toEqual(["payout:receive"]);
+
+      /* The status still reflects the remaining evidence. */
+      const row = await db.marketplaceParticipant.findUniqueOrThrow({
+        where: { id: participantId },
+      });
+      expect(row.status).toBe("RESTRICTED");
+    });
+
+    it("refuses to approve an activation while a suspension stands", async () => {
+      /* An approval wrote ACTIVE unconditionally. Against an active suspension
+         that undid a governed decision AND stranded the participant: the
+         suspension row keeps its unique marker, so they read ACTIVE, still held
+         an ACTIVE suspension, and could never be suspended again.
+
+         Refused rather than reconciled — 0M.8 deliberately declines to write
+         RESTRICTED or SUSPENDED from a review, and reinstatement is the
+         authority that restores admission. */
+      const { accountId, participantId } = await seedParticipant(["SELLER"]);
+      await completeProfile(participantId);
+      const ref = `acct_${TAG.toLowerCase()}_${(seq += 1)}`;
+      await registerParticipantPaymentAccount(
+        { participantId, provider: "STRIPE", providerAccountRef: ref, now: NOW },
+        deps(),
+      );
+      const base = { participantId, provider: "STRIPE" as const, providerAccountRef: ref };
+      for (const readiness of ["DETAILS_REQUIRED", "PENDING_PROVIDER", "ENABLED"] as const) {
+        await recordObservedProviderState(
+          { ...base, readiness, outstandingRequirements: [], observedAt: NOW },
+          deps(),
+        );
+      }
+      await satisfyActivationPolicyPrerequisites(db, {
+        participantId,
+        accountId,
+        roles: ["SELLER"],
+        now: NOW,
+      });
+      await submitParticipantForActivation({ participantId, submittedAt: NOW }, deps());
+      await arrangeSuspension(participantId);
+
+      await expect(
+        decideParticipantActivation(
+          {
+            participantId,
+            decision: "APPROVED",
+            decisionReasonCode: "PREREQUISITES_SATISFIED",
+            reviewerAccountId: REVIEWER,
+            decidedAt: LATER,
+          },
+          deps(),
+        ),
+      ).rejects.toMatchObject({ code: "PARTICIPANT_SUSPENDED" });
+
+      /* The participant did not become ACTIVE, and the suspension still stands
+         and is still the record that governs them. */
+      const row = await db.marketplaceParticipant.findUniqueOrThrow({
+        where: { id: participantId },
+      });
+      expect(row.status).toBe("UNDER_REVIEW");
+      expect((await readParticipantStanding(db, participantId)).suspended).toBe(true);
+    });
+  });
+
 });

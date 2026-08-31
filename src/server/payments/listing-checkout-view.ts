@@ -30,6 +30,7 @@ import {
   OrderCurrencyMismatchError,
 } from "../marketplace/order-errors";
 import { getPrisma } from "../db/client";
+import { publicSafeBlockingReasons } from "../../contracts/marketplace/listing-source";
 
 type Db = ReturnType<typeof getPrisma>;
 
@@ -40,7 +41,11 @@ export interface ListingCheckoutView {
   currency: string | null;
   /** The buyer's total at this instant. Present only when purchasable. */
   buyerTotalMinorUnits: number | null;
-  /** Bounded Monacado reasons, straight from `0M.4A`'s evaluator. Never free text. */
+  /**
+   * Bounded Monacado reasons, never free text — and **filtered for a public
+   * audience** (Phase 1.15). Reasons describing the participant's marketplace
+   * standing are withheld; see `publicSafeBlockingReasons`.
+   */
   blockingReasons: readonly string[];
 }
 
@@ -81,9 +86,20 @@ export async function readListingCheckoutView(
     };
   } catch (error) {
     if (error instanceof ListingNotPurchasableError) {
-      /* The evaluator reports every blocking reason rather than the first, and
-         they are bounded codes, so they are safe to surface as-is. */
-      return UNAVAILABLE(args.internalListingId, error.blockingReasons);
+      /* Phase 1.15 — filtered, not passed through.
+       *
+       * These were surfaced as-is on the reasoning that they are bounded codes
+       * and therefore safe. Bounded is not the same as public. Two of them
+       * describe the PARTICIPANT rather than the Listing, and because any active
+       * restriction reconciles a participant to `RESTRICTED` and a suspension to
+       * `SUSPENDED`, returning either told an anonymous visitor that this
+       * seller's or promoter's standing had been withheld — turning a public
+       * failure path into a probe for a counterparty's account standing.
+       *
+       * The rest still travel. A buyer is owed the operational consequence, and
+       * "this product is unavailable" is a fact about the thing they wanted to
+       * buy; only the participant's standing is withheld. */
+      return UNAVAILABLE(args.internalListingId, publicSafeBlockingReasons(error.blockingReasons));
     }
     if (
       error instanceof ListingNotFoundError ||

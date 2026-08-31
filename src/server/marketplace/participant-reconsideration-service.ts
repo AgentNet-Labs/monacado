@@ -145,6 +145,38 @@ export async function requestReconsideration(
   const decisionId = d.restrictionId ?? d.suspensionId!;
 
   return db.$transaction(async (tx) => {
+    /* — The requester must BE the participant (Phase 1.15). —
+     *
+     * The invariant the schema already states of `requestedByAccountId` — "the
+     * account that asked — the participant's own, never a Staff account" — and
+     * which nothing enforced. Knowing a participant id was sufficient to file.
+     *
+     * That mattered because reconsideration is ONE-SHOT per decision: an
+     * unrelated account filing first would permanently consume the participant's
+     * only opportunity to contest a restriction or suspension, and no lift could
+     * afterwards be asked for. A denial of remedy rather than an escalation, and
+     * the more serious for being silent.
+     *
+     * `MarketplaceParticipant.accountId` is the authoritative relationship and is
+     * `@unique`, so this is the repository's existing one-account-one-participant
+     * model rather than a second notion of ownership. Nothing here consults a
+     * Staff entitlement: `participant:restrict` and `participant:suspend`
+     * authorize DECIDING a reconsideration, and letting either stand in for the
+     * participant's own request would be exactly the substitution the schema
+     * comment rules out.
+     *
+     * CHECKED FIRST, before any decision is read, and refused as NOT FOUND — the
+     * same answer a wrong-participant target already gets below. An unauthorized
+     * caller therefore learns nothing: not whether the participant exists, not
+     * whether a restriction or suspension stands, and not what it says. */
+    const participant = await tx.marketplaceParticipant.findUnique({
+      where: { id: d.participantId },
+      select: { accountId: true },
+    });
+    if (participant === null || participant.accountId !== d.requestedByAccountId) {
+      throw new ReconsiderationNotFoundError();
+    }
+
     /* The decision must exist, belong to this participant, and still stand. */
     if (d.restrictionId !== null) {
       const restriction = await tx.participantRestriction.findUnique({

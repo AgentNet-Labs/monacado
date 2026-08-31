@@ -404,6 +404,25 @@ export class OrderPersistenceFailureError extends OrderServiceError {
  */
 export type ProceedsPayoutHoldReason =
   | "PARTICIPANT_PAYOUT_RESTRICTED"
+  /**
+   * The participant's marketplace admission is withdrawn (Phase 1.15).
+   *
+   * Distinct from `PARTICIPANT_PAYOUT_RESTRICTED`, and the distinction is not
+   * cosmetic: a restriction withholds one named capability and is answered by
+   * curing it, whereas a suspension withdraws admission and is answered through
+   * reinstatement. An operator told "restricted" about a suspension would look
+   * for the wrong remedy.
+   *
+   * Until this phase a suspension had NO effect here at all — the gate counted
+   * `ParticipantRestriction` rows, and a suspension mints none — so the heavier
+   * act left a claim payable while the lighter one held it.
+   *
+   * What it holds is Monacado making its own commercial obligation payable. The
+   * obligation itself remains recorded in full, at its recorded amount, and
+   * `PAID` is never blocked: withholding settlement is not forfeiture, and a
+   * suspension does not extinguish what a completed sale earned.
+   */
+  | "PARTICIPANT_SUSPENDED"
   | "SALE_REVERSED"
   /**
    * A payment dispute is open on the sale this claim arises from (Phase 1.11).

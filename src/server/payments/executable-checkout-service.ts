@@ -55,6 +55,7 @@ import type {
 } from "../../contracts/marketplace/tax-calculation";
 import { riskAllowed, type RiskDecision } from "../../contracts/marketplace/transaction-risk";
 import { evaluateTransactionRisk } from "../risk/transaction-risk-service";
+import { assertPartiesMayTransact } from "../marketplace/participant-standing-service";
 import { TransactionDeniedByRiskError } from "../risk/risk-errors";
 import { recordOrderTaxEvidence } from "../tax/tax-evidence-service";
 import { taxCalculationIdempotencyKey } from "../tax/tax-idempotency";
@@ -187,6 +188,33 @@ export async function beginCheckout(
   if (!riskAllowed(decision)) {
     throw new TransactionDeniedByRiskError(decision.reasonCodes);
   }
+
+  /* — 2a. Participant standing, BEFORE anything is written. —
+   *
+   * The seam Phase 1.15 added, and it is separate from the risk gate above on
+   * purpose. `RiskPolicy` decides whether a TRANSACTION is one Monacado will
+   * take — an amount ceiling, a currency — and two of its checks are booleans on
+   * a versioned policy row. Whether a PARTY may do new commerce at all is not a
+   * property of a transaction and must not be tunable by activating a different
+   * risk policy version, so it is asked here, unconditionally, against governed
+   * records only.
+   *
+   * Every party, not just the Listing's controller. On a promoted sale the
+   * controller is the promoter, so before this the Offer's seller — whose goods
+   * are sold, and who is owed proceeds — was checked by nothing that could see a
+   * suspension. A suspended seller sold indefinitely through any promoted
+   * Listing.
+   *
+   * Each party is judged on their own records and in their own role. No
+   * enforcement is inferred across parties: a restriction on the seller is not a
+   * restriction on the promoter, and a Seller×Promoter risk anomaly is evidence
+   * about a relationship, never a decision against someone. */
+  await assertPartiesMayTransact(deps.db ?? getPrisma(), [
+    { participantId: prepared.sellerParticipantId, role: "SELLER" },
+    ...(prepared.promoterParticipantId === null
+      ? []
+      : [{ participantId: prepared.promoterParticipantId, role: "PROMOTER" as const }]),
+  ]);
 
   /* — 2b. Commerce readiness, BEFORE tax and BEFORE anything is written. —
    *

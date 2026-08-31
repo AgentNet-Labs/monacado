@@ -42,7 +42,19 @@
  * | risk review heuristics not active | *(1.13)* nobody would be watching refund and chargeback rates at all |
  * | participant mitigation policy not active | *(1.14)* the ACTIVE marketplace terms do not authorise acting on a participant; shipping 1.3.0 does not clear it, activating it does |
  * | participant mitigation not granted | *(1.14)* the mechanism exists and nobody is entitled to use it |
+ * | restriction scopes not enforceable | *(1.15)* a scope Monacado can impose and no production path reads — a consequence that is recorded and not delivered |
  * | live provider not enabled | the deliberate gate above |
+ *
+ * ## What `1.15` corrected about `1.14`'s two codes
+ *
+ * They ask whether Monacado is *authorised* to act on a participant, and whether
+ * anybody is *entitled* to. Neither asks whether acting would do anything —
+ * and four of the six restriction scopes turned out to have no reader at all,
+ * while `PARTICIPANT_MITIGATION_NOT_GRANTED` cleared on either grant rather than
+ * both and ignored whether the holding account was even enabled. A readiness
+ * report is the document an operator reads *instead of* checking, so a control
+ * that asks an easier question than the gate it stands for is worse than a
+ * missing one.
  *
  * ## Why `1.9` added four rather than folding into `REVERSAL_ACCOUNTING`
  *
@@ -79,6 +91,7 @@ import { resolveActiveReviewPolicy } from "../risk/seller-risk-review-policy-ser
 import { getActiveMarketplacePolicyVersion } from "../policy/marketplace-policy-service";
 import { MONACADO_MARKETPLACE_POLICY_ID } from "../../contracts/marketplace/marketplace-policy-content";
 import { policyVersionAuthorizesParticipantMitigation } from "../../contracts/marketplace/participant-mitigation";
+import { UNSUPPORTED_RESTRICTION_SCOPES } from "../../contracts/marketplace/restriction-enforcement";
 import { getPrisma } from "../db/client";
 
 type Db = ReturnType<typeof getPrisma>;
@@ -247,6 +260,26 @@ export const LIVE_READINESS_BLOCKER_CODES = [
    * exactly the claim this dimension was created to refuse.
    */
   "PARTICIPANT_MITIGATION_NOT_GRANTED",
+  /**
+   * Some recognised restriction scope has no production enforcement (1.15).
+   *
+   * THE CLAIM 1.14's REPORT COULD NOT MAKE. Its two codes ask whether Monacado
+   * is *authorised* to act on a participant and whether anyone is *entitled* to;
+   * neither asks whether acting would DO anything. Four of six scopes had no
+   * reader — a restriction on one could be imposed, would move the participant
+   * to `RESTRICTED`, would tell them a capability had been withheld, and would
+   * leave the named operation working exactly as before.
+   *
+   * 1.15 wired three and refuses the other three at imposition, so no
+   * unenforceable consequence can be recorded. This blocker stands while any
+   * recognised scope still lacks a seam, because the participant-facing terms
+   * name five withheld capabilities and readiness must not read as though all
+   * five were real.
+   *
+   * Read from `RESTRICTION_SCOPE_ENFORCEMENT`, so it cannot be cleared by
+   * editing prose — only by building the seam or retiring the scope.
+   */
+  "RESTRICTION_SCOPES_NOT_ENFORCEABLE",
   /** Live provider support does not exist. Cleared only by a reviewed phase. */
   "LIVE_PROVIDER_NOT_ENABLED",
 ] as const;
@@ -461,13 +494,53 @@ export async function evaluateLiveCommerceReadiness(
   }
 
   try {
-    const granted = await db.accountEntitlement.count({
-      where: { capability: { in: ["participant:restrict", "participant:suspend"] }, status: "ACTIVE" },
+    /* Phase 1.15 correction — BOTH grants, and both on an enabled account.
+     *
+     * This counted the two capabilities together and cleared on one, so a
+     * deployment able to restrict and unable to suspend anybody reported
+     * mitigation as granted. They are independent authorities over different
+     * acts; an OR answers neither question.
+     *
+     * The `Account.status` join closes the second half: the real gate resolves
+     * the actor through `resolveInternalAuthorizationSubject` and denies a
+     * DISABLED account, so an entitlement held only by a disabled account is a
+     * grant nobody can exercise. A readiness check that asks an easier question
+     * than the gate it stands for is the failure mode this whole dimension was
+     * created to refuse. */
+    const grants = await db.accountEntitlement.findMany({
+      where: {
+        capability: { in: ["participant:restrict", "participant:suspend"] },
+        status: "ACTIVE",
+        account: { status: "ACTIVE" },
+      },
+      select: { capability: true },
     });
-    if (granted === 0) blockers.push("PARTICIPANT_MITIGATION_NOT_GRANTED");
-    else satisfied.push("PARTICIPANT_MITIGATION_GRANTED");
+    const held = new Set(grants.map((g) => g.capability));
+    if (!held.has("participant:restrict") || !held.has("participant:suspend")) {
+      blockers.push("PARTICIPANT_MITIGATION_NOT_GRANTED");
+    } else {
+      satisfied.push("PARTICIPANT_MITIGATION_GRANTED");
+    }
   } catch {
     blockers.push("PARTICIPANT_MITIGATION_NOT_GRANTED");
+  }
+
+  /* — Restriction enforcement (Phase 1.15) —
+   *
+   * Readiness may not claim a scope is operational because a row can hold it.
+   * The registry is the machine-readable answer to "what can Monacado actually
+   * withhold", and a scope with no production reader is reported here rather
+   * than left to be discovered by an operator who imposed one and watched
+   * nothing happen.
+   *
+   * Structural, not stateful: this reads the registry rather than the database,
+   * because the question is about what this BUILD enforces. Cleared only by a
+   * phase that gives every recognised scope a seam — or that retires the ones it
+   * cannot. */
+  if (UNSUPPORTED_RESTRICTION_SCOPES.length > 0) {
+    blockers.push("RESTRICTION_SCOPES_NOT_ENFORCEABLE");
+  } else {
+    satisfied.push("RESTRICTION_SCOPE_ENFORCEMENT_COMPLETE");
   }
 
   // — Live provider —

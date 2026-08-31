@@ -74,6 +74,38 @@ export class RiskReviewAlreadyOpenError extends SellerRiskError {
   }
 }
 
+/**
+ * The restriction named as a review's consequence belongs to a different
+ * participant (Phase 1.15, integrity correction).
+ *
+ * `resultingRestrictionId` carries a foreign key to `ParticipantRestriction.id`
+ * and nothing more, so the database could only prove the restriction EXISTS —
+ * of somebody. It is the one column linking a risk review to the act a reviewer
+ * took, which makes it the column an appeal, an auditor, and a regulator all
+ * read to answer "what did Monacado do about this, and why". A review of
+ * participant A resolving to participant B's restriction corrupts exactly that
+ * answer, in both directions at once: A's review appears to have had a
+ * consequence it did not, and B's restriction acquires a justification that was
+ * never about them.
+ *
+ * Enforced as a service invariant rather than a composite foreign key: making
+ * the database prove it would mean adding a `(id, participantId)` unique to
+ * `ParticipantRestriction` and carrying a redundant participant column on the
+ * review, which is schema redesign for a constraint one read already settles.
+ *
+ * Carries no identifier — naming either participant would disclose the linkage
+ * the refusal exists to prevent.
+ */
+export class RiskReviewRestrictionParticipantMismatchError extends SellerRiskError {
+  constructor() {
+    super(
+      "RISK_REVIEW_RESTRICTION_PARTICIPANT_MISMATCH",
+      "A review may only name a restriction imposed on the participant it concerns",
+    );
+    this.name = "RiskReviewRestrictionParticipantMismatchError";
+  }
+}
+
 /** A malformed or unusable request reached a risk read path. */
 export class SellerRiskRequestError extends SellerRiskError {
   constructor(message: string) {

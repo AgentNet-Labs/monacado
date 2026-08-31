@@ -69,6 +69,8 @@ import {
 import type { MarketplaceSubject } from "../../contracts/marketplace/participant";
 import { getPrisma } from "../db/client";
 import { toMarketplaceSubject } from "./participant-mapper";
+import { assertOfferMayBecomeCommerciallyLive } from "./participant-standing-service";
+import { ParticipantActionNotPermittedError } from "./participant-standing-errors";
 import { cryptoOfferIdProvider, type OfferIdProvider } from "./offer-ids";
 import {
   CorruptOfferRecordError,
@@ -116,6 +118,11 @@ function inputError(error: {
 /** Errors that must escape a catch block unwrapped rather than be disguised. */
 function isDomainError(error: unknown): boolean {
   return (
+    /* Phase 1.15 — a governed standing refusal is a DOMAIN answer, not an
+       outage. Wrapped as a persistence failure it would read to a caller as
+       though the database had broken, and the bounded denial code the seam
+       produced would be lost. */
+    error instanceof ParticipantActionNotPermittedError ||
     error instanceof OfferNotFoundError ||
     error instanceof OfferVersionNotFoundError ||
     error instanceof OfferNotAuthorizedError ||
@@ -579,6 +586,31 @@ export async function createOfferSourceVersion(
               : undefined,
         }),
       );
+
+      /* Phase 1.15 — `offer:publish` reaches the act it is named for.
+       *
+       * Only the branch that makes the Offer commercially live: activation, and
+       * resumption from SUSPENDED. Suspend, end, and withdraw are deliberately
+       * untouched, on `canSuspendOffer`'s own reasoning — a seller whose commerce
+       * was just withheld must still be able to take their Offer down, and
+       * requiring an intact commerce gate to STOP selling would trap exactly the
+       * seller who most needs to stop.
+       *
+       * Placed AFTER the authority decision and BEFORE the version row is
+       * written, which is where the operational effect is chosen. The source
+       * version is still authored — this refuses the lifecycle value that makes
+       * it live, not the act of recording history. A restricted seller may still
+       * mint versions correcting the work that caused the restriction.
+       *
+       * The status gate in `canActivateOffer` already refuses a non-ACTIVE
+       * participant, so this is not the only thing standing here. It is the
+       * SCOPE-specific one: without it, `offer:publish` bit only at checkout and
+       * the participant's derived status did all the work at publication, which
+       * is enforcement by coincidence rather than by the scope an operator
+       * chose. */
+      if (next.lifecycle === "ACTIVE" && current.lifecycle !== "ACTIVE") {
+        await assertOfferMayBecomeCommerciallyLive(tx, current.sellerParticipantId);
+      }
 
       /* Recomputed from the NEXT terms, never carried over: stored amounts and
          the terms beside them must never be able to disagree. */

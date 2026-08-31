@@ -139,6 +139,41 @@ export const RiskDenialReasonCode = z.enum(RISK_DENIAL_REASON_CODES);
 export type RiskDenialReasonCode = z.infer<typeof RiskDenialReasonCode>;
 
 /**
+ * The denial reasons that describe a PARTY rather than the transaction
+ * (Phase 1.15).
+ *
+ * The vocabulary above is documented as safe to surface **to an operator**, and
+ * that qualifier is load-bearing: the four members here each name a counterparty
+ * and something withheld from them. A checkout request names one Listing, so a
+ * denial naming one of these tells the requester — who may be an anonymous buyer
+ * — that this specific seller or promoter has been restricted, not cleared, or
+ * cannot be paid.
+ *
+ * The remaining three describe the transaction itself (its amount, its currency)
+ * or Monacado's own configuration, and disclose nothing about a participant.
+ */
+export const PARTY_DISCLOSING_RISK_DENIAL_REASON_CODES = [
+  "SELLER_RESTRICTED",
+  "PROMOTER_RESTRICTED",
+  "SELLER_NOT_COMMERCE_APPROVED",
+  "SELLER_PAYMENT_NOT_READY",
+] as const satisfies readonly RiskDenialReasonCode[];
+
+/**
+ * The subset of denial reasons safe to return to a buyer.
+ *
+ * Order-preserving and total. A caller that returns the result discloses no
+ * counterparty standing; an empty result is the honest answer that the buyer is
+ * owed the outcome and not the cause.
+ */
+export function buyerSafeRiskDenialReasons(
+  reasonCodes: readonly string[],
+): readonly string[] {
+  const withheld: readonly string[] = PARTY_DISCLOSING_RISK_DENIAL_REASON_CODES;
+  return reasonCodes.filter((c) => !withheld.includes(c));
+}
+
+/**
  * The gate's answer.
  *
  * A discriminated shape in spirit: an `ALLOW` carries no reasons and a `DENY`

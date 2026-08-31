@@ -20,6 +20,13 @@ import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { createAccount } from "../src/server/account/account-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
 import {
+  registerParticipantPaymentAccount,
+  recordObservedProviderState,
+} from "../src/server/marketplace/payment-account-service";
+import { recordCommerceApproval } from "../src/server/marketplace/participant-commerce-approval-service";
+import { imposeParticipantRestriction } from "../src/server/marketplace/participant-restriction-service";
+import { grantAccountEntitlement } from "../src/server/account/account-entitlement-service";
+import {
   assignStorefrontGovernance,
   createDraftStorefront,
   createStorefrontSourceVersion,
@@ -80,6 +87,11 @@ async function cleanup(): Promise<void> {
      globally must wipe this too, or it is blocked by any decision another suite
      legitimately recorded. */
   await db.notificationObligation.deleteMany({});
+  /* Phase 1.15, Ruling 2 — going live now requires the owner to be payable and
+     approved, so this suite creates payment-account and commerce-approval rows.
+     Both RESTRICT to the participant and must come off first. */
+  await db.participantCommerceApproval.deleteMany({});
+  await db.participantPaymentAccount.deleteMany({});
   await db.participantReconsideration.deleteMany({});
   await db.participantSuspension.deleteMany({});
   await db.participantRestriction.deleteMany({});
@@ -161,6 +173,68 @@ async function seedGovernedStorefront(overrides: Record<string, unknown> = {}) {
     { db },
   );
   return seeded;
+}
+
+/**
+ * Make a Storefront owner eligible to GO LIVE (Phase 1.15, Ruling 2).
+ *
+ * Taking a Storefront live is reserved to the active `SUPER_OWNER` and gated on
+ * the owner being admitted, payable, and approved — the authority the source
+ * model always specified (§7) and that production code only began honouring in
+ * Phase 1.15. Before then every lifecycle move ran through the presentation-edit
+ * decision, which asks for none of this, so these fixtures never had to supply
+ * it.
+ *
+ * Governance authority is arranged by the callers that need it; this supplies
+ * the commercial half.
+ */
+async function makeOwnerGoLiveEligible(ownerParticipantId: string): Promise<void> {
+  await db.marketplaceParticipant.update({
+    where: { id: ownerParticipantId },
+    data: { status: "ACTIVE" },
+  });
+  await db.marketplaceRoleAssignment.updateMany({
+    where: { participantId: ownerParticipantId },
+    data: { status: "ACTIVE" },
+  });
+
+  const ref = `acct_${pad26(`M3CPAY${(seq += 1)}`)}`;
+  await registerParticipantPaymentAccount(
+    { participantId: ownerParticipantId, provider: "STRIPE", providerAccountRef: ref, now: NOW },
+    { db },
+  );
+  const base = { participantId: ownerParticipantId, provider: "STRIPE" as const, providerAccountRef: ref };
+  for (const readiness of ["DETAILS_REQUIRED", "PENDING_PROVIDER", "ENABLED"] as const) {
+    await recordObservedProviderState(
+      { ...base, readiness, outstandingRequirements: [], observedAt: NOW },
+      { db },
+    );
+  }
+
+  const approverAccount = await createAccount(
+    {
+      name: "Synthetic Approver",
+      email: `approver${(seq += 1)}@example.com`,
+      password: PASSWORD,
+      createdAt: NOW,
+    },
+    { db },
+  );
+  const approver = approverAccount.accountId;
+  await grantAccountEntitlement(
+    { accountId: approver, capability: "participant:commerce-approve", grantedAt: NOW },
+    { db },
+  );
+  await recordCommerceApproval(
+    {
+      participantId: ownerParticipantId,
+      decision: "APPROVED",
+      reasonCode: "REQUIREMENTS_MET",
+      actingAccountId: approver,
+      decidedAt: NOW,
+    },
+    { db },
+  );
 }
 
 describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)", () => {
@@ -816,6 +890,9 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
   it("20b/21. records a permitted lifecycle and visibility change", async () => {
     const { ownerParticipantId, snapshot } = await seedGovernedStorefront();
     const id = snapshot.record.internalStorefrontId;
+    /* Phase 1.15, Ruling 2 — going live is the SUPER_OWNER's act, and it is
+       gated on the owner being admitted, payable, and approved. */
+    await makeOwnerGoLiveEligible(ownerParticipantId);
 
     const after = await createStorefrontSourceVersion(
       {
@@ -834,11 +911,166 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
     expect(after.currentVersion.visibility).toBe("PUBLIC");
   });
 
+  // — Phase 1.15, Ruling 2 · going live is the SUPER_OWNER's act —
+
+  describe("storefront activation authority", () => {
+    /** Appoint a separate participant as ADMIN on an already-governed shop. */
+    async function seedAdminOn(internalStorefrontId: string, ownerParticipantId: string) {
+      const admin = await seedSeller();
+      await assignStorefrontGovernance(
+        {
+          internalStorefrontId,
+          participantId: admin,
+          role: "ADMIN",
+          authorizedByParticipantId: ownerParticipantId,
+          authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
+          actorAuthorizedForOwnerParticipant: true,
+          now: NOW,
+        },
+        { db },
+      );
+      return admin;
+    }
+
+    const goLive = (id: string, actor: string, version = "2") =>
+      createStorefrontSourceVersion(
+        {
+          internalStorefrontId: id,
+          sourceRecordVersion: version,
+          lifecycle: "ACTIVE",
+          authorizedByParticipantId: actor,
+          authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
+          actorAuthorizedForOwnerParticipant: true,
+          now: LATER,
+        },
+        { db },
+      );
+
+    it("permits the active SUPER_OWNER when otherwise eligible", async () => {
+      const { ownerParticipantId, snapshot } = await seedGovernedStorefront();
+      await makeOwnerGoLiveEligible(ownerParticipantId);
+
+      const after = await goLive(snapshot.record.internalStorefrontId, ownerParticipantId);
+      expect(after.currentVersion.lifecycle).toBe("ACTIVE");
+    });
+
+    it("refuses an ADMIN acting alone", async () => {
+      /* The authoritative source model §7: an ADMIN may not "activate the
+         Storefront". The boundary is recorded as data in
+         SUPER_OWNER_EXCLUSIVE_AUTHORITIES, and until Phase 1.15 production code
+         authorised every lifecycle move with the PRESENTATION decision, which
+         admits an ADMIN. */
+      const { ownerParticipantId, snapshot } = await seedGovernedStorefront();
+      const id = snapshot.record.internalStorefrontId;
+      await makeOwnerGoLiveEligible(ownerParticipantId);
+      const admin = await seedAdminOn(id, ownerParticipantId);
+
+      const error = await goLive(id, admin).catch((e) => e);
+      expect(error).toBeInstanceOf(StorefrontNotAuthorizedError);
+      expect(error.reasonCodes).toContain("SUPER_OWNER_REQUIRED");
+
+      /* And the Storefront did not move. */
+      const row = await db.storefront.findUniqueOrThrow({ where: { internalStorefrontId: id } });
+      expect(row.lifecycle).toBe("DRAFT");
+    });
+
+    it("still lets an ADMIN edit presentation", async () => {
+      /* The correction must not narrow authority an ADMIN legitimately holds. */
+      const { ownerParticipantId, snapshot } = await seedGovernedStorefront();
+      const id = snapshot.record.internalStorefrontId;
+      const admin = await seedAdminOn(id, ownerParticipantId);
+
+      const after = await createStorefrontSourceVersion(
+        {
+          internalStorefrontId: id,
+          sourceRecordVersion: "2",
+          presentation: presentation({ displayName: "Admin Still Edits" }),
+          authorizedByParticipantId: admin,
+          authorizedByActorId: `mon:actor:${pad26("M3CADMIN")}`,
+          actorAuthorizedForOwnerParticipant: true,
+          now: LATER,
+        },
+        { db },
+      );
+      expect(after.currentVersion.presentation.displayName).toBe("Admin Still Edits");
+    });
+
+    it("refuses a SUPER_OWNER whose owner is restricted from taking a shop live", async () => {
+      /* Governance authority and participant standing are independent gates, and
+         Phase 1.15's standing check runs AFTER governance authorization rather
+         than instead of it. */
+      const { ownerParticipantId, snapshot } = await seedGovernedStorefront();
+      await makeOwnerGoLiveEligible(ownerParticipantId);
+
+      const restrictor = await createAccount(
+        {
+          name: "Synthetic Restrictor",
+          email: `restrictor${(seq += 1)}@example.com`,
+          password: PASSWORD,
+          createdAt: NOW,
+        },
+        { db },
+      );
+      await grantAccountEntitlement(
+        { accountId: restrictor.accountId, capability: "participant:restrict", grantedAt: NOW },
+        { db },
+      );
+      await imposeParticipantRestriction(
+        {
+          participantId: ownerParticipantId,
+          scope: "storefront:activate",
+          reasonCode: "UNDERWRITING_REVIEW_REQUIRED",
+          actingAccountId: restrictor.accountId,
+          imposedAt: NOW,
+        },
+        { db },
+      );
+
+      /* Imposing reconciles the participant to RESTRICTED, so the commerce gate
+         inside `canActivateStorefrontRecord` refuses first. That is correct, and
+         it is the ordinary path. */
+      const byStatus = await goLive(
+        snapshot.record.internalStorefrontId,
+        ownerParticipantId,
+      ).catch((e) => e);
+      expect(byStatus).toBeInstanceOf(StorefrontNotAuthorizedError);
+      expect(byStatus.reasonCodes).toContain("PARTICIPANT_NOT_ACTIVATED");
+
+      /* Now the case that makes Phase 1.15's seam load-bearing rather than
+         redundant: status ACTIVE while a restriction still stands.
+         
+         This divergence is reachable today — an activation review approves to
+         ACTIVE without reckoning with standing restrictions, which is the
+         inconsistency Phase 1.15 deferred rather than reinterpreting 0M.8's
+         refusal to write RESTRICTED. It is SAFE precisely because the enforcement
+         seams read the authoritative restriction ROWS rather than the derived
+         status, and this asserts that. */
+      await db.marketplaceParticipant.update({
+        where: { id: ownerParticipantId },
+        data: { status: "ACTIVE" },
+      });
+
+      const byScope = await goLive(
+        snapshot.record.internalStorefrontId,
+        ownerParticipantId,
+      ).catch((e) => e);
+      expect(byScope.denialCode).toBe("ACTION_RESTRICTED");
+      expect(byScope.deniedCapability).toBe("storefront:activate");
+
+      /* And the Storefront did not go live by either route. */
+      const row = await db.storefront.findUniqueOrThrow({
+        where: { internalStorefrontId: snapshot.record.internalStorefrontId },
+      });
+      expect(row.lifecycle).toBe("DRAFT");
+    });
+  });
+
   // — Readiness and the go-live boundary —
 
   it("derives readiness from a SUPPLIED approval, storing none", async () => {
     const { ownerParticipantId, snapshot } = await seedStorefront();
     const id = snapshot.record.internalStorefrontId;
+    await makeOwnerGoLiveEligible(ownerParticipantId);
 
     await assignStorefrontGovernance(
       {
@@ -963,6 +1195,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
     const { snapshot } = await seedGovernedStorefront();
     const id = snapshot.record.internalStorefrontId;
     const owner = snapshot.record.ownerParticipantId;
+    await makeOwnerGoLiveEligible(owner);
 
     // Make it projectable: ACTIVE + PUBLIC.
     await createStorefrontSourceVersion(

@@ -19,6 +19,7 @@ export type ParticipantRestrictionErrorCode =
   | "RESTRICTION_ALREADY_LIFTED"
   | "RESTRICTION_ACTOR_NOT_AUTHORIZED"
   | "RESTRICTION_SELF_ACTION_NOT_PERMITTED"
+  | "RESTRICTION_SCOPE_NOT_ENFORCEABLE"
   | "CORRUPT_RESTRICTION_RECORD"
   | "RESTRICTION_PERSISTENCE_FAILURE";
 
@@ -136,6 +137,37 @@ export class RestrictionSelfActionNotPermittedError extends ParticipantRestricti
       "An internal actor may not impose or lift a restriction on a participant owned by the same account",
     );
     this.name = "RestrictionSelfActionNotPermittedError";
+  }
+}
+
+/**
+ * Monacado cannot actually withhold this capability, so it will not record that
+ * it has (Phase 1.15).
+ *
+ * The scope is a recognised member of the vocabulary and no production seam
+ * reads it — `RESTRICTION_SCOPE_ENFORCEMENT` names which, and why. Imposing it
+ * would move the participant to `RESTRICTED`, raise a notice obligation telling
+ * them a capability had been withheld, and leave the named operation working
+ * exactly as before. A marketplace that records consequences it does not deliver
+ * is worse than one that admits the gap: the record is what an appeal, an
+ * auditor, and the participant all reason from.
+ *
+ * **Refuses new imposition only.** A restriction already stored on this scope
+ * still reads back, still lifts, and can still be reconsidered — retiring the
+ * vocabulary member instead would rewrite history to make the present look
+ * tidier.
+ *
+ * Carries the scope, which the caller supplied, and nothing else.
+ */
+export class RestrictionScopeNotEnforceableError extends ParticipantRestrictionError {
+  readonly scope: string;
+  constructor(scope: string) {
+    super(
+      "RESTRICTION_SCOPE_NOT_ENFORCEABLE",
+      "No production enforcement exists for this restriction scope, so it may not be imposed",
+    );
+    this.name = "RestrictionScopeNotEnforceableError";
+    this.scope = scope;
   }
 }
 

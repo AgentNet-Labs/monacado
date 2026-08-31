@@ -46,6 +46,8 @@ import { getActiveRiskPolicyVersionIn } from "./risk-policy-service";
 import { RiskEvaluationFailureError } from "./risk-errors";
 import { resolveCommerceApproval } from "../marketplace/participant-commerce-approval-service";
 import { readReadinessIn } from "../marketplace/payment-account-service";
+import { commerceBlockingScopesForRole } from "../../contracts/marketplace/restriction-enforcement";
+import type { MarketplaceRole } from "../../contracts/marketplace/participant";
 
 type Db = ReturnType<typeof getPrisma>;
 type Tx = Db | Prisma.TransactionClient;
@@ -87,18 +89,33 @@ export interface TransactionRiskSubject {
  * sale should happen at all: one withholds the right to offer, the other the
  * right to be paid, and booking proceeds for somebody barred from receiving them
  * creates a liability with no route to settlement.
+ *
+ * **Phase 1.15 — the scope list is no longer written here, and it is now
+ * role-aware.** It comes from `commerceBlockingScopesForRole`, so this gate and
+ * the standing seam in `beginCheckout` cannot disagree about which capabilities
+ * bear on a sale. The role argument corrects a real defect: this function read
+ * one flat list for both parties, so a PROMOTER restricted on `offer:publish` —
+ * a capability a promoter never exercises — was refused, while the same flat
+ * list gave a seller and a promoter identical treatment on scopes that do not
+ * apply to both.
+ *
+ * This gate remains a *second* reader rather than the only one. It is retained
+ * unchanged in purpose, and the authoritative participant-standing decision now
+ * lives outside the risk policy, where it cannot be turned off by activating a
+ * different policy version.
  */
-const COMMERCE_BLOCKING_SCOPES = ["offer:publish", "payout:receive"] as const;
-
 async function hasCommerceBlockingRestriction(
   tx: Tx,
   participantId: string,
+  role: MarketplaceRole,
 ): Promise<boolean> {
+  const scopes = commerceBlockingScopesForRole(role);
+  if (scopes.length === 0) return false;
   const count = await tx.participantRestriction.count({
     where: {
       participantId,
       status: "ACTIVE",
-      scope: { in: [...COMMERCE_BLOCKING_SCOPES] },
+      scope: { in: [...scopes] },
     },
   });
   return count > 0;
@@ -148,12 +165,12 @@ export async function evaluateTransactionRisk(
       reasons.push("ORDER_AMOUNT_EXCEEDS_LIMIT");
     }
 
-    if (await hasCommerceBlockingRestriction(db, subject.sellerParticipantId)) {
+    if (await hasCommerceBlockingRestriction(db, subject.sellerParticipantId, "SELLER")) {
       reasons.push("SELLER_RESTRICTED");
     }
     if (
       subject.promoterParticipantId !== null &&
-      (await hasCommerceBlockingRestriction(db, subject.promoterParticipantId))
+      (await hasCommerceBlockingRestriction(db, subject.promoterParticipantId, "PROMOTER"))
     ) {
       reasons.push("PROMOTER_RESTRICTED");
     }

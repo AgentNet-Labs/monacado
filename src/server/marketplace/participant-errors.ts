@@ -32,6 +32,7 @@ export type ParticipantErrorCode =
   | "ACTIVATION_NOT_SUBMITTED"
   | "ACTIVATION_ALREADY_DECIDED"
   | "ACTIVATION_PREREQUISITES_NOT_MET"
+  | "PARTICIPANT_SUSPENDED"
   | "ACTIVATION_REVIEWER_NOT_AUTHORIZED"
   | "ACTIVATION_SELF_REVIEW_NOT_PERMITTED"
   | "INCOHERENT_ACTIVATION_DECISION"
@@ -212,6 +213,32 @@ export class ActivationPrerequisitesNotMetError extends ParticipantError {
     );
     this.name = "ActivationPrerequisitesNotMetError";
     this.refusalCodes = refusalCodes;
+  }
+}
+
+/**
+ * The participant's admission is withdrawn, so an activation review may not
+ * restore it (Phase 1.15).
+ *
+ * An approval wrote `ACTIVE` unconditionally, which against an active suspension
+ * was a governed decision undone by an unrelated one — and it produced a state
+ * nothing could repair: the suspension row keeps its unique
+ * `activeForParticipantId` marker, so the participant read `ACTIVE`, still held
+ * an ACTIVE suspension, and could never be suspended again.
+ *
+ * Reinstatement is the authority that restores admission, with its own actor,
+ * reason, and record. This refusal points at it rather than working around it.
+ *
+ * Carries no reason code, no risk material, and no identifier — a suspension's
+ * grounds are on the governed record, read by someone entitled to them.
+ */
+export class ParticipantSuspendedError extends ParticipantError {
+  constructor() {
+    super(
+      "PARTICIPANT_SUSPENDED",
+      "This participant is suspended; admission is restored by reinstatement, not by activation review",
+    );
+    this.name = "ParticipantSuspendedError";
   }
 }
 

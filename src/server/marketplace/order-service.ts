@@ -97,6 +97,7 @@ import {
   type TaxTransactionIdProvider,
 } from "../tax/tax-transaction-ids";
 import { prepareCheckout, type PreparedCheckout } from "./checkout-service";
+import { readParticipantStanding } from "./participant-standing-service";
 import { recordTransactionEconomicSnapshotInTx } from "./transaction-accounting-service";
 import { upsertObligationInTx } from "./notification-obligation-service";
 import {
@@ -894,14 +895,18 @@ export async function advanceProceedsObligation(
        * rather than safe.
        */
       if (to === "ELIGIBLE") {
-        const held = await tx.participantRestriction.count({
-          where: {
-            participantId: current.participantId,
-            status: "ACTIVE",
-            scope: "payout:receive",
-          },
-        });
-        if (held > 0) {
+        /* Phase 1.15 — through the single standing reader, so this seam and the
+           checkout seam cannot drift apart about what a governed decision means.
+           Suspension is checked FIRST and dominates: it withdraws admission
+           rather than one capability, so it holds settlement whether or not any
+           `payout:receive` restriction also stands. Before 1.15 it was invisible
+           here, which made a suspension weaker than a restriction at the one
+           seam where money is authorised. */
+        const standing = await readParticipantStanding(tx, current.participantId);
+        if (standing.suspended) {
+          throw new ProceedsPayoutHeldError(obligationId, "PARTICIPANT_SUSPENDED");
+        }
+        if (standing.activeScopes.includes("payout:receive")) {
           throw new ProceedsPayoutHeldError(obligationId, "PARTICIPANT_PAYOUT_RESTRICTED");
         }
         const reversed = await tx.transactionReversal.count({

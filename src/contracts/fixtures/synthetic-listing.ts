@@ -122,6 +122,10 @@ export function syntheticListingProjectionContext(): ListingProjectionContext {
       controllingRoleStatus: "ACTIVE",
       offerLifecycle: "ACTIVE",
       offerAvailability: "AVAILABLE",
+      /* Phase 1.15, Ruling 1 — the Seller's CURRENT authorization for new
+         commerce, separate from the accepted version's frozen terms above. */
+      currentOfferLifecycle: "ACTIVE",
+      currentOfferAvailability: "AVAILABLE",
     },
     capsuleId: `an:capsule:${CAPSULE}`,
     capsuleVersion: SUPPORTED_LISTING_CAPSULE_VERSION,

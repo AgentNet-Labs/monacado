@@ -49,7 +49,10 @@ import { createAccount } from "../src/server/account/account-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
 import { grantAccountEntitlement } from "../src/server/account/account-entitlement-service";
 import { recordCommerceApproval } from "../src/server/marketplace/participant-commerce-approval-service";
-import { imposeParticipantRestriction } from "../src/server/marketplace/participant-restriction-service";
+import {
+  imposeParticipantRestriction,
+  liftParticipantRestriction,
+} from "../src/server/marketplace/participant-restriction-service";
 import type { CommerceApprovalIdProvider } from "../src/server/marketplace/participant-commerce-approval-ids";
 import { createSellerDirectListing } from "../src/server/marketplace/listing-service";
 import {
@@ -293,6 +296,12 @@ async function cleanup(): Promise<void> {
       where: { recipientParticipantId: { in: participantIds } },
     });
     await db.participantRestriction.deleteMany({
+      where: { participantId: { in: participantIds } },
+    });
+    /* Phase 1.15 — suspensions RESTRICT to the participant, exactly as
+       restrictions do, so a suspension arranged by this suite has to come off
+       before the participant can. */
+    await db.participantSuspension.deleteMany({
       where: { participantId: { in: participantIds } },
     });
     await db.participantCommerceApproval.deleteMany({
@@ -1564,6 +1573,205 @@ describeDb("1.2 — pre-live commerce controls", () => {
     });
   });
 
+  // — 4b · Phase 1.15 · restriction enforcement seams —
+
+  /**
+   * The seams Phase 1.15 wired, tested where the fixtures already are.
+   *
+   * Suspensions are ARRANGED as rows rather than imposed through
+   * `suspendParticipant`, deliberately. That service requires Marketplace Policy
+   * 1.3.0 to be ACTIVE, and this suite's whole point is that 1.0.0 governs here;
+   * activating 1.3.0 to make a fixture would change what every other test in the
+   * file is standing on. The suspension SERVICE is exercised in Phase 1.14's own
+   * suite — what is under test here is whether an enforcement seam READS one.
+   */
+  describe("suspension and restriction reach the operational seams", () => {
+    const begin = (internalListingId: string, policyId: string, riskPolicyId: string) =>
+      beginCheckout(
+        CHECKOUT_INPUT(internalListingId),
+        policyId,
+        {
+          provider: "STRIPE",
+          port: initiationDouble(),
+          taxPort: createZeroRateTaxAdapter(),
+          riskPolicyId,
+          buyerDetails: BUYER_DETAILS,
+        },
+        { ...deps(), taxIds, buyerSnapshotIds },
+      );
+
+    const arrangeSuspension = async (participantId: string): Promise<void> => {
+      await db.participantSuspension.create({
+        data: {
+          id: `mon:psus:${pad26(`${TAG}SU${next()}`)}`,
+          participantId,
+          reasonCode: "ADVERSE_OUTCOME_LEVEL_UNSUSTAINABLE",
+          status: "ACTIVE",
+          statusBeforeSuspension: "ACTIVE",
+          imposedAt: new Date(NOW),
+          imposedByAccountId: await seedInternalActor("participant:suspend"),
+          marketplacePolicyId: MONACADO_MARKETPLACE_POLICY_ID,
+          marketplacePolicyVersion: MARKETPLACE_POLICY_VERSION_1,
+          activeForParticipantId: participantId,
+        },
+      });
+      await db.marketplaceParticipant.update({
+        where: { id: participantId },
+        data: { status: "SUSPENDED" },
+      });
+    };
+
+    const restrictPayout = async (participantId: string): Promise<void> => {
+      await imposeParticipantRestriction(
+        {
+          participantId,
+          scope: "payout:receive",
+          reasonCode: "UNDERWRITING_REVIEW_REQUIRED",
+          actingAccountId: await seedInternalActor("participant:restrict"),
+          imposedAt: NOW,
+        },
+        { db, ids: notificationIds },
+      );
+    };
+
+    it("holds payout eligibility for a SUSPENDED participant", async () => {
+      /* The inversion 1.15 corrected: this gate counted restriction rows, and a
+         suspension mints none — so the heavier act left a claim payable while
+         the lighter one held it. */
+      const { seller, sale } = await completedSale();
+      await arrangeSuspension(seller.participantId);
+
+      const [obligation] = await listProceedsObligations(sale.snapshotId, deps());
+      await expect(
+        advanceProceedsObligation(
+          { obligationId: obligation!.obligationId, to: "ELIGIBLE", at: REVERSED_AT },
+          deps(),
+        ),
+      ).rejects.toMatchObject({ holdReason: "PARTICIPANT_SUSPENDED" });
+    });
+
+    it("leaves the historical obligation recorded in full while payment is held", async () => {
+      /* Monacado withholds SETTLEMENT of its own commercial obligation. It never
+         un-owes it: the claim, its amount, and its currency are untouched. */
+      const { seller, sale } = await completedSale();
+      const [before] = await listProceedsObligations(sale.snapshotId, deps());
+      await restrictPayout(seller.participantId);
+
+      const [after] = await listProceedsObligations(sale.snapshotId, deps());
+      expect(after!.state).toBe("PENDING");
+      expect(after!.amountMinorUnits).toBe(before!.amountMinorUnits);
+      expect(after!.currency).toBe(before!.currency);
+      expect(after!.becameEligibleAt).toBeNull();
+    });
+
+    it("resumes eligibility once the restriction is lifted, rewriting nothing", async () => {
+      const { seller, sale } = await completedSale();
+      await restrictPayout(seller.participantId);
+      const [obligation] = await listProceedsObligations(sale.snapshotId, deps());
+
+      await expect(
+        advanceProceedsObligation(
+          { obligationId: obligation!.obligationId, to: "ELIGIBLE", at: REVERSED_AT },
+          deps(),
+        ),
+      ).rejects.toBeInstanceOf(ProceedsPayoutHeldError);
+
+      const [held] = await db.participantRestriction.findMany({
+        where: { participantId: seller.participantId, status: "ACTIVE" },
+      });
+      await liftParticipantRestriction(
+        {
+          restrictionId: held!.id,
+          reasonCode: "REQUIREMENT_SATISFIED",
+          actingAccountId: await seedInternalActor("participant:restrict"),
+          liftedAt: REVERSED_AT,
+        },
+        { db, ids: notificationIds },
+      );
+
+      const advanced = await advanceProceedsObligation(
+        { obligationId: obligation!.obligationId, to: "ELIGIBLE", at: REVERSED_AT },
+        deps(),
+      );
+      expect(advanced.state).toBe("ELIGIBLE");
+      expect(advanced.amountMinorUnits).toBe(obligation!.amountMinorUnits);
+    });
+
+    it("refuses NEW commerce for a SUSPENDED seller", async () => {
+      /* The phase's headline gap. Nothing in the codebase stopped this before:
+         checkout read the Listing's controller, and the risk gate counted
+         restriction rows. A suspension was invisible to both. */
+      const seller = await seedSellerDirect();
+      await arrangeSuspension(seller.participantId);
+
+      await expect(
+        begin(seller.internalListingId, await seedCommercialPolicy(), await seedRiskPolicy()),
+      ).rejects.toBeTruthy();
+    });
+
+    it("refuses NEW commerce for a seller restricted from payout, and writes no Order", async () => {
+      const seller = await seedSellerDirect();
+      const before = await db.order.count();
+      await restrictPayout(seller.participantId);
+
+      await expect(
+        begin(seller.internalListingId, await seedCommercialPolicy(), await seedRiskPolicy()),
+      ).rejects.toBeTruthy();
+
+      /* A refused transaction leaves NO Order behind — the same discipline the
+         risk gate follows, for the same reason. */
+      expect(await db.order.count()).toBe(before);
+    });
+
+    it("keeps refund and reversal obligations available against a restricted, suspended seller", async () => {
+      /* Restrictions govern FUTURE permissions. What Monacado already owes a
+         buyer is not a permission, and no standing withholds it. */
+      const { seller, sale } = await completedSale();
+      await restrictPayout(seller.participantId);
+      await arrangeSuspension(seller.participantId);
+
+      const reversal = await recordFullReversal(
+        {
+          snapshotId: sale.snapshotId,
+          kind: "REFUND",
+          reasonCode: "BUYER_REQUESTED",
+          provider: "STRIPE",
+          providerReversalRef: `re_${pad26(`${TAG}R15${next()}`)}`,
+          occurredAt: REVERSED_AT,
+          recordedAt: REVERSED_AT,
+        },
+        { db, ids: reversalIds },
+      );
+      expect(reversal).toBeTruthy();
+    });
+
+    it("refuses to impose a scope no production path enforces", async () => {
+      const seller = await seedSellerDirect();
+      await expect(
+        imposeParticipantRestriction(
+          {
+            participantId: seller.participantId,
+            scope: "commission:accrue",
+            reasonCode: "UNDERWRITING_REVIEW_REQUIRED",
+            actingAccountId: await seedInternalActor("participant:restrict"),
+            imposedAt: NOW,
+          },
+          { db, ids: notificationIds },
+        ),
+      ).rejects.toMatchObject({ code: "RESTRICTION_SCOPE_NOT_ENFORCEABLE" });
+
+      /* And nothing was recorded — no row, and therefore no status move and no
+         notice telling the participant a capability had been withheld. */
+      expect(
+        await db.participantRestriction.count({ where: { participantId: seller.participantId } }),
+      ).toBe(0);
+      const row = await db.marketplaceParticipant.findUniqueOrThrow({
+        where: { id: seller.participantId },
+      });
+      expect(row.status).toBe("ACTIVE");
+    });
+  });
+
   // — 5 · readiness —
 
   describe("live-commerce readiness", () => {
@@ -1684,6 +1892,11 @@ describeDb("1.2 — pre-live commerce controls", () => {
            authority nobody has is a capability on paper. */
         "PARTICIPANT_MITIGATION_POLICY_NOT_ACTIVE",
         "PARTICIPANT_MITIGATION_NOT_GRANTED",
+        /* Phase 1.15 — three recognised scopes still have no production seam,
+           and readiness says so rather than letting the vocabulary imply they
+           are enforceable. Cleared only by building the seams or retiring the
+           scopes, never by editing prose. */
+        "RESTRICTION_SCOPES_NOT_ENFORCEABLE",
         "LIVE_PROVIDER_NOT_ENABLED",
       ]);
       expect(readiness.satisfied).toContain("REFUND_BACKLOG");

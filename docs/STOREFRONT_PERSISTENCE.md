@@ -101,10 +101,14 @@ storable**: it means "no assignment exists", which is the absence of a row.
 `createStorefrontSourceVersion` runs, in order:
 
 1. read the current version — the comparison basis;
-2. assemble 0M.3A authority facts and honour the decision;
+2. assemble 0M.3A authority facts;
 3. ask `materialChangesBetween` whether this is a change at all;
-4. check any lifecycle move against the 0M.3A transition table;
-5. insert the new version and advance the pointer **in one transaction**.
+4. **route to the authority decision the change actually requires**, and honour
+   it (see §10);
+5. check any lifecycle move against the 0M.3A transition table;
+6. check the acting owner's governed standing for operational changes (Phase
+   1.15);
+7. insert the new version and advance the pointer **in one transaction**.
 
 Historical rows are never touched. A stable record can never point at a version
 that does not exist — the write path makes it impossible, and the read path fails
@@ -170,9 +174,42 @@ no approval workflow.
 
 The 0M.3A authority decisions are **used, never restated**. The service assembles
 `StorefrontOwnerFacts` and `StorefrontActorFacts` from persisted rows and honours
-`canCreateStorefrontRecord` / `canEditStorefrontPresentation`. A refusal carries
-that contract's own bounded reason codes — typed to the closed vocabulary rather
-than `string[]`, after an early draft invented two codes no contract defines.
+the decision that matches the act. A refusal carries that contract's own bounded
+reason codes — typed to the closed vocabulary rather than `string[]`, after an
+early draft invented two codes no contract defines.
+
+**Which decision, by branch** (corrected in Phase 1.15):
+
+| The version does | Decision | Governance |
+| --- | --- | --- |
+| create the record | `canCreateStorefrontRecord` | no assignment yet exists |
+| take the Storefront live (`→ ACTIVE`) | `canActivateStorefrontRecord` | **`SUPER_OWNER` only** |
+| resume from `SUSPENDED` | `canResumeStorefrontRecord` | **`SUPER_OWNER` only** |
+| widen exposure toward the public | `canIncreaseStorefrontExposure` | **`SUPER_OWNER` only** |
+| anything else — presentation, standing down | `canEditStorefrontPresentation` | `ADMIN` or `SUPER_OWNER` |
+
+> **Corrected in Phase 1.15.** An earlier revision of this document stated that
+> the service "honours `canCreateStorefrontRecord` / `canEditStorefrontPresentation`",
+> and the implementation matched: **every** lifecycle and visibility move,
+> including `DRAFT → ACTIVE` and `PRIVATE → PUBLIC`, was authorized by the
+> presentation-edit decision — which admits an `ADMIN` and reads neither the
+> owner's participant standing nor Monacado's go-live determination.
+>
+> That contradicted the authoritative source model, which reserves activation,
+> resumption, and public visibility to the active `SUPER_OWNER`
+> ([`AUTHORITATIVE_STOREFRONT_SOURCE_MODEL.md`](AUTHORITATIVE_STOREFRONT_SOURCE_MODEL.md) §7,
+> recorded as data in `SUPER_OWNER_EXCLUSIVE_AUTHORITIES`). This document
+> described the weaker behaviour as though it were the design; it was a defect,
+> and the authoritative model governs. `ADMIN` retains every operational
+> authority it legitimately holds, and standing a Storefront down is never gated
+> on commerce readiness.
+
+For the go-live branches the owner's **payment readiness is read** through
+`readReadinessIn` and go-live approval through `resolveCommerceApproval`, rather
+than taken from `toStorefrontOwnerFacts`, whose hardcoded initial value was
+written when no payment record existed and would otherwise make the authority the
+source model specifies impossible to satisfy. The presentation branch continues
+to pass the conservative `NOT_APPROVED`, because editing does not depend on it.
 
 Two facts are deliberately **not** derived from persisted state:
 
