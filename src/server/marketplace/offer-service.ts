@@ -69,7 +69,10 @@ import {
 import type { MarketplaceSubject } from "../../contracts/marketplace/participant";
 import { getPrisma } from "../db/client";
 import { toMarketplaceSubject } from "./participant-mapper";
-import { assertOfferMayBecomeCommerciallyLive } from "./participant-standing-service";
+import {
+  assertOfferMayBecomeCommerciallyLive,
+  assertParticipantMayAuthorMarketplaceState,
+} from "./participant-standing-service";
 import { ParticipantActionNotPermittedError } from "./participant-standing-errors";
 import { cryptoOfferIdProvider, type OfferIdProvider } from "./offer-ids";
 import {
@@ -376,6 +379,9 @@ export async function createDraftOffer(
           hasProductAuthority: data.hasProductAuthority,
         }),
       );
+
+      /* Phase 1.16 — suspension withholds authoring; see the standing service. */
+      await assertParticipantMayAuthorMarketplaceState(tx, data.sellerParticipantId);
 
       await tx.offer.create({
         data: {

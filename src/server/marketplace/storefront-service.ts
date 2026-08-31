@@ -57,7 +57,10 @@ import {
   type StorefrontSourceVersion,
 } from "../../contracts/marketplace/storefront-source";
 import { getPrisma } from "../db/client";
-import { assertStorefrontMayBecomeOperational } from "./participant-standing-service";
+import {
+  assertStorefrontMayBecomeOperational,
+  assertParticipantMayAuthorMarketplaceState,
+} from "./participant-standing-service";
 import { ParticipantActionNotPermittedError } from "./participant-standing-errors";
 import { readReadinessIn } from "./payment-account-service";
 import { resolveCommerceApproval } from "./participant-commerce-approval-service";
@@ -368,6 +371,12 @@ export async function createDraftStorefront(
       });
 
       requireAllowed(canCreateStorefrontRecord({ owner: facts.owner, actor: facts.actor }));
+
+      /* Phase 1.16 — an active suspension withholds authoring, whatever the
+         projected status says. A participant suspended before admission keeps
+         their onboarding stage, so `permitsDrafting` above still passes; the
+         authoritative row is the only place the answer exists. */
+      await assertParticipantMayAuthorMarketplaceState(tx, data.ownerParticipantId);
 
       await tx.storefront.create({
         data: {

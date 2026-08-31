@@ -336,6 +336,76 @@ describe("stand-down is never gated", () => {
   });
 });
 
+describe("status consistency may improve; enforcement still depends on rows", () => {
+  /* Phase 1.16 made `MarketplaceParticipant.status` a faithful projection of the
+     mitigation rows. That is a consistency and audit-truth gain, and it is NOT a
+     licence to start gating on status: status is one bit, and `RestrictionScope`
+     has six members, so it can only ever answer "restricted for something" when
+     the seam asked "restricted for THIS". These assertions exist so a later
+     simplification has to delete them deliberately. */
+  const SEAM_FILES = [
+    "src/server/marketplace/storefront-service.ts",
+    "src/server/marketplace/offer-service.ts",
+    "src/server/marketplace/listing-service.ts",
+    "src/server/marketplace/order-service.ts",
+    "src/server/payments/executable-checkout-service.ts",
+  ];
+
+  it("every enforcement seam still routes through the standing service", () => {
+    for (const rel of SEAM_FILES) {
+      const src = read(rel);
+      expect(src, `${rel} must still import the standing service`).toContain(
+        "participant-standing-service",
+      );
+    }
+  });
+
+  it("the standing reader consults mitigation rows and never participant status", () => {
+    const src = read(STANDING_SERVICE);
+    expect(src).toContain("participantSuspension");
+    expect(src).toContain("participantRestriction");
+    /* The one table it must not read. Reading it back would answer the narrowest
+       question with the coarsest fact available. */
+    expect(src).not.toContain("marketplaceParticipant");
+  });
+
+  it("reconciliation writes status and never authors mitigation", () => {
+    /* Status is the projection; the rows are the authority. The activation
+       reconciliation may count restrictions and may not create, lift, or
+       otherwise author one. */
+    const src = read("src/server/marketplace/activation-service.ts");
+    expect(src).toContain("reconcileApprovedStatusInTx");
+    expect(src).toContain("participantRestriction.count");
+    for (const forbidden of [
+      "participantRestriction.create",
+      "participantRestriction.update",
+      "participantSuspension.create",
+      "participantSuspension.update",
+      "imposeParticipantRestriction",
+      "suspendParticipant",
+    ]) {
+      expect(src, `activation-service must not ${forbidden}`).not.toContain(forbidden);
+    }
+  });
+
+  it("no risk signal reaches a status write", () => {
+    /* A score, a rate, a ranking, or a disposition may never move a participant's
+       status. Only governed mitigation records may. */
+    const src = read("src/server/marketplace/activation-service.ts");
+    for (const forbidden of [
+      "riskScore",
+      "dispositionCode",
+      "SUSPENSION_RECOMMENDED",
+      "participantRiskReview",
+      "sellerRiskMetric",
+      "chargebackRate",
+      "refundRate",
+    ]) {
+      expect(src).not.toContain(forbidden);
+    }
+  });
+});
+
 describe("historical obligations stay outside enforcement", () => {
   it("no correction path consults participant standing", () => {
     /* Refunds, disputes, reversals, and tax corrections are obligations Monacado

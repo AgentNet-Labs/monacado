@@ -325,18 +325,35 @@ export type ParticipantRestrictionRecord = z.infer<typeof ParticipantRestriction
  *
  *   - A `DRAFT`, `PROFILE_INCOMPLETE`, `PROFILE_COMPLETE`, or `UNDER_REVIEW`
  *     participant may hold restrictions — a policy problem found during
- *     onboarding is real — but none of those transitions to `RESTRICTED` exists
- *     in the 0M.1 table, and the restriction record stands as evidence without
- *     one. When they later reach `ACTIVE` through the governed review, the
- *     restriction is already there to be reckoned with.
+ *     onboarding is real — and the restriction record stands as evidence
+ *     without a status change. Their onboarding stage is the honest stored
+ *     status; the rows carry the mitigation, and every Phase 1.15 enforcement
+ *     seam reads the rows. When they are later admitted through the governed
+ *     review, the restriction is reckoned with there (Phase 1.16).
+ *
+ *     CORRECTED IN PHASE 1.16: this previously said "none of those transitions
+ *     to `RESTRICTED` exists in the 0M.1 table". That is true of three of the
+ *     four — `lifecycle.ts` does list `RESTRICTED` among `UNDER_REVIEW`'s
+ *     targets. The behaviour was right and the reason given for it was not, so
+ *     the reason is now the one that actually holds: admission is a
+ *     precondition for wearing a mitigation overlay, not a consequence of one.
  *   - A `CLOSED` or `SUSPENDED` participant is not moved by this phase.
  *   - Restrictions two through N change nothing; the status is already right.
  *
  * **It never bypasses activation prerequisites.** Returning to `ACTIVE` here is
- * only reachable *from* `RESTRICTED`, which is only reachable *from* `ACTIVE` —
- * so the participant was already admitted through a governed activation review,
- * and this restores what a restriction withheld rather than granting admission.
- * A participant that never activated cannot reach `ACTIVE` by this path.
+ * only reachable *from* `RESTRICTED`, which this function only ever produces
+ * *from* `ACTIVE` — so the participant was already admitted through a governed
+ * activation review, and this restores what a restriction withheld rather than
+ * granting admission.
+ *
+ * THAT GUARANTEE IS ABOUT THIS FUNCTION, AND PHASE 1.14 ADDED A SECOND PRODUCER
+ * OF `RESTRICTED`. `reinstatementTargetStatus` could confer it on a participant
+ * suspended before admission, and lifting that restriction then read
+ * `RESTRICTED` + 0 and moved them to `ACTIVE` — full admission through two
+ * mitigation acts and no approved review. Phase 1.16 carried the guarantee
+ * across by making admission a precondition there too; see
+ * `ADMITTED_PARTICIPANT_STATUSES`. A guarantee that holds for one function and
+ * not for the system is the shape of defect worth naming here.
  */
 export function reconcileParticipantStatusForRestrictions(input: {
   currentStatus: ParticipantStatus;

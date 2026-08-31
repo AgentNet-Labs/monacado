@@ -491,6 +491,19 @@ failed to move.
 
 **0M.8 writes neither, from any path.**
 
+> **Phase 1.16 discharged half of this, exactly as §13 anticipated.** The
+> premise below — "until [the machine-readable restriction scope] exists" — was
+> discharged by `0M.R1`, and Phase 1.15 gave three of its scopes real production
+> readers. An activation approval may now land `RESTRICTED`, but only as a
+> reconciliation of counted authoritative restriction rows read in the same
+> transaction, never as something the review chose.
+>
+> What did not change: `participantStatusAfterDecision` still cannot return
+> `RESTRICTED` or `SUSPENDED`, no caller can request either,
+> `RestrictionScopeNotAvailableInPhaseError` still guards the review's own
+> output, and `SUSPENDED` remains unreachable from this path — an approval over
+> an active suspension is refused outright rather than reconciled.
+
 Both mean "admitted, some capability withheld" (0M.1 §4.1), and nothing in the
 repository expresses **which** capability — `capability.ts` tests only
 `status !== "ACTIVE"`. Writing either would record a status a later reader cannot

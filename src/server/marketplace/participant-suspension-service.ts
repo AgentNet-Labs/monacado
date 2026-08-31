@@ -48,6 +48,8 @@ import {
   ReinstateParticipantInput,
   SuspendParticipantInput,
   reinstatementTargetStatus,
+  isAdmittedParticipantStatus,
+  suspendedStatusIsSupported,
 } from "../../contracts/marketplace/participant-mitigation";
 import {
   canSuspendParticipant,
@@ -204,11 +206,39 @@ export async function suspendParticipant(
       });
 
       /* The status move, guarded by the committed 0M.1 table. A status this
-         phase cannot legally reach is left alone; the evidence row stands. */
+         phase cannot legally reach is left alone; the evidence row stands.
+         
+         PHASE 1.16 — ADMISSION IS ALSO REQUIRED, and the evidence is counted.
+         
+         `SUSPENDED` means admission withdrawn, so there must be admission to
+         withdraw. Writing it over a pre-review stage destroyed the only record of
+         where the participant was in onboarding — `statusBeforeSuspension`
+         remembered it, but the lifecycle table has no edge back from `SUSPENDED`
+         to any pre-review status, so reinstatement could not restore it. A
+         participant suspended while `UNDER_REVIEW` and later reinstated was left
+         stored `SUSPENDED` with ZERO active suspensions, unable to be
+         re-suspended, re-submitted, or reconciled by anything short of closure.
+         
+         The row is still written for every participant, exactly as a restriction
+         is: it is the authoritative record, every Phase 1.15 seam reads it, and
+         `assertNotSuspended` refuses to approve an activation over it. What the
+         non-admitted participant keeps is their onboarding stage, which is the
+         honest stored status and the one a later governed act needs.
+         
+         This is the same treatment `reconcileParticipantStatusForRestrictions`
+         already gives a restriction imposed before admission. */
       const { isValidParticipantTransition } = await import(
         "../../contracts/marketplace/lifecycle"
       );
-      if (isValidParticipantTransition(participant.status as ParticipantStatus, "SUSPENDED")) {
+      const from = participant.status as ParticipantStatus;
+      const activeSuspensionCount = await tx.participantSuspension.count({
+        where: { participantId, status: "ACTIVE" },
+      });
+      if (
+        isAdmittedParticipantStatus(from) &&
+        suspendedStatusIsSupported(activeSuspensionCount) &&
+        isValidParticipantTransition(from, "SUSPENDED")
+      ) {
         await tx.marketplaceParticipant.update({
           where: { id: participantId },
           data: { status: "SUSPENDED" },

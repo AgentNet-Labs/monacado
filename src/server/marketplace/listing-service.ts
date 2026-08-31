@@ -82,7 +82,10 @@ import type { MarketplaceSubject } from "../../contracts/marketplace/participant
 import type { GeneralAvailabilityState } from "../../contracts/product/product.capsule";
 import { getPrisma } from "../db/client";
 import { toMarketplaceSubject } from "./participant-mapper";
-import { assertListingMayBecomeOperational } from "./participant-standing-service";
+import {
+  assertListingMayBecomeOperational,
+  assertParticipantMayAuthorMarketplaceState,
+} from "./participant-standing-service";
 import { ParticipantActionNotPermittedError } from "./participant-standing-errors";
 import { versionRowToSourceVersion as offerVersionRowToSourceVersion } from "./offer-mapper";
 import { cryptoListingIdProvider, type ListingIdProvider } from "./listing-ids";
@@ -692,6 +695,8 @@ export async function createSellerDirectListing(
       const decision = decideForBranch("SELLER_DIRECT", subject);
       requireAllowed(decision);
       requireController(subject, data.controllingParticipantId, decision.capability);
+      /* Phase 1.16 — suspension withholds authoring; see the standing service. */
+      await assertParticipantMayAuthorMarketplaceState(tx, data.controllingParticipantId);
 
       await insertFirstVersion(tx, {
         internalListingId,
@@ -752,6 +757,8 @@ export async function createPromotedListing(
       const decision = decideForBranch("PROMOTED", subject);
       requireAllowed(decision);
       requireController(subject, data.controllingParticipantId, decision.capability);
+      /* Phase 1.16 — suspension withholds authoring; see the standing service. */
+      await assertParticipantMayAuthorMarketplaceState(tx, data.controllingParticipantId);
 
       const accepted = await resolveAcceptedOffer(tx, {
         offerSourceRecordId: data.acceptedOfferSourceRecordId,

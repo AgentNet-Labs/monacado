@@ -1742,6 +1742,108 @@ describeDb("Phase 0M.R1 — versioned commercial policy and activation risk reco
       expect(row.status).toBe("RESTRICTED");
     });
 
+    it("lands an approved participant on RESTRICTED when a restriction stands", async () => {
+      /* Phase 1.16 — the inconsistency Phase 1.15 recorded and deferred.
+      
+         The approval succeeds: a restriction is not a reason to refuse admission,
+         it is a reason the admission arrives with something withheld. What
+         changes is where the participant comes to rest. */
+      const { accountId, participantId } = await seedParticipant(["SELLER"]);
+      await completeProfile(participantId);
+      const ref = `acct_${TAG.toLowerCase()}_${(seq += 1)}`;
+      await registerParticipantPaymentAccount(
+        { participantId, provider: "STRIPE", providerAccountRef: ref, now: NOW },
+        deps(),
+      );
+      const base = { participantId, provider: "STRIPE" as const, providerAccountRef: ref };
+      for (const readiness of ["DETAILS_REQUIRED", "PENDING_PROVIDER", "ENABLED"] as const) {
+        await recordObservedProviderState(
+          { ...base, readiness, outstandingRequirements: [], observedAt: NOW },
+          deps(),
+        );
+      }
+      await satisfyActivationPolicyPrerequisites(db, {
+        participantId,
+        accountId,
+        roles: ["SELLER"],
+        now: NOW,
+      });
+      await submitParticipantForActivation({ participantId, submittedAt: NOW }, deps());
+
+      /* Restricted while UNDER_REVIEW. The row stands as evidence and the
+         onboarding stage is left alone — unchanged from 0M.R1. */
+      await restrict(participantId, { scope: "payout:receive" });
+      expect(
+        (await db.marketplaceParticipant.findUniqueOrThrow({ where: { id: participantId } }))
+          .status,
+      ).toBe("UNDER_REVIEW");
+
+      const restrictionsBefore = await db.participantRestriction.findMany({
+        where: { participantId },
+        orderBy: { id: "asc" },
+      });
+
+      await decideParticipantActivation(
+        {
+          participantId,
+          decision: "APPROVED",
+          decisionReasonCode: "PREREQUISITES_SATISFIED",
+          reviewerAccountId: REVIEWER,
+          decidedAt: LATER,
+        },
+        deps(),
+      );
+
+      /* Reconciled, not ACTIVE. */
+      expect(
+        (await db.marketplaceParticipant.findUniqueOrThrow({ where: { id: participantId } }))
+          .status,
+      ).toBe("RESTRICTED");
+
+      /* The review created no restriction and altered none. */
+      const restrictionsAfter = await db.participantRestriction.findMany({
+        where: { participantId },
+        orderBy: { id: "asc" },
+      });
+      expect(restrictionsAfter).toEqual(restrictionsBefore);
+
+      /* The activation decision itself is recorded exactly as the reviewer made
+         it — the status is the projection, the decision is the authority. */
+      const activation = await db.participantActivation.findFirstOrThrow({
+        where: { participantId },
+        orderBy: { decidedAt: "desc" },
+      });
+      expect(activation.decision).toBe("APPROVED");
+      expect(activation.decidedByActorId).toBe(REVIEWER);
+
+      /* And lifting it later reconciles the ordinary way. */
+      await liftParticipantRestriction(
+        {
+          restrictionId: restrictionsAfter[0]!.id,
+          reasonCode: "REQUIREMENT_SATISFIED",
+          actingAccountId: RESTRICTOR,
+          liftedAt: LATER,
+        },
+        deps(),
+      );
+      expect(
+        (await db.marketplaceParticipant.findUniqueOrThrow({ where: { id: participantId } }))
+          .status,
+      ).toBe("ACTIVE");
+    });
+
+    it("lands an approved participant on ACTIVE when nothing stands", async () => {
+      /* Regression guard: reconciliation must not over-fire. */
+      const { participantId } = await seedActivatedParticipant();
+      expect(
+        (await db.marketplaceParticipant.findUniqueOrThrow({ where: { id: participantId } }))
+          .status,
+      ).toBe("ACTIVE");
+      expect(
+        await db.participantRestriction.count({ where: { participantId, status: "ACTIVE" } }),
+      ).toBe(0);
+    });
+
     it("refuses to approve an activation while a suspension stands", async () => {
       /* An approval wrote ACTIVE unconditionally. Against an active suspension
          that undid a governed decision AND stranded the participant: the

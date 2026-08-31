@@ -192,6 +192,28 @@ export const ReinstateParticipantInput = z.strictObject({
 export type ReinstateParticipantInput = z.infer<typeof ReinstateParticipantInput>;
 
 /**
+ * The statuses that mean **Monacado admitted this participant** (Phase 1.16).
+ *
+ * `ACTIVE` and `RESTRICTED` are the only two, and the pairing is the point:
+ * 0M.1 §4.1 defines `RESTRICTED` as "admitted, some capability withheld pending
+ * a cure", so it is an admitted participant wearing a mitigation overlay rather
+ * than a separate standing. `SUSPENDED` is deliberately absent — admission has
+ * been withdrawn — and every pre-review stage is absent because admission has
+ * not yet been granted.
+ *
+ * Named so the reconciliation rules below can ask "was this participant ever
+ * admitted" as a fact rather than by enumerating statuses at each call site.
+ */
+export const ADMITTED_PARTICIPANT_STATUSES = [
+  "ACTIVE",
+  "RESTRICTED",
+] as const satisfies readonly ParticipantStatus[];
+
+export function isAdmittedParticipantStatus(status: ParticipantStatus): boolean {
+  return (ADMITTED_PARTICIPANT_STATUSES as readonly ParticipantStatus[]).includes(status);
+}
+
+/**
  * Where a participant returns to when a suspension is lifted.
  *
  * RECONCILES RATHER THAN ASSUMES. Restoring the status held before the
@@ -199,6 +221,21 @@ export type ReinstateParticipantInput = z.infer<typeof ReinstateParticipantInput
  * stand against them — the exact divergence `restrictedStatusIsSupported` exists
  * to prevent, in the opposite direction. So standing restrictions win, and the
  * remembered status is used only when there are none.
+ *
+ * **ADMISSION IS A PRECONDITION, NOT A CONSEQUENCE (Phase 1.16).** Standing
+ * restrictions may only produce `RESTRICTED` for a participant who was
+ * ALREADY ADMITTED when the suspension landed. Without that clause this function
+ * was the second step of a real escalation: a participant suspended while
+ * `UNDER_REVIEW`, holding one restriction, was reinstated to `RESTRICTED` —
+ * because the restriction count short-circuited before the remembered status was
+ * consulted — and lifting that restriction then read `RESTRICTED` + 0 and moved
+ * them to `ACTIVE`. A participant reached full admission through two mitigation
+ * acts and no approved activation review.
+ *
+ * `participant-restriction.ts` guarantees that "a participant that never
+ * activated cannot reach `ACTIVE` by this path", and it is right about its own
+ * path. Phase 1.14 added a SECOND producer of `RESTRICTED` and did not carry the
+ * guarantee across. This clause carries it across.
  *
  * `null` means the lifecycle table forbids the move and nothing should be
  * written; the suspension row is still lifted, and the status is left where a
@@ -211,12 +248,18 @@ export function reinstatementTargetStatus(input: {
   statusBeforeSuspension: ParticipantStatus;
 }): ParticipantStatus | null {
   if (input.currentStatus !== "SUSPENDED") return null;
+
+  /* Restrictions decide only for a participant who held admission. For anyone
+     else the remembered stage is the whole answer, and their restrictions stand
+     as evidence exactly as they did before the suspension. */
+  const wasAdmitted = isAdmittedParticipantStatus(input.statusBeforeSuspension);
   const target =
-    input.activeRestrictionCount > 0
+    wasAdmitted && input.activeRestrictionCount > 0
       ? "RESTRICTED"
       : input.statusBeforeSuspension === "RESTRICTED"
         ? "ACTIVE"
         : input.statusBeforeSuspension;
+
   if (target === input.currentStatus) return null;
   if (!isValidParticipantTransition(input.currentStatus, target)) return null;
   return target;

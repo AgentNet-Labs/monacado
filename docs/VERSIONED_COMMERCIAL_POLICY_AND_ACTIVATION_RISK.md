@@ -214,9 +214,18 @@ index on a nullable marker column.
 
 **The invariant 0M.8 could not express:** a participant is never `RESTRICTED`
 without at least one active restriction. The restriction row and the status are
-written in one transaction, and the restriction service is the **only** thing in
-the codebase that may write the status — `advanceParticipantStatus` still refuses
-it outright.
+written in one transaction, and `advanceParticipantStatus` still refuses the
+status outright.
+
+> **Corrected in Phase 1.16.** This section previously said the restriction
+> service was "the **only** thing in the codebase that may write the status".
+> That stopped being true in Phase 1.14, which added reinstatement as a second
+> producer of `RESTRICTED`, and Phase 1.16 adds a third: an activation approval
+> reconciles against standing restrictions. What survives unchanged is the
+> invariant itself — every writer of `RESTRICTED` counts active restriction rows
+> in the same transaction and applies `restrictedStatusIsSupported`, so the
+> status never outruns its evidence. The claim worth making is about the
+> evidence, not about the number of writers.
 
 **Lifting one of several changes nothing**; only the last one returning the count
 to zero restores `ACTIVE`.

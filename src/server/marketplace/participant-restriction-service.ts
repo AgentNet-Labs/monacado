@@ -81,6 +81,7 @@ import {
   RestrictionScopeNotEnforceableError,
 } from "./participant-restriction-errors";
 import { isEnforceableRestrictionScope } from "../../contracts/marketplace/restriction-enforcement";
+import { isAdmittedParticipantStatus } from "../../contracts/marketplace/participant-mitigation";
 import { restrictionRowToRecord } from "./participant-restriction-mapper";
 
 type Db = ReturnType<typeof getPrisma>;
@@ -99,6 +100,43 @@ const prismaCode = (error: unknown): string | undefined => {
 };
 
 const isUniqueViolation = (error: unknown): boolean => prismaCode(error) === "P2002";
+
+/**
+ * A transient serialization failure the database asks the caller to retry.
+ *
+ * `P2034` is Prisma's write-conflict/deadlock code. Phase 1.16 made status
+ * convergence a row-guarded UPDATE, so two concurrent mitigation mutations on one
+ * participant now contend on the evidence they both depend on instead of each
+ * quietly deciding from a stale snapshot. Contention is the correct outcome; a
+ * conflict surfaced to the caller is not.
+ */
+const isSerializationConflict = (error: unknown): boolean => prismaCode(error) === "P2034";
+
+/** Deadlock resolution takes one victim, so one retry settles it; two is slack. */
+const MITIGATION_CONFLICT_RETRIES = 3;
+
+/**
+ * Run one governed mitigation mutation, re-running it against fresh state if the
+ * database refuses it as a serialization conflict.
+ *
+ * OPTIMISTIC, NOT LOCKED. There is no lock manager here, no lock ordering, and
+ * no participant-level mutex — each attempt is the ordinary transaction, and the
+ * retry exists only because the guarded convergence deliberately makes concurrent
+ * mutations collide rather than letting both proceed on stale reads. A retried
+ * attempt re-reads everything, so it decides on committed state.
+ *
+ * Bounded and re-throwing: a conflict that survives the budget is a real failure
+ * and is reported as one rather than retried forever.
+ */
+async function withMitigationConflictRetry<T>(run: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await run();
+    } catch (error) {
+      if (!isSerializationConflict(error) || attempt >= MITIGATION_CONFLICT_RETRIES) throw error;
+    }
+  }
+}
 
 function isDomainError(error: unknown): boolean {
   return (
@@ -181,7 +219,8 @@ export async function imposeParticipantRestriction(
     .nextObligationId();
 
   try {
-    return await db.$transaction(async (tx) => {
+    return await withMitigationConflictRetry(() =>
+      db.$transaction(async (tx) => {
       /* Phase 1.14 — the terms have to authorise acting on a PARTICIPANT before
          a risk-derived restriction may be imposed at all.
          
@@ -240,7 +279,8 @@ export async function imposeParticipantRestriction(
       });
 
       return await readSnapshotInTx(tx, participantId, restrictionId);
-    });
+      }),
+    );
   } catch (error) {
     if (isDomainError(error)) throw error;
     if (isUniqueViolation(error)) throw new DuplicateActiveRestrictionError(error);
@@ -276,7 +316,8 @@ export async function liftParticipantRestriction(
   await assertRestrictionAuthority(db, actingAccountId);
 
   try {
-    return await db.$transaction(async (tx) => {
+    return await withMitigationConflictRetry(() =>
+      db.$transaction(async (tx) => {
       const row = await tx.participantRestriction.findUnique({ where: { id: restrictionId } });
       if (row === null) throw new RestrictionNotFoundError();
 
@@ -316,7 +357,8 @@ export async function liftParticipantRestriction(
       });
 
       return await readSnapshotInTx(tx, row.participantId, restrictionId);
-    });
+      }),
+    );
   } catch (error) {
     if (isDomainError(error)) throw error;
     throw new RestrictionPersistenceFailureError("liftParticipantRestriction", error);
@@ -406,21 +448,60 @@ async function reconcileStatusInTx(
   participantId: string,
   currentStatus: ParticipantStatus,
 ): Promise<void> {
-  const activeRestrictionCount = await tx.participantRestriction.count({
-    where: { participantId, status: "ACTIVE" },
+  /* Only an admitted participant carries the mitigation overlay. A pre-admission
+     stage and a terminal `CLOSED` are both left exactly where they are, which is
+     `reconcileParticipantStatusForRestrictions`'s own rule and the reason it
+     returns `null` for them. Checked here so neither can be reached by the
+     guarded writes below even in principle. */
+  if (!isAdmittedParticipantStatus(currentStatus)) return;
+
+  /* — Phase 1.16 · the ROWS decide, not this transaction's snapshot. —
+   *
+   * This counted active restrictions and then wrote the status the count implied.
+   * Under MySQL's REPEATABLE READ that count is a consistent read against the
+   * snapshot taken at the transaction's first read, so two concurrent lifts of
+   * DIFFERENT scopes each saw the other's restriction as still active, each
+   * computed "no change warranted", and neither wrote. Both committed, and the
+   * participant was left `RESTRICTED` with zero active restrictions — the exact
+   * status/evidence divergence this phase exists to eliminate, reproduced 8 times
+   * out of 8 against the disposable database.
+   *
+   * The correction moves the decision into the statement. Each convergence is an
+   * UPDATE whose WHERE names both the expected current status and the
+   * authoritative evidence, so the database evaluates the rows rather than
+   * trusting a value this transaction read earlier. A stale observation can now
+   * only produce a no-op — never a wrong write — and concurrent lifts serialize
+   * on the evidence they both depend on, with the loser surfacing a retryable
+   * write conflict that `withMitigationConflictRetry` re-runs against fresh state.
+   *
+   * Both are attempted unconditionally, because the bug was precisely that an
+   * early return skipped the write that was needed. At most one can match: their
+   * `status` preconditions are disjoint. Idempotent by construction — re-running
+   * against settled state matches nothing and writes nothing.
+   *
+   * `suspensions: { none: ... }` on both keeps suspension dominant: a suspended
+   * participant is never quietly reconciled to `RESTRICTED` or `ACTIVE` here.
+   * `ACTIVE → RESTRICTED` and `RESTRICTED → ACTIVE` are the two moves the
+   * committed 0M.1 table already permits, so no transition is invented. */
+
+  await tx.marketplaceParticipant.updateMany({
+    where: {
+      id: participantId,
+      status: "ACTIVE",
+      restrictions: { some: { status: "ACTIVE" } },
+      suspensions: { none: { status: "ACTIVE" } },
+    },
+    data: { status: "RESTRICTED" },
   });
 
-  const next = reconcileParticipantStatusForRestrictions({
-    currentStatus,
-    activeRestrictionCount,
-  });
-  if (next === null || next === currentStatus) return;
-  if (!isValidParticipantTransition(currentStatus, next)) return;
-  if (next === "RESTRICTED" && !restrictedStatusIsSupported(activeRestrictionCount)) return;
-
-  await tx.marketplaceParticipant.update({
-    where: { id: participantId },
-    data: { status: next },
+  await tx.marketplaceParticipant.updateMany({
+    where: {
+      id: participantId,
+      status: "RESTRICTED",
+      restrictions: { none: { status: "ACTIVE" } },
+      suspensions: { none: { status: "ACTIVE" } },
+    },
+    data: { status: "ACTIVE" },
   });
 }
 

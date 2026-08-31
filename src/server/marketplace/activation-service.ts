@@ -36,9 +36,16 @@
  *      fabricate a provider state — that is the 0M.1 §5 separation enforced
  *      structurally rather than described.
  *
- *   5. **`RESTRICTED` and `SUSPENDED` are unreachable**, behind their own phase
- *      gate. They have no machine-readable restriction scope, which `0M.R1`
- *      owns; refusing is the only answer that fabricates nothing.
+ *   5. **No DECISION produces `RESTRICTED` or `SUSPENDED`**, behind their own
+ *      phase gate. When this phase was written they had no machine-readable
+ *      restriction scope, which `0M.R1` then supplied; refusing was the only
+ *      answer that fabricated nothing.
+ *
+ *      **Phase 1.16:** an APPROVED participant may now come to rest at
+ *      `RESTRICTED` — never because the review asked for it, but because a
+ *      reconciliation counted authoritative restriction rows in the same
+ *      transaction. `SUSPENDED` stays unreachable from this service entirely:
+ *      an approval over an active suspension is refused, not reconciled.
  *
  *   6. **Append-only.** A decided activation is never re-decided; a second
  *      review is a second submission and a second row, so the first survives.
@@ -79,6 +86,10 @@ import {
   isValidParticipantTransition,
   isValidRoleAssignmentTransition,
 } from "../../contracts/marketplace/lifecycle";
+import {
+  reconcileParticipantStatusForRestrictions,
+  restrictedStatusIsSupported,
+} from "../../contracts/marketplace/participant-restriction";
 import type {
   ParticipantStatus,
   PaymentReadinessStatus,
@@ -400,6 +411,35 @@ export async function decideParticipantActivation(
           where: { id: participantId },
           data: { status: nextStatus },
         });
+
+        /* — Phase 1.16 · reconcile the admission against standing mitigation. —
+         *
+         * The review has decided, and the decision is written above exactly as
+         * the reviewer made it. What follows is not a second decision: it applies
+         * `0M.R1`'s own rule to the admission that was just granted, so the
+         * stored status agrees with the authoritative restriction rows.
+         *
+         * WITHOUT IT, an approval wrote `ACTIVE` over standing restrictions. The
+         * status then claimed a participant was unrestricted while the rows said
+         * otherwise, and — worse — the state did not self-heal: lifting the last
+         * restriction from `ACTIVE` warrants no transition, so nothing ever
+         * corrected it.
+         *
+         * THE 0M.8 REFUSAL IS INTACT AND DELIBERATELY UNTOUCHED. `assertPhaseWritable`
+         * still runs above, and still refuses `RESTRICTED` and `SUSPENDED` as
+         * REVIEW OUTPUTS: `participantStatusAfterDecision` cannot return either,
+         * and no caller can ask for one. The refusal's stated ground was that
+         * such a status would have "no machine-readable content to write" — true
+         * when nothing expressed WHICH capability was withheld, and discharged by
+         * `0M.R1`'s scope vocabulary. Here the content is a counted row, read in
+         * this transaction. The review is not imposing a restriction; it is
+         * honouring one that a separately-authorized act already recorded.
+         *
+         * `SUSPENDED` is not reachable from this path at all: `assertNotSuspended`
+         * refused the approval before any of this ran. */
+        if (nextStatus === "ACTIVE") {
+          await reconcileApprovedStatusInTx(tx, participantId);
+        }
       }
 
       if (decision === "APPROVED") {
@@ -482,13 +522,61 @@ function assertPhaseWritable(status: ParticipantStatus): void {
  * reinstatement is the act that restores admission, with its own actor, reason,
  * and record.
  *
- * Restrictions are deliberately NOT refused here. An approved participant
- * carrying restrictions still lands `ACTIVE`, which is a status/evidence
+ * Restrictions are deliberately NOT refused here, and Phase 1.16 explains why
+ * that is the right shape rather than a gap: a restriction is not a reason to
+ * refuse admission, it is a reason the admission comes with something withheld.
+ * So the approval succeeds and `reconcileApprovedStatusInTx` then lands the
+ * participant at `RESTRICTED`.
+ *
+ * Phase 1.15 recorded the pre-reconciliation state as "a status/evidence
  * inconsistency worth correcting — but not an enforcement gap, because every
  * Phase 1.15 seam reads the governed restriction ROWS rather than the derived
- * status. The payout hold, the checkout gate, and the go-live gates all still
- * fire.
+ * status." That remained true and is now moot on this path. It is worth keeping
+ * the reasoning in view: the seams still read rows, and a more accurate status is
+ * not a licence to start reading status instead.
  */
+/**
+ * Apply the standing restriction evidence to an admission just granted
+ * (Phase 1.16).
+ *
+ * Reads a count and writes at most one status. It creates no restriction, lifts
+ * none, invents no reason code, and consults no risk score, rate, threshold, or
+ * review disposition — the two facts it may read are the participant's status
+ * and the number of ACTIVE restriction rows.
+ *
+ * Uses `0M.R1`'s committed reconciler rather than restating it, asked the
+ * question it was written for: an `ACTIVE` participant acquiring its first
+ * active restriction becomes `RESTRICTED`. Passing `"ACTIVE"` is honest — the
+ * approval granted exactly that, and it is already written. The reconciler is
+ * never shown `UNDER_REVIEW`, so its deliberate refusal to move a non-admitted
+ * participant stays literally true.
+ *
+ * Double-guarded on the same count in the same transaction, the identical
+ * discipline `reconcileStatusInTx` follows: the count that decides the
+ * transition and the count that validates it cannot diverge.
+ */
+async function reconcileApprovedStatusInTx(
+  tx: Prisma.TransactionClient,
+  participantId: string,
+): Promise<void> {
+  const activeRestrictionCount = await tx.participantRestriction.count({
+    where: { participantId, status: "ACTIVE" },
+  });
+
+  const next = reconcileParticipantStatusForRestrictions({
+    currentStatus: "ACTIVE",
+    activeRestrictionCount,
+  });
+  if (next !== "RESTRICTED") return;
+  if (!restrictedStatusIsSupported(activeRestrictionCount)) return;
+  if (!isValidParticipantTransition("ACTIVE", "RESTRICTED")) return;
+
+  await tx.marketplaceParticipant.update({
+    where: { id: participantId },
+    data: { status: "RESTRICTED" },
+  });
+}
+
 async function assertNotSuspended(
   tx: Prisma.TransactionClient,
   participantId: string,

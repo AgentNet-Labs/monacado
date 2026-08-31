@@ -48,13 +48,19 @@ import {
   policyVersionAuthorizesParticipantMitigation,
   reinstatementTargetStatus,
   suspendedStatusIsSupported,
+  ADMITTED_PARTICIPANT_STATUSES,
+  isAdmittedParticipantStatus,
 } from "../src/contracts/marketplace/participant-mitigation";
 import {
   RESTRICTION_LIFT_REASON_CODES,
   RESTRICTION_REASON_CODES,
   RISK_DERIVED_RESTRICTION_REASON_CODES,
 } from "../src/contracts/marketplace/participant-restriction";
-import { DRAFTING_PARTICIPANT_STATUSES } from "../src/contracts/marketplace/participant";
+import {
+  DRAFTING_PARTICIPANT_STATUSES,
+  PARTICIPANT_STATUSES,
+} from "../src/contracts/marketplace/participant";
+import { isValidParticipantTransition } from "../src/contracts/marketplace/lifecycle";
 import { PARTICIPANT_STATUS_TRANSITIONS } from "../src/contracts/marketplace/lifecycle";
 import {
   ACCOUNT_CAPABILITIES,
@@ -424,6 +430,84 @@ describe("1.14 · suspension is not a restriction with a louder name", () => {
         statusBeforeSuspension: "ACTIVE",
       }),
     ).toBeNull();
+  });
+
+  it("requires admission before restrictions may confer RESTRICTED", () => {
+    /* Phase 1.16 — the escalation this closes.
+    
+       A participant suspended while UNDER_REVIEW, holding one restriction, was
+       reinstated to RESTRICTED because the restriction count short-circuited
+       before the remembered status was consulted. Lifting that restriction then
+       read RESTRICTED + 0 and moved them to ACTIVE — full admission through two
+       mitigation acts and no approved activation review. */
+    expect(
+      reinstatementTargetStatus({
+        currentStatus: "SUSPENDED",
+        activeRestrictionCount: 1,
+        statusBeforeSuspension: "UNDER_REVIEW",
+      }),
+    ).not.toBe("RESTRICTED");
+
+    /* Every non-admitted origin behaves the same way: restrictions stand as
+       evidence, and the remembered stage is the whole answer. */
+    for (const stage of [
+      "DRAFT",
+      "PROFILE_INCOMPLETE",
+      "PROFILE_COMPLETE",
+      "UNDER_REVIEW",
+    ] as const) {
+      for (const count of [0, 1, 3]) {
+        const target = reinstatementTargetStatus({
+          currentStatus: "SUSPENDED",
+          activeRestrictionCount: count,
+          statusBeforeSuspension: stage,
+        });
+        expect(target).not.toBe("RESTRICTED");
+        expect(target).not.toBe("ACTIVE");
+      }
+    }
+  });
+
+  it("names admission as a status pair, not a guess", () => {
+    expect([...ADMITTED_PARTICIPANT_STATUSES].sort()).toEqual(["ACTIVE", "RESTRICTED"]);
+    expect(isAdmittedParticipantStatus("ACTIVE")).toBe(true);
+    expect(isAdmittedParticipantStatus("RESTRICTED")).toBe(true);
+    /* Admission withdrawn, and admission not yet granted, are both not-admitted. */
+    for (const s of ["SUSPENDED", "CLOSED", "DRAFT", "UNDER_REVIEW"] as const) {
+      expect(isAdmittedParticipantStatus(s)).toBe(false);
+    }
+  });
+
+  it("never invents a lifecycle transition, whatever the evidence", () => {
+    /* Reconciliation projects; it does not legislate. Every non-null answer must
+       be a move the committed 0M.1 table already permits. */
+    for (const before of PARTICIPANT_STATUSES) {
+      for (const count of [0, 1, 2]) {
+        const target = reinstatementTargetStatus({
+          currentStatus: "SUSPENDED",
+          activeRestrictionCount: count,
+          statusBeforeSuspension: before,
+        });
+        if (target === null) continue;
+        expect(isValidParticipantTransition("SUSPENDED", target)).toBe(true);
+        /* Terminal is never manufactured: CLOSED comes back only if CLOSED was
+           what was remembered, which `suspendParticipant` refuses to record in
+           the first place. Reconciliation neither invents an ending nor revives
+           one. */
+        if (target === "CLOSED") expect(before).toBe("CLOSED");
+      }
+    }
+
+    /* And a CLOSED participant is never moved by reinstatement at all. */
+    for (const count of [0, 1, 2]) {
+      expect(
+        reinstatementTargetStatus({
+          currentStatus: "CLOSED",
+          activeRestrictionCount: count,
+          statusBeforeSuspension: "ACTIVE",
+        }),
+      ).toBeNull();
+    }
   });
 
   it("is never SUSPENDED without evidence", () => {

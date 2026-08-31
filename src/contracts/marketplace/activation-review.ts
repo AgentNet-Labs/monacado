@@ -34,12 +34,25 @@
  *      and it may do so only when every prerequisite holds — including payment
  *      readiness `ENABLED`, which Monacado cannot supply for itself.
  *
- *   5. **`RESTRICTED` and `SUSPENDED` are unreachable.** Both mean "admitted,
- *      some capability withheld" (0M.1 §4.1) and nothing yet expresses *which*
- *      capability — `capability.ts` tests only `status !== "ACTIVE"`. Writing
- *      either would record a status with no machine-readable meaning. The
- *      restriction scope belongs to `0M.R1`; this phase refuses both behind a
- *      phase gate, exactly as 0M.5 refused `ACTIVE`.
+ *   5. **No DECISION produces `RESTRICTED` or `SUSPENDED`.** Both mean
+ *      "admitted, some capability withheld" (0M.1 §4.1), and when this phase was
+ *      written nothing expressed *which* capability — `capability.ts` tested only
+ *      `status !== "ACTIVE"` — so writing either would have recorded a status
+ *      with no machine-readable meaning. The restriction scope belonged to
+ *      `0M.R1`; this phase refuses both behind a phase gate, exactly as 0M.5
+ *      refused `ACTIVE`.
+ *
+ *      **Phase 1.16 narrowed the claim without weakening the gate.** `0M.R1`
+ *      supplied the scope vocabulary and Phase 1.15 gave three of its members
+ *      real production readers, so the premise is discharged: a `RESTRICTED`
+ *      backed by counted restriction rows has exactly the machine-readable
+ *      meaning that was missing. What remains prohibited is what was always the
+ *      real danger — a review ELECTING an adverse status. `participantStatus
+ *      AfterDecision` still returns only `ACTIVE`, `PROFILE_INCOMPLETE`, or
+ *      `null`; no input carries a desired status; and `assertPhaseWritable`
+ *      still refuses both. An approved participant may now come to rest at
+ *      `RESTRICTED`, but only because a *separate* reconciliation read rows a
+ *      separately-authorized act had already written.
  *
  *   6. **Reason codes are classifications, never values.** The same rule
  *      `CAPABILITY_REASON_CODES` follows: no name, address, provider message, or
@@ -88,12 +101,19 @@ const ReviewerAccountId = AccountId;
 // — Phase-writable participant statuses —
 
 /**
- * The participant statuses Phase 0M.8 may write.
+ * The participant statuses a governed activation DECISION may produce.
  *
  * 0M.5's `DRAFT_WRITABLE_PARTICIPANT_STATUSES` plus the two the governed review
  * exists to reach. `RESTRICTED` and `SUSPENDED` remain absent — see property 5
  * above. `CLOSED` stays writable for the same reason 0M.5 allowed it: closing is
  * the participant giving up, not Monacado ruling.
+ *
+ * PHASE 1.16 CORRECTED THE LABEL, NOT THE MEMBERSHIP. This was described as
+ * "every status this phase may write", which is no longer true: the activation
+ * service may now come to rest at `RESTRICTED` by reconciling against counted
+ * restriction rows. It remains exactly true of what a DECISION may produce, which
+ * is the question this constant exists to answer and the one the phase gate
+ * enforces.
  */
 export const ACTIVATION_PHASE_WRITABLE_PARTICIPANT_STATUSES = [
   "DRAFT",

@@ -31,6 +31,8 @@ import {
   liftParticipantRestriction,
   getParticipantRestrictionHistory,
 } from "../src/server/marketplace/participant-restriction-service";
+import { isParticipantSuspended } from "../src/server/marketplace/participant-standing-service";
+import { createDraftStorefront } from "../src/server/marketplace/storefront-service";
 import {
   getParticipantSuspensionHistory,
   reinstateParticipant,
@@ -71,6 +73,8 @@ const NOW = "2028-10-01T09:00:00.000Z";
 const LATER = "2028-10-02T09:00:00.000Z";
 
 let counter = 0;
+const pad26 = (seed: string): string =>
+  (seed.toUpperCase().replace(/[ILOU]/g, "0") + "0".repeat(26)).slice(0, 26);
 const next = (): number => (counter += 1);
 
 interface Actors {
@@ -204,6 +208,13 @@ async function cleanup(): Promise<void> {
     await db.participantSuspension.deleteMany({ where: { participantId: { in: ids } } });
     await db.participantRestriction.deleteMany({ where: { participantId: { in: ids } } });
     await db.participantActivation.deleteMany({ where: { participantId: { in: ids } } });
+    /* Phase 1.16 — the drafting tests create Storefronts, and every marketplace
+       FK is RESTRICT, so they come off before the participants that own them. */
+    await db.storefrontGovernanceAssignment.deleteMany({ where: { participantId: { in: ids } } });
+    await db.storefrontSourceRecordVersionRow.deleteMany({
+      where: { ownerParticipantId: { in: ids } },
+    });
+    await db.storefront.deleteMany({ where: { ownerParticipantId: { in: ids } } });
     await db.participantProfile.deleteMany({ where: { participantId: { in: ids } } });
     await db.marketplaceRoleAssignment.deleteMany({ where: { participantId: { in: ids } } });
     await db.marketplaceParticipant.deleteMany({ where: { id: { in: ids } } });
@@ -861,6 +872,334 @@ d("1.14 · governed participant mitigation (integration)", () => {
       expect(history[0]!.status).toBe("ACTIVE");
       expect(history[0]!.liftedAt).toBeNull();
       expect(await participantStatus(participantId)).toBe(before);
+    });
+  });
+
+  describe("1.16 · admission is never granted by mitigation", () => {
+    beforeEach(async () => {
+      await activatePolicy(MARKETPLACE_POLICY_VERSION_1_3);
+    });
+
+    /** A participant who submitted for review and was never decided. */
+    async function seedUnderReview(): Promise<string> {
+      const participantId = await seedParticipant();
+      await db.marketplaceParticipant.update({
+        where: { id: participantId },
+        data: { status: "UNDER_REVIEW" },
+      });
+      return participantId;
+    }
+
+    it("does not let a never-approved participant reach ACTIVE through mitigation", async () => {
+      /* THE ESCALATION PHASE 1.16 CLOSES, end to end.
+      
+         Every step is an ordinary governed act, and before 1.16 the sequence
+         ended with a participant stored ACTIVE holding no approved activation:
+         restrict (no status move) → suspend (UNDER_REVIEW → SUSPENDED, the
+         onboarding stage remembered) → reinstate (restrictions stood, so the
+         count short-circuited to RESTRICTED) → lift (RESTRICTED + 0 → ACTIVE).
+         
+         Two mitigation acts conferred full admission. */
+      const participantId = await seedUnderReview();
+      await restrict(participantId);
+      expect(await participantStatus(participantId)).toBe("UNDER_REVIEW");
+
+      const suspended = await suspend(participantId);
+      /* A suspension on a participant with no admission to withdraw records its
+         evidence and leaves the onboarding stage intact. */
+      expect(await participantStatus(participantId)).toBe("UNDER_REVIEW");
+
+      await reinstateParticipant(
+        {
+          suspensionId: suspended.suspensionId,
+          reasonCode: "LIFTED_ON_RECONSIDERATION",
+          actingAccountId: actors.suspender,
+          reinstatedAt: LATER,
+        },
+        { db },
+      );
+      expect(await participantStatus(participantId)).toBe("UNDER_REVIEW");
+
+      const [restriction] = await db.participantRestriction.findMany({
+        where: { participantId, status: "ACTIVE" },
+      });
+      await liftParticipantRestriction(
+        {
+          restrictionId: restriction!.id,
+          reasonCode: "REQUIREMENT_SATISFIED",
+          actingAccountId: actors.restrictor,
+          liftedAt: LATER,
+        },
+        { db },
+      );
+
+      /* The whole point: no admission was manufactured. */
+      const finalStatus = await participantStatus(participantId);
+      expect(finalStatus).toBe("UNDER_REVIEW");
+      expect(finalStatus).not.toBe("ACTIVE");
+      expect(finalStatus).not.toBe("RESTRICTED");
+    });
+
+    it("never leaves a participant SUSPENDED with no active suspension", async () => {
+      /* The stranding this closes: a mid-review suspension moved the status to
+         SUSPENDED, and the lifecycle table has no edge back to any pre-review
+         stage — so reinstatement lifted the row and could not restore the
+         status. The participant was left stored SUSPENDED with zero evidence,
+         unable to be re-suspended, re-submitted, or reconciled. */
+      const participantId = await seedUnderReview();
+      const suspended = await suspend(participantId);
+
+      await reinstateParticipant(
+        {
+          suspensionId: suspended.suspensionId,
+          reasonCode: "LIFTED_ON_RECONSIDERATION",
+          actingAccountId: actors.suspender,
+          reinstatedAt: LATER,
+        },
+        { db },
+      );
+
+      expect(await participantStatus(participantId)).not.toBe("SUSPENDED");
+      expect(
+        await db.participantSuspension.count({ where: { participantId, status: "ACTIVE" } }),
+      ).toBe(0);
+
+      /* And the participant is not trapped — a second suspension still works. */
+      const again = await suspend(participantId, { suspendedAt: LATER });
+      expect(again.suspensionId).not.toBe(suspended.suspensionId);
+    });
+
+    it("still records the suspension as authoritative evidence", async () => {
+      /* Leaving the onboarding stage alone must not weaken the suspension. The
+         row is what every Phase 1.15 seam reads. */
+      const participantId = await seedUnderReview();
+      await suspend(participantId);
+
+      expect(
+        await db.participantSuspension.count({ where: { participantId, status: "ACTIVE" } }),
+      ).toBe(1);
+      expect(await isParticipantSuspended(db, participantId)).toBe(true);
+    });
+
+    it("moves an admitted participant to SUSPENDED as before", async () => {
+      /* Regression guard: the ordinary case is untouched. */
+      const participantId = await seedParticipant();
+      await suspend(participantId);
+      expect(await participantStatus(participantId)).toBe("SUSPENDED");
+    });
+  });
+
+  describe("1.16 · suspension withholds authoring, whatever the projected status", () => {
+    beforeEach(async () => {
+      await activatePolicy(MARKETPLACE_POLICY_VERSION_1_3);
+    });
+
+    /** A participant still in onboarding, where `permitsDrafting` returns true. */
+    async function seedPreAdmission(): Promise<{ participantId: string; accountId: string }> {
+      const participantId = await seedParticipant();
+      await db.marketplaceParticipant.update({
+        where: { id: participantId },
+        data: { status: "PROFILE_COMPLETE" },
+      });
+      const { accountId } = await db.marketplaceParticipant.findUniqueOrThrow({
+        where: { id: participantId },
+        select: { accountId: true },
+      });
+      return { participantId, accountId };
+    }
+
+    const draftStorefront = (ownerParticipantId: string) =>
+      createDraftStorefront(
+        {
+          ownerParticipantId,
+          publicHandle: `mitigation-shop-${(counter += 1)}`,
+          presentation: {
+            displayName: "Synthetic Shop",
+            tagline: "A synthetic storefront used only for tests.",
+            summary: "A synthetic storefront for suspension tests.",
+          },
+          authorizedByParticipantId: ownerParticipantId,
+          authorizedByActorId: `mon:actor:${pad26("M116ACTOR")}`,
+          actorAuthorizedForOwnerParticipant: true,
+          now: NOW,
+        },
+        { db },
+      );
+
+    it("permits drafting for a pre-admission participant with no suspension", async () => {
+      const { participantId } = await seedPreAdmission();
+      const snapshot = await draftStorefront(participantId);
+      expect(snapshot.record.ownerParticipantId).toBe(participantId);
+    });
+
+    it("refuses drafting once an authoritative suspension stands", async () => {
+      /* THE GAP THIS CLOSES. Phase 1.16 stopped manufacturing an admitted
+         SUSPENDED status for a participant who was never admitted — correctly,
+         since there is no admission to withdraw. But drafting eligibility is
+         decided by `permitsDrafting`, which reads the projected status, so the
+         suspension reached nothing. The row is the only place the answer lives. */
+      const { participantId } = await seedPreAdmission();
+      await suspend(participantId);
+
+      /* The projection is deliberately NOT SUSPENDED — that is the point. */
+      expect(await participantStatus(participantId)).toBe("PROFILE_COMPLETE");
+      expect(await isParticipantSuspended(db, participantId)).toBe(true);
+
+      await expect(draftStorefront(participantId)).rejects.toMatchObject({
+        denialCode: "PARTICIPANT_SUSPENDED",
+      });
+    });
+
+    it("restores drafting when the suspension is lifted", async () => {
+      const { participantId } = await seedPreAdmission();
+      const imposed = await suspend(participantId);
+      await expect(draftStorefront(participantId)).rejects.toBeTruthy();
+
+      await reinstateParticipant(
+        {
+          suspensionId: imposed.suspensionId,
+          reasonCode: "LIFTED_ON_RECONSIDERATION",
+          actingAccountId: actors.suspender,
+          reinstatedAt: LATER,
+        },
+        { db },
+      );
+
+      const snapshot = await draftStorefront(participantId);
+      expect(snapshot.record.ownerParticipantId).toBe(participantId);
+    });
+
+    it("keeps drafting available to a RESTRICTED participant", async () => {
+      /* The asymmetry the architecture turns on: a restriction withholds
+         COMMERCE, never the ability to correct the work that caused it.
+         RESTRICTED must not become a synonym for SUSPENDED. */
+      const participantId = await seedParticipant();
+      await restrict(participantId, { scope: "offer:publish" });
+      expect(await participantStatus(participantId)).toBe("RESTRICTED");
+
+      const snapshot = await draftStorefront(participantId);
+      expect(snapshot.record.ownerParticipantId).toBe(participantId);
+    });
+
+    it("does not deny on a risk signal without a suspension row", async () => {
+      /* No score, ranking, or recommendation can produce this refusal — only a
+         governed ParticipantSuspension can. */
+      const { participantId } = await seedPreAdmission();
+      expect(
+        await db.participantSuspension.count({ where: { participantId, status: "ACTIVE" } }),
+      ).toBe(0);
+      const snapshot = await draftStorefront(participantId);
+      expect(snapshot.record.ownerParticipantId).toBe(participantId);
+    });
+  });
+
+  describe("1.16 · status converges to the evidence under concurrency", () => {
+    beforeEach(async () => {
+      await activatePolicy(MARKETPLACE_POLICY_VERSION_1_3);
+    });
+
+    const lift = (restrictionId: string) =>
+      liftParticipantRestriction(
+        {
+          restrictionId,
+          reasonCode: "REQUIREMENT_SATISFIED",
+          actingAccountId: actors.restrictor,
+          liftedAt: LATER,
+        },
+        { db },
+      );
+
+    const activeRestrictions = (participantId: string) =>
+      db.participantRestriction.count({ where: { participantId, status: "ACTIVE" } });
+
+    it("converges to ACTIVE when two restrictions are lifted concurrently", async () => {
+      /* THE RACE THIS CLOSES, and it was deterministic rather than rare.
+      
+         Each lift counted the remaining active restrictions, and under MySQL's
+         REPEATABLE READ that count is a consistent read against the snapshot
+         taken at the transaction's first read. So each transaction saw the
+         OTHER's restriction as still active, each concluded no status change was
+         warranted, and neither wrote. Both committed: RESTRICTED with zero active
+         restrictions — measured 8 times out of 8 before the fix. */
+      const participantId = await seedParticipant();
+      const first = await restrict(participantId, { scope: "offer:publish" });
+      const second = await restrict(participantId, { scope: "payout:receive" });
+      expect(await participantStatus(participantId)).toBe("RESTRICTED");
+
+      const outcomes = await Promise.allSettled([
+        lift(first.restriction.restrictionId),
+        lift(second.restriction.restrictionId),
+      ]);
+      /* A serialization conflict is retried inside the service, so a caller sees
+         neither lift fail. */
+      for (const o of outcomes) expect(o.status).toBe("fulfilled");
+
+      expect(await activeRestrictions(participantId)).toBe(0);
+      expect(await participantStatus(participantId)).toBe("ACTIVE");
+    });
+
+    it("never leaves RESTRICTED standing on zero evidence", async () => {
+      /* Stated as the invariant rather than as an outcome, because this is the
+         contradiction Phase 1.16 exists to eliminate. */
+      const participantId = await seedParticipant();
+      const a = await restrict(participantId, { scope: "offer:publish" });
+      const b = await restrict(participantId, { scope: "payout:receive" });
+
+      await Promise.allSettled([lift(a.restriction.restrictionId), lift(b.restriction.restrictionId)]);
+
+      const status = await participantStatus(participantId);
+      const remaining = await activeRestrictions(participantId);
+      const suspensions = await db.participantSuspension.count({
+        where: { participantId, status: "ACTIVE" },
+      });
+      expect(status === "RESTRICTED" && remaining === 0 && suspensions === 0).toBe(false);
+    });
+
+    it("stays RESTRICTED while one restriction remains", async () => {
+      const participantId = await seedParticipant();
+      const a = await restrict(participantId, { scope: "offer:publish" });
+      await restrict(participantId, { scope: "payout:receive" });
+
+      await lift(a.restriction.restrictionId);
+
+      expect(await activeRestrictions(participantId)).toBe(1);
+      expect(await participantStatus(participantId)).toBe("RESTRICTED");
+    });
+
+    it("keeps SUSPENDED dominant while restrictions are lifted underneath it", async () => {
+      /* Suspension outranks the restriction overlay, so convergence must not
+         quietly promote a suspended participant to ACTIVE. */
+      const participantId = await seedParticipant();
+      const a = await restrict(participantId, { scope: "offer:publish" });
+      const b = await restrict(participantId, { scope: "payout:receive" });
+      await suspend(participantId);
+      expect(await participantStatus(participantId)).toBe("SUSPENDED");
+
+      await Promise.allSettled([lift(a.restriction.restrictionId), lift(b.restriction.restrictionId)]);
+
+      expect(await activeRestrictions(participantId)).toBe(0);
+      expect(await participantStatus(participantId)).toBe("SUSPENDED");
+    });
+
+    it("is idempotent — a settled state is not rewritten", async () => {
+      const participantId = await seedParticipant();
+      const a = await restrict(participantId, { scope: "offer:publish" });
+      await lift(a.restriction.restrictionId);
+      expect(await participantStatus(participantId)).toBe("ACTIVE");
+
+      const settled = await db.marketplaceParticipant.findUniqueOrThrow({
+        where: { id: participantId },
+      });
+
+      /* A further governed mutation that warrants no status change leaves the row
+         alone, `updatedAt` included. */
+      const b = await restrict(participantId, { scope: "payout:receive" });
+      await lift(b.restriction.restrictionId);
+      const after = await db.marketplaceParticipant.findUniqueOrThrow({
+        where: { id: participantId },
+      });
+      expect(after.status).toBe("ACTIVE");
+      expect(settled.status).toBe("ACTIVE");
     });
   });
 

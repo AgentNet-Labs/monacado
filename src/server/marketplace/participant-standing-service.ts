@@ -178,6 +178,45 @@ export async function assertListingMayBecomeOperational(
   }
 }
 
+/**
+ * May this participant author NEW marketplace state?
+ *
+ * The drafting seam, and it refuses on **suspension only** (Phase 1.16).
+ *
+ * WHY A ROW READ IS REQUIRED HERE. Drafting eligibility is decided by
+ * `permitsDrafting`, which excludes `SUSPENDED` — so for an admitted participant
+ * the derived status already carries the answer. It does not for a participant
+ * suspended before admission: a suspension withdraws admission, there is none to
+ * withdraw, and Phase 1.16 deliberately refuses to manufacture an admitted
+ * `SUSPENDED` status for them. Their honest stored status stays at their
+ * onboarding stage, `permitsDrafting` keeps returning true, and without this the
+ * suspension reached nothing. The authoritative row has to be read because the
+ * projection cannot express this case — which is the whole reason enforcement
+ * reads rows.
+ *
+ * RESTRICTIONS ARE DELIBERATELY NOT CONSULTED, and this is the asymmetry the
+ * architecture turns on. `RESTRICTED` is a member of
+ * `DRAFTING_PARTICIPANT_STATUSES` on purpose: a restriction withholds *commerce*,
+ * never the ability to correct the work that caused it, and `activation:submit`
+ * is excluded from the restrictable vocabulary for the same reason. A restricted
+ * participant must keep drafting, or the restriction becomes unanswerable.
+ * Suspension is the heavier act and withdraws participation itself.
+ *
+ * SCOPED TO AUTHORING, not to standing down. It gates the acts that bring new
+ * marketplace state into existence; it never gates suspending, ending,
+ * withdrawing, closing, or any historical or support obligation. A suspended
+ * participant must still be able to stop, and Monacado must still be able to
+ * refund, dispute, and correct on their completed sales.
+ */
+export async function assertParticipantMayAuthorMarketplaceState(
+  tx: Tx,
+  participantId: string,
+): Promise<void> {
+  if (await isParticipantSuspended(tx, participantId)) {
+    throw new ParticipantActionNotPermittedError("PARTICIPANT_SUSPENDED");
+  }
+}
+
 /** One party to a prospective sale, and the role they play in it. */
 export interface TransactingParty {
   readonly participantId: string;
