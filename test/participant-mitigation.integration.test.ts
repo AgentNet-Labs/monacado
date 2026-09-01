@@ -1068,8 +1068,15 @@ d("1.14 · governed participant mitigation (integration)", () => {
       return { participantId, accountId };
     }
 
-    const draftStorefront = (ownerParticipantId: string) =>
-      createDraftStorefront(
+    const draftStorefront = async (ownerParticipantId: string) => {
+      /* Phase 1.18 — the owner acts as themselves, resolved from their own
+         account. The Storefront inputs no longer take a claimed actor
+         participant or a supplied authorization flag. */
+      const { accountId } = await db.marketplaceParticipant.findUniqueOrThrow({
+        where: { id: ownerParticipantId },
+        select: { accountId: true },
+      });
+      return await createDraftStorefront(
         {
           ownerParticipantId,
           publicHandle: `mitigation-shop-${(counter += 1)}`,
@@ -1078,13 +1085,12 @@ d("1.14 · governed participant mitigation (integration)", () => {
             tagline: "A synthetic storefront used only for tests.",
             summary: "A synthetic storefront for suspension tests.",
           },
-          authorizedByParticipantId: ownerParticipantId,
-          authorizedByActorId: `mon:actor:${pad26("M116ACTOR")}`,
-          actorAuthorizedForOwnerParticipant: true,
+          actingAccountId: accountId,
           now: NOW,
         },
         { db },
       );
+    };
 
     it("permits drafting for a pre-admission participant with no suspension", async () => {
       const { participantId } = await seedPreAdmission();

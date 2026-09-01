@@ -170,9 +170,14 @@ export function toStorefrontOwnerFacts(input: {
 /**
  * Persisted rows → the 0M.3A actor facts an authority decision may see.
  *
- * `authorizedForOwnerParticipant` is **supplied by the caller**, never derived.
- * 0M.3A forbids inferring it from an email domain, a display name, or any
- * private profile datum, and nothing reachable here could supply one.
+ * `authorizedForOwnerParticipant` is **derived from authoritative records, never
+ * supplied by the caller** (Phase 1.18). It arrives already decided from
+ * `resolveAuthorizationFacts`, which reads it from self-ownership or an ACTIVE
+ * `StorefrontGovernanceAssignment` — the only production caller of this mapper.
+ *
+ * 0M.3A's prohibition is intact and is a different rule: authority must never be
+ * inferred from an email domain, a display name, or any private profile datum,
+ * and there is no such field on the actor facts to infer one from.
  *
  * An absent governance assignment becomes `NONE`/`NONE` with a `null`
  * storefront — the contract's representation of "never appointed", which it

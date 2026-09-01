@@ -88,10 +88,23 @@ availability, and checkout eligibility belong to the Offer; descriptive facts
 belong to the Product. No second Product record and no second Product ownership
 model is introduced.
 
-`hasProductAuthority` is **supplied to the service, never derived.** `0M.2A` is
-explicit that authority over a Product is the Product model's question, and
-re-deriving it inside an Offer decision would put two answers in the repository
-that could disagree.
+`hasProductAuthority` remains a supplied input to the **pure `0M.2A` decision**,
+for the reason `0M.2A` gives: authority over a Product is the Product model's
+question, and re-deriving it inside an Offer decision would put two answers in
+the repository that could disagree.
+
+> **Superseded in part by Phase 1.18.** It is no longer supplied *to the
+> service*. It was a member of `CreateDraftOfferInput` and `UpdateOfferInput`,
+> which meant any caller could write `true` and draft, reprice, or activate an
+> Offer over another creator's Product. The Offer service now derives it from the
+> Product's current source version — `authorityCreatorParticipantId` in the
+> `"authorized"` state and the `"product-facts"` scope — via
+> `participantHoldsProductAuthority`. Both input schemas are `strictObject`, so a
+> caller still sending the field is refused rather than ignored.
+>
+> The Product model still owns the question; only the *provenance* of the answer
+> moved. A version whose creator participant is NULL — the historical rows the
+> column is nullable for — grants the authority to nobody.
 
 ## 5. Participant authority, and the creator-Node boundary
 

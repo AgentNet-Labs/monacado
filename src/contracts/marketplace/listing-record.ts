@@ -38,7 +38,6 @@ import { canonicalJsonString } from "../integrity/canonical-json";
 import { MarketplaceParticipantId } from "./participant";
 import { OfferSourceRecordVersion } from "./offer-source";
 import {
-  AuthorizingActorId,
   InternalListingId,
   InternalProductRef,
   InternalStorefrontRef,
@@ -88,7 +87,6 @@ export const CreateSellerDirectListingInput = z.strictObject({
   sale: SellerSaleSchedule.nullable().optional(),
 
   actingAccountId: ActingAccountId,
-  authorizedByActorId: AuthorizingActorId,
 
   /** Explicit instants. Nothing here reads a clock. */
   now: z.iso.datetime(),
@@ -129,7 +127,6 @@ export const CreatePromotedListingInput = z.strictObject({
   acquisitionPolicy: MonacadoWholesaleAcquisitionPolicy,
 
   actingAccountId: ActingAccountId,
-  authorizedByActorId: AuthorizingActorId,
   now: z.iso.datetime(),
 });
 export type CreatePromotedListingInput = z.infer<typeof CreatePromotedListingInput>;
@@ -169,7 +166,6 @@ export const UpdateListingInput = z.strictObject({
   acquisitionPolicy: MonacadoWholesaleAcquisitionPolicy.optional(),
 
   actingAccountId: ActingAccountId,
-  authorizedByActorId: AuthorizingActorId,
   now: z.iso.datetime(),
 });
 export type UpdateListingInput = z.infer<typeof UpdateListingInput>;

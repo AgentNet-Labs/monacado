@@ -120,6 +120,23 @@ async function seedSeller(): Promise<string> {
   return snapshot.participant.participantId;
 }
 
+/**
+ * The account that owns a participant — the authoritative account→participant
+ * relation, read back rather than remembered.
+ *
+ * Phase 1.18 removed `authorizedByParticipantId` and
+ * `actorAuthorizedForOwnerParticipant` from every Storefront input: a caller no
+ * longer names which participant it is, nor asserts that the participant was
+ * authorized. A fixture that wants to act AS a participant must therefore sign
+ * in as the account that owns it, which is what this resolves. Supplying a
+ * stranger's account is how a test now expresses "unauthorized".
+ */
+async function accountFor(participantId: string): Promise<string> {
+  const row = await db.marketplaceParticipant.findUnique({ where: { id: participantId } });
+  if (row === null) throw new Error(`no participant ${participantId}`);
+  return row.accountId;
+}
+
 const presentation = (overrides: Record<string, unknown> = {}) => ({
   displayName: "Synthetic Example Shop",
   tagline: "A synthetic storefront used only for tests.",
@@ -138,9 +155,7 @@ async function seedStorefront(overrides: Record<string, unknown> = {}) {
       ownerParticipantId,
       publicHandle: nextHandle(),
       presentation: presentation(),
-      authorizedByParticipantId: ownerParticipantId,
-      authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-      actorAuthorizedForOwnerParticipant: true,
+      actingAccountId: await accountFor(ownerParticipantId),
       now: NOW,
       ...overrides,
     },
@@ -165,9 +180,7 @@ async function seedGovernedStorefront(overrides: Record<string, unknown> = {}) {
       internalStorefrontId: seeded.snapshot.record.internalStorefrontId,
       participantId: seeded.ownerParticipantId,
       role: "SUPER_OWNER",
-      authorizedByParticipantId: seeded.ownerParticipantId,
-      authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-      actorAuthorizedForOwnerParticipant: true,
+      actingAccountId: await accountFor(seeded.ownerParticipantId),
       now: NOW,
     },
     { db },
@@ -284,9 +297,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
         ownerParticipantId: "not-a-participant",
         publicHandle: "Not A Handle",
         presentation: presentation(),
-        authorizedByParticipantId: `mon:mpart:${pad26("X")}`,
-        authorizedByActorId: `mon:actor:${pad26("Y")}`,
-        actorAuthorizedForOwnerParticipant: true,
+        actingAccountId: "acct_never_resolved_parse_fails_first",
         now: NOW,
       },
       { db },
@@ -322,8 +333,11 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
       visibility: "PRIVATE",
       publicHandle: snapshot.record.publicHandle,
       presentation: presentation(),
+      /* The RESOLVED actor participant, not a claimed one: Phase 1.18 writes
+         the authorization trace from the acting account's own participant. */
       authorizedByParticipantId: ownerParticipantId,
-      authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
+      /* The resolved acting account (Phase 1.18). */
+      authorizedByActorId: await accountFor(ownerParticipantId),
       recordedAt: NOW,
     });
   });
@@ -340,7 +354,8 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
     expect(version.presentation).toEqual(custom);
     expect(version.presentation.tagline).toBeNull();
     expect(version.authorizedByParticipantId).toBe(owner);
-    expect(version.authorizedByActorId).toBe(`mon:actor:${pad26("M3CACTOR")}`);
+    /* The resolved acting account (Phase 1.18). */
+    expect(version.authorizedByActorId).toBe(await accountFor(owner));
     expect(version.recordedAt).toBe(NOW);
   });
 
@@ -355,9 +370,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
         internalStorefrontId: id,
         sourceRecordVersion: "2",
         presentation: presentation({ displayName: "Renamed Shop" }),
-        authorizedByParticipantId: ownerParticipantId,
-        authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-        actorAuthorizedForOwnerParticipant: true,
+        actingAccountId: await accountFor(ownerParticipantId),
         now: LATER,
       },
       { db },
@@ -382,9 +395,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
         internalStorefrontId: id,
         sourceRecordVersion: "2",
         presentation: presentation({ displayName: "Renamed Shop" }),
-        authorizedByParticipantId: ownerParticipantId,
-        authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-        actorAuthorizedForOwnerParticipant: true,
+        actingAccountId: await accountFor(ownerParticipantId),
         now: LATER,
       },
       { db },
@@ -406,9 +417,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
           internalStorefrontId: id,
           sourceRecordVersion: "2",
           presentation: presentation(),
-          authorizedByParticipantId: ownerParticipantId,
-          authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-          actorAuthorizedForOwnerParticipant: true,
+          actingAccountId: await accountFor(ownerParticipantId),
           now: LATER,
         },
         { db },
@@ -426,9 +435,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
           internalStorefrontId: snapshot.record.internalStorefrontId,
           sourceRecordVersion: "1",
           presentation: presentation({ displayName: "Renamed" }),
-          authorizedByParticipantId: ownerParticipantId,
-          authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-          actorAuthorizedForOwnerParticipant: true,
+          actingAccountId: await accountFor(ownerParticipantId),
           now: LATER,
         },
         { db },
@@ -450,15 +457,17 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
   // — 11/12. Owner FK —
 
   it("11/12. refuses a Storefront whose owner participant does not exist", async () => {
+    /* A real acting account: the owner is what must be missing, and resolving
+       the actor from a participant that does not exist would test the fixture
+       rather than the foreign key. */
+    const actor = await seedSeller();
     await expect(
       createDraftStorefront(
         {
           ownerParticipantId: `mon:mpart:${pad26("NOSUCHPART")}`,
           publicHandle: nextHandle(),
           presentation: presentation(),
-          authorizedByParticipantId: `mon:mpart:${pad26("NOSUCHPART")}`,
-          authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-          actorAuthorizedForOwnerParticipant: true,
+          actingAccountId: await accountFor(actor),
           now: NOW,
         },
         { db },
@@ -477,9 +486,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
             ownerParticipantId: owner,
             publicHandle: bad,
             presentation: presentation(),
-            authorizedByParticipantId: owner,
-            authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-            actorAuthorizedForOwnerParticipant: true,
+            actingAccountId: await accountFor(owner),
             now: NOW,
           },
           { db },
@@ -499,9 +506,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
           ownerParticipantId: other,
           publicHandle: handle,
           presentation: presentation(),
-          authorizedByParticipantId: other,
-          authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-          actorAuthorizedForOwnerParticipant: true,
+          actingAccountId: await accountFor(other),
           now: NOW,
         },
         { db },
@@ -520,9 +525,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
         internalStorefrontId: id,
         sourceRecordVersion: "2",
         publicHandle: newHandle,
-        authorizedByParticipantId: ownerParticipantId,
-        authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-        actorAuthorizedForOwnerParticipant: true,
+        actingAccountId: await accountFor(ownerParticipantId),
         now: LATER,
       },
       { db },
@@ -545,9 +548,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
         internalStorefrontId: id,
         participantId: ownerParticipantId,
         role: "SUPER_OWNER",
-        authorizedByParticipantId: ownerParticipantId,
-        authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-        actorAuthorizedForOwnerParticipant: true,
+        actingAccountId: await accountFor(ownerParticipantId),
         now: NOW,
       },
       { db },
@@ -571,9 +572,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
         internalStorefrontId: id,
         participantId: ownerParticipantId,
         role: "SUPER_OWNER",
-        authorizedByParticipantId: ownerParticipantId,
-        authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-        actorAuthorizedForOwnerParticipant: true,
+        actingAccountId: await accountFor(ownerParticipantId),
         now: NOW,
       },
       { db },
@@ -585,9 +584,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
           internalStorefrontId: id,
           participantId: second,
           role: "SUPER_OWNER",
-          authorizedByParticipantId: ownerParticipantId,
-          authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-          actorAuthorizedForOwnerParticipant: true,
+          actingAccountId: await accountFor(ownerParticipantId),
           now: LATER,
         },
         { db },
@@ -605,9 +602,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
         internalStorefrontId: id,
         participantId: ownerParticipantId,
         role: "SUPER_OWNER",
-        authorizedByParticipantId: ownerParticipantId,
-        authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-        actorAuthorizedForOwnerParticipant: true,
+        actingAccountId: await accountFor(ownerParticipantId),
         now: NOW,
       },
       { db },
@@ -618,9 +613,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
         internalStorefrontId: id,
         participantId: ownerParticipantId,
         status: "REVOKED",
-        authorizedByParticipantId: ownerParticipantId,
-        authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-        actorAuthorizedForOwnerParticipant: true,
+        actingAccountId: await accountFor(ownerParticipantId),
         now: LATER,
       },
       { db },
@@ -635,9 +628,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
         internalStorefrontId: id,
         participantId: successor,
         role: "SUPER_OWNER",
-        authorizedByParticipantId: ownerParticipantId,
-        authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-        actorAuthorizedForOwnerParticipant: true,
+        actingAccountId: await accountFor(ownerParticipantId),
         now: LATER,
       },
       { db },
@@ -654,9 +645,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
         internalStorefrontId: id,
         participantId: ownerParticipantId,
         role: "SUPER_OWNER",
-        authorizedByParticipantId: ownerParticipantId,
-        authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-        actorAuthorizedForOwnerParticipant: true,
+        actingAccountId: await accountFor(ownerParticipantId),
         now: NOW,
       },
       { db },
@@ -668,9 +657,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
           internalStorefrontId: id,
           participantId: await seedSeller(),
           role: "ADMIN",
-          authorizedByParticipantId: ownerParticipantId,
-          authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-          actorAuthorizedForOwnerParticipant: true,
+          actingAccountId: await accountFor(ownerParticipantId),
           now: LATER,
         },
         { db },
@@ -690,9 +677,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
           internalStorefrontId: snapshot.record.internalStorefrontId,
           participantId: ownerParticipantId,
           status: "SUSPENDED",
-          authorizedByParticipantId: ownerParticipantId,
-          authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-          actorAuthorizedForOwnerParticipant: true,
+          actingAccountId: await accountFor(ownerParticipantId),
           now: LATER,
         },
         { db },
@@ -715,9 +700,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
           internalStorefrontId: id,
           sourceRecordVersion: "2",
           presentation: presentation({ displayName: "Too Soon" }),
-          authorizedByParticipantId: ownerParticipantId,
-          authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-          actorAuthorizedForOwnerParticipant: true,
+          actingAccountId: await accountFor(ownerParticipantId),
           now: LATER,
         },
         { db },
@@ -731,9 +714,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
           internalStorefrontId: id,
           participantId: ownerParticipantId,
           role: "SUPER_OWNER",
-          authorizedByParticipantId: ownerParticipantId,
-          authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-          actorAuthorizedForOwnerParticipant: true,
+          actingAccountId: await accountFor(ownerParticipantId),
           now: NOW,
         },
         { db },
@@ -743,9 +724,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
           internalStorefrontId: id,
           sourceRecordVersion: "2",
           presentation: presentation({ displayName: "Now Permitted" }),
-          authorizedByParticipantId: ownerParticipantId,
-          authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-          actorAuthorizedForOwnerParticipant: true,
+          actingAccountId: await accountFor(ownerParticipantId),
           now: LATER,
         },
         { db },
@@ -763,9 +742,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
           internalStorefrontId: snapshot.record.internalStorefrontId,
           participantId: stranger,
           role: "SUPER_OWNER",
-          authorizedByParticipantId: stranger,
-          authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-          actorAuthorizedForOwnerParticipant: true,
+          actingAccountId: await accountFor(stranger),
           now: NOW,
         },
         { db },
@@ -773,18 +750,136 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
     ).rejects.toBeInstanceOf(StorefrontNotAuthorizedError);
   });
 
+  it("refuses the revoke-then-appoint seizure a claimed participant id used to allow", async () => {
+    /* Phase 1.18. Through 1.17, `assignStorefrontGovernance` and
+       `setGovernanceAssignmentStatus` compared the caller's OWN
+       `authorizedByParticipantId` against the stored owner id and treated
+       equality as authority — a string comparison against a value the caller
+       supplied. Knowing one opaque id was therefore a two-step takeover of any
+       Storefront: revoke the incumbent SUPER_OWNER while "acting as owner", which
+       drops the active count to zero, then appoint yourself through the
+       first-SUPER_OWNER bootstrap branch.
+
+       Both halves are refused now, because the acting participant is resolved
+       from the authenticated account and never claimed. */
+    const { ownerParticipantId, snapshot } = await seedGovernedStorefront();
+    const id = snapshot.record.internalStorefrontId;
+    const attacker = await seedSeller();
+
+    // Step one: revoke the incumbent while claiming to be the owner.
+    await expect(
+      setGovernanceAssignmentStatus(
+        {
+          internalStorefrontId: id,
+          participantId: ownerParticipantId,
+          status: "REVOKED",
+          actingAccountId: await accountFor(attacker),
+          now: LATER,
+        },
+        { db },
+      ),
+    ).rejects.toBeInstanceOf(StorefrontNotAuthorizedError);
+
+    // Step two: appoint yourself. Refused on its own terms as well.
+    await expect(
+      assignStorefrontGovernance(
+        {
+          internalStorefrontId: id,
+          participantId: attacker,
+          role: "SUPER_OWNER",
+          actingAccountId: await accountFor(attacker),
+          now: LATER,
+        },
+        { db },
+      ),
+    ).rejects.toBeInstanceOf(StorefrontNotAuthorizedError);
+
+    // The incumbent still stands, and the attacker holds nothing.
+    const assignments = await listGovernanceAssignments(id, { db });
+    const incumbent = assignments.find((a) => a.participantId === ownerParticipantId);
+    expect(incumbent?.status).toBe("ACTIVE");
+    expect(incumbent?.role).toBe("SUPER_OWNER");
+    expect(assignments.some((a) => a.participantId === attacker)).toBe(false);
+  });
+
+  it("refuses a DISABLED account administering governance, owner or not", async () => {
+    /* The two governance commands hand-roll their authority test instead of
+       reaching `actorProblem`, which is where every other Storefront path asks
+       whether the account is enabled at all. The status was resolved and never
+       read, so a disabled account was refused presentation edits, activation and
+       stand-down — and could still appoint and revoke governance, which is the
+       authority that hands all the others back. */
+    const { ownerParticipantId, snapshot } = await seedGovernedStorefront();
+    const id = snapshot.record.internalStorefrontId;
+    const ownerAccount = await accountFor(ownerParticipantId);
+    const candidate = await seedSeller();
+
+    await db.account.update({ where: { id: ownerAccount }, data: { status: "DISABLED" } });
+
+    const appoint = await assignStorefrontGovernance(
+      {
+        internalStorefrontId: id,
+        participantId: candidate,
+        role: "ADMIN",
+        actingAccountId: ownerAccount,
+        now: LATER,
+      },
+      { db },
+    ).catch((e) => e);
+    expect(appoint).toBeInstanceOf(StorefrontNotAuthorizedError);
+    expect(appoint.reasonCodes).toContain("ACCOUNT_DISABLED");
+
+    const revoke = await setGovernanceAssignmentStatus(
+      {
+        internalStorefrontId: id,
+        participantId: ownerParticipantId,
+        status: "REVOKED",
+        actingAccountId: ownerAccount,
+        now: LATER,
+      },
+      { db },
+    ).catch((e) => e);
+    expect(revoke).toBeInstanceOf(StorefrontNotAuthorizedError);
+    expect(revoke.reasonCodes).toContain("ACCOUNT_DISABLED");
+
+    // Nothing was appointed, and the incumbent still stands.
+    const assignments = await listGovernanceAssignments(id, { db });
+    expect(assignments.some((a) => a.participantId === candidate)).toBe(false);
+    expect(assignments.find((a) => a.participantId === ownerParticipantId)?.status).toBe("ACTIVE");
+
+    // Re-enabled, the same owner may administer governance again.
+    await db.account.update({ where: { id: ownerAccount }, data: { status: "ACTIVE" } });
+    const allowed = await assignStorefrontGovernance(
+      {
+        internalStorefrontId: id,
+        participantId: candidate,
+        role: "ADMIN",
+        actingAccountId: ownerAccount,
+        now: LATER,
+      },
+      { db },
+    );
+    expect(allowed.role).toBe("ADMIN");
+  });
+
   // — 16/17. Authorization —
 
-  it("16. refuses an actor not authorized for the owner participant", async () => {
+  it("16. refuses a stranger naming another participant as owner (Phase 1.18)", async () => {
+    /* What this test asserted through Phase 1.17 is no longer expressible: the
+       denial came from a supplied `actorAuthorizedForOwnerParticipant: false`,
+       and an owner acting as themselves is now correctly authorized because
+       self-ownership is the authoritative basis. The forgery it stood in for is
+       asserted directly instead — a stranger cannot create a Storefront owned by
+       someone else, and knowing the owner's participant id does not help. */
     const owner = await seedSeller();
+    const stranger = await seedSeller();
+
     const error = await createDraftStorefront(
       {
         ownerParticipantId: owner,
         publicHandle: nextHandle(),
         presentation: presentation(),
-        authorizedByParticipantId: owner,
-        authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-        actorAuthorizedForOwnerParticipant: false,
+        actingAccountId: await accountFor(stranger),
         now: NOW,
       },
       { db },
@@ -792,6 +887,19 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
 
     expect(error).toBeInstanceOf(StorefrontNotAuthorizedError);
     expect(error.reasonCodes).toContain("ACTOR_NOT_AUTHORIZED_FOR_OWNER");
+
+    // And the owner acting as themselves still succeeds.
+    const allowed = await createDraftStorefront(
+      {
+        ownerParticipantId: owner,
+        publicHandle: nextHandle(),
+        presentation: presentation(),
+        actingAccountId: await accountFor(owner),
+        now: NOW,
+      },
+      { db },
+    );
+    expect(allowed.record.ownerParticipantId).toBe(owner);
   });
 
   it("16b. refuses a stranger with no governance assignment", async () => {
@@ -803,9 +911,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
         internalStorefrontId: snapshot.record.internalStorefrontId,
         sourceRecordVersion: "2",
         presentation: presentation({ displayName: "Hijacked" }),
-        authorizedByParticipantId: stranger,
-        authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-        actorAuthorizedForOwnerParticipant: false,
+        actingAccountId: await accountFor(stranger),
         now: LATER,
       },
       { db },
@@ -829,9 +935,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
         internalStorefrontId: id,
         participantId: ownerParticipantId,
         role: "SUPER_OWNER",
-        authorizedByParticipantId: ownerParticipantId,
-        authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-        actorAuthorizedForOwnerParticipant: true,
+        actingAccountId: await accountFor(ownerParticipantId),
         now: NOW,
       },
       { db },
@@ -841,9 +945,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
         internalStorefrontId: id,
         participantId: admin,
         role: "ADMIN",
-        authorizedByParticipantId: ownerParticipantId,
-        authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-        actorAuthorizedForOwnerParticipant: true,
+        actingAccountId: await accountFor(ownerParticipantId),
         now: NOW,
       },
       { db },
@@ -854,9 +956,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
         internalStorefrontId: id,
         sourceRecordVersion: "2",
         presentation: presentation({ displayName: "Edited By Admin" }),
-        authorizedByParticipantId: admin,
-        authorizedByActorId: `mon:actor:${pad26("M3CADMIN")}`,
-        actorAuthorizedForOwnerParticipant: true,
+        actingAccountId: await accountFor(admin),
         now: LATER,
       },
       { db },
@@ -875,9 +975,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
         sourceRecordVersion: "2",
         // DRAFT -> SUSPENDED is not a permitted transition.
         lifecycle: "SUSPENDED",
-        authorizedByParticipantId: ownerParticipantId,
-        authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-        actorAuthorizedForOwnerParticipant: true,
+        actingAccountId: await accountFor(ownerParticipantId),
         now: LATER,
       },
       { db },
@@ -900,9 +998,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
         sourceRecordVersion: "2",
         lifecycle: "ACTIVE",
         visibility: "PUBLIC",
-        authorizedByParticipantId: ownerParticipantId,
-        authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-        actorAuthorizedForOwnerParticipant: true,
+        actingAccountId: await accountFor(ownerParticipantId),
         now: LATER,
       },
       { db },
@@ -922,9 +1018,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
           internalStorefrontId,
           participantId: admin,
           role: "ADMIN",
-          authorizedByParticipantId: ownerParticipantId,
-          authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-          actorAuthorizedForOwnerParticipant: true,
+          actingAccountId: await accountFor(ownerParticipantId),
           now: NOW,
         },
         { db },
@@ -932,15 +1026,13 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
       return admin;
     }
 
-    const goLive = (id: string, actor: string, version = "2") =>
-      createStorefrontSourceVersion(
+    const goLive = async (id: string, actor: string, version = "2") =>
+      await createStorefrontSourceVersion(
         {
           internalStorefrontId: id,
           sourceRecordVersion: version,
           lifecycle: "ACTIVE",
-          authorizedByParticipantId: actor,
-          authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-          actorAuthorizedForOwnerParticipant: true,
+          actingAccountId: await accountFor(actor),
           now: LATER,
         },
         { db },
@@ -985,14 +1077,76 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
           internalStorefrontId: id,
           sourceRecordVersion: "2",
           presentation: presentation({ displayName: "Admin Still Edits" }),
-          authorizedByParticipantId: admin,
-          authorizedByActorId: `mon:actor:${pad26("M3CADMIN")}`,
-          actorAuthorizedForOwnerParticipant: true,
+          actingAccountId: await accountFor(admin),
           now: LATER,
         },
         { db },
       );
       expect(after.currentVersion.presentation.displayName).toBe("Admin Still Edits");
+    });
+
+    it("refuses an ADMIN standing a Storefront down — SUPER_OWNER-exclusive", async () => {
+      /* Phase 1.18. 0M.3A names `storefront:suspend`, `storefront:close` and
+         `storefront:visibility:deactivate` SUPER_OWNER-exclusive, and 0M.3C wrote
+         `canSuspendStorefrontRecord`, `canCloseStorefrontRecord` and
+         `canReduceStorefrontExposure` to enforce it — but none of the three had a
+         call site. Every non-go-live, non-widening version fell through to the
+         presentation gate, which admits an ADMIN, so an ADMIN could suspend or
+         close a shop outright. Each branch is asserted separately, because each
+         was reached by a different route through the same missing wiring. */
+      const { ownerParticipantId, snapshot } = await seedGovernedStorefront();
+      const id = snapshot.record.internalStorefrontId;
+      await makeOwnerGoLiveEligible(ownerParticipantId);
+      await goLive(id, ownerParticipantId);
+      /* Widened by the SUPER_OWNER first, so that reducing exposure is a
+         material change rather than a no-op the service refuses for a
+         different reason. */
+      await createStorefrontSourceVersion(
+        {
+          internalStorefrontId: id,
+          sourceRecordVersion: "3",
+          visibility: "PUBLIC",
+          actingAccountId: await accountFor(ownerParticipantId),
+          now: LATER,
+        },
+        { db },
+      );
+      const admin = await seedAdminOn(id, ownerParticipantId);
+
+      for (const [version, change] of [
+        ["4", { lifecycle: "SUSPENDED" as const }],
+        ["5", { lifecycle: "CLOSED" as const }],
+        ["6", { visibility: "PRIVATE" as const }],
+      ] as const) {
+        await expect(
+          createStorefrontSourceVersion(
+            {
+              internalStorefrontId: id,
+              sourceRecordVersion: version,
+              ...change,
+              actingAccountId: await accountFor(admin),
+              now: LATER,
+            },
+            { db },
+          ),
+        ).rejects.toBeInstanceOf(StorefrontNotAuthorizedError);
+      }
+
+      // The shop is untouched: no version was minted by any of the three.
+      expect(await listSourceVersions(id, { db })).toHaveLength(3);
+
+      // And the SUPER_OWNER may still do it, so the rule narrowed nobody else.
+      const suspended = await createStorefrontSourceVersion(
+        {
+          internalStorefrontId: id,
+          sourceRecordVersion: "4",
+          lifecycle: "SUSPENDED",
+          actingAccountId: await accountFor(ownerParticipantId),
+          now: LATER,
+        },
+        { db },
+      );
+      expect(suspended.currentVersion.lifecycle).toBe("SUSPENDED");
     });
 
     it("refuses a SUPER_OWNER whose owner is restricted from taking a shop live", async () => {
@@ -1077,9 +1231,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
         internalStorefrontId: id,
         participantId: ownerParticipantId,
         role: "SUPER_OWNER",
-        authorizedByParticipantId: ownerParticipantId,
-        authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-        actorAuthorizedForOwnerParticipant: true,
+        actingAccountId: await accountFor(ownerParticipantId),
         now: NOW,
       },
       { db },
@@ -1090,9 +1242,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
         sourceRecordVersion: "2",
         lifecycle: "ACTIVE",
         visibility: "PUBLIC",
-        authorizedByParticipantId: ownerParticipantId,
-        authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-        actorAuthorizedForOwnerParticipant: true,
+        actingAccountId: await accountFor(ownerParticipantId),
         now: LATER,
       },
       { db },
@@ -1142,9 +1292,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
         internalStorefrontId: snapshot.record.internalStorefrontId,
         participantId: ownerParticipantId,
         role: "SUPER_OWNER",
-        authorizedByParticipantId: ownerParticipantId,
-        authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-        actorAuthorizedForOwnerParticipant: true,
+        actingAccountId: await accountFor(ownerParticipantId),
         now: NOW,
       },
       { db },
@@ -1154,9 +1302,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
         internalStorefrontId: snapshot.record.internalStorefrontId,
         participantId: admin,
         role: "ADMIN",
-        authorizedByParticipantId: ownerParticipantId,
-        authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-        actorAuthorizedForOwnerParticipant: true,
+        actingAccountId: await accountFor(ownerParticipantId),
         now: NOW,
       },
       { db },
@@ -1204,9 +1350,7 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
         sourceRecordVersion: "2",
         lifecycle: "ACTIVE",
         visibility: "PUBLIC",
-        authorizedByParticipantId: owner,
-        authorizedByActorId: `mon:actor:${pad26("M3CACTOR")}`,
-        actorAuthorizedForOwnerParticipant: true,
+        actingAccountId: await accountFor(owner),
         now: LATER,
       },
       { db },

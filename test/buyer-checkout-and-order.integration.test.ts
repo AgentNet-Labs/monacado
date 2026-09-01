@@ -22,6 +22,7 @@
 import "dotenv/config";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
+import { grantProductCreatorAuthority } from "./support/product-authority-fixture";
 import { createAccount } from "../src/server/account/account-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
 import { createDraftOffer } from "../src/server/marketplace/offer-service";
@@ -223,6 +224,13 @@ async function cleanup(): Promise<void> {
       await db.marketplaceRoleAssignment.deleteMany({
         where: { participantId: { in: participantIds } },
       });
+      /* Phase 1.18 — Product source versions now name the creator participant
+         with onDelete: Restrict. Detach rather than delete: the version rows are
+         immutable Product history that this cleanup does not own. */
+      await db.productSourceRecordVersionRow.updateMany({
+        where: { authorityCreatorParticipantId: { in: participantIds } },
+        data: { authorityCreatorParticipantId: null },
+      });
       await db.marketplaceParticipant.deleteMany({ where: { id: { in: participantIds } } });
     }
     await db.accountEntitlement.deleteMany({ where: { accountId: { in: accountIds } } });
@@ -234,6 +242,11 @@ async function cleanup(): Promise<void> {
   await db.commercialPolicyVersionRow.deleteMany({ where: { policyId: ownPolicies } });
   await db.commercialPolicy.deleteMany({ where: { id: ownPolicies } });
 
+  /* Phase 1.18 — the Offer fixture now records creator authority on the
+     Product's current source version, so the version row has to go first. */
+  await db.productSourceRecordVersionRow.deleteMany({
+    where: { internalProductId: { startsWith: PRODUCT_PREFIX } },
+  });
   await db.product.deleteMany({ where: { internalProductId: { startsWith: PRODUCT_PREFIX } } });
 }
 
@@ -243,7 +256,7 @@ const policyIds: CommercialPolicyIdProvider = {
   nextPolicyId: () => `mon:cpol:${pad26(`${TAG}P0L${next()}`)}`,
 };
 
-async function seedProduct(): Promise<string> {
+async function seedProduct(creatorParticipantId?: string): Promise<string> {
   const n = next();
   const internalProductId = `${PRODUCT_PREFIX}${pad26(String(n)).slice(
     0,
@@ -257,6 +270,12 @@ async function seedProduct(): Promise<string> {
       recordStatus: "DRAFT",
     },
   });
+  if (creatorParticipantId !== undefined) {
+    await grantProductCreatorAuthority(db, {
+      internalProductId,
+      participantId: creatorParticipantId,
+    });
+  }
   return internalProductId;
 }
 
@@ -388,7 +407,7 @@ async function forceListingActive(internalListingId: string): Promise<void> {
 /** A purchasable seller-direct Listing at $100.00. */
 async function seedSellerDirect(sale: Record<string, unknown> | null = null) {
   const seller = await seedActiveParticipant(["SELLER"]);
-  const internalProductId = await seedProduct();
+  const internalProductId = await seedProduct(seller.participantId);
   const storefrontId = await seedStorefront(seller.participantId);
   const snapshot = await createSellerDirectListing(
     {
@@ -398,7 +417,6 @@ async function seedSellerDirect(sale: Record<string, unknown> | null = null) {
       retail: { retailPriceMinorUnits: 10_000, retailPriceCurrency: "USD" },
       sale,
       actingAccountId: seller.accountId,
-      authorizedByActorId: ACTOR,
       now: NOW,
     },
     { db },
@@ -425,7 +443,7 @@ const ACQUISITION_POLICY = {
 async function seedPromoted() {
   const seller = await seedActiveParticipant(["SELLER"]);
   const promoter = await seedActiveParticipant(["PROMOTER"]);
-  const internalProductId = await seedProduct();
+  const internalProductId = await seedProduct(seller.participantId);
   const storefrontId = await seedStorefront(promoter.participantId);
 
   const offer = await createDraftOffer(
@@ -440,8 +458,6 @@ async function seedPromoted() {
         },
       },
       actingAccountId: seller.accountId,
-      authorizedByActorId: ACTOR,
-      hasProductAuthority: true,
       now: NOW,
     },
     { db },
@@ -470,7 +486,6 @@ async function seedPromoted() {
       acceptedOfferSourceRecordVersion: "1",
       acquisitionPolicy: ACQUISITION_POLICY,
       actingAccountId: promoter.accountId,
-      authorizedByActorId: ACTOR,
       now: NOW,
     },
     { db },
@@ -933,7 +948,6 @@ describeDb("0M.9 — buyer checkout, Order, and post-sale foundation", () => {
           retail: { retailPriceMinorUnits: 20_000, retailPriceCurrency: "USD" },
           acquisitionPolicy: ACQUISITION_POLICY,
           actingAccountId: promoter.accountId,
-          authorizedByActorId: ACTOR,
           now: LATER,
         },
         { db },
@@ -1553,7 +1567,7 @@ describeDb("0M.9 — buyer checkout, Order, and post-sale foundation", () => {
          state every participant starts in: assessed by nobody, cleared for
          nothing. */
       const seller = await seedActiveParticipant(["SELLER"]);
-      const internalProductId = await seedProduct();
+      const internalProductId = await seedProduct(seller.participantId);
       const storefrontId = await seedStorefront(seller.participantId);
       const listing = await createSellerDirectListing(
         {
@@ -1563,7 +1577,6 @@ describeDb("0M.9 — buyer checkout, Order, and post-sale foundation", () => {
           retail: { retailPriceMinorUnits: 10_000, retailPriceCurrency: "USD" },
           sale: null,
           actingAccountId: seller.accountId,
-          authorizedByActorId: ACTOR,
           now: NOW,
         },
         { db },
@@ -1592,7 +1605,7 @@ describeDb("0M.9 — buyer checkout, Order, and post-sale foundation", () => {
 
     it("permits an otherwise-eligible checkout once approval is recorded", async () => {
       const seller = await seedActiveParticipant(["SELLER"]);
-      const internalProductId = await seedProduct();
+      const internalProductId = await seedProduct(seller.participantId);
       const storefrontId = await seedStorefront(seller.participantId);
       const listing = await createSellerDirectListing(
         {
@@ -1602,7 +1615,6 @@ describeDb("0M.9 — buyer checkout, Order, and post-sale foundation", () => {
           retail: { retailPriceMinorUnits: 10_000, retailPriceCurrency: "USD" },
           sale: null,
           actingAccountId: seller.accountId,
-          authorizedByActorId: ACTOR,
           now: NOW,
         },
         { db },

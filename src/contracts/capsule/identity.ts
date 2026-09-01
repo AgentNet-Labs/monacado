@@ -133,6 +133,44 @@ export const LOCK_TOKEN_RE = new RegExp(`^mon:lock:${OPAQUE_BODY}$`);
 export const ACCOUNT_ID_RE = new RegExp(`^mon:acct:${OPAQUE_BODY}$`);
 
 /**
+ * Marketplace participant identifier (`mon:mpart:<opaque>`).
+ *
+ * Defined here rather than in the marketplace layer because the Product source
+ * model also references it (Phase 1.18): a Product source version records which
+ * participant holds creator authority over its facts. One regex, so the two
+ * layers cannot drift into two spellings of the same identity.
+ */
+export const MARKETPLACE_PARTICIPANT_ID_RE = new RegExp(`^mon:mpart:${OPAQUE_BODY}$`);
+
+/**
+ * The audit actor recorded on a governed source version (Phase 1.18).
+ *
+ * Accepts an **account** identifier (`mon:acct:<opaque>`) — the identity the
+ * authorization decision was actually evaluated against — and, for rows written
+ * before Phase 1.18, a bare `mon:actor:<opaque>`.
+ *
+ * The account id is the current and only writable form, on the rule
+ * `participant-record.ts` already states for `ParticipantActivation`: *"A
+ * separate `mon:actor:` value would be a second identity nothing verifies
+ * against the first, and the audit trail could then name someone other than
+ * whoever was actually checked."* Offer, Listing, and Storefront versions took
+ * exactly that separate value from the caller until Phase 1.18; they now record
+ * the resolved acting account, so the audit actor IS the authorized actor by
+ * construction.
+ *
+ * The historical alternative stays readable because immutable source history is
+ * never rewritten — a version recorded under the old convention is a true record
+ * of what was written, and inventing an account for it would fabricate an actor
+ * that was never authenticated.
+ *
+ * Both forms are opaque. An email address, display name, or other private
+ * profile datum can match neither.
+ */
+export const AUTHORIZING_ACTOR_ID_RE = new RegExp(
+  `^(?:mon:acct|mon:actor):${OPAQUE_BODY}$`,
+);
+
+/**
  * Account session identifier (`mon:asess:<opaque>`). Names one server-side
  * session row. This is NOT the session token — the token is a separate secret
  * that is never persisted and never appears in an identifier.

@@ -30,6 +30,7 @@ import {
   verifyPrimarySupportContact,
 } from "./support/marketplace-policy-fixture";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
+import { grantProductCreatorAuthority } from "./support/product-authority-fixture";
 import { createAccount } from "../src/server/account/account-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
 import { grantAccountEntitlement } from "../src/server/account/account-entitlement-service";
@@ -361,6 +362,13 @@ async function cleanup(): Promise<void> {
     await db.sellerRefundPolicy.deleteMany({
       where: { sellerParticipantId: { in: participantIds } },
     });
+    /* Phase 1.18 — Product source versions now name the creator participant
+       with onDelete: Restrict. Detach rather than delete: the version rows are
+       immutable Product history this cleanup does not own. */
+    await db.productSourceRecordVersionRow.updateMany({
+      where: { internalProductId: { startsWith: PRODUCT_PREFIX } },
+      data: { authorityCreatorParticipantId: null },
+    });
     await db.marketplaceParticipant.deleteMany({ where: { id: { in: participantIds } } });
   }
 
@@ -575,6 +583,12 @@ async function seedSellerDirect(deliveryMode: "DIGITAL" | "PHYSICAL" = "DIGITAL"
       visibility: "PUBLIC",
     },
   });
+  /* Phase 1.18 — a seller-direct placement requires creator authority over
+     the Product, derived from its current source version. */
+  await grantProductCreatorAuthority(db, {
+    internalProductId: internalProductId,
+    participantId: seller.participantId,
+  });
   const snapshot = await createSellerDirectListing(
     {
       storefrontId,
@@ -583,7 +597,6 @@ async function seedSellerDirect(deliveryMode: "DIGITAL" | "PHYSICAL" = "DIGITAL"
       retail: { retailPriceMinorUnits: 10_000, retailPriceCurrency: "USD" },
       sale: null,
       actingAccountId: seller.accountId,
-      authorizedByActorId: ACTOR,
       now: NOW,
     },
     { db },

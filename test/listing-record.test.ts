@@ -82,7 +82,6 @@ const sellerDirectInput = (overrides: Record<string, unknown> = {}) => ({
   controllingParticipantId: PARTICIPANT,
   retail,
   actingAccountId: "acct_synthetic_0m7",
-  authorizedByActorId: ACTOR,
   now: "2027-11-01T09:00:00.000Z",
   ...overrides,
 });
@@ -105,7 +104,6 @@ const promotedInput = (overrides: Record<string, unknown> = {}) => ({
   acceptedOfferSourceRecordVersion: "3",
   acquisitionPolicy: policy,
   actingAccountId: "acct_synthetic_0m7",
-  authorizedByActorId: ACTOR,
   now: "2027-11-01T09:00:00.000Z",
   ...overrides,
 });
@@ -209,7 +207,6 @@ describe("update input", () => {
     internalListingId: `mon:listing:${pad26("M7LSTNG")}`,
     sourceRecordVersion: "2",
     actingAccountId: "acct_synthetic_0m7",
-    authorizedByActorId: ACTOR,
     now: "2027-11-02T09:00:00.000Z",
     ...overrides,
   });

@@ -450,9 +450,29 @@ about different entities:
 A decision therefore never depends on the actor personally holding `SELLER` or on
 the actor's participant id matching the owner's.
 
-**Authorization to act for the owner is supplied, never derived.** There is no
-email, domain, display name, or profile field on actor facts to derive it from —
-organization membership must never be inferred from an email domain.
+**Authorization to act for the owner is never inferred from descriptive data.**
+There is no email, domain, display name, or profile field on actor facts to
+derive it from — organization membership must never be inferred from an email
+domain.
+
+> **Amended by Phase 1.18.** This passage read "supplied, never derived", and
+> the persistence layer took it literally: `actorAuthorizedForOwnerParticipant`
+> arrived as a caller-supplied boolean on every Storefront input, so a caller
+> asserted its own authorization and the service believed it.
+>
+> The prohibition above is unchanged and still binding — nothing descriptive may
+> establish this fact. What Phase 1.18 changed is that the *service* now derives
+> it from **authorization records**: the actor IS the owner, or holds an ACTIVE
+> `StorefrontGovernanceAssignment` on this Storefront. An appointment by the
+> owner is the owner's own recorded authorization for someone else to act.
+>
+> The **pure decision model below is untouched**: it still receives
+> `authorizedForOwnerParticipant` as an actor fact, and still never depends on
+> the actor's participant id matching the owner's. Only the provenance moved.
+>
+> Organization membership persistence remains deferred, exactly as this document
+> defers it. A member who is neither the owner nor a governance assignee has no
+> authoritative record and is denied.
 
 | Capability | Requires |
 | --- | --- |

@@ -30,6 +30,7 @@ import {
 } from "./product.capsule";
 import { generateProductCandidate } from "./product.factory";
 import { ProductTaxClassification } from "./product-tax-classification";
+import { MARKETPLACE_PARTICIPANT_ID_RE } from "../capsule/identity";
 
 // — Opaque internal identifiers (distinct from ANS Node/capsule IDs) —
 
@@ -53,11 +54,38 @@ export const AUTHORIZATION_STATES = ["authorized", "pending", "revoked"] as cons
  * This is INTERNAL and must never be published as a `sourceAuthority` capsule
  * field. It is not the full account/organisation/permissions system.
  */
+export const CreatorParticipantId = z
+  .string()
+  .regex(MARKETPLACE_PARTICIPANT_ID_RE, "creatorParticipantId must be opaque (mon:mpart:<opaque>)");
+
 export const InternalProductAuthority = z.strictObject({
   creatorId: InternalCreatorId,
   authorityScope: z.enum(AUTHORITY_SCOPES),
   authorizationState: z.enum(AUTHORIZATION_STATES),
   authorizationRef: z.string().min(1).optional(),
+
+  /**
+   * The MarketplaceParticipant holding creator authority over these facts
+   * (Phase 1.18) — the resolution of `creatorId` into an identity marketplace
+   * authorization can be evaluated against.
+   *
+   * **OPTIONAL FOR HISTORICAL READABILITY ONLY, and absence is not a default.**
+   * Rows written before participants existed carry a `mon:creator:` reference
+   * matching no participant, and a required field would make every one of them
+   * unreadable — the same posture `taxClassification` and
+   * `RegistrarReceipt.submissionAttemptId` take. A historical absence stays
+   * readable and can never be repaired into a participant that did not exist.
+   *
+   * What absence means downstream is decided, not guessed:
+   * `participantHoldsProductAuthority` grants Product authority to **nobody**
+   * when this is missing, so an unattributed Product can back no Offer and no
+   * seller-direct Listing. Fail-closed, not a fallback.
+   *
+   * It is set at the authenticated write path from the resolved acting
+   * participant, never supplied as an authorization claim, and it is never
+   * published: `authority` is excluded from projection as a whole object.
+   */
+  creatorParticipantId: CreatorParticipantId.optional(),
 });
 export type InternalProductAuthority = z.infer<typeof InternalProductAuthority>;
 

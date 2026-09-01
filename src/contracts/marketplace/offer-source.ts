@@ -37,7 +37,7 @@
  */
 
 import { z } from "zod";
-import { ACTOR_ID_RE, INTERNAL_PRODUCT_ID_RE, SOURCE_RECORD_ID_RE } from "../capsule/identity";
+import { AUTHORIZING_ACTOR_ID_RE, INTERNAL_PRODUCT_ID_RE, SOURCE_RECORD_ID_RE } from "../capsule/identity";
 import { canonicalJsonString } from "../integrity/canonical-json";
 import { INTERNAL_OFFER_ID_RE } from "./identity";
 import { CapabilityReasonCode } from "./capability";
@@ -74,12 +74,23 @@ export const InternalProductId = z
 export type InternalProductId = z.infer<typeof InternalProductId>;
 
 /**
- * Who performed the authorized source action. Opaque by construction — an email,
- * display name, or other private profile datum must never be recorded here.
+ * Who performed the authorized source action — the **resolved acting account**
+ * (Phase 1.18), or a historical `mon:actor:` value on a row written before it.
+ *
+ * Derived, never supplied. It used to be a caller input beside the acting
+ * account id, which made the audit trail forgeable and independently settable:
+ * a caller could name any actor for an operation authorized against a different
+ * identity. `AUTHORIZING_ACTOR_ID_RE` carries the full reasoning.
+ *
+ * Opaque by construction — an email, display name, or other private profile
+ * datum must never be recorded here, and matches neither form.
  */
 export const AuthorizingActorId = z
   .string()
-  .regex(ACTOR_ID_RE, "authorizedByActorId must be opaque (mon:actor:<opaque>)");
+  .regex(
+    AUTHORIZING_ACTOR_ID_RE,
+    "authorizedByActorId must be opaque (mon:acct:<opaque>, or a historical mon:actor:<opaque>)",
+  );
 export type AuthorizingActorId = z.infer<typeof AuthorizingActorId>;
 
 /**
@@ -1078,8 +1089,6 @@ export type OfferCapability = z.infer<typeof OfferCapability>;
 export const OFFER_SPECIFIC_REASON_CODES = [
   /** The subject's participant is not the Seller that controls this Offer. */
   "SELLER_PARTICIPANT_MISMATCH",
-  /** The subject holds no authority over the referenced Product. */
-  "PRODUCT_AUTHORITY_REQUIRED",
   /** The lifecycle move this capability implies is not a permitted transition. */
   "OFFER_LIFECYCLE_TRANSITION_NOT_PERMITTED",
   /** The Offer is in a terminal state; nothing further may be authorized. */
@@ -1127,9 +1136,14 @@ export function isOfferActionAllowed(decision: OfferAuthorityDecision): boolean 
 /**
  * What an Offer authority decision may consider.
  *
- * `hasProductAuthority` is supplied rather than derived: authority over a Product
- * is the Product model's question, and re-deriving it here would put two answers
- * in the repository that could disagree.
+ * `hasProductAuthority` stays a supplied *input to this pure decision* — the
+ * Product model owns the question, and re-deriving it here would put two
+ * answers in the repository that could disagree. What changed in Phase 1.18 is
+ * its **provenance**, one layer out: the Offer service reads it from the
+ * Product's current source version (`participantHoldsProductAuthority`) rather
+ * than accepting it on `CreateDraftOfferInput` / `UpdateOfferInput`, where any
+ * caller could write `true`. The rules below are unchanged; only the caller's
+ * ability to forge their premise is gone.
  */
 export const OfferAuthorityRequest = z.strictObject({
   subject: MarketplaceSubject,

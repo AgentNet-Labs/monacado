@@ -21,6 +21,7 @@ export type ProductRepositoryErrorCode =
   | "IMMUTABLE_IDENTITY"
   | "CONCURRENCY_CONFLICT"
   | "PERSISTED_CONTRACT_VIOLATION"
+  | "CREATOR_PARTICIPANT_REQUIRED"
   | "DATABASE_ERROR";
 
 export class ProductRepositoryError extends Error {
@@ -98,5 +99,26 @@ export class DatabaseError extends ProductRepositoryError {
   constructor(message: string, cause?: unknown) {
     super("DATABASE_ERROR", message, cause);
     this.name = "DatabaseError";
+  }
+}
+
+/**
+ * The acting account holds no marketplace participant (Phase 1.18).
+ *
+ * Raised by the authenticated Product-creation command, which records the
+ * acting participant as the creator authority. This is not an authorization
+ * refusal wearing a different name: the account is not a marketplace
+ * participant at all, so there is no identity for creator authority to name.
+ *
+ * Carries no account id, no email, and no participant reference — there is
+ * nothing here for a caller to learn about anyone.
+ */
+export class ProductCreatorParticipantRequiredError extends ProductRepositoryError {
+  constructor() {
+    super(
+      "CREATOR_PARTICIPANT_REQUIRED",
+      "The acting account holds no marketplace participant",
+    );
+    this.name = "ProductCreatorParticipantRequiredError";
   }
 }

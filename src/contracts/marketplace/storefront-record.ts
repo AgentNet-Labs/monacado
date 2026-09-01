@@ -31,7 +31,6 @@
  */
 
 import { z } from "zod";
-import { ACTOR_ID_RE } from "../capsule/identity";
 import { STOREFRONT_GOVERNANCE_ASSIGNMENT_ID_RE } from "./identity";
 import { MarketplaceParticipantId } from "./participant";
 import {
@@ -55,9 +54,22 @@ export const StorefrontGovernanceAssignmentId = z
   );
 export type StorefrontGovernanceAssignmentId = z.infer<typeof StorefrontGovernanceAssignmentId>;
 
-const AuthorizingActorId = z
-  .string()
-  .regex(ACTOR_ID_RE, "authorizedByActorId must be mon:actor:<opaque>");
+/**
+ * The account whose marketplace identity and Storefront governance are read.
+ *
+ * **Phase 1.18 replaced `authorizedByParticipantId` and
+ * `actorAuthorizedForOwnerParticipant` with this one member.** Those two let a
+ * caller name which participant it was and then assert that the participant was
+ * authorized — so knowing one opaque id was enough to appoint yourself
+ * SUPER_OWNER of any Storefront. The acting participant is now resolved from
+ * `MarketplaceParticipant.accountId`, and authorization to act for the owner is
+ * derived from self-ownership or an ACTIVE governance assignment.
+ *
+ * This names who is asking, never what they may do. A production caller must
+ * take it from an authenticated session, never from a request body — see
+ * `src/server/account/acting-participant-boundary.ts`.
+ */
+const ActingAccountId = z.string().min(1).max(191);
 
 // — Governance assignment —
 
@@ -99,26 +111,17 @@ export type StorefrontGovernanceAssignmentRecord = z.infer<
  * `DRAFT`, and a Storefront that were publicly visible before anyone reviewed it
  * would defeat the go-live gate entirely. Neither is a caller choice.
  *
- * `authorizedByActorId` records the human who acted, as an opaque actor id —
- * never an email address or a display name.
+ * The authorization trace is **derived, not supplied**: the service records the
+ * resolved acting participant and the resolved acting account, so a caller can
+ * name neither the participant it acted as nor the actor credited for the act.
  */
 export const CreateDraftStorefrontInput = z.strictObject({
   ownerParticipantId: MarketplaceParticipantId,
   publicHandle: PublicHandle,
   presentation: StorefrontPresentation,
 
-  /** Who authorized this creation, and as which acting human. */
-  authorizedByParticipantId: MarketplaceParticipantId,
-  authorizedByActorId: AuthorizingActorId,
-
-  /**
-   * Whether the acting account is authorized to act for the owner participant.
-   *
-   * **Supplied, never derived** — 0M.3A is explicit that it must never be
-   * inferred from an email domain, a display name, or any private profile datum,
-   * and there is no field here that could carry one.
-   */
-  actorAuthorizedForOwnerParticipant: z.boolean(),
+  /** The account acting. The audit actor is derived from it, never supplied. */
+  actingAccountId: ActingAccountId,
 
   /** Explicit instants. Nothing here reads a clock. */
   now: z.iso.datetime(),
@@ -148,9 +151,7 @@ export const UpdateStorefrontInput = z.strictObject({
   lifecycle: StorefrontLifecycleState.optional(),
   visibility: StorefrontVisibility.optional(),
 
-  authorizedByParticipantId: MarketplaceParticipantId,
-  authorizedByActorId: AuthorizingActorId,
-  actorAuthorizedForOwnerParticipant: z.boolean(),
+  actingAccountId: ActingAccountId,
   now: z.iso.datetime(),
 });
 export type UpdateStorefrontInput = z.infer<typeof UpdateStorefrontInput>;
@@ -160,9 +161,7 @@ export const AssignStorefrontGovernanceInput = z.strictObject({
   participantId: MarketplaceParticipantId,
   role: StorefrontGovernanceRole,
 
-  authorizedByParticipantId: MarketplaceParticipantId,
-  authorizedByActorId: AuthorizingActorId,
-  actorAuthorizedForOwnerParticipant: z.boolean(),
+  actingAccountId: ActingAccountId,
   now: z.iso.datetime(),
 });
 export type AssignStorefrontGovernanceInput = z.infer<typeof AssignStorefrontGovernanceInput>;
@@ -172,9 +171,7 @@ export const SetGovernanceAssignmentStatusInput = z.strictObject({
   participantId: MarketplaceParticipantId,
   status: StoredGovernanceAssignmentStatus,
 
-  authorizedByParticipantId: MarketplaceParticipantId,
-  authorizedByActorId: AuthorizingActorId,
-  actorAuthorizedForOwnerParticipant: z.boolean(),
+  actingAccountId: ActingAccountId,
   now: z.iso.datetime(),
 });
 export type SetGovernanceAssignmentStatusInput = z.infer<

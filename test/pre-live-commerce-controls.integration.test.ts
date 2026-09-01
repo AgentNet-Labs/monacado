@@ -35,6 +35,7 @@ import {
   upsertEmailContact,
 } from "../src/server/policy/email-verification-service";
 import { readOrderPolicyView } from "../src/server/policy/order-policy-view-service";
+import { grantProductCreatorAuthority } from "./support/product-authority-fixture";
 import {
   MARKETPLACE_POLICY_VERSION_1,
   MONACADO_MARKETPLACE_POLICY_ID,
@@ -323,6 +324,13 @@ async function cleanup(): Promise<void> {
     await db.sellerRefundPolicy.deleteMany({
       where: { sellerParticipantId: { in: participantIds } },
     });
+    /* Phase 1.18 — Product source versions now name the creator participant
+       with onDelete: Restrict. Detach rather than delete: the version rows are
+       immutable Product history this cleanup does not own. */
+    await db.productSourceRecordVersionRow.updateMany({
+      where: { internalProductId: { startsWith: PRODUCT_PREFIX } },
+      data: { authorityCreatorParticipantId: null },
+    });
     await db.marketplaceParticipant.deleteMany({ where: { id: { in: participantIds } } });
   }
 
@@ -471,6 +479,12 @@ async function seedSellerDirect(
       visibility: "PUBLIC",
     },
   });
+  /* Phase 1.18 — a seller-direct placement requires creator authority over
+     the Product, derived from its current source version. */
+  await grantProductCreatorAuthority(db, {
+    internalProductId: internalProductId,
+    participantId: participantId,
+  });
   const listing = await createSellerDirectListing(
     {
       storefrontId,
@@ -479,7 +493,6 @@ async function seedSellerDirect(
       retail: { retailPriceMinorUnits: retailMinorUnits, retailPriceCurrency: "USD" },
       sale: null,
       actingAccountId: accountId,
-      authorizedByActorId: ACTOR,
       now: NOW,
     },
     { db },

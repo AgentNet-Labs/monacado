@@ -15,7 +15,7 @@
  * phase alters no committed identity code.
  */
 
-import { OPAQUE_BODY } from "../capsule/identity";
+import { MARKETPLACE_PARTICIPANT_ID_RE, OPAQUE_BODY } from "../capsule/identity";
 
 /**
  * Marketplace participant (`mon:mpart:<opaque>`).
@@ -26,7 +26,7 @@ import { OPAQUE_BODY } from "../capsule/identity";
  * the marketplace", and collapsing them would make every marketplace record
  * reachable from an authentication key.
  */
-export const MARKETPLACE_PARTICIPANT_ID_RE = new RegExp(`^mon:mpart:${OPAQUE_BODY}$`);
+export { MARKETPLACE_PARTICIPANT_ID_RE };
 
 /**
  * Internal Offer identifier (`mon:offer:<opaque>`).

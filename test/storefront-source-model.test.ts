@@ -332,11 +332,27 @@ describe("2. the immutable source version has a strict shape", () => {
   });
 
   it("the authorizing actor must be opaque — never an email or a name", () => {
-    for (const bad of ["owner@example.com", "Ada Lovelace", ACCOUNT_ID]) {
+    for (const bad of ["owner@example.com", "Ada Lovelace", "mon:mpart:not-an-actor"]) {
       expect(
         StorefrontSourceVersion.safeParse({ ...storefrontVersion(), authorizedByActorId: bad })
           .success,
       ).toBe(false);
+    }
+  });
+
+  it("accepts the acting ACCOUNT as the authorizing actor (Phase 1.18)", () => {
+    /* Inverted deliberately. This case asserted that an account id was refused,
+       on the premise that the actor was a separate `mon:actor:` value supplied
+       beside it. That premise was the defect: a caller could name any actor for
+       an operation authorized against a different identity. The account id is
+       now the only writable form, and the historical one stays readable because
+       immutable source history is never rewritten. Both are opaque, so the
+       privacy guarantee above is untouched. */
+    for (const good of [ACCOUNT_ID, ACTOR_ID]) {
+      expect(
+        StorefrontSourceVersion.safeParse({ ...storefrontVersion(), authorizedByActorId: good })
+          .success,
+      ).toBe(true);
     }
   });
 });

@@ -44,10 +44,14 @@ import {
   canActivateStorefrontRecord,
   canCreateStorefrontRecord,
   canEditStorefrontPresentation,
+  canCloseStorefrontRecord,
   canIncreaseStorefrontExposure,
+  canReduceStorefrontExposure,
+  canSuspendStorefrontRecord,
   canResumeStorefrontRecord,
   isStorefrontLive,
   isExposureIncrease,
+  isExposureReduction,
   isValidStorefrontLifecycleTransition,
   materialChangesBetween,
   type MaterialStorefrontField,
@@ -62,6 +66,7 @@ import {
   assertParticipantMayAuthorMarketplaceState,
 } from "./participant-standing-service";
 import { ParticipantActionNotPermittedError } from "./participant-standing-errors";
+import { readActingAccountRows } from "./acting-subject-service";
 import { readReadinessIn } from "./payment-account-service";
 import { resolveCommerceApproval } from "./participant-commerce-approval-service";
 import {
@@ -149,15 +154,37 @@ export interface StorefrontSnapshot {
 /**
  * Assemble the 0M.3A owner and actor facts from persisted state.
  *
- * `authorizedForOwnerParticipant` is supplied by the caller and passed straight
- * through; nothing here could derive it, and 0M.3A forbids inferring it.
+ * **The actor is the authenticated account, and everything about them is read
+ * (Phase 1.18).** This function used to take `authorizedByParticipantId` and
+ * look the account up *from it*, so a caller named which participant it was and
+ * the service believed the claim; `actorAuthorizedForOwnerParticipant` then
+ * arrived as a caller-supplied boolean beside it. Knowing one opaque
+ * participant id was therefore enough to act as its holder on every Storefront
+ * write, go-live and governance appointment included.
+ *
+ * `authorizedForOwnerParticipant` is now derived from the two records that can
+ * actually establish it:
+ *
+ *   1. **the actor IS the owner** — self-ownership, the only basis available
+ *      when the Storefront does not exist yet; or
+ *   2. **an ACTIVE `StorefrontGovernanceAssignment`** naming this actor on this
+ *      Storefront — an appointment by the owner *is* the owner's recorded
+ *      authorization for someone else to act.
+ *
+ * 0M.3A's rule that authorization "must never be inferred from an email domain,
+ * a display name, or any private profile datum" is preserved exactly: none of
+ * those is read here, and none is readable — the actor projection has no field
+ * for one. What the model deferred was *organization membership persistence*,
+ * and it is still deferred: a member of an organization-owned Storefront who is
+ * neither the owner nor a governance assignee has no authoritative record, so
+ * they are **denied**. That is fail-closed, and it is the honest answer for an
+ * authority the database cannot evidence.
  */
 async function resolveAuthorizationFacts(
   tx: Tx,
   input: {
     ownerParticipantId: string;
-    authorizedByParticipantId: string;
-    actorAuthorizedForOwnerParticipant: boolean;
+    actingAccountId: string;
     internalStorefrontId: string | null;
   },
 ) {
@@ -171,18 +198,14 @@ async function resolveAuthorizationFacts(
     orderBy: { role: "asc" },
   });
 
-  const actorParticipant = await tx.marketplaceParticipant.findUnique({
-    where: { id: input.authorizedByParticipantId },
-  });
-  if (actorParticipant === null) throw new GovernanceParticipantNotFoundError();
-
-  const account = await tx.account.findUnique({ where: { id: actorParticipant.accountId } });
-  if (account === null) throw new GovernanceParticipantNotFoundError();
-
-  const entitlements = await tx.accountEntitlement.findMany({
-    where: { accountId: account.id, status: "ACTIVE" },
-    orderBy: { capability: "asc" },
-  });
+  /* The acting account's OWN rows, through the shared Phase 1.18 reader. The
+     account id names who is asking; nothing a caller sends names what they may
+     do. */
+  const acting = await readActingAccountRows(tx, input.actingAccountId);
+  if (acting === null || acting.participant === null) {
+    throw new GovernanceParticipantNotFoundError();
+  }
+  const actorParticipant = acting.participant;
 
   const assignment =
     input.internalStorefrontId === null
@@ -196,16 +219,56 @@ async function resolveAuthorizationFacts(
           },
         });
 
+  /* Derived, never supplied. Self-ownership, or the owner's own recorded
+     appointment of this actor on this Storefront. A SUSPENDED or REVOKED
+     assignment is not an authorization — it is the record of one that has
+     been withdrawn. */
+  const authorizedForOwnerParticipant =
+    actorParticipant.id === owner.id ||
+    (assignment !== null && assignment.status === "ACTIVE");
+
   return {
+    actorParticipantId: actorParticipant.id,
     owner: toStorefrontOwnerFacts({ owner, roles }),
     actor: toStorefrontActorFacts({
-      accountId: account.id,
-      accountStatus: account.status,
-      authorizedForOwnerParticipant: input.actorAuthorizedForOwnerParticipant,
+      accountId: acting.account.id,
+      accountStatus: acting.account.status,
+      authorizedForOwnerParticipant,
       assignment,
-      internalCapabilities: entitlements.map((e) => e.capability),
+      internalCapabilities: [...acting.internalCapabilities],
     }),
   };
+}
+
+/**
+ * The acting account must be enabled before it administers governance.
+ *
+ * The two governance commands hand-roll their authority test rather than
+ * reaching `actorProblem` through `requireAllowed`, and `actorProblem` is where
+ * every other Storefront path answers "is this account enabled at all"
+ * (`ACCOUNT_DISABLED`). The status was resolved onto the actor facts and then
+ * simply never read here.
+ *
+ * The consequence was the wrong way round: a DISABLED account whose participant
+ * owned the Storefront — or held an ACTIVE SUPER_OWNER assignment — was refused
+ * presentation edits, activation, and stand-down, yet could still appoint and
+ * revoke governance. That is the one authority that restores all the others, so
+ * disabling an account removed every power except the power to hand them back.
+ *
+ * Standing is asked beside it, for the reason `createDraftStorefront` asks it:
+ * a suspension withholds authoring marketplace state, and an appointment is
+ * marketplace state. Authority first, standing second — the same order, and the
+ * same two questions, as every other governed write in this phase.
+ */
+async function requireGovernanceAdministrationStanding(
+  tx: Tx,
+  facts: { actor: { accountStatus: string }; actorParticipantId: string },
+  capability: string,
+): Promise<void> {
+  if (facts.actor.accountStatus !== "ACTIVE") {
+    throw new StorefrontNotAuthorizedError(capability, ["ACCOUNT_DISABLED"]);
+  }
+  await assertParticipantMayAuthorMarketplaceState(tx, facts.actorParticipantId);
 }
 
 function requireAllowed(decision: StorefrontAuthorityDecision): void {
@@ -364,8 +427,7 @@ export async function createDraftStorefront(
     return await db.$transaction(async (tx) => {
       const facts = await resolveAuthorizationFacts(tx, {
         ownerParticipantId: data.ownerParticipantId,
-        authorizedByParticipantId: data.authorizedByParticipantId,
-        actorAuthorizedForOwnerParticipant: data.actorAuthorizedForOwnerParticipant,
+        actingAccountId: data.actingAccountId,
         /* No Storefront exists yet, so there is no assignment to resolve. */
         internalStorefrontId: null,
       });
@@ -406,8 +468,8 @@ export async function createDraftStorefront(
           presentationDisplayName: data.presentation.displayName,
           presentationTagline: data.presentation.tagline,
           presentationSummary: data.presentation.summary,
-          authorizedByParticipantId: data.authorizedByParticipantId,
-          authorizedByActorId: data.authorizedByActorId,
+          authorizedByParticipantId: facts.actorParticipantId,
+          authorizedByActorId: data.actingAccountId,
           recordedAt: at,
         },
       });
@@ -478,8 +540,7 @@ export async function createStorefrontSourceVersion(
 
       const facts = await resolveAuthorizationFacts(tx, {
         ownerParticipantId: current.ownerParticipantId,
-        authorizedByParticipantId: data.authorizedByParticipantId,
-        actorAuthorizedForOwnerParticipant: data.actorAuthorizedForOwnerParticipant,
+        actingAccountId: data.actingAccountId,
         internalStorefrontId: data.internalStorefrontId,
       });
 
@@ -516,7 +577,7 @@ export async function createStorefrontSourceVersion(
        * `SUPER_OWNER_EXCLUSIVE_AUTHORITIES`. The decisions enforcing it already
        * existed and were simply never called.
        *
-       * Three branches, narrowest first:
+       * Branches, narrowest first:
        *
        *   - taking the Storefront live, or resuming it — `SUPER_OWNER` only,
        *     exactly one active `SUPER_OWNER` appointed, owner admitted and
@@ -524,10 +585,15 @@ export async function createStorefrontSourceVersion(
        *   - widening exposure toward the public — the same authority, for the
        *     same reason: §7 names making a Storefront publicly visible as an
        *     act an `ADMIN` may not perform;
-       *   - everything else — presentation, and standing DOWN — stays exactly as
-       *     it was. `ADMIN` keeps every operational authority it legitimately
-       *     holds, and nothing here requires an intact commerce gate to close or
-       *     hide a shop.
+       *   - standing DOWN — added by Phase 1.18; see the note on that branch.
+       *     §7 reserves suspend, close, and visibility deactivation to
+       *     `SUPER_OWNER` too, and this path used to fall through to the
+       *     presentation gate;
+       *   - everything else — presentation — stays exactly as it was. `ADMIN`
+       *     keeps every operational authority it legitimately holds, and
+       *     standing down still never requires an intact commerce gate: a
+       *     `SUPER_OWNER` whose payment capability was just restricted can still
+       *     close or hide the shop.
        *
        * `SUPER_OWNER` inherits every `ADMIN` permission, so a version that both
        * edits presentation and goes live is correctly judged by the stronger
@@ -559,6 +625,25 @@ export async function createStorefrontSourceVersion(
         goLiveApproval: await resolveCommerceApproval(tx, current.ownerParticipantId),
       });
 
+      /* Phase 1.18 — stand-down reaches the decisions written for it.
+       *
+       * 0M.3A names `storefront:suspend`, `storefront:close` and
+       * `storefront:visibility:deactivate` as SUPER_OWNER-exclusive, and Phase
+       * 0M.3C wrote `canSuspendStorefrontRecord`, `canCloseStorefrontRecord` and
+       * `canReduceStorefrontExposure` to enforce that. None of the three had a
+       * call site: every non-go-live, non-widening version fell to the
+       * presentation gate, which admits an ADMIN and inspects only the CURRENT
+       * lifecycle. An ADMIN could therefore suspend or close a Storefront, and
+       * `superOwnerConsistencyProblem` — the fail-closed check for contradictory
+       * SUPER_OWNER facts — never ran at all.
+       *
+       * ADMIN keeps exactly what 0M.3A gives it: presentation and the other
+       * operational authorities, which is still the final branch below. */
+      const standingDown =
+        next.lifecycle !== current.lifecycle &&
+        (next.lifecycle === "SUSPENDED" || next.lifecycle === "CLOSED");
+      const reducingExposure = isExposureReduction(current.visibility, next.visibility);
+
       if (becomingOperational) {
         const request = await operationalRequest();
         requireAllowed(
@@ -569,6 +654,20 @@ export async function createStorefrontSourceVersion(
       } else if (wideningExposure) {
         requireAllowed(
           canIncreaseStorefrontExposure({
+            ...(await operationalRequest()),
+            targetVisibility: next.visibility,
+          }),
+        );
+      } else if (standingDown) {
+        const request = await operationalRequest();
+        requireAllowed(
+          next.lifecycle === "CLOSED"
+            ? canCloseStorefrontRecord(request)
+            : canSuspendStorefrontRecord(request),
+        );
+      } else if (reducingExposure) {
+        requireAllowed(
+          canReduceStorefrontExposure({
             ...(await operationalRequest()),
             targetVisibility: next.visibility,
           }),
@@ -618,10 +717,13 @@ export async function createStorefrontSourceVersion(
        * correct the work that caused the restriction, which is exactly why
        * `RESTRICTED` is a drafting status.
        *
-       * NOTE — this does not touch WHICH GOVERNANCE ROLE may activate. That
-       * question (the source model reserves activation to an active SUPER_OWNER;
-       * this path admits an ADMIN) is a separate authorization defect, surfaced
-       * rather than resolved here. */
+       * NOTE — this does not touch WHICH GOVERNANCE ROLE may act. That question
+       * is answered above, and is now fully wired: Phase 1.15 routed activation
+       * and resumption to `canActivateStorefrontRecord` / `canResumeStorefrontRecord`,
+       * and Phase 1.18 routed stand-down to `canSuspendStorefrontRecord`,
+       * `canCloseStorefrontRecord`, and `canReduceStorefrontExposure`. All are
+       * SUPER_OWNER-exclusive. Governance authority and participant standing stay
+       * independent gates, asked in that order. */
       if (becomingOperational || wideningExposure) {
         await assertStorefrontMayBecomeOperational(tx, current.ownerParticipantId);
       }
@@ -642,8 +744,8 @@ export async function createStorefrontSourceVersion(
           presentationDisplayName: next.presentation.displayName,
           presentationTagline: next.presentation.tagline,
           presentationSummary: next.presentation.summary,
-          authorizedByParticipantId: data.authorizedByParticipantId,
-          authorizedByActorId: data.authorizedByActorId,
+          authorizedByParticipantId: facts.actorParticipantId,
+          authorizedByActorId: data.actingAccountId,
           recordedAt: at,
         },
       });
@@ -707,8 +809,7 @@ export async function assignStorefrontGovernance(
 
       const facts = await resolveAuthorizationFacts(tx, {
         ownerParticipantId: stable.ownerParticipantId,
-        authorizedByParticipantId: data.authorizedByParticipantId,
-        actorAuthorizedForOwnerParticipant: data.actorAuthorizedForOwnerParticipant,
+        actingAccountId: data.actingAccountId,
         internalStorefrontId: data.internalStorefrontId,
       });
 
@@ -716,11 +817,17 @@ export async function assignStorefrontGovernance(
          (0M.3A). The owner's own first SUPER_OWNER appointment is permitted
          through the create-record decision, since there is no SUPER_OWNER yet to
          grant it. */
+      await requireGovernanceAdministrationStanding(
+        tx,
+        facts,
+        "storefront:governance:appoint-admin",
+      );
+
       const superOwners = await activeSuperOwnerCount(tx, data.internalStorefrontId);
       const isOwnerBootstrappingFirstSuperOwner =
         data.role === "SUPER_OWNER" &&
         superOwners === 0 &&
-        data.authorizedByParticipantId === stable.ownerParticipantId;
+        facts.actorParticipantId === stable.ownerParticipantId;
 
       if (!isOwnerBootstrappingFirstSuperOwner) {
         if (facts.actor.governanceRole !== "SUPER_OWNER" ||
@@ -822,12 +929,17 @@ export async function setGovernanceAssignmentStatus(
 
       const facts = await resolveAuthorizationFacts(tx, {
         ownerParticipantId: stable.ownerParticipantId,
-        authorizedByParticipantId: data.authorizedByParticipantId,
-        actorAuthorizedForOwnerParticipant: data.actorAuthorizedForOwnerParticipant,
+        actingAccountId: data.actingAccountId,
         internalStorefrontId: data.internalStorefrontId,
       });
 
-      const actingAsOwner = data.authorizedByParticipantId === stable.ownerParticipantId;
+      await requireGovernanceAdministrationStanding(
+        tx,
+        facts,
+        "storefront:governance:revoke-admin",
+      );
+
+      const actingAsOwner = facts.actorParticipantId === stable.ownerParticipantId;
       const actingAsSuperOwner =
         facts.actor.governanceRole === "SUPER_OWNER" &&
         facts.actor.governanceAssignmentStatus === "ACTIVE";
@@ -877,6 +989,20 @@ export interface StorefrontReadiness {
  *
  * `live` is derived through the source model's own `isStorefrontLive`; there is
  * no stored `isLive`, and this function computes nothing itself.
+ *
+ * **The supplied `goLiveApproval` is not an authorization answer (Phase 1.18).**
+ * This function reads two rows and writes nothing; the boolean it returns is a
+ * view, and a caller passing `"APPROVED"` changes no record and unlocks no act.
+ * The only path on which a go-live approval actually gates a Storefront is
+ * `createStorefrontSourceVersion`, which derives it from
+ * `ParticipantCommerceApproval` through `resolveCommerceApproval`, inside the
+ * transaction that writes. The parameter therefore stays supplied, exactly as
+ * 0M.3A §9 specifies — Phase 1.18 removes forgeable authorization conclusions,
+ * not boolean syntax.
+ *
+ * A future route must NOT hand this straight to a client, or the returned `live`
+ * becomes a client-authored claim. Such a route derives the approval first, the
+ * way the write path does.
  */
 export async function evaluateStorefrontReadiness(
   internalStorefrontId: string,

@@ -68,7 +68,8 @@ import {
 } from "../../contracts/marketplace/offer-source";
 import type { MarketplaceSubject } from "../../contracts/marketplace/participant";
 import { getPrisma } from "../db/client";
-import { toMarketplaceSubject } from "./participant-mapper";
+import { resolveActingSubject } from "./acting-subject-service";
+import { participantHoldsProductAuthority } from "./product-authority-service";
 import {
   assertOfferMayBecomeCommerciallyLive,
   assertParticipantMayAuthorMarketplaceState,
@@ -144,48 +145,18 @@ export interface OfferSnapshot {
 
 // — Authorization facts —
 
-/**
- * Materialize the acting account's marketplace subject from persisted state.
+/*
+ * Both facts a 0M.2A Offer decision weighs are read from the database here.
  *
- * Deliberately the **0M.5 machinery**, not a second copy: the same account,
- * participant, role, and entitlement rows feed the same `toMarketplaceSubject`
- * mapper the participant service uses. An authorization decision is therefore
- * made against the database rather than against whatever a caller asserted.
+ * `resolveActingSubject` is the shared reader (Phase 1.18); the private copy
+ * this module used to keep is gone, along with its one divergence — it never
+ * passed payment readiness, so `commerceProblem` saw `NOT_STARTED` for every
+ * seller no matter what the provider had reported.
  *
- * An unknown account yields the guest subject, which every 0M.2A gate refuses
- * with `ACCOUNT_REQUIRED` — a refusal, not an exception.
+ * `participantHoldsProductAuthority` replaces the `hasProductAuthority` boolean
+ * the caller used to supply. The pure decisions are unchanged and still receive
+ * a boolean; what moved is where it comes from.
  */
-async function resolveSubject(tx: Tx, accountId: string): Promise<MarketplaceSubject> {
-  const account = await tx.account.findUnique({ where: { id: accountId } });
-  if (account === null) {
-    return toMarketplaceSubject({
-      account: null,
-      participant: null,
-      roles: [],
-      internalCapabilities: [],
-    });
-  }
-
-  const participant = await tx.marketplaceParticipant.findUnique({ where: { accountId } });
-  const roles =
-    participant === null
-      ? []
-      : await tx.marketplaceRoleAssignment.findMany({
-          where: { participantId: participant.id },
-          orderBy: { role: "asc" },
-        });
-  const entitlements = await tx.accountEntitlement.findMany({
-    where: { accountId, status: "ACTIVE" },
-    orderBy: { capability: "asc" },
-  });
-
-  return toMarketplaceSubject({
-    account,
-    participant,
-    roles,
-    internalCapabilities: entitlements.map((e) => e.capability),
-  });
-}
 
 function requireAllowed(decision: OfferAuthorityDecision): void {
   if (decision.decision === "ALLOW") return;
@@ -370,13 +341,22 @@ export async function createDraftOffer(
       });
       if (seller === null) throw new SellerParticipantNotFoundError();
 
-      const subject = await resolveSubject(tx, data.actingAccountId);
+      const subject = await resolveActingSubject(tx, data.actingAccountId);
+
+      /* Derived from the Product's current source version, never supplied. A
+         seller drafting terms over a Product they do not control would create a
+         record nobody is ever allowed to activate. */
+      const hasProductAuthority = await participantHoldsProductAuthority(
+        tx,
+        data.internalProductId,
+        subject.participant?.participantId ?? null,
+      );
 
       requireAllowed(
         canCreateDraftOffer({
           subject,
           offerSellerParticipantId: data.sellerParticipantId,
-          hasProductAuthority: data.hasProductAuthority,
+          hasProductAuthority,
         }),
       );
 
@@ -416,7 +396,7 @@ export async function createDraftOffer(
           ),
           commissionCalculationPolicyVersion: economics.commissionCalculationPolicyVersion,
           authorizedBySellerParticipantId: data.sellerParticipantId,
-          authorizedByActorId: data.authorizedByActorId,
+          authorizedByActorId: data.actingAccountId,
           recordedAt: at,
         },
       });
@@ -570,13 +550,23 @@ export async function createOfferSourceVersion(
       );
       if (changed.length === 0) throw new NoMaterialOfferChangeError();
 
-      const subject = await resolveSubject(tx, data.actingAccountId);
+      const subject = await resolveActingSubject(tx, data.actingAccountId);
+
+      /* Against the PERSISTED Product, not one the caller names: the Offer
+         already knows which Product its terms are for, and accepting a second
+         answer here would let a caller point the authority check at a Product
+         they do control while repricing one they do not. */
+      const hasProductAuthority = await participantHoldsProductAuthority(
+        tx,
+        current.internalProductId,
+        subject.participant?.participantId ?? null,
+      );
 
       requireAllowed(
         decideUpdate({
           subject,
           sellerParticipantId: current.sellerParticipantId,
-          hasProductAuthority: data.hasProductAuthority,
+          hasProductAuthority,
           currentLifecycle: current.lifecycle,
           nextLifecycle: next.lifecycle,
           /* Supplied only when going live, which is the one action 0M.2A binds
@@ -643,7 +633,7 @@ export async function createOfferSourceVersion(
           ),
           commissionCalculationPolicyVersion: economics.commissionCalculationPolicyVersion,
           authorizedBySellerParticipantId: current.sellerParticipantId,
-          authorizedByActorId: data.authorizedByActorId,
+          authorizedByActorId: data.actingAccountId,
           recordedAt: at,
         },
       });

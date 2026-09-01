@@ -24,6 +24,7 @@ import "dotenv/config";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type Stripe from "stripe";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
+import { grantProductCreatorAuthority } from "./support/product-authority-fixture";
 import { createAccount } from "../src/server/account/account-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
 import { grantAccountEntitlement } from "../src/server/account/account-entitlement-service";
@@ -588,6 +589,13 @@ async function cleanup(): Promise<void> {
     await db.sellerRefundPolicy.deleteMany({
       where: { sellerParticipantId: { in: participantIds } },
     });
+    /* Phase 1.18 — Product source versions now name the creator participant
+       with onDelete: Restrict. Detach rather than delete: the version rows are
+       immutable Product history this cleanup does not own. */
+    await db.productSourceRecordVersionRow.updateMany({
+      where: { internalProductId: { startsWith: PRODUCT_PREFIX } },
+      data: { authorityCreatorParticipantId: null },
+    });
     await db.marketplaceParticipant.deleteMany({ where: { id: { in: participantIds } } });
   }
 
@@ -736,6 +744,12 @@ async function seedSellerDirect(
       visibility: "PUBLIC",
     },
   });
+  /* Phase 1.18 — a seller-direct placement requires creator authority over
+     the Product, derived from its current source version. */
+  await grantProductCreatorAuthority(db, {
+    internalProductId: internalProductId,
+    participantId: participantId,
+  });
   const listing = await createSellerDirectListing(
     {
       storefrontId,
@@ -744,7 +758,6 @@ async function seedSellerDirect(
       retail: { retailPriceMinorUnits: retailMinorUnits, retailPriceCurrency: "USD" },
       sale: null,
       actingAccountId: accountId,
-      authorizedByActorId: ACTOR,
       now: NOW,
     },
     { db },

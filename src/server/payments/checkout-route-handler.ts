@@ -67,6 +67,7 @@ import { TaxError } from "../tax/tax-errors";
 import { TransactionDeniedByRiskError, RiskError } from "../risk/risk-errors";
 import { buyerSafeRiskDenialReasons } from "../../contracts/marketplace/transaction-risk";
 import { ParticipantActionNotPermittedError } from "../marketplace/participant-standing-errors";
+import { ParticipantLifecycleTerminatedError } from "../marketplace/participant-closure-errors";
 import { BasketFulfillmentError } from "../../contracts/marketplace/basket-fulfillment";
 import { beginCheckout } from "./executable-checkout-service";
 import { createStripeBuyerPaymentAdapter } from "./stripe-buyer-payment-adapter";
@@ -507,6 +508,24 @@ export async function handleBeginCheckoutRequest(
      * the governed records by someone entitled to them, never something a buyer
      * learns by attempting a purchase. */
     if (error instanceof ParticipantActionNotPermittedError) {
+      return refuse(409, CHECKOUT_ERROR_CODES.notPurchasable);
+    }
+    /* Phase 1.18 — a CLOSED party refused this sale, and that is a business
+     * answer rather than an outage.
+     *
+     * `assertParticipantLifecycleIsLive` threw from the standing checks above.
+     * Unmapped, it reached the fall-through and was reported as HTTP 500: a
+     * governed lifecycle refusal presented to the buyer as a Monacado fault, and
+     * indistinguishable from one in monitoring.
+     *
+     * Answered with the SAME code a restricted or suspended party gets, and that
+     * is deliberate. A distinct code would tell an unauthenticated poster that
+     * this particular participant had closed their account — reopening exactly
+     * the standing disclosure Phase 1.15 closed just above. On a promoted
+     * Listing it would be worse: the closed party may be the seller, whom the
+     * buyer cannot see at all. The error object itself carries no participant
+     * id, reason, or date; the code would have been the whole leak. */
+    if (error instanceof ParticipantLifecycleTerminatedError) {
       return refuse(409, CHECKOUT_ERROR_CODES.notPurchasable);
     }
     /* Tax could not be established. Monacado refuses to sell rather than sell

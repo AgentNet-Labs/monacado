@@ -81,7 +81,8 @@ import {
 import type { MarketplaceSubject } from "../../contracts/marketplace/participant";
 import type { GeneralAvailabilityState } from "../../contracts/product/product.capsule";
 import { getPrisma } from "../db/client";
-import { toMarketplaceSubject } from "./participant-mapper";
+import { resolveActingSubject } from "./acting-subject-service";
+import { participantHoldsProductAuthority } from "./product-authority-service";
 import {
   assertListingMayBecomeOperational,
   assertParticipantMayAuthorMarketplaceState,
@@ -166,48 +167,12 @@ export interface ListingSnapshot {
 
 // — Authorization facts —
 
-/**
- * Materialize the acting account's marketplace subject from persisted state.
- *
- * The **0M.5 machinery**, not a second copy: the same account, participant,
- * role, and entitlement rows feed the same `toMarketplaceSubject` mapper the
- * participant and Offer services use, so a decision is made against the database
- * rather than against whatever a caller asserted.
- *
- * An unknown account yields the guest subject, which every gate refuses with
- * `ACCOUNT_REQUIRED` — a refusal, not an exception.
+/*
+ * The acting subject is read by the shared Phase 1.18 reader
+ * (`resolveActingSubject`). The private copy this module used to keep is gone;
+ * it agreed with the Offer service's copy on the queries and with neither the
+ * participant nor the activation service on payment readiness.
  */
-async function resolveSubject(tx: Tx, accountId: string): Promise<MarketplaceSubject> {
-  const account = await tx.account.findUnique({ where: { id: accountId } });
-  if (account === null) {
-    return toMarketplaceSubject({
-      account: null,
-      participant: null,
-      roles: [],
-      internalCapabilities: [],
-    });
-  }
-
-  const participant = await tx.marketplaceParticipant.findUnique({ where: { accountId } });
-  const roles =
-    participant === null
-      ? []
-      : await tx.marketplaceRoleAssignment.findMany({
-          where: { participantId: participant.id },
-          orderBy: { role: "asc" },
-        });
-  const entitlements = await tx.accountEntitlement.findMany({
-    where: { accountId, status: "ACTIVE" },
-    orderBy: { capability: "asc" },
-  });
-
-  return toMarketplaceSubject({
-    account,
-    participant,
-    roles,
-    internalCapabilities: entitlements.map((e) => e.capability),
-  });
-}
 
 function requireAllowed(decision: CapabilityDecision): void {
   if (isAllowed(decision)) return;
@@ -229,6 +194,113 @@ function requireController(
   if (subject.participant?.participantId !== controllingParticipantId) {
     throw new ListingNotAuthorizedError(capability, ["PARTICIPANT_REQUIRED"]);
   }
+}
+
+/**
+ * A seller-direct placement requires creator authority over the Product.
+ *
+ * Phase 1.18 closes an asymmetry, not a forgery: the Offer path has always
+ * required Product authority, and the Listing path checked only that the
+ * Product row *existed* — so a seller who could not state commercial terms for
+ * another creator's work could nonetheless put it in front of buyers, which is
+ * the louder act of the two.
+ *
+ * **Seller-direct only.** A PROMOTED placement deliberately does not ask: a
+ * promoter never holds authority over the Product they promote, and their right
+ * to place it comes from the accepted Offer version, which was itself gated on
+ * the seller's Product authority when it was authored. Asking here would refuse
+ * every promoter, and asking it *of the seller* would be a second, divergent
+ * answer to a question the Offer already settled.
+ */
+async function requireSellerDirectProductAuthority(
+  tx: Tx,
+  input: {
+    listingType: string;
+    internalProductId: string;
+    subject: MarketplaceSubject;
+    capability: string;
+  },
+): Promise<void> {
+  if (input.listingType !== "SELLER_DIRECT") return;
+
+  const authorized = await participantHoldsProductAuthority(
+    tx,
+    input.internalProductId,
+    input.subject.participant?.participantId ?? null,
+  );
+  if (!authorized) {
+    throw new ListingNotAuthorizedError(input.capability, ["PRODUCT_AUTHORITY_REQUIRED"]);
+  }
+}
+
+/**
+ * The controlling participant must hold authority over the destination Storefront.
+ *
+ * Phase 1.18. `requirePlacementReferences` checked that the Storefront row
+ * EXISTED and nothing more, so any SELLER or PROMOTER could place a Listing into
+ * any shop given its opaque id — including a competitor's. Knowing an identifier
+ * is not authority over the thing it names, which is the premise this whole
+ * phase removes.
+ *
+ * **The same rule governs both branches**, because 0M.3A §3 gives both the same
+ * first clause — "Storefront authority" — and differs only in the role leg,
+ * which `decideForBranch` already enforces. A promoted placement is not an
+ * exception: 0M.3A and the product thesis both have a promoter operating their
+ * own branded shop, and every fixture in the repository already assumes it.
+ *
+ * Two authoritative bases, matching `resolveAuthorizationFacts` in the
+ * Storefront service exactly:
+ *
+ *   1. the controller IS `Storefront.ownerParticipantId`; or
+ *   2. they hold an **ACTIVE** `StorefrontGovernanceAssignment` on it — 0M.3A
+ *      §3 reserves adding and removing Listings to ADMIN and SUPER_OWNER, and an
+ *      appointment by the owner is the owner's own recorded authorization.
+ *      SUSPENDED and REVOKED are records of a *withdrawn* authorization and
+ *      grant nothing — at creation, and again whenever the placement is taken
+ *      or kept live, so a revoked assignee cannot go live on a draft they
+ *      authored while still governing.
+ *
+ * **No Seller↔Promoter↔Storefront delegation exists**, in the schema, the
+ * contracts, or the governing documents — there is no way to express "this
+ * promoter may place into this seller's shop". A placement that would need one
+ * therefore fails closed. That is not a functionality loss: every flow the
+ * product describes already satisfies this rule, and the calls that newly fail
+ * are exactly the forgeries. The governed placement/delegation model is future
+ * work, and it is not invented here.
+ *
+ * Checked AFTER the capability and controller decisions so a refusal names the
+ * most specific thing the subject actually failed, and after the existence probe
+ * so a missing Storefront stays a not-found rather than becoming an authority
+ * refusal.
+ */
+async function requireStorefrontPlacementAuthority(
+  tx: Tx,
+  input: { storefrontId: string; controllingParticipantId: string; capability: string },
+): Promise<void> {
+  const storefront = await tx.storefront.findUnique({
+    where: { internalStorefrontId: input.storefrontId },
+    select: { ownerParticipantId: true },
+  });
+  if (storefront === null) throw new ListingStorefrontNotFoundError();
+
+  if (storefront.ownerParticipantId === input.controllingParticipantId) return;
+
+  const assignment = await tx.storefrontGovernanceAssignment.findUnique({
+    where: {
+      internalStorefrontId_participantId: {
+        internalStorefrontId: input.storefrontId,
+        participantId: input.controllingParticipantId,
+      },
+    },
+    select: { status: true },
+  });
+  if (assignment !== null && assignment.status === "ACTIVE") return;
+
+  /* Names the capability the subject was exercising and one bounded code. The
+     owner's identity, the governance roles held by others, and whether an
+     assignment exists at all are deliberately absent: an unauthorized caller
+     learns that they may not place here, and nothing about who may. */
+  throw new ListingNotAuthorizedError(input.capability, ["STOREFRONT_AUTHORITY_REQUIRED"]);
 }
 
 /**
@@ -691,10 +763,21 @@ export async function createSellerDirectListing(
     return await db.$transaction(async (tx) => {
       await requirePlacementReferences(tx, data);
 
-      const subject = await resolveSubject(tx, data.actingAccountId);
+      const subject = await resolveActingSubject(tx, data.actingAccountId);
       const decision = decideForBranch("SELLER_DIRECT", subject);
       requireAllowed(decision);
       requireController(subject, data.controllingParticipantId, decision.capability);
+      await requireSellerDirectProductAuthority(tx, {
+        listingType: "SELLER_DIRECT",
+        internalProductId: data.internalProductId,
+        subject,
+        capability: decision.capability,
+      });
+      await requireStorefrontPlacementAuthority(tx, {
+        storefrontId: data.storefrontId,
+        controllingParticipantId: data.controllingParticipantId,
+        capability: decision.capability,
+      });
       /* Phase 1.16 — suspension withholds authoring; see the standing service. */
       await assertParticipantMayAuthorMarketplaceState(tx, data.controllingParticipantId);
 
@@ -706,7 +789,7 @@ export async function createSellerDirectListing(
         controllingParticipantId: data.controllingParticipantId,
         placement,
         authorizedByParticipantId: data.controllingParticipantId,
-        authorizedByActorId: data.authorizedByActorId,
+        authorizedByActorId: data.actingAccountId,
         recordedAt: at,
       });
 
@@ -753,10 +836,15 @@ export async function createPromotedListing(
     return await db.$transaction(async (tx) => {
       await requirePlacementReferences(tx, data);
 
-      const subject = await resolveSubject(tx, data.actingAccountId);
+      const subject = await resolveActingSubject(tx, data.actingAccountId);
       const decision = decideForBranch("PROMOTED", subject);
       requireAllowed(decision);
       requireController(subject, data.controllingParticipantId, decision.capability);
+      await requireStorefrontPlacementAuthority(tx, {
+        storefrontId: data.storefrontId,
+        controllingParticipantId: data.controllingParticipantId,
+        capability: decision.capability,
+      });
       /* Phase 1.16 — suspension withholds authoring; see the standing service. */
       await assertParticipantMayAuthorMarketplaceState(tx, data.controllingParticipantId);
 
@@ -799,7 +887,7 @@ export async function createPromotedListing(
         controllingParticipantId: data.controllingParticipantId,
         placement,
         authorizedByParticipantId: data.controllingParticipantId,
-        authorizedByActorId: data.authorizedByActorId,
+        authorizedByActorId: data.actingAccountId,
         recordedAt: at,
       });
 
@@ -956,7 +1044,7 @@ export async function createListingSourceVersion(
       );
       if (changed.length === 0) throw new NoMaterialListingChangeError();
 
-      const subject = await resolveSubject(tx, data.actingAccountId);
+      const subject = await resolveActingSubject(tx, data.actingAccountId);
       const decision = decideForBranch(currentPlacement.listingType, subject);
       requireAllowed(decision);
       requireController(subject, current.controllingParticipantId, decision.capability);
@@ -988,6 +1076,33 @@ export async function createListingSourceVersion(
        * Only the going-live branch. Suspending, ending, or withdrawing a Listing
        * stays available, on the same reasoning as the Offer and Storefront
        * stand-down paths. */
+      /* Both placement authorities are re-asked only while the placement is
+         LIVE, on the Offer path's own reasoning: standing a Listing down must
+         stay available to whoever has lost the authority, or the check would
+         trap exactly the participant who most needs to withdraw the placement.
+         Suspending, ending, and withdrawing therefore ask neither.
+
+         Storefront authority is re-asked for the same reason Product authority
+         is, and its absence here was a real gap: a participant who drafted a
+         Listing under an ACTIVE governance assignment could take it live — and
+         keep minting repriced versions of it — in a shop whose owner had since
+         SUSPENDED or REVOKED that assignment. Revocation has to reach the
+         placements already drafted under it, or "an ACTIVE assignment is what
+         grants placement" would be true at creation only. */
+      if (nextLifecycle === "ACTIVE") {
+        await requireSellerDirectProductAuthority(tx, {
+          listingType: nextPlacement.listingType,
+          internalProductId: current.internalProductId,
+          subject,
+          capability: decision.capability,
+        });
+        await requireStorefrontPlacementAuthority(tx, {
+          storefrontId: current.storefrontId,
+          controllingParticipantId: current.controllingParticipantId,
+          capability: decision.capability,
+        });
+      }
+
       if (nextLifecycle === "ACTIVE" && current.lifecycle !== "ACTIVE") {
         await assertListingMayBecomeOperational(tx, current.controllingParticipantId);
       }
@@ -1007,7 +1122,7 @@ export async function createListingSourceVersion(
           lifecycle: nextLifecycle,
           ...placementToColumns(nextPlacement),
           authorizedByParticipantId: current.controllingParticipantId,
-          authorizedByActorId: data.authorizedByActorId,
+          authorizedByActorId: data.actingAccountId,
           recordedAt: at,
         },
       });

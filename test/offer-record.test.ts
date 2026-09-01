@@ -55,8 +55,6 @@ const createInput = (overrides: Record<string, unknown> = {}) => ({
   sellerParticipantId: SELLER,
   terms: paidPromotableTerms,
   actingAccountId: "acct_synthetic_0m6",
-  authorizedByActorId: ACTOR,
-  hasProductAuthority: true,
   now: "2027-10-01T09:00:00.000Z",
   ...overrides,
 });
@@ -114,9 +112,16 @@ describe("create input", () => {
     ).toBe(false);
   });
 
-  it("requires hasProductAuthority — supplied, never derived", () => {
-    const { hasProductAuthority: _drop, ...without } = createInput();
-    expect(CreateDraftOfferInput.safeParse(without).success).toBe(false);
+  it("refuses hasProductAuthority — derived, never supplied (Phase 1.18)", () => {
+    /* The inversion of what this test asserted through Phase 1.17. The field was
+       the deciding fact behind `canCreateDraftOffer`, and any caller could write
+       `true`; the Offer service now reads it from the Product's current source
+       version. `strictObject` makes the removal active rather than passive — a
+       caller still sending it is refused, not quietly ignored. */
+    expect(CreateDraftOfferInput.safeParse(createInput()).success).toBe(true);
+    expect(
+      CreateDraftOfferInput.safeParse({ ...createInput(), hasProductAuthority: true }).success,
+    ).toBe(false);
   });
 
   it("refuses a non-opaque actor id, so an email can never become an actor", () => {
@@ -172,8 +177,6 @@ describe("update input", () => {
     internalOfferId: `mon:offer:${pad26("M6OFFER")}`,
     sourceRecordVersion: "2",
     actingAccountId: "acct_synthetic_0m6",
-    authorizedByActorId: ACTOR,
-    hasProductAuthority: true,
     now: "2027-10-02T09:00:00.000Z",
     ...overrides,
   });

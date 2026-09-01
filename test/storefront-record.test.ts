@@ -53,9 +53,7 @@ describe("go-live approval is never a Storefront fact", () => {
       ownerParticipantId: `mon:mpart:${pad26("OWNER")}`,
       publicHandle: "a-handle",
       presentation: { displayName: "Shop", tagline: null, summary: null },
-      authorizedByParticipantId: `mon:mpart:${pad26("OWNER")}`,
-      authorizedByActorId: `mon:actor:${pad26("ACTOR")}`,
-      actorAuthorizedForOwnerParticipant: true,
+      actingAccountId: "acct_synthetic_0m3c",
       now: "2027-09-01T09:00:00.000Z",
     };
     expect(CreateDraftStorefrontInput.safeParse(base).success).toBe(true);
@@ -266,21 +264,26 @@ describe("service and scope boundaries", () => {
     }
   });
 
-  it("requires a supplied authorization flag rather than deriving one", () => {
-    /* 0M.3A forbids inferring it from an email domain, a display name, or any
-       private profile datum, so it must arrive as an input. */
-    expect(codeOnly(source("../src/contracts/marketplace/storefront-record.ts"))).toContain(
-      "actorAuthorizedForOwnerParticipant: z.boolean()",
-    );
+  it("carries no supplied authorization flag and no claimed actor participant (Phase 1.18)", () => {
+    /* The inversion of what this test asserted through Phase 1.17.
+       `actorAuthorizedForOwnerParticipant` was a caller-supplied boolean and
+       `authorizedByParticipantId` was a caller-supplied actor identity; together
+       they let anyone who knew one opaque participant id act as its holder. Both
+       are gone, replaced by `actingAccountId`, and 0M.3A's actual prohibition —
+       never infer authority from an email domain, a display name, or a private
+       profile datum — is preserved: the derivation reads only
+       `MarketplaceParticipant.accountId` and `StorefrontGovernanceAssignment`. */
+    const code = codeOnly(source("../src/contracts/marketplace/storefront-record.ts"));
+    expect(code).not.toContain("actorAuthorizedForOwnerParticipant");
+    expect(code).not.toContain("authorizedByParticipantId");
+    expect(code).toContain("actingAccountId: ActingAccountId");
   });
 
   it("accepts a partial update and refuses an unknown field", () => {
     const base = {
       internalStorefrontId: `mon:storefront:${pad26("SF")}`,
       sourceRecordVersion: "2",
-      authorizedByParticipantId: `mon:mpart:${pad26("P")}`,
-      authorizedByActorId: `mon:actor:${pad26("A")}`,
-      actorAuthorizedForOwnerParticipant: true,
+      actingAccountId: "acct_synthetic_0m3c",
       now: "2027-09-02T09:00:00.000Z",
     };
     expect(UpdateStorefrontInput.safeParse(base).success).toBe(true);

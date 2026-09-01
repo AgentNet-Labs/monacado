@@ -54,7 +54,7 @@
  */
 
 import { z } from "zod";
-import { ACTOR_ID_RE, INTERNAL_PRODUCT_ID_RE, SOURCE_RECORD_ID_RE } from "../capsule/identity";
+import { AUTHORIZING_ACTOR_ID_RE, INTERNAL_PRODUCT_ID_RE, SOURCE_RECORD_ID_RE } from "../capsule/identity";
 import { GeneralAvailabilityState } from "../product/product.capsule";
 import { INTERNAL_LISTING_ID_RE, INTERNAL_STOREFRONT_ID_RE } from "./identity";
 import { MarketplaceParticipantId, RoleAssignmentStatus, ParticipantStatus } from "./participant";
@@ -96,9 +96,24 @@ export const InternalProductRef = z
   .string()
   .regex(INTERNAL_PRODUCT_ID_RE, "internalProductId must be mon:product:<opaque>");
 
+/**
+ * Who performed the authorized source action — the **resolved acting account**
+ * (Phase 1.18), or a historical `mon:actor:` value on a row written before it.
+ *
+ * Derived, never supplied. It used to be a caller input beside the acting
+ * account id, which made the audit trail forgeable and independently settable:
+ * a caller could name any actor for an operation authorized against a different
+ * identity. `AUTHORIZING_ACTOR_ID_RE` carries the full reasoning.
+ *
+ * Opaque by construction — an email, display name, or other private profile
+ * datum must never be recorded here, and matches neither form.
+ */
 export const AuthorizingActorId = z
   .string()
-  .regex(ACTOR_ID_RE, "authorizedByActorId must be mon:actor:<opaque>");
+  .regex(
+    AUTHORIZING_ACTOR_ID_RE,
+    "authorizedByActorId must be opaque (mon:acct:<opaque>, or a historical mon:actor:<opaque>)",
+  );
 
 /** Opaque, monotonically-meaningful version label, as Offer and Storefront use. */
 export const ListingSourceRecordVersion = z.string().min(1).max(64);

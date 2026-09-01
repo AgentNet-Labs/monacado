@@ -116,6 +116,23 @@ export const CAPABILITY_REASON_CODES = [
   "PAYMENT_RESTRICTED",
   /** A guest may not perform this capability at all. */
   "GUEST_NOT_PERMITTED",
+  /**
+   * The subject holds no creator authority over the referenced Product.
+   *
+   * Shared rather than entity-specific (Phase 1.18): an Offer states commercial
+   * terms for a Product and a seller-direct Listing places one in front of
+   * buyers, so both must ask the same question, and two spellings of one
+   * refusal would be two things to keep in step.
+   */
+  "PRODUCT_AUTHORITY_REQUIRED",
+  /**
+   * The subject holds no authority over the destination Storefront.
+   *
+   * Placement authority (Phase 1.18): a Listing may be placed only in a
+   * Storefront the controlling participant owns, or governs under an ACTIVE
+   * assignment. Knowing a Storefront's opaque id is not authority over it.
+   */
+  "STOREFRONT_AUTHORITY_REQUIRED",
   /** Monacado cannot establish that the submitter transacted. */
   "PURCHASE_PROVENANCE_UNVERIFIED",
   /** No stored review-submission authority backs this action. */

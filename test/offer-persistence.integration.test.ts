@@ -19,6 +19,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { createAccount } from "../src/server/account/account-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
+import { grantProductCreatorAuthority } from "./support/product-authority-fixture";
 import {
   createDraftOffer,
   createOfferSourceVersion,
@@ -96,6 +97,13 @@ async function cleanup(): Promise<void> {
     where: { email: { startsWith: ACCOUNT_EMAIL_PREFIX } },
     select: { id: true },
   });
+  /* Product source versions first: Phase 1.18 made them reference the creator
+     participant with onDelete: Restrict, so a participant that authored one
+     cannot be deleted beneath it — which is the point of the constraint. */
+  await db.productSourceRecordVersionRow.deleteMany({
+    where: { internalProductId: { startsWith: PRODUCT_PREFIX } },
+  });
+
   const accountIds = accounts.map((a) => a.id);
   if (accountIds.length > 0) {
     const participants = await db.marketplaceParticipant.findMany({
@@ -123,8 +131,14 @@ async function cleanup(): Promise<void> {
   await db.product.deleteMany({ where: { internalProductId: { startsWith: PRODUCT_PREFIX } } });
 }
 
-/** A persisted Product for an Offer to name. Descriptive facts are not our concern. */
-async function seedProduct(): Promise<string> {
+/**
+ * A persisted Product for an Offer to name, with its creator authority recorded.
+ *
+ * `creatorParticipantId` is optional: omitting it produces a Product whose
+ * current source version names no participant, which is the historical NULL the
+ * derivation must fail closed on.
+ */
+async function seedProduct(creatorParticipantId?: string): Promise<string> {
   seq += 1;
   const internalProductId = `${PRODUCT_PREFIX}${pad26(String(seq)).slice(0, 26 - PRODUCT_ID_TAG.length)}`;
   await db.product.create({
@@ -135,6 +149,13 @@ async function seedProduct(): Promise<string> {
       recordStatus: "DRAFT",
     },
   });
+  if (creatorParticipantId !== undefined) {
+    await grantProductCreatorAuthority(db, {
+      internalProductId,
+      participantId: creatorParticipantId,
+      now: NOW,
+    });
+  }
   return internalProductId;
 }
 
@@ -170,18 +191,19 @@ const paidPromotableTerms = {
 };
 
 async function seedOffer(overrides: Record<string, unknown> = {}) {
-  const internalProductId =
-    (overrides.internalProductId as string) ?? (await seedProduct());
+  /* The seller is resolved FIRST, because the Product's creator authority now
+     has to name them: Phase 1.18 derives `hasProductAuthority` from the
+     Product's current source version rather than taking it from this input. */
   const seller = (overrides.seller as { participantId: string; accountId: string }) ??
     (await seedSeller());
+  const internalProductId =
+    (overrides.internalProductId as string) ?? (await seedProduct(seller.participantId));
   const snapshot = await createDraftOffer(
     {
       internalProductId,
       sellerParticipantId: seller.participantId,
       terms: paidPromotableTerms,
       actingAccountId: seller.accountId,
-      authorizedByActorId: ACTOR,
-      hasProductAuthority: true,
       now: NOW,
       ...overrides,
     },
@@ -244,7 +266,7 @@ function projectionContext(v: {
 async function seedActiveVersionRow(
   internalOfferId: string,
   offerSourceRecordId: string,
-  base: { internalProductId: string; sellerParticipantId: string },
+  base: { internalProductId: string; sellerParticipantId: string; actingAccountId?: string },
 ): Promise<void> {
   const economics = calculateOfferEconomics(paidPromotableTerms);
   await db.offerSourceRecordVersionRow.create({
@@ -276,7 +298,9 @@ async function seedActiveVersionRow(
       ),
       commissionCalculationPolicyVersion: economics.commissionCalculationPolicyVersion,
       authorizedBySellerParticipantId: base.sellerParticipantId,
-      authorizedByActorId: ACTOR,
+      /* The account convention the service now writes (Phase 1.18); a raw row
+         may still carry a historical `mon:actor:` value, which stays readable. */
+      authorizedByActorId: base.actingAccountId ?? ACTOR,
       recordedAt: new Date(LATER),
     },
   });
@@ -340,8 +364,6 @@ describeDb("Offer persistence (Phase 0M.6)", () => {
           sellerParticipantId: seller.participantId,
           terms: paidPromotableTerms,
           actingAccountId: seller.accountId,
-          authorizedByActorId: ACTOR,
-          hasProductAuthority: true,
           now: NOW,
         },
         { db },
@@ -359,8 +381,6 @@ describeDb("Offer persistence (Phase 0M.6)", () => {
           sellerParticipantId: `mon:mpart:${pad26("M6NOBODY")}`,
           terms: paidPromotableTerms,
           actingAccountId: seller.accountId,
-          authorizedByActorId: ACTOR,
-          hasProductAuthority: true,
           now: NOW,
         },
         { db },
@@ -390,8 +410,6 @@ describeDb("Offer persistence (Phase 0M.6)", () => {
         sourceRecordVersion: "2",
         availability: "TEMPORARILY_UNAVAILABLE",
         actingAccountId: seller.accountId,
-        authorizedByActorId: ACTOR,
-        hasProductAuthority: true,
         now: LATER,
       },
       { db },
@@ -431,8 +449,6 @@ describeDb("Offer persistence (Phase 0M.6)", () => {
           },
         },
         actingAccountId: seller.accountId,
-        authorizedByActorId: ACTOR,
-        hasProductAuthority: true,
         now: LATER,
       },
       { db },
@@ -454,8 +470,6 @@ describeDb("Offer persistence (Phase 0M.6)", () => {
         sourceRecordVersion: "2",
         availability: "TEMPORARILY_UNAVAILABLE",
         actingAccountId: seller.accountId,
-        authorizedByActorId: ACTOR,
-        hasProductAuthority: true,
         now: LATER,
       },
       { db },
@@ -477,8 +491,6 @@ describeDb("Offer persistence (Phase 0M.6)", () => {
         sourceRecordVersion: "2",
         availability: "TEMPORARILY_UNAVAILABLE",
         actingAccountId: seller.accountId,
-        authorizedByActorId: ACTOR,
-        hasProductAuthority: true,
         now: LATER,
       },
       { db },
@@ -498,8 +510,6 @@ describeDb("Offer persistence (Phase 0M.6)", () => {
           sourceRecordVersion: "1",
           availability: "TEMPORARILY_UNAVAILABLE",
           actingAccountId: seller.accountId,
-          authorizedByActorId: ACTOR,
-          hasProductAuthority: true,
           now: LATER,
         },
         { db },
@@ -516,8 +526,6 @@ describeDb("Offer persistence (Phase 0M.6)", () => {
           sourceRecordVersion: "2",
           availability: "AVAILABLE",
           actingAccountId: seller.accountId,
-          authorizedByActorId: ACTOR,
-          hasProductAuthority: true,
           now: LATER,
         },
         { db },
@@ -619,8 +627,6 @@ describeDb("Offer persistence (Phase 0M.6)", () => {
           },
         },
         actingAccountId: seller.accountId,
-        authorizedByActorId: ACTOR,
-        hasProductAuthority: true,
         now: LATER,
       },
       { db },
@@ -653,8 +659,6 @@ describeDb("Offer persistence (Phase 0M.6)", () => {
             },
           },
           actingAccountId: seller.accountId,
-          authorizedByActorId: ACTOR,
-          hasProductAuthority: true,
           now: NOW,
         },
         { db },
@@ -683,8 +687,6 @@ describeDb("Offer persistence (Phase 0M.6)", () => {
             },
           },
           actingAccountId: seller.accountId,
-          authorizedByActorId: ACTOR,
-          hasProductAuthority: true,
           now: NOW,
         },
         { db },
@@ -709,7 +711,10 @@ describeDb("Offer persistence (Phase 0M.6)", () => {
 
   it("24. round-trips the authorization trace and recordedAt", async () => {
     const { snapshot, seller } = await seedOffer();
-    expect(snapshot.currentVersion.authorizedByActorId).toBe(ACTOR);
+    /* The resolved acting account (Phase 1.18): the audit actor IS the identity
+       the authorization decision was evaluated against, not a second value the
+       caller supplied beside it. */
+    expect(snapshot.currentVersion.authorizedByActorId).toBe(seller.accountId);
     expect(snapshot.currentVersion.authorizedBySellerParticipantId).toBe(seller.participantId);
     expect(snapshot.currentVersion.recordedAt).toBe(NOW);
   });
@@ -719,7 +724,8 @@ describeDb("Offer persistence (Phase 0M.6)", () => {
     const row = await db.offerSourceRecordVersionRow.findFirst({
       where: { internalOfferId: snapshot.record.internalOfferId },
     });
-    expect(row!.authorizedByActorId).toMatch(/^mon:actor:/);
+    /* Still opaque — the namespace moved to the account, the guarantee did not. */
+    expect(row!.authorizedByActorId).toMatch(/^mon:acct:/);
     expect(row!.authorizedByActorId).not.toContain("@");
   });
 
@@ -738,8 +744,6 @@ describeDb("Offer persistence (Phase 0M.6)", () => {
           terms: paidPromotableTerms,
           /* The stranger acts, but the Offer names the other seller. */
           actingAccountId: stranger.accountId,
-          authorizedByActorId: ACTOR,
-          hasProductAuthority: true,
           now: NOW,
         },
         { db },
@@ -750,18 +754,64 @@ describeDb("Offer persistence (Phase 0M.6)", () => {
     });
   });
 
-  it("27. refuses creation without Product authority", async () => {
-    const internalProductId = await seedProduct();
+  it("27. refuses creation without Product authority — derived, not supplied", async () => {
+    /* Phase 1.18. Through 1.17 this was expressed by passing
+       `hasProductAuthority: false`, which meant the test proved only that the
+       service read its own input. Both ways of NOT holding the authority are
+       asserted now, and neither is reachable by anything a caller can send.
+
+       First: a Product whose current source version names no creator
+       participant at all — the historical NULL the column is nullable for.
+       Authority that cannot be evidenced is granted to nobody. */
+    const unattributed = await seedProduct();
     const seller = await seedSeller();
     await expect(
       createDraftOffer(
         {
-          internalProductId,
+          internalProductId: unattributed,
           sellerParticipantId: seller.participantId,
           terms: paidPromotableTerms,
           actingAccountId: seller.accountId,
-          authorizedByActorId: ACTOR,
-          hasProductAuthority: false,
+          now: NOW,
+        },
+        { db },
+      ),
+    ).rejects.toMatchObject({ reasonCodes: ["PRODUCT_AUTHORITY_REQUIRED"] });
+
+    /* Second, and the one that matters: another creator's Product. An active
+       SELLER cannot state commercial terms over work they do not control, and
+       knowing the Product id does not help. */
+    const creator = await seedSeller();
+    const theirProduct = await seedProduct(creator.participantId);
+    await expect(
+      createDraftOffer(
+        {
+          internalProductId: theirProduct,
+          sellerParticipantId: seller.participantId,
+          terms: paidPromotableTerms,
+          actingAccountId: seller.accountId,
+          now: NOW,
+        },
+        { db },
+      ),
+    ).rejects.toMatchObject({ reasonCodes: ["PRODUCT_AUTHORITY_REQUIRED"] });
+
+    /* And a revoked authority is not an authority, even naming the right
+       participant. */
+    const revoked = await seedProduct();
+    await grantProductCreatorAuthority(db, {
+      internalProductId: revoked,
+      participantId: seller.participantId,
+      authorizationState: "revoked",
+      now: NOW,
+    });
+    await expect(
+      createDraftOffer(
+        {
+          internalProductId: revoked,
+          sellerParticipantId: seller.participantId,
+          terms: paidPromotableTerms,
+          actingAccountId: seller.accountId,
           now: NOW,
         },
         { db },
@@ -779,8 +829,6 @@ describeDb("Offer persistence (Phase 0M.6)", () => {
           sellerParticipantId: seller.participantId,
           terms: paidPromotableTerms,
           actingAccountId: "acct_does_not_exist",
-          authorizedByActorId: ACTOR,
-          hasProductAuthority: true,
           now: NOW,
         },
         { db },
@@ -798,8 +846,6 @@ describeDb("Offer persistence (Phase 0M.6)", () => {
           sourceRecordVersion: "2",
           availability: "TEMPORARILY_UNAVAILABLE",
           actingAccountId: stranger.accountId,
-          authorizedByActorId: ACTOR,
-          hasProductAuthority: true,
           now: LATER,
         },
         { db },
@@ -822,8 +868,6 @@ describeDb("Offer persistence (Phase 0M.6)", () => {
         sourceRecordVersion: "2",
         availability: "TEMPORARILY_UNAVAILABLE",
         actingAccountId: seller.accountId,
-        authorizedByActorId: ACTOR,
-        hasProductAuthority: true,
         now: LATER,
       },
       { db },
@@ -842,8 +886,6 @@ describeDb("Offer persistence (Phase 0M.6)", () => {
           sourceRecordVersion: "2",
           lifecycle: "SUSPENDED",
           actingAccountId: seller.accountId,
-          authorizedByActorId: ACTOR,
-          hasProductAuthority: true,
           now: LATER,
         },
         { db },
@@ -859,8 +901,6 @@ describeDb("Offer persistence (Phase 0M.6)", () => {
         sourceRecordVersion: "2",
         lifecycle: "WITHDRAWN",
         actingAccountId: seller.accountId,
-        authorizedByActorId: ACTOR,
-        hasProductAuthority: true,
         now: LATER,
       },
       { db },
@@ -873,8 +913,6 @@ describeDb("Offer persistence (Phase 0M.6)", () => {
           sourceRecordVersion: "3",
           availability: "TEMPORARILY_UNAVAILABLE",
           actingAccountId: seller.accountId,
-          authorizedByActorId: ACTOR,
-          hasProductAuthority: true,
           now: LATER,
         },
         { db },
@@ -903,8 +941,6 @@ describeDb("Offer persistence (Phase 0M.6)", () => {
           sourceRecordVersion: "2",
           lifecycle: "ACTIVE",
           actingAccountId: seller.accountId,
-          authorizedByActorId: ACTOR,
-          hasProductAuthority: true,
           economicsConfirmation: {
             confirmedOfferSourceRecordId: snapshot.record.offerSourceRecordId,
             confirmedOfferSourceRecordVersion: "2",
@@ -993,7 +1029,11 @@ describeDb("Offer persistence (Phase 0M.6)", () => {
     await seedActiveVersionRow(
       snapshot.record.internalOfferId,
       snapshot.record.offerSourceRecordId,
-      { internalProductId, sellerParticipantId: seller.participantId },
+      {
+        internalProductId,
+        sellerParticipantId: seller.participantId,
+        actingAccountId: seller.accountId,
+      },
     );
 
     /* Read back THROUGH the service and the mapper — the pipeline stage this
@@ -1025,7 +1065,8 @@ describeDb("Offer persistence (Phase 0M.6)", () => {
       effectiveInterval: null,
       economics: calculateOfferEconomics(paidPromotableTerms),
       authorizedBySellerParticipantId: seller.participantId,
-      authorizedByActorId: ACTOR,
+      /* The resolved acting account (Phase 1.18). */
+      authorizedByActorId: seller.accountId,
       recordedAt: LATER,
     });
 

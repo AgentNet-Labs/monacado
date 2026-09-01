@@ -17,11 +17,14 @@
  *      consumes. Persistence must not widen the source model, and it does not
  *      introduce a single new economic quantity.
  *
- *   3. **Product authority is supplied, never derived.** 0M.2A is explicit that
- *      authority over a Product is the Product model's question, and that
- *      re-deriving it inside an Offer decision would put two answers in the
- *      repository that could disagree. There is no field here from which it
- *      could be inferred.
+ *   3. **Product authority is derived from authoritative state, never supplied**
+ *      (Phase 1.18). 0M.2A's reasoning is unchanged — authority over a Product
+ *      is the Product model's question, and re-deriving it inside an Offer
+ *      *decision* would put two answers in the repository that could disagree.
+ *      What moved is where the answer comes from: `hasProductAuthority` was a
+ *      member of both inputs below, so any caller could write `true`. The Offer
+ *      service now reads it from the Product's current source version. There is
+ *      no field here through which a caller can assert it.
  *
  *   4. **Economics are computed, never supplied.** A caller states commercial
  *      *terms*; the deterministic 0M.2C calculator produces the commission and
@@ -33,7 +36,6 @@
  */
 
 import { z } from "zod";
-import { ACTOR_ID_RE } from "../capsule/identity";
 import { MarketplaceParticipantId } from "./participant";
 import {
   CreatorEconomicsConfirmation,
@@ -46,10 +48,6 @@ import {
   OfferSourceRecordVersion,
 } from "./offer-source";
 
-const AuthorizingActorId = z
-  .string()
-  .regex(ACTOR_ID_RE, "authorizedByActorId must be mon:actor:<opaque>");
-
 /**
  * The account whose marketplace subject is evaluated for authority.
  *
@@ -57,6 +55,15 @@ const AuthorizingActorId = z
  * subject from persisted state using the existing 0M.5 machinery, so an
  * authorization decision is made against the database rather than against
  * whatever a caller asserted about themselves.
+ *
+ * **This names who is asking, never what they may do (Phase 1.18).** There is
+ * deliberately no member on either input below through which a caller can
+ * assert an authorization conclusion — `hasProductAuthority` used to be exactly
+ * that, and the Offer service now reads it from the Product's current source
+ * version instead. The account id is itself an identity claim, and it is only
+ * as trustworthy as the boundary that produced it: a production caller must
+ * take it from an authenticated session, never from a request body. See
+ * `src/server/account/acting-participant-boundary.ts`.
  */
 const ActingAccountId = z.string().min(1).max(191);
 
@@ -91,17 +98,8 @@ export const CreateDraftOfferInput = z.strictObject({
     .nullable()
     .optional(),
 
-  /** The account acting, and the opaque human actor within it. */
+  /** The account acting. The audit actor is derived from it, never supplied. */
   actingAccountId: ActingAccountId,
-  authorizedByActorId: AuthorizingActorId,
-
-  /**
-   * Whether the acting subject holds authority over the referenced Product.
-   *
-   * **Supplied, never derived** — 0M.2A states this explicitly, and deriving it
-   * here would create a second answer to a question the Product model owns.
-   */
-  hasProductAuthority: z.boolean(),
 
   /** Explicit instants. Nothing here reads a clock. */
   now: z.iso.datetime(),
@@ -140,8 +138,6 @@ export const UpdateOfferInput = z.strictObject({
   effectiveInterval: OfferEffectiveIntervalField.optional(),
 
   actingAccountId: ActingAccountId,
-  authorizedByActorId: AuthorizingActorId,
-  hasProductAuthority: z.boolean(),
 
   /**
    * The creator's confirmation of this version's economics. Required to

@@ -38,7 +38,7 @@
  */
 
 import { z } from "zod";
-import { ACTOR_ID_RE, SOURCE_RECORD_ID_RE } from "../capsule/identity";
+import { AUTHORIZING_ACTOR_ID_RE, SOURCE_RECORD_ID_RE } from "../capsule/identity";
 import { canonicalJsonString } from "../integrity/canonical-json";
 import { INTERNAL_STOREFRONT_ID_RE } from "./identity";
 import { ACCOUNT_CAPABILITIES, AccountCapability, AccountId, AccountStatus } from "../account/account";
@@ -66,10 +66,24 @@ export const InternalStorefrontId = z
   .regex(INTERNAL_STOREFRONT_ID_RE, "internalStorefrontId must be opaque (mon:storefront:<opaque>)");
 export type InternalStorefrontId = z.infer<typeof InternalStorefrontId>;
 
-/** Who performed the authorized source action. Opaque — never an email or name. */
+/**
+ * Who performed the authorized source action — the **resolved acting account**
+ * (Phase 1.18), or a historical `mon:actor:` value on a row written before it.
+ *
+ * Derived, never supplied. It used to be a caller input beside the acting
+ * account id, which made the audit trail forgeable and independently settable:
+ * a caller could name any actor for an operation authorized against a different
+ * identity. `AUTHORIZING_ACTOR_ID_RE` carries the full reasoning.
+ *
+ * Opaque by construction — an email, display name, or other private profile
+ * datum must never be recorded here, and matches neither form.
+ */
 export const AuthorizingActorId = z
   .string()
-  .regex(ACTOR_ID_RE, "authorizedByActorId must be opaque (mon:actor:<opaque>)");
+  .regex(
+    AUTHORIZING_ACTOR_ID_RE,
+    "authorizedByActorId must be opaque (mon:acct:<opaque>, or a historical mon:actor:<opaque>)",
+  );
 export type AuthorizingActorId = z.infer<typeof AuthorizingActorId>;
 
 /** A source-version label, in the existing bounded-string form. */
@@ -837,11 +851,21 @@ export type StorefrontOwnerFacts = z.infer<typeof StorefrontOwnerFacts>;
 /**
  * Resolved facts about the **acting human account**.
  *
- * `authorizedForOwnerParticipant` is supplied, never derived: for an individual
- * owner it means "this is their account", for an organization owner "this account
- * is a member authorized to act". **It must never be inferred from an email
+ * `authorizedForOwnerParticipant` means "this account may act for the owner": for
+ * an individual owner, that it is their account; for an organization owner, that
+ * it is a member authorized to act. **It must never be inferred from an email
  * domain, a display name, or any private profile datum** — there is deliberately
  * no field here that could carry one.
+ *
+ * It stays a supplied *input to this pure decision*, exactly as
+ * `hasProductAuthority` does for an Offer, and for the same reason: the decision
+ * weighs facts rather than fetching them. What changed in Phase 1.18 is its
+ * **provenance** one layer out. `resolveAuthorizationFacts` now derives it from
+ * authoritative records — self-ownership, or an ACTIVE
+ * `StorefrontGovernanceAssignment` — where it used to arrive on the service
+ * input beside a caller-named actor participant, so anyone knowing one opaque id
+ * could act as its holder. The organization case remains genuinely underivable
+ * for want of a membership model, and therefore fails closed.
  */
 export const StorefrontActorFacts = z.strictObject({
   accountId: AccountId,

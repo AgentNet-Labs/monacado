@@ -30,6 +30,7 @@ import {
   verifyPrimarySupportContact,
 } from "./support/marketplace-policy-fixture";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
+import { grantProductCreatorAuthority } from "./support/product-authority-fixture";
 import { createAccount } from "../src/server/account/account-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
 import { createDraftOffer } from "../src/server/marketplace/offer-service";
@@ -405,6 +406,13 @@ async function cleanup(): Promise<void> {
     await db.sellerRefundPolicy.deleteMany({
       where: { sellerParticipantId: { in: participantIds } },
     });
+      /* Phase 1.18 — Product source versions now name the creator participant
+         with onDelete: Restrict. Detach rather than delete: the version rows are
+         immutable Product history that this cleanup does not own. */
+      await db.productSourceRecordVersionRow.updateMany({
+        where: { authorityCreatorParticipantId: { in: participantIds } },
+        data: { authorityCreatorParticipantId: null },
+      });
     await db.marketplaceParticipant.deleteMany({ where: { id: { in: participantIds } } });
   }
 
@@ -480,6 +488,7 @@ async function seedProductVersion(
 
 async function seedProduct(
   deliveryMode: "DIGITAL" | "PHYSICAL" = "DIGITAL",
+  creatorParticipantId?: string,
 ): Promise<string> {
   const n = next();
   const internalProductId = `${PRODUCT_PREFIX}${pad26(String(n)).slice(0, 26 - PRODUCT_TAG.length)}`;
@@ -493,6 +502,12 @@ async function seedProduct(
     },
   });
   await seedProductVersion(internalProductId, sourceRecordId, deliveryMode);
+  if (creatorParticipantId !== undefined) {
+    await grantProductCreatorAuthority(db, {
+      internalProductId,
+      participantId: creatorParticipantId,
+    });
+  }
   return internalProductId;
 }
 
@@ -652,7 +667,7 @@ async function forceListingActive(internalListingId: string): Promise<void> {
 /** A purchasable seller-direct Listing at $100.00. */
 async function seedSellerDirect() {
   const seller = await seedActiveParticipant(["SELLER"]);
-  const internalProductId = await seedProduct();
+  const internalProductId = await seedProduct("DIGITAL", seller.participantId);
   const storefrontId = await seedStorefront(seller.participantId);
   const snapshot = await createSellerDirectListing(
     {
@@ -662,7 +677,6 @@ async function seedSellerDirect() {
       retail: { retailPriceMinorUnits: 10_000, retailPriceCurrency: "USD" },
       sale: null,
       actingAccountId: seller.accountId,
-      authorizedByActorId: ACTOR,
       now: NOW,
     },
     { db },
@@ -685,7 +699,7 @@ const ACQUISITION_POLICY = {
 async function seedPromoted() {
   const seller = await seedActiveParticipant(["SELLER"]);
   const promoter = await seedActiveParticipant(["PROMOTER"]);
-  const internalProductId = await seedProduct();
+  const internalProductId = await seedProduct("DIGITAL", seller.participantId);
   const storefrontId = await seedStorefront(promoter.participantId);
 
   const offer = await createDraftOffer(
@@ -700,8 +714,6 @@ async function seedPromoted() {
         },
       },
       actingAccountId: seller.accountId,
-      authorizedByActorId: ACTOR,
-      hasProductAuthority: true,
       now: NOW,
     },
     { db },
@@ -728,7 +740,6 @@ async function seedPromoted() {
       acceptedOfferSourceRecordVersion: "1",
       acquisitionPolicy: ACQUISITION_POLICY,
       actingAccountId: promoter.accountId,
-      authorizedByActorId: ACTOR,
       now: NOW,
     },
     { db },
@@ -1195,6 +1206,67 @@ describeDb("1.0 — executable checkout, Stripe-confirmed", () => {
       expect(result.status).toBe(403);
       expect(result.body).toEqual({ error: "CROSS_ORIGIN_REQUEST_REFUSED" });
       expect(await db.order.count()).toBe(before);
+    });
+
+    it("refuses a CLOSED seller as a business answer, not a server fault", async () => {
+      /* Phase 1.18. `assertParticipantLifecycleIsLive` threw from the standing
+         checks and was unmapped, so a governed lifecycle refusal reached the
+         fall-through and was reported to the buyer as HTTP 500 — a Monacado
+         outage, and indistinguishable from a real fault in monitoring.
+
+         It answers with the SAME code a restricted or suspended party gets. A
+         distinct code would tell an unauthenticated poster that this particular
+         participant closed their account, reopening the standing disclosure
+         Phase 1.15 closed; on a promoted Listing the closed party may be the
+         seller, whom the buyer cannot even see. */
+      const { listing, seller } = await seedSellerDirect();
+      const policyId = await seedPolicy();
+      const before = await db.order.count();
+
+      await db.marketplaceParticipant.update({
+        where: { id: seller.participantId },
+        data: { status: "CLOSED" },
+      });
+
+      const result = await handleBeginCheckoutRequest(
+        {
+          contentType: "application/json",
+          originHeader: null,
+          cookieHeader: null,
+          rawBody: JSON.stringify({
+            internalListingId: listing.record.internalListingId,
+            ...CHECKOUT_FORM_FIELDS,
+          }),
+        },
+        {
+          db,
+          port: initiationDouble(),
+          ids: orderIds,
+          notificationIds,
+          claimCodes,
+          taxPort: createZeroRateTaxAdapter(),
+          taxIds,
+          buyerSnapshotIds,
+          config: { policyId, riskPolicyId: await seedRiskPolicy(), appOrigin: "https://monacado.test:443" },
+          now: () => CHECKOUT_AT,
+        },
+      );
+
+      expect(result.status).toBe(409);
+      expect(result.body).toEqual({ error: "LISTING_NOT_PURCHASABLE" });
+      expect(await db.order.count()).toBe(before);
+
+      /* Nothing about the closure reaches the buyer: not the participant, not
+         the lifecycle code, not the reason it was closed. */
+      const serialized = JSON.stringify(result);
+      for (const leak of [
+        seller.participantId,
+        seller.accountId,
+        "PARTICIPANT_LIFECYCLE_TERMINATED",
+        "CLOSED",
+      ]) {
+        expect(`leak:${serialized.includes(leak) ? leak : "none"}`).toBe("leak:none");
+      }
     });
 
     it("refuses a body that tries to price its own sale, and writes no Order", async () => {

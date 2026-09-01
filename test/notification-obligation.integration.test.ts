@@ -16,6 +16,7 @@
 import "dotenv/config";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
+import { grantProductCreatorAuthority } from "./support/product-authority-fixture";
 import { createAccount } from "../src/server/account/account-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
 import {
@@ -115,6 +116,11 @@ async function cleanup(): Promise<void> {
   await db.storefront.deleteMany({ where: { ownerParticipantId: owned } });
   await db.offerSourceRecordVersionRow.deleteMany({ where: { sellerParticipantId: owned } });
   await db.offer.deleteMany({ where: { sellerParticipantId: owned } });
+  /* Phase 1.18 — the Offer fixture now records creator authority on the
+     Product's current source version, so the version row has to go first. */
+  await db.productSourceRecordVersionRow.deleteMany({
+    where: { internalProductId: { startsWith: PRODUCT_PREFIX } },
+  });
   await db.product.deleteMany({ where: { internalProductId: { startsWith: PRODUCT_PREFIX } } });
   await db.marketplaceRoleAssignment.deleteMany({ where: { participantId: owned } });
   await db.marketplaceParticipant.deleteMany({ where: { id: owned } });
@@ -145,7 +151,7 @@ async function seedParticipant(roles: Array<"SELLER" | "PROMOTER">) {
   return { participantId: snapshot.participant.participantId, accountId: account.accountId };
 }
 
-async function seedProduct(): Promise<string> {
+async function seedProduct(creatorParticipantId?: string): Promise<string> {
   seq += 1;
   const internalProductId = `${PRODUCT_PREFIX}${pad26(String(seq)).slice(0, 26 - TAG.length)}`;
   await db.product.create({
@@ -156,6 +162,12 @@ async function seedProduct(): Promise<string> {
       recordStatus: "DRAFT",
     },
   });
+  if (creatorParticipantId !== undefined) {
+    await grantProductCreatorAuthority(db, {
+      internalProductId,
+      participantId: creatorParticipantId,
+    });
+  }
   return internalProductId;
 }
 
@@ -191,8 +203,6 @@ async function seedOffer(internalProductId: string, seller: { accountId: string;
       sellerParticipantId: seller.participantId,
       terms: OFFER_TERMS_V1,
       actingAccountId: seller.accountId,
-      authorizedByActorId: ACTOR,
-      hasProductAuthority: true,
       now: NOW,
     },
     { db },
@@ -205,7 +215,7 @@ async function seedOffer(internalProductId: string, seller: { accountId: string;
  */
 async function seedOfferWithPromoters(promoterCount: number, storefrontsEach = 1) {
   const seller = await seedParticipant(["SELLER"]);
-  const internalProductId = await seedProduct();
+  const internalProductId = await seedProduct(seller.participantId);
   const offer = await seedOffer(internalProductId, seller);
 
   const promoters: Array<{ participantId: string; accountId: string }> = [];
@@ -223,7 +233,6 @@ async function seedOfferWithPromoters(promoterCount: number, storefrontsEach = 1
           acceptedOfferSourceRecordVersion: "1",
           acquisitionPolicy: ACQUISITION_POLICY,
           actingAccountId: promoter.accountId,
-          authorizedByActorId: ACTOR,
           now: NOW,
         },
         { db },
@@ -256,8 +265,6 @@ async function raiseWholesalePrice(
         },
       },
       actingAccountId: seller.accountId,
-      authorizedByActorId: ACTOR,
-      hasProductAuthority: true,
       now: LATER,
     },
     { db },

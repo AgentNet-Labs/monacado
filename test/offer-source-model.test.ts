@@ -282,9 +282,19 @@ describe("2. the immutable source version has a strict shape", () => {
   });
 
   it("the authorizing actor must be opaque — never an email or a name", () => {
-    for (const bad of ["seller@example.com", "Ada Lovelace", ACCOUNT_ID]) {
+    for (const bad of ["seller@example.com", "Ada Lovelace", "mon:mpart:not-an-actor"]) {
       expect(OfferSourceVersion.safeParse({ ...offerVersion(), authorizedByActorId: bad }).success)
         .toBe(false);
+    }
+  });
+
+  it("accepts the acting ACCOUNT as the authorizing actor (Phase 1.18)", () => {
+    /* Inverted deliberately — see the Storefront twin of this case. The audit
+       actor is now the identity the authorization decision was evaluated
+       against, not a second value supplied beside it. */
+    for (const good of [ACCOUNT_ID, ACTOR_ID]) {
+      expect(OfferSourceVersion.safeParse({ ...offerVersion(), authorizedByActorId: good }).success)
+        .toBe(true);
     }
   });
 });

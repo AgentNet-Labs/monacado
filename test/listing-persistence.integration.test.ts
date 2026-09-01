@@ -27,6 +27,7 @@ import { createAccount } from "../src/server/account/account-service";
 import { grantAccountEntitlement } from "../src/server/account/account-entitlement-service";
 import { recordCommerceApproval } from "../src/server/marketplace/participant-commerce-approval-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
+import { grantProductCreatorAuthority } from "./support/product-authority-fixture";
 import { createDraftOffer } from "../src/server/marketplace/offer-service";
 import {
   createListingSourceVersion,
@@ -116,6 +117,12 @@ async function cleanup(): Promise<void> {
     where: { email: { startsWith: ACCOUNT_EMAIL_PREFIX } },
     select: { id: true },
   });
+  /* Before the participants: Phase 1.18 made Product source versions reference
+     the creator participant with onDelete: Restrict. */
+  await db.productSourceRecordVersionRow.deleteMany({
+    where: { internalProductId: { startsWith: PRODUCT_PREFIX } },
+  });
+
   const accountIds = accounts.map((a) => a.id);
   if (accountIds.length > 0) {
     const participants = await db.marketplaceParticipant.findMany({
@@ -155,7 +162,15 @@ async function cleanup(): Promise<void> {
   await db.product.deleteMany({ where: { internalProductId: { startsWith: PRODUCT_PREFIX } } });
 }
 
-async function seedProduct(): Promise<string> {
+/**
+ * A Product, optionally with its creator authority recorded.
+ *
+ * Phase 1.18 requires creator authority for a seller-direct placement, so the
+ * seller must be named here. A promoted placement deliberately does not — the
+ * promoter's right comes from the accepted Offer version, which was itself
+ * gated on the seller's authority when it was authored.
+ */
+async function seedProduct(creatorParticipantId?: string): Promise<string> {
   seq += 1;
   const internalProductId = `${PRODUCT_PREFIX}${pad26(String(seq)).slice(
     0,
@@ -169,6 +184,13 @@ async function seedProduct(): Promise<string> {
       recordStatus: "DRAFT",
     },
   });
+  if (creatorParticipantId !== undefined) {
+    await grantProductCreatorAuthority(db, {
+      internalProductId,
+      participantId: creatorParticipantId,
+      now: NOW,
+    });
+  }
   return internalProductId;
 }
 
@@ -223,7 +245,7 @@ const sale = {
 /** A seller-direct Listing with its Product, Storefront, and seller. */
 async function seedSellerDirect(overrides: Record<string, unknown> = {}) {
   const seller = await seedParticipant(["SELLER"]);
-  const internalProductId = await seedProduct();
+  const internalProductId = await seedProduct(seller.participantId);
   const storefrontId = await seedStorefront(seller.participantId);
   const snapshot = await createSellerDirectListing(
     {
@@ -232,7 +254,6 @@ async function seedSellerDirect(overrides: Record<string, unknown> = {}) {
       controllingParticipantId: seller.participantId,
       retail,
       actingAccountId: seller.accountId,
-      authorizedByActorId: ACTOR,
       now: NOW,
       ...overrides,
     },
@@ -255,8 +276,6 @@ async function seedOffer(internalProductId: string, sellerAccountId: string, sel
         },
       },
       actingAccountId: sellerAccountId,
-      authorizedByActorId: ACTOR,
-      hasProductAuthority: true,
       now: NOW,
     },
     { db },
@@ -267,7 +286,7 @@ async function seedOffer(internalProductId: string, sellerAccountId: string, sel
 async function seedPromoted(overrides: Record<string, unknown> = {}) {
   const seller = await seedParticipant(["SELLER"]);
   const promoter = await seedParticipant(["PROMOTER"]);
-  const internalProductId = await seedProduct();
+  const internalProductId = await seedProduct(seller.participantId);
   const storefrontId = await seedStorefront(promoter.participantId);
   const offer = await seedOffer(internalProductId, seller.accountId, seller.participantId);
 
@@ -281,7 +300,6 @@ async function seedPromoted(overrides: Record<string, unknown> = {}) {
       acceptedOfferSourceRecordVersion: "1",
       acquisitionPolicy: ACQUISITION_POLICY,
       actingAccountId: promoter.accountId,
-      authorizedByActorId: ACTOR,
       now: NOW,
       ...overrides,
     },
@@ -413,7 +431,6 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
           controllingParticipantId: seller.participantId,
           retail,
           actingAccountId: seller.accountId,
-          authorizedByActorId: ACTOR,
           now: NOW,
         },
         { db },
@@ -432,7 +449,6 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
           controllingParticipantId: seller.participantId,
           retail,
           actingAccountId: seller.accountId,
-          authorizedByActorId: ACTOR,
           now: NOW,
         },
         { db },
@@ -452,7 +468,6 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
           controllingParticipantId: `mon:mpart:${pad26("M7N0B0DY")}`,
           retail,
           actingAccountId: seller.accountId,
-          authorizedByActorId: ACTOR,
           now: NOW,
         },
         { db },
@@ -474,7 +489,6 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
         sourceRecordVersion: "2",
         retail: { retailPriceMinorUnits: 11_000, retailPriceCurrency: "USD" },
         actingAccountId: seller.accountId,
-        authorizedByActorId: ACTOR,
         now: LATER,
       },
       { db },
@@ -495,7 +509,6 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
         sourceRecordVersion: "2",
         lifecycle: "WITHDRAWN",
         actingAccountId: seller.accountId,
-        authorizedByActorId: ACTOR,
         now: LATER,
       },
       { db },
@@ -515,7 +528,6 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
         sourceRecordVersion: "2",
         retail: { retailPriceMinorUnits: 11_000, retailPriceCurrency: "USD" },
         actingAccountId: seller.accountId,
-        authorizedByActorId: ACTOR,
         now: LATER,
       },
       { db },
@@ -547,7 +559,6 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
           sourceRecordVersion: "1",
           lifecycle: "WITHDRAWN",
           actingAccountId: seller.accountId,
-          authorizedByActorId: ACTOR,
           now: LATER,
         },
         { db },
@@ -564,7 +575,6 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
           sourceRecordVersion: "2",
           retail,
           actingAccountId: seller.accountId,
-          authorizedByActorId: ACTOR,
           now: LATER,
         },
         { db },
@@ -677,7 +687,7 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
   it("22. refuses a promoted Listing naming an Offer version that does not exist", async () => {
     const seller = await seedParticipant(["SELLER"]);
     const promoter = await seedParticipant(["PROMOTER"]);
-    const internalProductId = await seedProduct();
+    const internalProductId = await seedProduct(seller.participantId);
     const storefrontId = await seedStorefront(promoter.participantId);
     const offer = await seedOffer(internalProductId, seller.accountId, seller.participantId);
 
@@ -692,7 +702,6 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
           acceptedOfferSourceRecordVersion: "999",
           acquisitionPolicy: ACQUISITION_POLICY,
           actingAccountId: promoter.accountId,
-          authorizedByActorId: ACTOR,
           now: NOW,
         },
         { db },
@@ -703,7 +712,7 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
   it("23. refuses an Offer that is for a different Product", async () => {
     const seller = await seedParticipant(["SELLER"]);
     const promoter = await seedParticipant(["PROMOTER"]);
-    const productA = await seedProduct();
+    const productA = await seedProduct(seller.participantId);
     const productB = await seedProduct();
     const storefrontId = await seedStorefront(promoter.participantId);
     const offer = await seedOffer(productA, seller.accountId, seller.participantId);
@@ -720,7 +729,6 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
           acceptedOfferSourceRecordVersion: "1",
           acquisitionPolicy: ACQUISITION_POLICY,
           actingAccountId: promoter.accountId,
-          authorizedByActorId: ACTOR,
           now: NOW,
         },
         { db },
@@ -748,8 +756,6 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
           },
         },
         actingAccountId: seller.accountId,
-        authorizedByActorId: ACTOR,
-        hasProductAuthority: true,
         now: LATER,
       },
       { db },
@@ -786,8 +792,6 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
           },
         },
         actingAccountId: seller.accountId,
-        authorizedByActorId: ACTOR,
-        hasProductAuthority: true,
         now: LATER,
       },
       { db },
@@ -800,7 +804,6 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
         acceptedOfferSourceRecordVersion: "2",
         acquisitionPolicy: ACQUISITION_POLICY,
         actingAccountId: promoter.accountId,
-        authorizedByActorId: ACTOR,
         now: LATER,
       },
       { db },
@@ -861,7 +864,7 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
   it("28. enforces promoted viability with 0M.4A's own calculator", async () => {
     const seller = await seedParticipant(["SELLER"]);
     const promoter = await seedParticipant(["PROMOTER"]);
-    const internalProductId = await seedProduct();
+    const internalProductId = await seedProduct(seller.participantId);
     const storefrontId = await seedStorefront(promoter.participantId);
     const offer = await seedOffer(internalProductId, seller.accountId, seller.participantId);
 
@@ -884,7 +887,6 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
           acceptedOfferSourceRecordVersion: "1",
           acquisitionPolicy: ACQUISITION_POLICY,
           actingAccountId: promoter.accountId,
-          authorizedByActorId: ACTOR,
           now: NOW,
         },
         { db },
@@ -916,12 +918,272 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
           controllingParticipantId: seller.participantId,
           retail,
           actingAccountId: stranger.accountId,
-          authorizedByActorId: ACTOR,
           now: NOW,
         },
         { db },
       ),
     ).rejects.toBeInstanceOf(ListingNotAuthorizedError);
+  });
+
+  it("29d. a seller cannot place another creator's Product (Phase 1.18)", async () => {
+    /* The asymmetry Phase 1.18 closes. The Offer path has always required
+       creator authority over the Product; the Listing path checked only that the
+       Product row existed — so a seller who could not state commercial terms for
+       another creator's work could still put it in front of buyers, which is the
+       louder act of the two.
+
+       Derived from the Product's current source version, so there is nothing a
+       caller can send to change the answer. */
+    const creator = await seedParticipant(["SELLER"]);
+    const seller = await seedParticipant(["SELLER"]);
+    const theirProduct = await seedProduct(creator.participantId);
+    const storefrontId = await seedStorefront(seller.participantId);
+
+    const error = await createSellerDirectListing(
+      {
+        storefrontId,
+        internalProductId: theirProduct,
+        controllingParticipantId: seller.participantId,
+        retail,
+        actingAccountId: seller.accountId,
+        now: NOW,
+      },
+      { db },
+    ).catch((e) => e);
+
+    expect(error).toBeInstanceOf(ListingNotAuthorizedError);
+    expect(error.reasonCodes).toContain("PRODUCT_AUTHORITY_REQUIRED");
+
+    /* A promoted placement deliberately does NOT ask: the promoter never holds
+       Product authority, and their right to place it comes from the accepted
+       Offer version, which was gated on the seller's authority when authored. */
+    const promoter = await seedParticipant(["PROMOTER"]);
+    const promoterShop = await seedStorefront(promoter.participantId);
+    const offer = await seedOffer(theirProduct, creator.accountId, creator.participantId);
+    const promoted = await createPromotedListing(
+      {
+        storefrontId: promoterShop,
+        internalProductId: theirProduct,
+        controllingParticipantId: promoter.participantId,
+        retail: { retailPriceMinorUnits: 12_500, retailPriceCurrency: "USD" },
+        acceptedOfferSourceRecordId: offer.record.offerSourceRecordId,
+        acceptedOfferSourceRecordVersion: "1",
+        acquisitionPolicy: ACQUISITION_POLICY,
+        actingAccountId: promoter.accountId,
+        now: NOW,
+      },
+      { db },
+    );
+    expect(promoted.currentVersion.placement.listingType).toBe("PROMOTED");
+  });
+
+  it("29e. no Listing may be placed into a Storefront the controller has no authority over", async () => {
+    /* Phase 1.18. `requirePlacementReferences` checked only that the Storefront
+       row EXISTED, so any SELLER or PROMOTER could place a Listing into any shop
+       given its opaque id. Knowing an identifier is not authority over the thing
+       it names.
+
+       Both branches get the same rule, because 0M.3A §3 gives both the same
+       first clause — Storefront authority — and differs only in the role leg,
+       which the branch capability already enforces. */
+    const owner = await seedParticipant(["SELLER"]);
+    const theirShop = await seedStorefront(owner.participantId);
+
+    // A seller with full Product authority still may not place in another's shop.
+    const seller = await seedParticipant(["SELLER"]);
+    const product = await seedProduct(seller.participantId);
+    const sellerDirect = await createSellerDirectListing(
+      {
+        storefrontId: theirShop,
+        internalProductId: product,
+        controllingParticipantId: seller.participantId,
+        retail,
+        actingAccountId: seller.accountId,
+        now: NOW,
+      },
+      { db },
+    ).catch((e) => e);
+    expect(sellerDirect).toBeInstanceOf(ListingNotAuthorizedError);
+    expect(sellerDirect.reasonCodes).toContain("STOREFRONT_AUTHORITY_REQUIRED");
+
+    // And a promoter may not place into the seller's shop either. There is no
+    // Seller-to-Promoter placement delegation anywhere in the model, so this
+    // fails closed rather than being permitted by an unwritten relationship.
+    const promoter = await seedParticipant(["PROMOTER"]);
+    const offer = await seedOffer(product, seller.accountId, seller.participantId);
+    const promoted = await createPromotedListing(
+      {
+        storefrontId: theirShop,
+        internalProductId: product,
+        controllingParticipantId: promoter.participantId,
+        retail: { retailPriceMinorUnits: 12_500, retailPriceCurrency: "USD" },
+        acceptedOfferSourceRecordId: offer.record.offerSourceRecordId,
+        acceptedOfferSourceRecordVersion: "1",
+        acquisitionPolicy: ACQUISITION_POLICY,
+        actingAccountId: promoter.accountId,
+        now: NOW,
+      },
+      { db },
+    ).catch((e) => e);
+    expect(promoted).toBeInstanceOf(ListingNotAuthorizedError);
+    expect(promoted.reasonCodes).toContain("STOREFRONT_AUTHORITY_REQUIRED");
+
+    // Nothing was minted by either attempt.
+    expect(await db.listing.count({ where: { storefrontId: theirShop } })).toBe(0);
+
+    /* The refusal names the capability and one bounded code. It does not name
+       the owner, say whether an assignment exists, or list who may place. */
+    const serialized = JSON.stringify({ ...sellerDirect, msg: sellerDirect.message });
+    for (const leak of [owner.participantId, owner.accountId, "SUPER_OWNER", "ADMIN"]) {
+      expect(`leak:${serialized.includes(leak) ? leak : "none"}`).toBe("leak:none");
+    }
+  });
+
+  it("29f. an ACTIVE governance assignee may place; SUSPENDED and REVOKED may not", async () => {
+    /* 0M.3A §3 reserves adding and removing Listings to ADMIN and SUPER_OWNER,
+       so an appointment by the owner IS the owner's recorded authorization to
+       place. A withdrawn appointment is a record of an authorization that no
+       longer stands, and grants nothing. */
+    const owner = await seedParticipant(["SELLER"]);
+    const shop = await seedStorefront(owner.participantId);
+    const admin = await seedParticipant(["SELLER"]);
+    const product = await seedProduct(admin.participantId);
+
+    const place = async (version: string) =>
+      await createSellerDirectListing(
+        {
+          storefrontId: shop,
+          internalProductId: product,
+          controllingParticipantId: admin.participantId,
+          retail,
+          actingAccountId: admin.accountId,
+          now: NOW,
+        },
+        { db },
+      ).catch((e) => e);
+
+    const assignment = {
+      internalStorefrontId: shop,
+      participantId: admin.participantId,
+      role: "ADMIN",
+      assignedAt: new Date(NOW),
+      revokedAt: null,
+    };
+    await db.storefrontGovernanceAssignment.create({
+      data: { id: `mon:sgov:${pad26(`M7GOV${(seq += 1)}`)}`, ...assignment, status: "ACTIVE" },
+    });
+    const allowed = await place("1");
+    expect(allowed).not.toBeInstanceOf(ListingNotAuthorizedError);
+    expect(allowed.record.storefrontId).toBe(shop);
+
+    for (const status of ["SUSPENDED", "REVOKED"] as const) {
+      await db.storefrontGovernanceAssignment.updateMany({
+        where: { internalStorefrontId: shop, participantId: admin.participantId },
+        data: { status },
+      });
+      const refused = await place("1");
+      expect(refused).toBeInstanceOf(ListingNotAuthorizedError);
+      expect(refused.reasonCodes).toContain("STOREFRONT_AUTHORITY_REQUIRED");
+    }
+  });
+
+  it("29h. revoking governance stops a drafted Listing from going live in that shop", async () => {
+    /* The gap the create-time check alone left open. A participant who drafted a
+       Listing under an ACTIVE assignment could take it live — and keep minting
+       repriced versions — in a shop whose owner had since revoked them, because
+       `requireController` only re-checks the (immutable) controller. Revocation
+       has to reach placements already drafted under it, or "an ACTIVE assignment
+       is what grants placement" would be true at creation only. */
+    const owner = await seedParticipant(["SELLER"]);
+    const shop = await seedStorefront(owner.participantId);
+    const admin = await seedParticipant(["SELLER"]);
+    const product = await seedProduct(admin.participantId);
+
+    await db.storefrontGovernanceAssignment.create({
+      data: {
+        id: `mon:sgov:${pad26(`M7REV${(seq += 1)}`)}`,
+        internalStorefrontId: shop,
+        participantId: admin.participantId,
+        role: "ADMIN",
+        status: "ACTIVE",
+        assignedAt: new Date(NOW),
+        revokedAt: null,
+      },
+    });
+
+    const draft = await createSellerDirectListing(
+      {
+        storefrontId: shop,
+        internalProductId: product,
+        controllingParticipantId: admin.participantId,
+        retail,
+        actingAccountId: admin.accountId,
+        now: NOW,
+      },
+      { db },
+    );
+
+    // The owner withdraws the appointment the draft was authored under.
+    await db.storefrontGovernanceAssignment.updateMany({
+      where: { internalStorefrontId: shop, participantId: admin.participantId },
+      data: { status: "REVOKED", revokedAt: new Date(NOW) },
+    });
+
+    const error = await createListingSourceVersion(
+      {
+        internalListingId: draft.record.internalListingId,
+        sourceRecordVersion: "2",
+        lifecycle: "ACTIVE",
+        actingAccountId: admin.accountId,
+        now: NOW,
+      },
+      { db },
+    ).catch((e) => e);
+
+    expect(error).toBeInstanceOf(ListingNotAuthorizedError);
+    expect(error.reasonCodes).toContain("STOREFRONT_AUTHORITY_REQUIRED");
+
+    // The Listing stayed at its first version and never went live.
+    const stable = await db.listing.findUniqueOrThrow({
+      where: { internalListingId: draft.record.internalListingId },
+    });
+    expect(stable.lifecycle).toBe("DRAFT");
+    expect(await listSourceVersions(draft.record.internalListingId, { db })).toHaveLength(1);
+
+    /* Standing down stays available, on the same reasoning the Product-authority
+       check uses: the participant who has lost the authority is exactly the one
+       who must still be able to withdraw the placement. */
+    const stoodDown = await createListingSourceVersion(
+      {
+        internalListingId: draft.record.internalListingId,
+        sourceRecordVersion: "2",
+        lifecycle: "WITHDRAWN",
+        actingAccountId: admin.accountId,
+        now: NOW,
+      },
+      { db },
+    );
+    expect(stoodDown.currentVersion.lifecycle).toBe("WITHDRAWN");
+  });
+
+  it("29g. a missing Storefront stays a not-found, never an authority refusal", async () => {
+    /* Ordering matters: turning a 404 into a 403 would make the placement check
+       an existence oracle for Storefront ids. */
+    const seller = await seedParticipant(["SELLER"]);
+    const product = await seedProduct(seller.participantId);
+    await expect(
+      createSellerDirectListing(
+        {
+          storefrontId: `mon:storefront:${pad26("M7NOSUCHSHOP")}`,
+          internalProductId: product,
+          controllingParticipantId: seller.participantId,
+          retail,
+          actingAccountId: seller.accountId,
+          now: NOW,
+        },
+        { db },
+      ),
+    ).rejects.toBeInstanceOf(ListingStorefrontNotFoundError);
   });
 
   it("29b. each branch reports its OWN capability, never Product drafting", async () => {
@@ -943,7 +1205,6 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
           controllingParticipantId: seller.participantId,
           retail,
           actingAccountId: stranger.accountId,
-          authorizedByActorId: ACTOR,
           now: NOW,
         },
         { db },
@@ -962,7 +1223,6 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
           controllingParticipantId: promoter.participantId,
           retail,
           actingAccountId: promoter.accountId,
-          authorizedByActorId: ACTOR,
           now: NOW,
         },
         { db },
@@ -976,7 +1236,7 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
   it("29c. the promoted branch still reports listing:promoted:create", async () => {
     const seller = await seedParticipant(["SELLER"]);
     const notAPromoter = await seedParticipant(["SELLER"]);
-    const internalProductId = await seedProduct();
+    const internalProductId = await seedProduct(seller.participantId);
     const storefrontId = await seedStorefront(notAPromoter.participantId);
     const offer = await seedOffer(internalProductId, seller.accountId, seller.participantId);
 
@@ -991,7 +1251,6 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
           acceptedOfferSourceRecordVersion: "1",
           acquisitionPolicy: ACQUISITION_POLICY,
           actingAccountId: notAPromoter.accountId,
-          authorizedByActorId: ACTOR,
           now: NOW,
         },
         { db },
@@ -1009,7 +1268,6 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
           sourceRecordVersion: "2",
           lifecycle: "WITHDRAWN",
           actingAccountId: stranger.accountId,
-          authorizedByActorId: ACTOR,
           now: LATER,
         },
         { db },
@@ -1027,7 +1285,7 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
     const seller = await seedParticipant(["SELLER"]);
     /* Holds SELLER only — no PROMOTER role. */
     const notAPromoter = await seedParticipant(["SELLER"]);
-    const internalProductId = await seedProduct();
+    const internalProductId = await seedProduct(seller.participantId);
     const storefrontId = await seedStorefront(notAPromoter.participantId);
     const offer = await seedOffer(internalProductId, seller.accountId, seller.participantId);
 
@@ -1042,7 +1300,6 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
           acceptedOfferSourceRecordVersion: "1",
           acquisitionPolicy: ACQUISITION_POLICY,
           actingAccountId: notAPromoter.accountId,
-          authorizedByActorId: ACTOR,
           now: NOW,
         },
         { db },
@@ -1062,7 +1319,6 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
           controllingParticipantId: seller.participantId,
           retail,
           actingAccountId: "acct_does_not_exist",
-          authorizedByActorId: ACTOR,
           now: NOW,
         },
         { db },
@@ -1080,7 +1336,6 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
           sourceRecordVersion: "2",
           lifecycle: "SUSPENDED",
           actingAccountId: seller.accountId,
-          authorizedByActorId: ACTOR,
           now: LATER,
         },
         { db },
@@ -1173,8 +1428,6 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
           sourceRecordVersion: "2",
           lifecycle,
           actingAccountId: sellerAccountId,
-          authorizedByActorId: ACTOR,
-          hasProductAuthority: true,
           now: LATER,
         },
         { db },
@@ -1321,8 +1574,6 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
           sourceRecordVersion: "3",
           lifecycle: "ACTIVE",
           actingAccountId: seeded.seller.accountId,
-          authorizedByActorId: ACTOR,
-          hasProductAuthority: true,
           now: LATER,
         },
         { db },
@@ -1441,7 +1692,7 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
   // — Projection compatibility —
 
   it("45. a persisted SELLER_DIRECT version feeds the existing projection", async () => {
-    const { snapshot } = await seedSellerDirect({ sale });
+    const { seller, snapshot } = await seedSellerDirect({ sale });
     await forceActive(snapshot.record.internalListingId);
     const persisted = await getCurrentSourceVersion(snapshot.record.internalListingId, { db });
 
@@ -1498,7 +1749,7 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
   });
 
   it("47. persisted and canonical in-memory sources project byte-identically", async () => {
-    const { snapshot } = await seedSellerDirect({ sale });
+    const { seller, snapshot } = await seedSellerDirect({ sale });
     await forceActive(snapshot.record.internalListingId);
     const persisted = await getCurrentSourceVersion(snapshot.record.internalListingId, { db });
     const context = projectionContext(persisted);
@@ -1519,7 +1770,9 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
       lifecycle: "ACTIVE",
       placement: { listingType: "SELLER_DIRECT", retail, sale },
       authorizedByParticipantId: snapshot.record.controllingParticipantId,
-      authorizedByActorId: ACTOR,
+      /* The resolved acting account (Phase 1.18): the audit actor IS the
+         identity the authorization decision was evaluated against. */
+      authorizedByActorId: seller.accountId,
       recordedAt: NOW,
     });
 

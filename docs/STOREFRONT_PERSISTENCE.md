@@ -211,14 +211,35 @@ written when no payment record existed and would otherwise make the authority th
 source model specifies impossible to satisfy. The presentation branch continues
 to pass the conservative `NOT_APPROVED`, because editing does not depend on it.
 
-Two facts are deliberately **not** derived from persisted state:
+One fact is deliberately **not** derived from persisted state:
 
-- `authorizedForOwnerParticipant` — supplied by the caller. 0M.3A forbids
-  inferring it from an email domain, a display name, or any private profile
-  datum, and nothing reachable here could supply one.
 - `ownerKind` — `null`. The participant model records no
   INDIVIDUAL/ORGANIZATION kind, and 0M.3A is explicit that an unresolved kind is
   `null` and is **never silently treated as INDIVIDUAL**.
+
+> **Superseded by Phase 1.18: `authorizedForOwnerParticipant` is now derived.**
+> It was supplied by the caller, alongside `authorizedByParticipantId` — which
+> named *which participant the caller was*, and from which the service looked up
+> the account. Together they meant that knowing one opaque participant id was
+> enough to act as its holder on every Storefront write, including go-live and
+> governance appointment. Two owner-branch checks compared that claimed id
+> against the stored owner id directly, which made a revoke-then-appoint
+> takeover of any Storefront possible.
+>
+> Both members are replaced by `actingAccountId`. The acting participant is
+> resolved through `MarketplaceParticipant.accountId`, and authorization to act
+> for the owner is derived from the two records that can establish it:
+> self-ownership, or an **ACTIVE** `StorefrontGovernanceAssignment` naming the
+> actor on this Storefront.
+>
+> 0M.3A's prohibition is preserved exactly, because it is a prohibition on
+> inferring authority from an *email domain, a display name, or a private profile
+> datum* — none of which is read, or readable, by the derivation. What 0M.3A
+> deferred was organization-membership persistence, and that stays deferred: a
+> member of an organization-owned Storefront who is neither the owner nor a
+> governance assignee has no authoritative record, and is therefore **denied**.
+> Fail-closed is the honest answer for an authority the database cannot
+> evidence.
 
 `paymentReadiness` is the initial `NOT_STARTED`: no payment record exists (0M.8
 owns that axis), so it cannot report `ENABLED`.

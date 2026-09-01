@@ -44,6 +44,12 @@ export function versionRowToDomain(row: ProductSourceRecordVersionRow): ProductS
       ...(row.authorityAuthorizationRef !== null
         ? { authorizationRef: row.authorityAuthorizationRef }
         : {}),
+      /* Phase 1.18. Absent rather than null when unset, so a historical row
+         round-trips to a record that simply does not claim a creator
+         participant — which is a different thing from claiming none. */
+      ...(row.authorityCreatorParticipantId !== null
+        ? { creatorParticipantId: row.authorityCreatorParticipantId }
+        : {}),
     },
     facts: {
       name: row.factName,
@@ -102,6 +108,7 @@ export function domainToVersionCreateInput(
     authorityScope: record.authority.authorityScope,
     authorityAuthorizationState: record.authority.authorizationState,
     authorityAuthorizationRef: record.authority.authorizationRef ?? null,
+    authorityCreatorParticipantId: record.authority.creatorParticipantId ?? null,
     factName: record.facts.name,
     factDescription: record.facts.description ?? null,
     factImage: record.facts.image ?? null,
