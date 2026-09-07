@@ -45,3 +45,29 @@ export class TransactionDeniedByRiskError extends RiskError {
     this.reasonCodes = reasonCodes;
   }
 }
+
+/**
+ * An account tried to record or activate a risk policy version without the
+ * entitlement that permits it (Phase 1.20).
+ *
+ * A risk policy version is a control rather than a price: it decides whether a
+ * sale needs commerce approval and payment readiness at all, and what a single
+ * Order may be worth. Until this existed the service read no account of any
+ * kind — the actor was an opaque string written straight to the row.
+ *
+ * Carries the internal vocabulary's bounded reason codes and nothing else: no
+ * threshold, no participant, no amount, per this module's standing rule.
+ */
+export class RiskPolicyActorNotAuthorizedError extends RiskError {
+  readonly reasonCodes: readonly string[];
+  /** The internal capability that was required. An operator's fact. */
+  readonly requiredCapability = "risk-policy:govern";
+  constructor(reasonCodes: readonly string[]) {
+    super(
+      "RISK_POLICY_ACTOR_NOT_AUTHORIZED",
+      "That account may not govern risk policy versions",
+    );
+    this.name = "RiskPolicyActorNotAuthorizedError";
+    this.reasonCodes = reasonCodes;
+  }
+}

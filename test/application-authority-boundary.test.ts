@@ -35,9 +35,13 @@ import {
 } from "../src/contracts/marketplace/listing-record";
 import { ACCOUNT_CAPABILITIES } from "../src/contracts/account/account";
 import {
+  COMMERCIAL_POLICY_GOVERN_CAPABILITY,
   DISPUTE_EVIDENCE_APPROVE_CAPABILITY,
   REFUND_INITIATE_CAPABILITY,
+  RISK_POLICY_GOVERN_CAPABILITY,
   canApproveDisputeEvidence,
+  canGovernCommercialPolicy,
+  canGovernRiskPolicy,
   canInitiateRefundForBuyer,
 } from "../src/contracts/account/internal-authorization";
 import {
@@ -348,6 +352,14 @@ describe("5. the refund and dispute-evidence grants are new, narrow, and disjoin
     expect(ACCOUNT_CAPABILITIES).toContain("dispute:evidence:approve");
     expect(REFUND_INITIATE_CAPABILITY).toBe("refund:initiate");
     expect(DISPUTE_EVIDENCE_APPROVE_CAPABILITY).toBe("dispute:evidence:approve");
+
+    /* Phase 1.20's two, on the same argument: a policy version governs every
+       future transaction, which is not a subject any of the eight before it
+       reaches. */
+    expect(ACCOUNT_CAPABILITIES).toContain("commercial-policy:govern");
+    expect(ACCOUNT_CAPABILITIES).toContain("risk-policy:govern");
+    expect(COMMERCIAL_POLICY_GOVERN_CAPABILITY).toBe("commercial-policy:govern");
+    expect(RISK_POLICY_GOVERN_CAPABILITY).toBe("risk-policy:govern");
   });
 
   it("denies each unless that exact grant is held", () => {
@@ -368,5 +380,16 @@ describe("5. the refund and dispute-evidence grants are new, narrow, and disjoin
 
     expect(canInitiateRefundForBuyer(holding(["refund:initiate"])).decision).toBe("ALLOW");
     expect(canApproveDisputeEvidence(holding(["dispute:evidence:approve"])).decision).toBe("ALLOW");
+
+    /* Phase 1.20 — setting a commercial term and setting a risk threshold are
+       independent in both directions. Sharing one grant would hand everyone who
+       may change the commission rate the power to switch off the pre-live
+       commerce gates, which a risk version can do. */
+    expect(canGovernCommercialPolicy(holding(["risk-policy:govern"])).decision).toBe("DENY");
+    expect(canGovernRiskPolicy(holding(["commercial-policy:govern"])).decision).toBe("DENY");
+    expect(canGovernCommercialPolicy(holding([...everyParticipantGrant])).decision).toBe("DENY");
+    expect(canGovernRiskPolicy(holding([...everyParticipantGrant])).decision).toBe("DENY");
+    expect(canGovernCommercialPolicy(holding(["commercial-policy:govern"])).decision).toBe("ALLOW");
+    expect(canGovernRiskPolicy(holding(["risk-policy:govern"])).decision).toBe("ALLOW");
   });
 });

@@ -44,6 +44,12 @@ import {
 } from "../../contracts/marketplace/chargeback-fee";
 import { getPrisma } from "../db/client";
 import { DisputeEvidenceRefusedError } from "./dispute-errors";
+import {
+  canGovernCommercialPolicy,
+  isInternallyAuthorized,
+} from "../../contracts/account/internal-authorization";
+import { resolveInternalAuthorizationSubject } from "../account/internal-authorization-service";
+import { CommercialPolicyActorNotAuthorizedError } from "./commercial-policy-errors";
 
 export interface ChargebackFeePolicyDeps {
   db?: ReturnType<typeof getPrisma>;
@@ -66,11 +72,14 @@ export interface ChargebackFeePolicyDeps {
  * be written**, on that same precedent — reading versions needs no actor,
  * because reading them changes nothing.
  *
- * No capability is required here, and that is a deliberate boundary rather than
- * an oversight: no grant in the closed vocabulary governs commercial policy
- * versions today, and minting one would be new authority this phase did not
- * scope. What is closed here is the placeholder-actor hole. Naming a capability
- * for policy governance is recorded as remaining work.
+ * **Phase 1.20 completes it.** Phase 1.19 closed the placeholder-actor hole and
+ * recorded the missing capability as remaining work; this is that work. Being a
+ * real enabled account proves the actor is a person, not that they are an
+ * operator entitled to set a commercial term — under the 1.19 check alone,
+ * every buyer, seller, and promoter who ever registered satisfied it. The fee a
+ * seller pays on a lost chargeback is one of Monacado's published commercial
+ * terms, so it is governed by `commercial-policy:govern`, the same grant that
+ * governs the retention rate.
  */
 async function assertRecordingAccountResolvable(
   db: ReturnType<typeof getPrisma>,
@@ -87,6 +96,15 @@ async function assertRecordingAccountResolvable(
   }
   if (account.status !== "ACTIVE") {
     throw new DisputeEvidenceRefusedError("RECORDING_ACCOUNT_NOT_ACTIVE");
+  }
+
+  /* And the entitlement, resolved from persisted state on every call. The
+     existence check above answers "is this a real enabled person"; only this
+     answers "may they set what Monacado charges". */
+  const subject = await resolveInternalAuthorizationSubject(accountId, { db });
+  const decision = canGovernCommercialPolicy(subject);
+  if (!isInternallyAuthorized(decision)) {
+    throw new CommercialPolicyActorNotAuthorizedError([...decision.reasonCodes]);
   }
 }
 
@@ -308,7 +326,15 @@ export async function activateChargebackFeePolicyVersion(
     }
     await tx.sellerChargebackFeePolicyVersionRow.update({
       where: { seq: target.seq },
-      data: { status: "ACTIVE", activeMarker: policy.id },
+      data: {
+        status: "ACTIVE",
+        activeMarker: policy.id,
+        /* Phase 1.20 — the activating actor, on the version being
+           activated. Never read back from the incumbent's
+           `retiredByAccountId`, which does not exist on a first activation. */
+        activatedAt: new Date(input.at),
+        activatedByAccountId: input.activatedByAccountId,
+      },
     });
   });
 

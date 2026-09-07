@@ -288,6 +288,9 @@ export async function ensureSellerRefundPolicy(
       sellerParticipantId: input.sellerParticipantId,
       label: "Returns policy",
       now: input.now,
+      /* Phase 1.20 — the seller acts for themselves. Already in scope here as
+         the recording account, which is the same person by construction. */
+      actingAccountId: input.recordedByAccountId,
     },
     { db, ids: { nextSellerRefundPolicyId: () => input.policyId } },
   );
@@ -349,7 +352,12 @@ export async function ensureSellerRefundPolicy(
 
   if ((await getActiveSellerRefundPolicyVersion(input.sellerParticipantId, { db })) === null) {
     await activateSellerRefundPolicyVersion(
-      { policyId, policyVersion: "1", activatedAt: input.now },
+      {
+        policyId,
+        policyVersion: "1",
+        activatedAt: input.now,
+        activatedByAccountId: input.recordedByAccountId,
+      },
       { db },
     );
   }

@@ -198,7 +198,6 @@ const pad26 = (seed: string): string =>
   (seed.toUpperCase().replace(/[ILOU]/g, "0") + "0".repeat(26)).slice(0, 26);
 
 const ACTOR = `mon:actor:${pad26("P19TACT0R")}`;
-const RECORDER = `mon:acct:${pad26("P19TREC0RDER")}`;
 
 let seq = 0;
 const next = (): number => (seq += 1);
@@ -661,17 +660,44 @@ async function seedProductVersion(args: {
   });
 }
 
-async function seedAccount(): Promise<string> {
+async function seedAccount(email?: string): Promise<string> {
   const account = await createAccount(
     {
       name: "Synthetic",
-      email: `${ACCOUNT_EMAIL_PREFIX}${next()}@example.com`,
+      email: email ?? `${ACCOUNT_EMAIL_PREFIX}${next()}@example.com`,
       password: PASSWORD,
       createdAt: NOW,
     },
     { db },
   );
   return account.accountId;
+}
+
+/**
+ * The account that records and activates policy versions.
+ *
+ * Phase 1.20: policy governance requires a real, enabled account holding the
+ * narrow grant. This was a synthetic id that named no `Account` row at all —
+ * which is precisely the placeholder the new check refuses.
+ */
+async function policyRecorder(): Promise<string> {
+  /* One recorder per suite run, found by its own address rather than
+     remembered in a variable — a suite that wipes accounts between tests then
+     simply recreates it on the next call. */
+  const email = `${ACCOUNT_EMAIL_PREFIX}policy-recorder@example.com`;
+  const existing = await db.account.findFirst({ where: { email }, select: { id: true } });
+  if (existing !== null) return existing.id;
+
+  const accountId = await seedAccount(email);
+  await grantAccountEntitlement(
+    { accountId, capability: "commercial-policy:govern", grantedAt: NOW },
+    { db },
+  );
+  await grantAccountEntitlement(
+    { accountId, capability: "risk-policy:govern", grantedAt: NOW },
+    { db },
+  );
+  return accountId;
 }
 
 async function seedInternalActor(capability: string): Promise<string> {
@@ -808,7 +834,7 @@ async function seedCommercialPolicy(): Promise<string> {
       retainedFixedAmountMinorUnits: 100,
       roundingPolicy: "HALF_UP_TO_MINOR_UNIT",
       effectiveFrom: NOW,
-      recordedByAccountId: RECORDER,
+      recordedByAccountId: await policyRecorder(),
       recordedAt: NOW,
     },
     { db },
@@ -817,7 +843,7 @@ async function seedCommercialPolicy(): Promise<string> {
     {
       policyId: policy.policyId,
       policyVersion: "1",
-      activatedByAccountId: RECORDER,
+      activatedByAccountId: await policyRecorder(),
       activatedAt: NOW,
     },
     { db },
@@ -836,7 +862,7 @@ async function seedRiskPolicy(): Promise<string> {
       requireSellerCommerceApproval: false,
       requireSellerPaymentReadiness: false,
       effectiveFrom: NOW,
-      recordedByAccountId: RECORDER,
+      recordedByAccountId: await policyRecorder(),
       recordedAt: NOW,
     },
     { db },
@@ -845,7 +871,7 @@ async function seedRiskPolicy(): Promise<string> {
     {
       policyId: policy.policyId,
       policyVersion: "1",
-      activatedByAccountId: RECORDER,
+      activatedByAccountId: await policyRecorder(),
       activatedAt: NOW,
     },
     { db },
@@ -2651,7 +2677,7 @@ describeDb("1.11 — disputes and chargebacks", () => {
       /* Phase 1.19: a real, enabled Account. The literal `"acct-admin"` this
          used to pass named no account at all, which is precisely the
          placeholder the service now refuses. */
-      const admin = await seedAccount();
+      const admin = await seedInternalActor("commercial-policy:govern");
       await recordChargebackFeePolicyVersion(
         {
           policyVersion: version,
@@ -2807,6 +2833,33 @@ describeDb("1.11 — disputes and chargebacks", () => {
       expect(await db.sellerChargebackFee.count({ where: { orderId: sale.orderId } })).toBe(1);
     });
 
+    it("refuses a real enabled account that holds no policy grant", async () => {
+      /* Phase 1.20 completes what 1.19 started here. Being a real, enabled
+         account proved the actor was a person; it did not prove they were an
+         operator entitled to set a commercial term — under the 1.19 check
+         alone every buyer, seller and promoter who ever registered satisfied
+         it. The fee is one of Monacado's published terms, so it is governed by
+         the same grant as the retention rate. */
+      const bystander = await seedAccount();
+      await expect(
+        recordChargebackFeePolicyVersion(
+          {
+            policyVersion: "9.9.9",
+            amountMinorUnits: 9_999,
+            currency: "USD",
+            effectiveFrom: DISPUTE_AT,
+            recordedByAccountId: bystander,
+            at: DISPUTE_AT,
+          },
+          { db },
+        ),
+      ).rejects.toMatchObject({ code: "COMMERCIAL_POLICY_ACTOR_NOT_AUTHORIZED" });
+
+      expect(
+        await db.sellerChargebackFeePolicyVersionRow.count({ where: { policyVersion: "9.9.9" } }),
+      ).toBe(0);
+    });
+
     it("refuses to redefine a version label with a different amount", async () => {
       await activateFee("1.0.0", 3_000);
       await expect(
@@ -2816,10 +2869,9 @@ describeDb("1.11 — disputes and chargebacks", () => {
             amountMinorUnits: 9_999,
             currency: "USD",
             effectiveFrom: DISPUTE_AT,
-            /* A real operator, so the refusal under test is the version
-               redefinition rather than the Phase 1.19 actor check that now
-               runs before it. */
-            recordedByAccountId: await seedAccount(),
+            /* An entitled operator, so the refusal under test is the version
+               redefinition rather than the actor checks that run before it. */
+            recordedByAccountId: await seedInternalActor("commercial-policy:govern"),
             at: DISPUTE_AT,
           },
           { db },

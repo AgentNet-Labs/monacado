@@ -23,7 +23,8 @@
 import "dotenv/config";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
-import { createAccount } from "../src/server/account/account-service";
+import { createAccount, setAccountStatus } from "../src/server/account/account-service";
+import { grantAccountEntitlement } from "../src/server/account/account-entitlement-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
 import type { ParticipantIdProvider } from "../src/server/marketplace/participant-ids";
 import type { PolicyIdProvider } from "../src/server/policy/policy-ids";
@@ -153,6 +154,11 @@ async function cleanup(): Promise<void> {
   await db.accountSession.deleteMany({
     where: { account: { is: { email: { startsWith: EMAIL_PREFIX } } } },
   });
+  /* Entitlements RESTRICT the account they grant on, so they come off first —
+     the recorder now holds `marketplace-policy:govern`. */
+  await db.accountEntitlement.deleteMany({
+    where: { account: { is: { email: { startsWith: EMAIL_PREFIX } } } },
+  });
   await db.account.deleteMany({ where: { email: { startsWith: EMAIL_PREFIX } } });
 }
 
@@ -194,6 +200,12 @@ describeIf("Phase 1.4 — policy bootstrap", () => {
   beforeEach(async () => {
     await cleanup();
     RECORDER = (await seedAccount()).accountId;
+    /* Phase 1.20 — activating the governing terms now requires the narrow
+       marketplace-policy grant. Recording a draft still does not. */
+    await grantAccountEntitlement(
+      { accountId: RECORDER, capability: "marketplace-policy:govern", grantedAt: NOW },
+      { db },
+    );
   });
   afterAll(async () => {
     if (RUN) {
@@ -397,6 +409,63 @@ describeIf("Phase 1.4 — policy bootstrap", () => {
     expect(outcome.refusal).toBe("RECORDING_ACCOUNT_NOT_FOUND");
     expect(await getMarketplacePolicyVersion(POLICY_ID, V1, { db })).toBeNull();
   });
+
+  it("refuses to ACTIVATE without the marketplace-policy grant, and still records a draft", async () => {
+    /* Phase 1.20. Recording a draft governs nobody and keeps the weaker rule;
+       activation replaces the terms every participant accepted. Until now the
+       whole of that authority was a configured account id. */
+    const plain = (await seedAccount()).accountId;
+
+    const refused = await bootstrapMarketplacePolicy(
+      { recordedByAccountId: plain, now: NOW, activate: true, mode: "APPLY" },
+      bdeps(),
+    );
+    expect(refused.action).toBe("REFUSED");
+    expect(refused.refusal).toBe("ACTIVATION_NOT_AUTHORIZED");
+    /* Checked before the record half, so no half-applied state was left. */
+    expect(await getMarketplacePolicyVersion(POLICY_ID, V1, { db })).toBeNull();
+
+    // The same account may still record a draft, which governs nobody.
+    const recorded = await bootstrapMarketplacePolicy(
+      { recordedByAccountId: plain, now: NOW, activate: false, mode: "APPLY" },
+      bdeps(),
+    );
+    expect(recorded.action).toBe("RECORD_DRAFT");
+    expect((await getMarketplacePolicyVersion(POLICY_ID, V1, { db }))!.status).toBe("DRAFT");
+  });
+
+  it("lets an entitled actor activate, and stores who activated it", async () => {
+    const outcome = await bootstrapMarketplacePolicy(
+      { recordedByAccountId: RECORDER, now: NOW, activate: true, mode: "APPLY" },
+      bdeps(),
+    );
+    expect(outcome.action).toBe("RECORD_AND_ACTIVATE");
+
+    const row = await db.marketplacePolicyVersionRow.findFirstOrThrow({
+      where: { policyId: POLICY_ID, policyVersion: V1 },
+    });
+    expect(row.status).toBe("ACTIVE");
+    /* Accepted and discarded before Phase 1.20 — the governing terms recorded
+       when they came into force but never who put them there. */
+    expect(row.activatedByAccountId).toBe(RECORDER);
+    expect(row.activatedAt).not.toBeNull();
+  });
+
+  it("refuses to record a version under a DISABLED account", async () => {
+    /* Phase 1.20. Existence proved the id named somebody; only status proves
+       they are still entrusted with anything. Until now a disabled account
+       could record the governing terms and, with `--activate`, put them in
+       force — disabling an account withdrew every power except this one. */
+    await setAccountStatus(RECORDER, "DISABLED", { db });
+
+    const outcome = await bootstrapMarketplacePolicy(
+      { recordedByAccountId: RECORDER, now: NOW, activate: true, mode: "APPLY" },
+      bdeps(),
+    );
+    expect(outcome.action).toBe("REFUSED");
+    expect(outcome.refusal).toBe("RECORDING_ACCOUNT_NOT_ACTIVE");
+    expect(await getMarketplacePolicyVersion(POLICY_ID, V1, { db })).toBeNull();
+  });
 });
 
 /**
@@ -420,6 +489,12 @@ describeIf("Phase 1.4 — the bootstrap command's production gate", () => {
   beforeEach(async () => {
     await cleanup();
     RECORDER = (await seedAccount()).accountId;
+    /* Phase 1.20 — activating the governing terms now requires the narrow
+       marketplace-policy grant. Recording a draft still does not. */
+    await grantAccountEntitlement(
+      { accountId: RECORDER, capability: "marketplace-policy:govern", grantedAt: NOW },
+      { db },
+    );
     printed = [];
   });
   afterAll(async () => {

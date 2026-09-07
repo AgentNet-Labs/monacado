@@ -367,6 +367,108 @@ export function canApproveDisputeEvidence(
   return evaluateInternalCapability(DISPUTE_EVIDENCE_APPROVE_CAPABILITY, subject);
 }
 
+/**
+ * The capability that authorizes governing Monacado's own published commercial
+ * policy versions (Phase 1.20).
+ *
+ * Covers the commercial policy — retention on every sale — and the seller
+ * chargeback fee policy. Both are Monacado's published terms, and both answer
+ * what Monacado charges a seller.
+ *
+ * **Required for recording as well as activating.** Recording alone governs
+ * nobody, and the repo's own note says so: publishing is two decisions, not
+ * one. But a DRAFT row is the thing an activation later points at, and its
+ * numbers are exactly what the activating operator relies on. Requiring the
+ * grant at both ends keeps the draft an entitled act rather than an open
+ * inbox, and costs nothing — the same person does both today.
+ *
+ * **Seller refund policy is deliberately NOT covered.** The Marketplace Policy
+ * text every participant has accepted says "Monacado does not author a
+ * seller's refund terms", and `MARKETPLACE_REFUND_POSTURE.policyOwner` is
+ * `SELLER`. That document is a seller's own; authority over it is seller
+ * ownership, not an internal grant.
+ */
+export const COMMERCIAL_POLICY_GOVERN_CAPABILITY =
+  "commercial-policy:govern" as const satisfies AccountCapability;
+
+/**
+ * May this internal account record or activate a Monacado commercial policy
+ * version?
+ *
+ * Requires an explicit active `commercial-policy:govern` entitlement, resolved
+ * from persisted state on every call. **No marketplace role confers it**, and
+ * knowing a policy id is not authorization — until Phase 1.20 the only thing
+ * standing between a caller and the marketplace's retention rate was knowing
+ * that id.
+ */
+export function canGovernCommercialPolicy(
+  subject: InternalAuthorizationSubject | null,
+): InternalAuthorizationDecision {
+  return evaluateInternalCapability(COMMERCIAL_POLICY_GOVERN_CAPABILITY, subject);
+}
+
+/**
+ * The capability that authorizes governing transaction risk policy versions
+ * (Phase 1.20).
+ *
+ * Separate from `commercial-policy:govern` because a risk version is a control,
+ * not a price: it decides whether a sale needs commerce approval and payment
+ * readiness at all, and what a single Order may be worth. Setting the
+ * commission rate and disabling the pre-live gates are not the same authority.
+ */
+export const RISK_POLICY_GOVERN_CAPABILITY =
+  "risk-policy:govern" as const satisfies AccountCapability;
+
+/**
+ * May this internal account record or activate a transaction risk policy
+ * version?
+ *
+ * Requires an explicit active `risk-policy:govern` entitlement. **Holding
+ * `commercial-policy:govern` is not enough, and neither is this enough to set a
+ * commercial term** — the two are independent in both directions, which is what
+ * stops a rate change from carrying the power to switch off a safety gate.
+ *
+ * It is also not `participant:risk-review`: that grant reads analytics about
+ * one participant and records a conclusion, and its own note says it authorises
+ * nothing executable. This one sets the thresholds every checkout is measured
+ * against.
+ */
+export function canGovernRiskPolicy(
+  subject: InternalAuthorizationSubject | null,
+): InternalAuthorizationDecision {
+  return evaluateInternalCapability(RISK_POLICY_GOVERN_CAPABILITY, subject);
+}
+
+/**
+ * The capability that authorizes putting a Marketplace Policy version in force
+ * (Phase 1.20).
+ *
+ * Distinct from `commercial-policy:govern` because the subject is different in
+ * kind: a commercial policy sets a price, a Marketplace Policy version sets the
+ * rules every participant accepted. Reusing the commercial grant would let
+ * whoever may change the commission rate also republish the terms of service.
+ */
+export const MARKETPLACE_POLICY_GOVERN_CAPABILITY =
+  "marketplace-policy:govern" as const satisfies AccountCapability;
+
+/**
+ * May this internal account activate a Marketplace Policy version?
+ *
+ * Requires an explicit active `marketplace-policy:govern` entitlement. An
+ * existing, enabled account is not sufficient authority to change the terms a
+ * marketplace operates under — which is precisely what bootstrap could do
+ * before Phase 1.20 on nothing more than a configured id.
+ *
+ * Scoped to activation. Recording a draft version governs nobody and keeps the
+ * weaker rule, so a bootstrap that only records is not made harder than the act
+ * warrants.
+ */
+export function canGovernMarketplacePolicy(
+  subject: InternalAuthorizationSubject | null,
+): InternalAuthorizationDecision {
+  return evaluateInternalCapability(MARKETPLACE_POLICY_GOVERN_CAPABILITY, subject);
+}
+
 /** May this internal account read publication-worker operational health? */
 export function canReadPublicationWorkerStatus(
   subject: InternalAuthorizationSubject | null,

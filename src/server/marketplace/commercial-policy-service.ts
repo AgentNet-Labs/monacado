@@ -56,7 +56,13 @@ import {
   type CommercialPolicyIdProvider,
 } from "./commercial-policy-ids";
 import {
+  canGovernCommercialPolicy,
+  isInternallyAuthorized,
+} from "../../contracts/account/internal-authorization";
+import { resolveInternalAuthorizationSubject } from "../account/internal-authorization-service";
+import {
   AmbiguousActiveCommercialPolicyError,
+  CommercialPolicyActorNotAuthorizedError,
   CommercialPolicyNotFoundError,
   CommercialPolicyPersistenceFailureError,
   CommercialPolicyVersionNotFoundError,
@@ -76,6 +82,34 @@ type Db = ReturnType<typeof getPrisma>;
 export interface CommercialPolicyServiceDeps {
   db?: Db;
   ids?: CommercialPolicyIdProvider;
+}
+
+
+/**
+ * Refuse unless the acting account holds an active `commercial-policy:govern`
+ * entitlement (Phase 1.20).
+ *
+ * **Checked before any policy or version row is read**, so an unauthorized
+ * caller learns nothing about what the marketplace currently charges — the same
+ * ordering `assertRiskReviewAuthority` and `assertEvidenceApprovalAuthority`
+ * follow.
+ *
+ * Until this existed there was no authority here of any kind: `recordedByAccountId`
+ * and `activatedByAccountId` were opaque strings, never resolved, and the tests
+ * that exercise this service still pass a synthetic id that names no Account.
+ * Knowing a policy id was the whole of the authority over the retention rate
+ * applied to every sale.
+ *
+ * Module-private on purpose: an integration test asserts this module's exact
+ * export list, and a shared cross-service dispatcher would be a place for a
+ * capability to acquire a default.
+ */
+async function assertCommercialPolicyAuthority(db: Db, actingAccountId: string): Promise<void> {
+  const subject = await resolveInternalAuthorizationSubject(actingAccountId, { db });
+  const decision = canGovernCommercialPolicy(subject);
+  if (!isInternallyAuthorized(decision)) {
+    throw new CommercialPolicyActorNotAuthorizedError([...decision.reasonCodes]);
+  }
 }
 
 const prismaCode = (error: unknown): string | undefined => {
@@ -147,6 +181,7 @@ export async function recordCommercialPolicyVersion(
   const v = parsed.data;
 
   const db = deps.db ?? getPrisma();
+  await assertCommercialPolicyAuthority(db, v.recordedByAccountId);
 
   try {
     await db.commercialPolicyVersionRow.create({
@@ -196,6 +231,9 @@ export async function activateCommercialPolicyVersion(
   const { policyId, policyVersion, activatedByAccountId, activatedAt } = parsed.data;
 
   const db = deps.db ?? getPrisma();
+  /* Before the transaction opens, so an unauthorized caller never reaches the
+     read that would tell them which version currently stands. */
+  await assertCommercialPolicyAuthority(db, activatedByAccountId);
   const at = new Date(activatedAt);
 
   try {
@@ -229,7 +267,17 @@ export async function activateCommercialPolicyVersion(
 
       await tx.commercialPolicyVersionRow.update({
         where: { seq: target.seq },
-        data: { status: "ACTIVE", activeForPolicyId: policyId },
+        data: {
+          status: "ACTIVE",
+          activeForPolicyId: policyId,
+          /* Phase 1.20 — activation is its own governed act, so it names its own
+             actor. Written on the version being ACTIVATED, in the same
+             transaction, and never inferred from the incumbent's
+             `retiredByAccountId`: that column is absent entirely on a first
+             activation, which is exactly when provenance was being lost. */
+          activatedAt: at,
+          activatedByAccountId,
+        },
       });
 
       return await readVersionIn(tx, policyId, policyVersion);

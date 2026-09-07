@@ -158,43 +158,92 @@ function toRecord(row: {
 
 const INCLUDE_REASONS = { triggerReasons: { orderBy: { seq: "asc" } } } as const;
 
+/**
+ * What opening a review needs, minus the thing a caller may not choose.
+ *
+ * **`triggerSource` is gone from the input (Phase 1.20), and that is the whole
+ * correction.** It used to be a member here, and it selected which branch ran:
+ * `"STAFF"` authorized, `"SYSTEM"` did not. So the enum that was supposed to
+ * *describe* how a review arose instead *decided* whether anyone had to be
+ * entitled to raise one, and any caller could pick. It was the only
+ * unauthenticated writer in this module.
+ *
+ * Now the two provenances are two functions, and each writes its own
+ * `triggerSource` as a literal — the technique `dispute-evidence-service` uses
+ * for `assertedByKind`, where the service states what it just did rather than
+ * repeating what it was told.
+ */
 export interface OpenRiskReviewInput {
   participantId: string;
-  triggerSource: "SYSTEM" | "STAFF";
   triggerAsOf: string;
   reviewPolicyId: string;
   reviewPolicyVersion: string;
   reasons: readonly RiskReviewReason[];
   openedAt: string;
-  /** NULL for a SYSTEM-raised review. Required when a person opens one. */
-  actingAccountId: string | null;
 }
 
 /**
- * Open a review.
+ * Open a review that a person raised.
+ *
+ * Authorized before anything is read, on the same terms every other governed
+ * act in this module requires: an active `participant:risk-review` entitlement,
+ * resolved from persisted state. The acting account is recorded as the opener,
+ * so the review names who looked.
  *
  * A re-firing daily signal is the SAME concern, not a second one: the database
  * refuses a second open review per participant through `openForParticipantId`,
- * and this surfaces that as `RiskReviewAlreadyOpenError` so a caller can carry on
- * rather than treating a constraint violation as a failure.
- *
- * A SYSTEM-raised review needs no acting account — nobody has looked yet, which
- * is precisely what the review is asking for. A STAFF-raised one is authorized
- * first, on the same terms every other governed act here is.
+ * and this surfaces that as `RiskReviewAlreadyOpenError` so a caller can carry
+ * on rather than treating a constraint violation as a failure.
  */
-export async function openParticipantRiskReview(
+export async function openStaffParticipantRiskReview(
+  input: OpenRiskReviewInput & { actingAccountId: string },
+  deps: RiskReviewDeps = {},
+): Promise<ParticipantRiskReviewRecord> {
+  const db = deps.db ?? getPrisma();
+  await assertRiskReviewAuthority(db, input.actingAccountId);
+  return await createRiskReview(db, deps, input, "STAFF", input.actingAccountId);
+}
+
+/**
+ * Open a review that a ranked report raised, with no person behind it yet.
+ *
+ * `openedByAccountId` is `null` here and that is the honest record: nobody has
+ * looked, which is precisely what the review is asking for. The null is written
+ * by this function rather than chosen by a caller.
+ *
+ * **The honest limit, stated plainly.** This is an internal entry point with no
+ * account to resolve, so it cannot be authorized the way its sibling is — there
+ * is no principal to check. What Phase 1.20 removes is the ability to *reach the
+ * staff path's outcome without the staff path's check* by naming an enum; what
+ * it does not claim is that every in-process caller is trustworthy. That is the
+ * same boundary `acting-participant-boundary` documents for `ActingAccount`:
+ * unforgeable from a request, not a guarantee about code already inside.
+ *
+ * Nothing routed reaches this today, and a scheduler that one day does should
+ * come with its own gate rather than a widened enum.
+ */
+export async function openSystemParticipantRiskReview(
   input: OpenRiskReviewInput,
   deps: RiskReviewDeps = {},
 ): Promise<ParticipantRiskReviewRecord> {
   const db = deps.db ?? getPrisma();
-  const ids = deps.ids ?? cryptoParticipantRiskReviewIdProvider;
+  return await createRiskReview(db, deps, input, "SYSTEM", null);
+}
 
-  if (input.triggerSource === "STAFF") {
-    if (input.actingAccountId === null) {
-      throw new SellerRiskRequestError("A staff-opened review must name the acting account");
-    }
-    await assertRiskReviewAuthority(db, input.actingAccountId);
-  }
+/**
+ * The shared write, with the provenance already decided by the caller above.
+ *
+ * Module-private: `triggerSource` and `openedByAccountId` are arguments here
+ * precisely because neither is reachable from outside this file.
+ */
+async function createRiskReview(
+  db: Db,
+  deps: RiskReviewDeps,
+  input: OpenRiskReviewInput,
+  triggerSource: "SYSTEM" | "STAFF",
+  openedByAccountId: string | null,
+): Promise<ParticipantRiskReviewRecord> {
+  const ids = deps.ids ?? cryptoParticipantRiskReviewIdProvider;
 
   const existing = await db.participantRiskReview.findUnique({
     where: { openForParticipantId: input.participantId },
@@ -210,12 +259,12 @@ export async function openParticipantRiskReview(
       data: {
         id,
         participantId: input.participantId,
-        triggerSource: input.triggerSource,
+        triggerSource,
         triggerAsOf: new Date(input.triggerAsOf),
         reviewPolicyId: input.reviewPolicyId,
         reviewPolicyVersion: input.reviewPolicyVersion,
         openedAt: recordedAt,
-        openedByAccountId: input.triggerSource === "STAFF" ? input.actingAccountId : null,
+        openedByAccountId,
         status: "OPEN",
         /* Claims the unique marker while the review is not CLOSED. */
         openForParticipantId: input.participantId,

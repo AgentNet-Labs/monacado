@@ -23,7 +23,12 @@ import {
   RiskPolicyVersionRecord,
 } from "../../contracts/marketplace/transaction-risk";
 import { getPrisma } from "../db/client";
-import { RiskError } from "./risk-errors";
+import { RiskError, RiskPolicyActorNotAuthorizedError } from "./risk-errors";
+import {
+  canGovernRiskPolicy,
+  isInternallyAuthorized,
+} from "../../contracts/account/internal-authorization";
+import { resolveInternalAuthorizationSubject } from "../account/internal-authorization-service";
 
 type Db = ReturnType<typeof getPrisma>;
 type Tx = Db | Prisma.TransactionClient;
@@ -89,6 +94,30 @@ export async function createRiskPolicy(
 }
 
 /** Record one immutable version. Created `DRAFT`; activation is separate. */
+/**
+ * Refuse unless the acting account holds an active `risk-policy:govern`
+ * entitlement (Phase 1.20).
+ *
+ * **Checked before anything is read or written**, which on the activation path
+ * matters more than usual: that function opened its transaction and retired the
+ * standing version *before* it checked the target version even existed. An
+ * unauthorized caller reaching it would have retired the live risk policy on
+ * the way to being refused.
+ *
+ * Module-private, following the repository's rule against a shared
+ * cross-service authority dispatcher.
+ */
+async function assertRiskPolicyAuthority(
+  db: ReturnType<typeof getPrisma>,
+  actingAccountId: string,
+): Promise<void> {
+  const subject = await resolveInternalAuthorizationSubject(actingAccountId, { db });
+  const decision = canGovernRiskPolicy(subject);
+  if (!isInternallyAuthorized(decision)) {
+    throw new RiskPolicyActorNotAuthorizedError([...decision.reasonCodes]);
+  }
+}
+
 export async function recordRiskPolicyVersion(
   input: unknown,
   deps: RiskPolicyDeps = {},
@@ -98,6 +127,8 @@ export async function recordRiskPolicyVersion(
     throw new RiskError("INVALID_RISK_POLICY_INPUT", "Invalid risk policy version input");
   }
   const v = parsed.data;
+
+  await assertRiskPolicyAuthority(deps.db ?? getPrisma(), v.recordedByAccountId);
   const db = deps.db ?? getPrisma();
 
   const row = await db.riskPolicyVersionRow.create({
@@ -139,6 +170,11 @@ export async function activateRiskPolicyVersion(
   deps: RiskPolicyDeps = {},
 ): Promise<RiskPolicyVersionRecord> {
   const db = deps.db ?? getPrisma();
+  /* Before the transaction opens. This function retires the incumbent before it
+     checks the target exists, so an unauthorized caller reaching the body would
+     have taken the live policy down on the way to a refusal. */
+  await assertRiskPolicyAuthority(db, input.activatedByAccountId);
+
   return await db.$transaction(async (tx) => {
     const current = await tx.riskPolicyVersionRow.findFirst({
       where: { policyId: input.policyId, status: "ACTIVE" },
@@ -173,7 +209,14 @@ export async function activateRiskPolicyVersion(
     }
     const row = await tx.riskPolicyVersionRow.update({
       where: { seq: target.seq },
-      data: { status: "ACTIVE", activeMarker: input.policyId },
+      data: {
+        status: "ACTIVE",
+        activeMarker: input.policyId,
+        /* Phase 1.20 — the activating actor, on the version being activated,
+           never inferred from the incumbent's retirement. */
+        activatedAt: new Date(input.activatedAt),
+        activatedByAccountId: input.activatedByAccountId,
+      },
     });
     return rowToRecord(row);
   });

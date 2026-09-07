@@ -125,7 +125,6 @@ const pad26 = (seed: string): string =>
   (seed.toUpperCase().replace(/[ILOU]/g, "0") + "0".repeat(26)).slice(0, 26);
 
 const ACTOR = `mon:actor:${pad26("P12TACT0R")}`;
-const RECORDER = `mon:acct:${pad26("P12TREC0RDER")}`;
 
 let seq = 0;
 const next = (): number => (seq += 1);
@@ -402,18 +401,45 @@ async function seedProductVersion(
 }
 
 
-async function seedAccount(): Promise<string> {
+async function seedAccount(email?: string): Promise<string> {
   const n = next();
   const account = await createAccount(
     {
       name: "Synthetic",
-      email: `${ACCOUNT_EMAIL_PREFIX}${n}@example.com`,
+      email: email ?? `${ACCOUNT_EMAIL_PREFIX}${n}@example.com`,
       password: PASSWORD,
       createdAt: NOW,
     },
     { db },
   );
   return account.accountId;
+}
+
+/**
+ * The account that records and activates policy versions.
+ *
+ * Phase 1.20: policy governance requires a real, enabled account holding the
+ * narrow grant. This was a synthetic id that named no `Account` row at all —
+ * which is precisely the placeholder the new check refuses.
+ */
+async function policyRecorder(): Promise<string> {
+  /* One recorder per suite run, found by its own address rather than
+     remembered in a variable — a suite that wipes accounts between tests then
+     simply recreates it on the next call. */
+  const email = `${ACCOUNT_EMAIL_PREFIX}policy-recorder@example.com`;
+  const existing = await db.account.findFirst({ where: { email }, select: { id: true } });
+  if (existing !== null) return existing.id;
+
+  const accountId = await seedAccount(email);
+  await grantAccountEntitlement(
+    { accountId, capability: "commercial-policy:govern", grantedAt: NOW },
+    { db },
+  );
+  await grantAccountEntitlement(
+    { accountId, capability: "risk-policy:govern", grantedAt: NOW },
+    { db },
+  );
+  return accountId;
 }
 
 async function seedInternalActor(capability: string): Promise<string> {
@@ -540,7 +566,7 @@ async function seedCommercialPolicy(): Promise<string> {
       retainedFixedAmountMinorUnits: 100,
       roundingPolicy: "HALF_UP_TO_MINOR_UNIT",
       effectiveFrom: NOW,
-      recordedByAccountId: RECORDER,
+      recordedByAccountId: await policyRecorder(),
       recordedAt: NOW,
     },
     { db },
@@ -549,7 +575,7 @@ async function seedCommercialPolicy(): Promise<string> {
     {
       policyId: policy.policyId,
       policyVersion: "1",
-      activatedByAccountId: RECORDER,
+      activatedByAccountId: await policyRecorder(),
       activatedAt: NOW,
     },
     { db },
@@ -580,7 +606,7 @@ async function seedRiskPolicy(
       requireSellerCommerceApproval: over.requireSellerCommerceApproval ?? false,
       requireSellerPaymentReadiness: over.requireSellerPaymentReadiness ?? false,
       effectiveFrom: NOW,
-      recordedByAccountId: RECORDER,
+      recordedByAccountId: await policyRecorder(),
       recordedAt: NOW,
     },
     { db },
@@ -590,7 +616,7 @@ async function seedRiskPolicy(
       {
         policyId: policy.policyId,
         policyVersion: "1",
-        activatedByAccountId: RECORDER,
+        activatedByAccountId: await policyRecorder(),
         activatedAt: NOW,
       },
       { db },

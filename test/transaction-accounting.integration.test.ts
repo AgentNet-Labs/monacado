@@ -23,6 +23,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { grantProductCreatorAuthority } from "./support/product-authority-fixture";
 import { createAccount } from "../src/server/account/account-service";
+import { grantAccountEntitlement } from "../src/server/account/account-entitlement-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
 import { createDraftOffer, createOfferSourceVersion } from "../src/server/marketplace/offer-service";
 import {
@@ -77,7 +78,6 @@ const pad26 = (seed: string): string =>
 
 const ACTOR = `mon:actor:${pad26("T1TACT0R")}`;
 /** No FK; the column records the durable internal Account identity's shape. */
-const RECORDER = `mon:acct:${pad26("T1TREC0RDER")}`;
 
 let seq = 0;
 const next = (): number => (seq += 1);
@@ -180,6 +180,39 @@ async function seedProduct(creatorParticipantId?: string): Promise<string> {
   return internalProductId;
 }
 
+/**
+ * The account that records and activates policy versions.
+ *
+ * Phase 1.20: policy governance requires a real, enabled account holding the
+ * narrow grant. This was a synthetic id that named no `Account` row at all —
+ * which is precisely the placeholder the new check refuses.
+ */
+async function policyRecorder(): Promise<string> {
+  /* One recorder per suite run, found by its own address rather than
+     remembered in a variable — a suite that wipes accounts between tests then
+     simply recreates it on the next call. */
+  const email = `${ACCOUNT_EMAIL_PREFIX}policy-recorder@example.com`;
+  const existing = await db.account.findFirst({ where: { email }, select: { id: true } });
+  if (existing !== null) return existing.id;
+
+  const account = await createAccount(
+    {
+      name: "Synthetic Policy Recorder",
+      email,
+      password: PASSWORD,
+      createdAt: NOW,
+    },
+    { db },
+  );
+  for (const capability of ["commercial-policy:govern", "risk-policy:govern"]) {
+    await grantAccountEntitlement(
+      { accountId: account.accountId, capability, grantedAt: NOW },
+      { db },
+    );
+  }
+  return account.accountId;
+}
+
 async function seedParticipant(roles: Array<"SELLER" | "PROMOTER">) {
   const n = next();
   const account = await createAccount(
@@ -239,7 +272,7 @@ async function seedPolicy(
       ...economics,
       roundingPolicy: "HALF_UP_TO_MINOR_UNIT",
       effectiveFrom: NOW,
-      recordedByAccountId: RECORDER,
+      recordedByAccountId: await policyRecorder(),
       recordedAt: NOW,
     },
     { db },
@@ -248,7 +281,7 @@ async function seedPolicy(
     {
       policyId: policy.policyId,
       policyVersion: "1",
-      activatedByAccountId: RECORDER,
+      activatedByAccountId: await policyRecorder(),
       activatedAt: NOW,
     },
     { db },
@@ -738,7 +771,7 @@ describeDb("0M.T1 — MoR transaction accounting foundation", () => {
           retainedFixedAmountMinorUnits: 200,
           roundingPolicy: "HALF_UP_TO_MINOR_UNIT",
           effectiveFrom: LATER,
-          recordedByAccountId: RECORDER,
+          recordedByAccountId: await policyRecorder(),
           recordedAt: LATER,
         },
         { db },
@@ -747,7 +780,7 @@ describeDb("0M.T1 — MoR transaction accounting foundation", () => {
         {
           policyId: policy.policyId,
           policyVersion: "2",
-          activatedByAccountId: RECORDER,
+          activatedByAccountId: await policyRecorder(),
           activatedAt: LATER,
         },
         { db },
@@ -786,7 +819,7 @@ describeDb("0M.T1 — MoR transaction accounting foundation", () => {
           retainedFixedAmountMinorUnits: 100,
           roundingPolicy: "HALF_UP_TO_MINOR_UNIT",
           effectiveFrom: NOW,
-          recordedByAccountId: RECORDER,
+          recordedByAccountId: await policyRecorder(),
           recordedAt: NOW,
         },
         { db },

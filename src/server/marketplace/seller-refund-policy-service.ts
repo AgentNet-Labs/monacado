@@ -49,6 +49,7 @@ import {
   type RefundEligibilityCondition,
 } from "../../contracts/marketplace/seller-refund-policy";
 import { getPrisma } from "../db/client";
+import { readActingAccountRows } from "./acting-subject-service";
 
 type Db = ReturnType<typeof getPrisma>;
 type Tx = Db | Prisma.TransactionClient;
@@ -157,9 +158,70 @@ function rowToRecord(row: VersionRow): SellerRefundPolicyVersionRecord {
 
 // — Identity —
 
+
+/**
+ * Refuse unless the acting account IS the seller whose terms these are
+ * (Phase 1.20).
+ *
+ * **Ownership, not a capability, and that is a ruling rather than a shortcut.**
+ * The Marketplace Policy text every participant has accepted says "Monacado
+ * does not author a seller's refund terms", and
+ * `MARKETPLACE_REFUND_POSTURE.policyOwner` is `SELLER`. There is no Staff
+ * override anywhere in this repository, and adding one here would contradict a
+ * governing document rather than extend it. So no internal capability opens
+ * this door — the only actor who may declare a seller's refund terms is that
+ * seller.
+ *
+ * What Monacado does retain is the separate authority to execute or decline an
+ * individual refund, which is `refund:initiate` and lives elsewhere. Owning the
+ * terms and deciding one case are different acts, and the policy text draws
+ * that line explicitly.
+ *
+ * Until this existed there was no authority of any kind: `sellerParticipantId`
+ * and `recordedByAccountId` were unrelated caller-supplied strings, so any
+ * in-process caller could publish terms binding any seller's future sales and
+ * sign them as anyone.
+ */
+async function assertActsForSeller(
+  tx: Tx,
+  actingAccountId: string,
+  sellerParticipantId: string,
+): Promise<void> {
+  const acting = await readActingAccountRows(tx, actingAccountId);
+  if (acting === null || acting.participant === null) {
+    throw new SellerRefundPolicyError(
+      "SELLER_REFUND_POLICY_ACTOR_NOT_AUTHORIZED",
+      "That account may not declare refund terms",
+      ["ACTOR_PARTICIPANT_REQUIRED"],
+    );
+  }
+  if (acting.account.status !== "ACTIVE") {
+    throw new SellerRefundPolicyError(
+      "SELLER_REFUND_POLICY_ACTOR_NOT_AUTHORIZED",
+      "That account may not declare refund terms",
+      ["ACCOUNT_DISABLED"],
+    );
+  }
+  /* Derived from the persisted `MarketplaceParticipant.accountId`, never from a
+     matching pair of caller-supplied ids. */
+  if (acting.participant.id !== sellerParticipantId) {
+    throw new SellerRefundPolicyError(
+      "SELLER_REFUND_POLICY_ACTOR_NOT_AUTHORIZED",
+      "That account may not declare refund terms",
+      ["SELLER_PARTICIPANT_MISMATCH"],
+    );
+  }
+}
+
 /** Register one seller's stable policy identity. Idempotent. */
 export async function ensureSellerRefundPolicy(
-  input: { sellerParticipantId: string; label: string; now: string },
+  input: {
+    sellerParticipantId: string;
+    label: string;
+    now: string;
+    /** The seller acting for themselves. Verified, never assumed. */
+    actingAccountId: string;
+  },
   deps: SellerRefundPolicyDeps = {},
 ): Promise<string> {
   const db = deps.db ?? getPrisma();
@@ -170,6 +232,8 @@ export async function ensureSellerRefundPolicy(
       "an id provider is required",
     );
   }
+
+  await assertActsForSeller(db, input.actingAccountId, input.sellerParticipantId);
 
   const existing = await db.sellerRefundPolicy.findUnique({
     where: { sellerParticipantId: input.sellerParticipantId },
@@ -214,6 +278,9 @@ export async function recordSellerRefundPolicyVersion(
   deps: SellerRefundPolicyDeps = {},
 ): Promise<SellerRefundPolicyVersionRecord> {
   const db = deps.db ?? getPrisma();
+  /* The recording account is the seller acting for themselves, and is now
+     verified as such rather than copied into the row unread. */
+  await assertActsForSeller(db, input.recordedByAccountId, input.sellerParticipantId);
 
   const terms = SellerRefundTerms.parse(input.terms);
   const document = SellerRefundPolicyDocument.parse(input.document);
@@ -274,10 +341,30 @@ export async function activateSellerRefundPolicyVersion(
     policyId: string;
     policyVersion: string;
     activatedAt: string;
+    /** The seller acting for themselves. Verified against the policy's owner. */
+    activatedByAccountId: string;
   },
   deps: SellerRefundPolicyDeps = {},
 ): Promise<SellerRefundPolicyVersionRecord> {
   const db = deps.db ?? getPrisma();
+
+  /* Whose terms these are is read from the policy itself, never accepted
+     alongside the id — a caller supplying both would be asserting the
+     ownership this check exists to establish. Refused before the transaction
+     opens, because that transaction retires the standing version first and an
+     unauthorized caller must not reach it. */
+  const owner = await db.sellerRefundPolicy.findUnique({
+    where: { id: input.policyId },
+    select: { sellerParticipantId: true },
+  });
+  if (owner === null) {
+    throw new SellerRefundPolicyError(
+      "SELLER_REFUND_POLICY_NOT_FOUND",
+      "No such seller refund policy",
+    );
+  }
+  await assertActsForSeller(db, input.activatedByAccountId, owner.sellerParticipantId);
+
   return await db.$transaction(async (tx) => {
     const current = await tx.sellerRefundPolicyVersionRow.findFirst({
       where: { policyId: input.policyId, status: "ACTIVE" },
@@ -320,6 +407,11 @@ export async function activateSellerRefundPolicyVersion(
         status: "ACTIVE",
         activatedAt: new Date(input.activatedAt),
         activeMarker: input.policyId,
+        /* Phase 1.20 — the seller who put these terms in force. Activation is
+           its own act: the recorder of the version may be a different person on
+           a different day, and reading it back as the activator would be a
+           fabrication. */
+        activatedByAccountId: input.activatedByAccountId,
       },
     });
     return rowToRecord(row);

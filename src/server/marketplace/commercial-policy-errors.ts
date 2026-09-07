@@ -25,6 +25,7 @@ export type CommercialPolicyErrorCode =
   | "INVALID_COMMERCIAL_POLICY_VERSION_TRANSITION"
   | "IMMUTABLE_COMMERCIAL_POLICY_VERSION"
   | "CORRUPT_COMMERCIAL_POLICY_RECORD"
+  | "COMMERCIAL_POLICY_ACTOR_NOT_AUTHORIZED"
   | "COMMERCIAL_POLICY_PERSISTENCE_FAILURE";
 
 export class CommercialPolicyServiceError extends Error {
@@ -173,5 +174,31 @@ export class CommercialPolicyPersistenceFailureError extends CommercialPolicySer
     );
     this.name = "CommercialPolicyPersistenceFailureError";
     this.stage = stage;
+  }
+}
+
+/**
+ * An account tried to record or activate a commercial policy version without
+ * the entitlement that permits it (Phase 1.20).
+ *
+ * Carries the internal vocabulary's own bounded reason codes and nothing else.
+ * A commercial policy version sets retention on every sale the marketplace
+ * makes; until this existed, knowing a policy id was the whole of the
+ * authority.
+ *
+ * Raised before any policy or version row is read, so it discloses neither
+ * whether the policy exists nor what it currently says.
+ */
+export class CommercialPolicyActorNotAuthorizedError extends CommercialPolicyServiceError {
+  readonly reasonCodes: readonly string[];
+  /** The internal capability that was required. An operator's fact. */
+  readonly requiredCapability = "commercial-policy:govern";
+  constructor(reasonCodes: readonly string[]) {
+    super(
+      "COMMERCIAL_POLICY_ACTOR_NOT_AUTHORIZED",
+      "That account may not govern commercial policy versions",
+    );
+    this.name = "CommercialPolicyActorNotAuthorizedError";
+    this.reasonCodes = reasonCodes;
   }
 }

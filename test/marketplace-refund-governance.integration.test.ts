@@ -34,6 +34,7 @@ import { grantProductCreatorAuthority } from "./support/product-authority-fixtur
 import { createAccount } from "../src/server/account/account-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
 import { grantAccountEntitlement } from "../src/server/account/account-entitlement-service";
+import { ACCOUNT_CAPABILITIES } from "../src/contracts/account/account";
 import { recordCommerceApproval } from "../src/server/marketplace/participant-commerce-approval-service";
 import type { CommerceApprovalIdProvider } from "../src/server/marketplace/participant-commerce-approval-ids";
 import { createSellerDirectListing } from "../src/server/marketplace/listing-service";
@@ -123,7 +124,6 @@ const pad26 = (seed: string): string =>
   (seed.toUpperCase().replace(/[ILOU]/g, "0") + "0".repeat(26)).slice(0, 26);
 
 const ACTOR = `mon:actor:${pad26(`${TAG}ACT0R`)}`;
-const RECORDER = `mon:acct:${pad26(`${TAG}REC0RDER`)}`;
 
 let seq = 0;
 const next = (): number => (seq += 1);
@@ -408,17 +408,44 @@ async function cleanup(): Promise<void> {
 
 // — Fixtures —
 
-async function seedAccount(): Promise<string> {
+async function seedAccount(email?: string): Promise<string> {
   const account = await createAccount(
     {
       name: "Synthetic",
-      email: `${ACCOUNT_EMAIL_PREFIX}${next()}@example.com`,
+      email: email ?? `${ACCOUNT_EMAIL_PREFIX}${next()}@example.com`,
       password: PASSWORD,
       createdAt: NOW,
     },
     { db },
   );
   return account.accountId;
+}
+
+/**
+ * The account that records and activates policy versions.
+ *
+ * Phase 1.20: policy governance requires a real, enabled account holding the
+ * narrow grant. This was a synthetic id that named no `Account` row at all —
+ * which is precisely the placeholder the new check refuses.
+ */
+async function policyRecorder(): Promise<string> {
+  /* One recorder per suite run, found by its own address rather than
+     remembered in a variable — a suite that wipes accounts between tests then
+     simply recreates it on the next call. */
+  const email = `${ACCOUNT_EMAIL_PREFIX}policy-recorder@example.com`;
+  const existing = await db.account.findFirst({ where: { email }, select: { id: true } });
+  if (existing !== null) return existing.id;
+
+  const accountId = await seedAccount(email);
+  await grantAccountEntitlement(
+    { accountId, capability: "commercial-policy:govern", grantedAt: NOW },
+    { db },
+  );
+  await grantAccountEntitlement(
+    { accountId, capability: "risk-policy:govern", grantedAt: NOW },
+    { db },
+  );
+  return accountId;
 }
 
 async function seedInternalActor(capability: string): Promise<string> {
@@ -574,7 +601,7 @@ async function seedCommercialPolicy(): Promise<string> {
       retainedFixedAmountMinorUnits: 100,
       roundingPolicy: "HALF_UP_TO_MINOR_UNIT",
       effectiveFrom: NOW,
-      recordedByAccountId: RECORDER,
+      recordedByAccountId: await policyRecorder(),
       recordedAt: NOW,
     },
     { db },
@@ -583,7 +610,7 @@ async function seedCommercialPolicy(): Promise<string> {
     {
       policyId: policy.policyId,
       policyVersion: "1",
-      activatedByAccountId: RECORDER,
+      activatedByAccountId: await policyRecorder(),
       activatedAt: NOW,
     },
     { db },
@@ -602,7 +629,7 @@ async function seedRiskPolicy(): Promise<string> {
       requireSellerCommerceApproval: false,
       requireSellerPaymentReadiness: false,
       effectiveFrom: NOW,
-      recordedByAccountId: RECORDER,
+      recordedByAccountId: await policyRecorder(),
       recordedAt: NOW,
     },
     { db },
@@ -611,7 +638,7 @@ async function seedRiskPolicy(): Promise<string> {
     {
       policyId: policy.policyId,
       policyVersion: "1",
-      activatedByAccountId: RECORDER,
+      activatedByAccountId: await policyRecorder(),
       activatedAt: NOW,
     },
     { db },
@@ -1001,6 +1028,116 @@ describeDb("1.10 — marketplace refund governance and receipts", () => {
 
   // — 3 · Nothing current is ever substituted —
 
+  /* Phase 1.20 — a seller's refund terms are the seller's to declare.
+   *
+   * The Marketplace Policy every participant has accepted says "Monacado does
+   * not author a seller's refund terms", and `MARKETPLACE_REFUND_POSTURE`
+   * records `policyOwner: "SELLER"`. Until now the service read no account at
+   * all: `sellerParticipantId` and `recordedByAccountId` were unrelated
+   * caller-supplied strings, so any caller could publish terms binding any
+   * seller's future sales and sign them as anyone.
+   *
+   * Authority here is ownership, not an internal grant — which is why the
+   * Staff arm below matters as much as the stranger arm. */
+  describe("declaring a seller's refund terms is the seller's own act", () => {
+    async function otherSellerPolicy() {
+      const mine = await seedSellerDirect();
+      const theirs = await seedSellerDirect();
+      const policyId = await db.sellerRefundPolicy
+        .findUniqueOrThrow({ where: { sellerParticipantId: mine.participantId } })
+        .then((row) => row.id);
+      return { mine, theirs, policyId };
+    }
+
+    const v2 = (participantId: string, actor: string) => ({
+      policyVersion: "2",
+      sellerParticipantId: participantId,
+      terms: {
+        refundsAllowed: false,
+        eligibilityConditions: [] as never[],
+        refundWindowDays: null,
+        shippingRefundability: "NEVER_REFUNDED" as const,
+        procedureKind: "MONACADO_MEDIATED" as const,
+      },
+      document: {
+        title: "Returns and refunds",
+        sections: [
+          { key: "SUMMARY" as const, heading: "Summary", body: "All sales are final." },
+          { key: "SHIPPING" as const, heading: "Shipping", body: "Shipping is not refunded." },
+          { key: "PROCEDURE" as const, heading: "How", body: "Raise it with Monacado." },
+        ],
+      },
+      effectiveFrom: LATER,
+      recordedByAccountId: actor,
+      recordedAt: LATER,
+    });
+
+    it("refuses another seller, and refuses Staff holding every internal grant", async () => {
+      const { mine, theirs, policyId } = await otherSellerPolicy();
+
+      /* A different seller, acting for themselves, naming somebody else's
+         participant. Knowing the ids is not owning the terms. */
+      await expect(
+        recordSellerRefundPolicyVersion(
+          { policyId, ...v2(mine.participantId, theirs.accountId) },
+          { db },
+        ),
+      ).rejects.toMatchObject({ detail: ["SELLER_PARTICIPANT_MISMATCH"] });
+
+      /* And Staff. This is the doctrinal half: no internal capability opens
+         this door, because the accepted policy text says Monacado does not
+         author these terms. An account holding the entire vocabulary is still
+         refused — it holds no participant at all. */
+      const staff = await seedAccount();
+      for (const capability of ACCOUNT_CAPABILITIES) {
+        await grantAccountEntitlement({ accountId: staff, capability, grantedAt: NOW }, { db });
+      }
+      await expect(
+        recordSellerRefundPolicyVersion({ policyId, ...v2(mine.participantId, staff) }, { db }),
+      ).rejects.toMatchObject({ detail: ["ACTOR_PARTICIPANT_REQUIRED"] });
+
+      /* Neither reached a write. */
+      expect(await db.sellerRefundPolicyVersionRow.count({ where: { policyId } })).toBe(1);
+    });
+
+    it("refuses a stranger activating another seller's version, and lets the owner", async () => {
+      const { mine, theirs, policyId } = await otherSellerPolicy();
+      await recordSellerRefundPolicyVersion(
+        { policyId, ...v2(mine.participantId, mine.accountId) },
+        { db },
+      );
+
+      await expect(
+        activateSellerRefundPolicyVersion(
+          {
+            policyId,
+            policyVersion: "2",
+            activatedAt: LATER,
+            activatedByAccountId: theirs.accountId,
+          },
+          { db },
+        ),
+      ).rejects.toMatchObject({ detail: ["SELLER_PARTICIPANT_MISMATCH"] });
+
+      /* The standing version was not retired on the way to that refusal. */
+      const stillActive = await db.sellerRefundPolicyVersionRow.findFirstOrThrow({
+        where: { policyId, status: "ACTIVE" },
+      });
+      expect(stillActive.policyVersion).toBe("1");
+
+      const activated = await activateSellerRefundPolicyVersion(
+        {
+          policyId,
+          policyVersion: "2",
+          activatedAt: LATER,
+          activatedByAccountId: mine.accountId,
+        },
+        { db },
+      );
+      expect(activated.status).toBe("ACTIVE");
+    });
+  });
+
   describe("a seller who changes everything afterwards", () => {
     it("cannot alter the receipt for a purchase already made", async () => {
       const sale = await paidSale();
@@ -1063,7 +1200,12 @@ describeDb("1.10 — marketplace refund governance and receipts", () => {
         { db },
       );
       await activateSellerRefundPolicyVersion(
-        { policyId: bound.sellerRefundPolicyId!, policyVersion: "2", activatedAt: LATER },
+        {
+          policyId: bound.sellerRefundPolicyId!,
+          policyVersion: "2",
+          activatedAt: LATER,
+          activatedByAccountId: sale.seller.accountId,
+        },
         { db },
       );
       expect(await resolveSellerSupportContact(sale.seller.participantId, { db })).toMatchObject({

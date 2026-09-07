@@ -330,7 +330,9 @@ describeDb("Phase 0M.R1 — versioned commercial policy and activation risk reco
     await cleanup();
     RESTRICTOR = await seedOperator("participant:restrict");
     REVIEWER = await seedOperator("activation:review");
-    POLICY_ACTOR = await seedOperator("participant:restrict");
+    /* Phase 1.20 — recording and activating a policy version now requires the
+       narrow grant that governs Monacado's published commercial terms. */
+    POLICY_ACTOR = await seedOperator("commercial-policy:govern");
     await ensureShippedMarketplacePolicyActive(db, {
       recordedByAccountId: REVIEWER,
       now: NOW,
@@ -1122,6 +1124,132 @@ describeDb("Phase 0M.R1 — versioned commercial policy and activation risk reco
   });
 
   // — 9. Separation of duties —
+
+  /* Phase 1.20 — governing a published policy version is an entitled act.
+   *
+   * Until now these four mutations read no account at all: the actor was an
+   * opaque string written straight to the governance column, and this suite's
+   * own fixtures passed a synthetic id that named no `Account` row. Knowing a
+   * policy id was the whole of the authority over the marketplace's retention
+   * rate and its risk thresholds.
+   *
+   * One case, four mutations, and both wrong-actor shapes — the DISABLED and
+   * revoked arms are properties of `evaluateInternalCapability`, proven in
+   * block 8 above and in three other suites; re-proving them per policy family
+   * would be the same line four more times. */
+  describe("8b. policy-version authority is the persisted internal capability", () => {
+    async function commercialPolicyId(): Promise<string> {
+      const policy = await createCommercialPolicy(
+        { label: `authority ${(seq += 1)}`, now: NOW },
+        { db, ids: policyIds },
+      );
+      return policy.policyId;
+    }
+
+    it("records the activator on the version activated, first time and after", async () => {
+      /* Phase 1.20. Activation is its own governed act, and until now it left
+         no trace of itself: the actor was written onto the version being
+         RETIRED, so a first activation — where there is no incumbent — recorded
+         nobody at all, and a later one could only be reconstructed backwards
+         from whoever happened to be superseded. */
+      const first = await seedOperator("commercial-policy:govern");
+      const second = await seedOperator("commercial-policy:govern");
+      const policyId = await commercialPolicyId();
+
+      const version = (label: string) => ({
+        policyId,
+        policyVersion: label,
+        currency: "USD" as const,
+        retainedPercentageBasisPoints: 750,
+        retainedFixedAmountMinorUnits: 100,
+        roundingPolicy: "HALF_UP_TO_MINOR_UNIT" as const,
+        effectiveFrom: NOW,
+        recordedAt: NOW,
+      });
+
+      await recordCommercialPolicyVersion(
+        { ...version("1"), recordedByAccountId: first },
+        { db },
+      );
+      await activateCommercialPolicyVersion(
+        { policyId, policyVersion: "1", activatedByAccountId: first, activatedAt: NOW },
+        { db },
+      );
+
+      /* The first activation has no incumbent to retire, which is exactly the
+         case that recorded nothing before. */
+      const v1 = await db.commercialPolicyVersionRow.findFirstOrThrow({
+        where: { policyId, policyVersion: "1" },
+      });
+      expect(v1.activatedByAccountId).toBe(first);
+      expect(v1.activatedAt).not.toBeNull();
+      expect(v1.retiredByAccountId).toBeNull();
+
+      // A different operator supersedes it.
+      await recordCommercialPolicyVersion(
+        { ...version("2"), recordedByAccountId: first },
+        { db },
+      );
+      await activateCommercialPolicyVersion(
+        { policyId, policyVersion: "2", activatedByAccountId: second, activatedAt: LATER },
+        { db },
+      );
+
+      const [after1, after2] = await Promise.all([
+        db.commercialPolicyVersionRow.findFirstOrThrow({
+          where: { policyId, policyVersion: "1" },
+        }),
+        db.commercialPolicyVersionRow.findFirstOrThrow({
+          where: { policyId, policyVersion: "2" },
+        }),
+      ]);
+
+      /* v2 names who put it in force. v1 still names who put IT in force —
+         unchanged by being retired — and separately names who retired it. The
+         two facts are independent, which is the whole point. */
+      expect(after2.activatedByAccountId).toBe(second);
+      expect(after1.activatedByAccountId).toBe(first);
+      expect(after1.retiredByAccountId).toBe(second);
+      expect(after1.status).toBe("RETIRED");
+    });
+
+    it("refuses every policy mutation to an account without the exact grant", async () => {
+      const stranger = await seedAccount();
+      const wrongGrant = await seedOperator("risk-policy:govern");
+      const policyId = await commercialPolicyId();
+
+      for (const actor of [stranger, wrongGrant]) {
+        await expect(
+          recordCommercialPolicyVersion(
+            {
+              policyId,
+              policyVersion: "1",
+              currency: "USD",
+              retainedPercentageBasisPoints: 750,
+              retainedFixedAmountMinorUnits: 100,
+              roundingPolicy: "HALF_UP_TO_MINOR_UNIT",
+              effectiveFrom: NOW,
+              recordedByAccountId: actor,
+              recordedAt: NOW,
+            },
+            { db },
+          ),
+        ).rejects.toMatchObject({ code: "COMMERCIAL_POLICY_ACTOR_NOT_AUTHORIZED" });
+
+        await expect(
+          activateCommercialPolicyVersion(
+            { policyId, policyVersion: "1", activatedByAccountId: actor, activatedAt: NOW },
+            { db },
+          ),
+        ).rejects.toMatchObject({ code: "COMMERCIAL_POLICY_ACTOR_NOT_AUTHORIZED" });
+      }
+
+      /* Nothing was written on the way to any of those refusals — the checks
+         run before the read that would say which version stands. */
+      expect(await db.commercialPolicyVersionRow.count({ where: { policyId } })).toBe(0);
+    });
+
+  });
 
   describe("9. no self-restriction", () => {
     it("an entitled actor may not restrict their own participant", async () => {

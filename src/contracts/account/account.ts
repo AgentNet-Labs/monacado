@@ -257,6 +257,62 @@ export const ACCOUNT_CAPABILITIES = [
    * provider call, which `submitDisputeEvidence` performs as a separate act.
    */
   "dispute:evidence:approve",
+  /**
+   * Phase 1.20. A NINTH GRANT, and the first whose subject is not one named
+   * party but **every future transaction on the platform**.
+   *
+   * It authorises recording and activating the versioned commercial terms
+   * Monacado itself publishes: the commercial policy that sets retention on
+   * every sale, and the seller chargeback fee policy that sets what a finalized
+   * lost chargeback costs. Both answer the same question — what Monacado
+   * charges a seller — so one grant governs both. The two policies are separate
+   * *records* for a version-binding reason (sale time versus finalization
+   * time), which is not an authority reason.
+   *
+   * Minted rather than folded in, because every one of the eight grants above
+   * acts on a single subject: one participant's standing, one buyer's Order,
+   * one dispute, one worker. `participant:commerce-approve` is the nearest by
+   * flavour and the worst by fit — it clears one seller to transact; this sets
+   * the rate card for all of them.
+   *
+   * It authorises the policy version. It does not authorise an individual
+   * commercial decision, and it confers nothing over a seller's own documents.
+   */
+  "commercial-policy:govern",
+  /**
+   * Phase 1.20. A TENTH GRANT, deliberately NOT folded into the ninth.
+   *
+   * A risk policy version is not a commercial term, it is a safety control:
+   * `RiskPolicyVersionRow` carries `requireSellerCommerceApproval` and
+   * `requireSellerPaymentReadiness`, so activating a version with those false
+   * switches off the commerce-approval and payment-readiness gates
+   * marketplace-wide, and `maxSingleOrderCommercialAmountMinorUnits` sets the
+   * ceiling on a single sale.
+   *
+   * Sharing one grant with `commercial-policy:govern` would hand everyone who
+   * may set the commission rate the power to disable the pre-live controls.
+   * That is the exact silent widening this vocabulary has been split to prevent
+   * five times already.
+   */
+  "risk-policy:govern",
+  /**
+   * Phase 1.20. AN ELEVENTH GRANT, for the terms the marketplace itself
+   * operates under.
+   *
+   * It authorises putting a Marketplace Policy version in force — the document
+   * participants accept, that governs refund rights, dispute duties, and what
+   * Monacado may do. Activating one supersedes the standing terms for everybody
+   * on the platform.
+   *
+   * Not `commercial-policy:govern`: that grant sets what Monacado charges, a
+   * commercial term. This one changes the rules of participation. They are
+   * different governance domains, and an operator trusted to publish a rate is
+   * not thereby trusted to republish the terms of service.
+   *
+   * Bootstrap may still RECORD a draft under the weaker existing rule — a draft
+   * governs nobody. Only activation requires this.
+   */
+  "marketplace-policy:govern",
 ] as const;
 export const AccountCapability = z.enum(ACCOUNT_CAPABILITIES);
 export type AccountCapability = z.infer<typeof AccountCapability>;

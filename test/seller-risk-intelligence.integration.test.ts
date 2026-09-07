@@ -51,7 +51,8 @@ import {
 } from "../src/server/risk/seller-risk-review-policy-service";
 import {
   closeParticipantRiskReview,
-  openParticipantRiskReview,
+  openSystemParticipantRiskReview,
+  openStaffParticipantRiskReview,
   readParticipantRiskReviews,
   readOpenRiskReviews,
 } from "../src/server/risk/participant-risk-review-service";
@@ -882,20 +883,59 @@ d("1.13 · staff review records a decision and performs none", () => {
     await disconnectPrisma();
   });
 
+  /* Phase 1.20 — `triggerSource` no longer decides whether anyone is checked.
+   *
+   * It used to be a member of the input, and it selected the branch: "STAFF"
+   * authorized, "SYSTEM" did not. So the enum that described how a review arose
+   * also decided whether the caller needed an entitlement, and any caller could
+   * pick. The two provenances are now two functions, each writing its own
+   * `triggerSource`, and there is no longer an input through which the check
+   * can be sidestepped — the type system enforces that half.
+   *
+   * What remains testable is the half that is not structural: the staff path
+   * authorizes, and it had no coverage at all before now. */
+  it("requires the risk-review grant on the staff path, and records the opener", async () => {
+    const seller = await seedParticipant(["SELLER"]);
+    const policy = (await resolveActiveReviewPolicy({ db }))!;
+    const open = {
+      participantId: seller,
+      triggerAsOf: AS_OF,
+      reviewPolicyId: policy.policyId,
+      reviewPolicyVersion: policy.policyVersion,
+      reasons,
+      openedAt: NOW,
+    };
+
+    await expect(
+      openStaffParticipantRiskReview(
+        { ...open, actingAccountId: graph.unentitledAccountId },
+        { db },
+      ),
+    ).rejects.toBeInstanceOf(RiskReviewNotAuthorizedError);
+    expect(await db.participantRiskReview.count({ where: { participantId: seller } })).toBe(0);
+
+    const opened = await openStaffParticipantRiskReview(
+      { ...open, actingAccountId: graph.reviewerAccountId },
+      { db },
+    );
+    /* A person looked, so the review names them — where a SYSTEM-raised one
+       honestly names nobody. */
+    expect(opened.openedByAccountId).toBe(graph.reviewerAccountId);
+    expect(opened.triggerSource).toBe("STAFF");
+  });
+
   it("opens a review, records a disposition, and suspends nobody", async () => {
     const seller = await seedParticipant(["SELLER"]);
     const policy = (await resolveActiveReviewPolicy({ db }))!;
 
-    const opened = await openParticipantRiskReview(
+    const opened = await openSystemParticipantRiskReview(
       {
         participantId: seller,
-        triggerSource: "SYSTEM",
         triggerAsOf: AS_OF,
         reviewPolicyId: policy.policyId,
         reviewPolicyVersion: policy.policyVersion,
         reasons,
         openedAt: NOW,
-        actingAccountId: null,
       },
       { db },
     );
@@ -969,16 +1009,14 @@ d("1.13 · staff review records a decision and performs none", () => {
       { db },
     );
 
-    const opened = await openParticipantRiskReview(
+    const opened = await openSystemParticipantRiskReview(
       {
         participantId: subject,
-        triggerSource: "SYSTEM",
         triggerAsOf: AS_OF,
         reviewPolicyId: policy.policyId,
         reviewPolicyVersion: policy.policyVersion,
         reasons,
         openedAt: NOW,
-        actingAccountId: null,
       },
       { db },
     );
@@ -1027,16 +1065,14 @@ d("1.13 · staff review records a decision and performs none", () => {
       },
       { db },
     );
-    const opened = await openParticipantRiskReview(
+    const opened = await openSystemParticipantRiskReview(
       {
         participantId: subject,
-        triggerSource: "SYSTEM",
         triggerAsOf: AS_OF,
         reviewPolicyId: policy.policyId,
         reviewPolicyVersion: policy.policyVersion,
         reasons,
         openedAt: NOW,
-        actingAccountId: null,
       },
       { db },
     );
@@ -1059,17 +1095,15 @@ d("1.13 · staff review records a decision and performs none", () => {
     const policy = (await resolveActiveReviewPolicy({ db }))!;
     const open = {
       participantId: seller,
-      triggerSource: "SYSTEM" as const,
       triggerAsOf: AS_OF,
       reviewPolicyId: policy.policyId,
       reviewPolicyVersion: policy.policyVersion,
       reasons,
       openedAt: NOW,
-      actingAccountId: null,
     };
-    await openParticipantRiskReview(open, { db });
+    await openSystemParticipantRiskReview(open, { db });
     /* A re-firing daily signal is the same concern, not a second one. */
-    await expect(openParticipantRiskReview(open, { db })).rejects.toBeInstanceOf(
+    await expect(openSystemParticipantRiskReview(open, { db })).rejects.toBeInstanceOf(
       RiskReviewAlreadyOpenError,
     );
   });
@@ -1079,15 +1113,13 @@ d("1.13 · staff review records a decision and performs none", () => {
     const policy = (await resolveActiveReviewPolicy({ db }))!;
     const open = {
       participantId: seller,
-      triggerSource: "SYSTEM" as const,
       triggerAsOf: AS_OF,
       reviewPolicyId: policy.policyId,
       reviewPolicyVersion: policy.policyVersion,
       reasons,
       openedAt: NOW,
-      actingAccountId: null,
     };
-    const first = await openParticipantRiskReview(open, { db });
+    const first = await openSystemParticipantRiskReview(open, { db });
     await closeParticipantRiskReview(
       {
         reviewId: first.id,
@@ -1098,7 +1130,7 @@ d("1.13 · staff review records a decision and performs none", () => {
       { db },
     );
     /* Two events, not one row that changed its mind. */
-    const second = await openParticipantRiskReview(open, { db });
+    const second = await openSystemParticipantRiskReview(open, { db });
     expect(second.id).not.toBe(first.id);
   });
 
@@ -1111,10 +1143,9 @@ d("1.13 · staff review records a decision and performs none", () => {
        the review as its basis. */
     const seller = await seedParticipant(["SELLER"]);
     const policy = (await resolveActiveReviewPolicy({ db }))!;
-    const opened = await openParticipantRiskReview(
+    const opened = await openSystemParticipantRiskReview(
       {
         participantId: seller,
-        triggerSource: "SYSTEM",
         triggerAsOf: AS_OF,
         reviewPolicyId: policy.policyId,
         reviewPolicyVersion: policy.policyVersion,
@@ -1131,7 +1162,6 @@ d("1.13 · staff review records a decision and performs none", () => {
           },
         ],
         openedAt: NOW,
-        actingAccountId: null,
       },
       { db },
     );

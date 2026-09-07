@@ -211,6 +211,10 @@ export async function activateMarketplacePolicyVersion(
         status: "ACTIVE",
         activeMarker: input.policyId,
         activatedAt: new Date(input.activatedAt),
+        /* Phase 1.20 — `activatedByAccountId` was accepted by this function and
+           then discarded, so the governing terms recorded when they came into
+           force but never who put them there. It is durable now. */
+        activatedByAccountId: input.activatedByAccountId,
       },
     });
     return rowToRecord(row);

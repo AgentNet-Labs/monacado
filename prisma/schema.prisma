@@ -1315,6 +1315,18 @@ model CommercialPolicyVersionRow {
   retiredAt          DateTime? @db.DateTime(3)
   retiredByAccountId String?   @db.VarChar(191)
 
+  /// WHEN THIS VERSION BECAME THE GOVERNING ONE, and WHO PUT IT THERE
+  /// (Phase 1.20). NULL until activated, and NULL on rows activated before this
+  /// provenance existed — a truthful absence rather than a fabricated actor.
+  ///
+  /// Activation is its own governed act. It is deliberately NOT inferred from
+  /// `retiredByAccountId` on the version this one displaced: that column names
+  /// who retired the incumbent, it is absent entirely on a first activation
+  /// when there is no incumbent, and reading it backwards would attribute an
+  /// act to whoever happened to be superseded.
+  activatedAt          DateTime? @db.DateTime(3)
+  activatedByAccountId String?   @db.VarChar(191)
+
   /// Set to `policyId` while this version is ACTIVE and NULL otherwise, so the
   /// unique index below enforces AT MOST ONE ACTIVE VERSION PER POLICY while
   /// permitting any number of DRAFT and RETIRED ones. MySQL has no partial
@@ -3023,6 +3035,16 @@ model MarketplacePolicyVersionRow {
   activatedAt         DateTime? @db.DateTime(3)
   retiredAt           DateTime? @db.DateTime(3)
 
+  /// WHO PUT THIS VERSION IN FORCE, as the durable internal Account id
+  /// (Phase 1.20). Never an email. NULL until activated, and NULL on rows
+  /// activated before this provenance existed.
+  ///
+  /// `activatedAt` above already said when; this says who, which the activation
+  /// path accepted and then discarded. Activation is its own governed act and is
+  /// never inferred from the recorder of the version or from the retirement of
+  /// its predecessor.
+  activatedByAccountId String?   @db.VarChar(191)
+
   /// Set to `policyId` while ACTIVE and NULL otherwise, so the unique index
   /// enforces AT MOST ONE ACTIVE VERSION while permitting any number of DRAFT
   /// and RETIRED ones. MySQL has no partial indexes; the same technique
@@ -3712,6 +3734,18 @@ model RiskPolicyVersionRow {
 
   retiredAt          DateTime? @db.DateTime(3)
   retiredByAccountId String?   @db.VarChar(191)
+
+  /// WHEN THIS VERSION BECAME THE GOVERNING ONE, and WHO PUT IT THERE
+  /// (Phase 1.20). NULL until activated, and NULL on rows activated before this
+  /// provenance existed — a truthful absence rather than a fabricated actor.
+  ///
+  /// Activation is its own governed act. It is deliberately NOT inferred from
+  /// `retiredByAccountId` on the version this one displaced: that column names
+  /// who retired the incumbent, it is absent entirely on a first activation
+  /// when there is no incumbent, and reading it backwards would attribute an
+  /// act to whoever happened to be superseded.
+  activatedAt          DateTime? @db.DateTime(3)
+  activatedByAccountId String?   @db.VarChar(191)
 
   /// Set to `policyId` while ACTIVE and NULL otherwise, so the unique index
   /// enforces AT MOST ONE ACTIVE VERSION PER POLICY while permitting any number
@@ -4539,6 +4573,16 @@ model SellerRefundPolicyVersionRow {
   activatedAt         DateTime? @db.DateTime(3)
   retiredAt           DateTime? @db.DateTime(3)
 
+  /// WHO PUT THIS VERSION IN FORCE, as the durable internal Account id
+  /// (Phase 1.20). Never an email. NULL until activated, and NULL on rows
+  /// activated before this provenance existed.
+  ///
+  /// `activatedAt` above already said when; this says who, which the activation
+  /// path accepted and then discarded. Activation is its own governed act and is
+  /// never inferred from the recorder of the version or from the retirement of
+  /// its predecessor.
+  activatedByAccountId String?   @db.VarChar(191)
+
   /// Set to `policyId` while ACTIVE and NULL otherwise, so the unique index
   /// enforces AT MOST ONE ACTIVE VERSION per policy while permitting any number
   /// of DRAFT and RETIRED ones. MySQL has no partial indexes; the same technique
@@ -5254,6 +5298,18 @@ model SellerChargebackFeePolicyVersionRow {
   /// Set when the version leaves ACTIVE. NULL while it stands.
   retiredAt          DateTime? @db.DateTime(3)
   retiredByAccountId String?   @db.VarChar(191)
+
+  /// WHEN THIS VERSION BECAME THE GOVERNING ONE, and WHO PUT IT THERE
+  /// (Phase 1.20). NULL until activated, and NULL on rows activated before this
+  /// provenance existed — a truthful absence rather than a fabricated actor.
+  ///
+  /// Activation is its own governed act. It is deliberately NOT inferred from
+  /// `retiredByAccountId` on the version this one displaced: that column names
+  /// who retired the incumbent, it is absent entirely on a first activation
+  /// when there is no incumbent, and reading it backwards would attribute an
+  /// act to whoever happened to be superseded.
+  activatedAt          DateTime? @db.DateTime(3)
+  activatedByAccountId String?   @db.VarChar(191)
 
   /// Set to `policyId` while ACTIVE and NULL otherwise, so the unique index
   /// enforces AT MOST ONE ACTIVE VERSION per policy while permitting any number

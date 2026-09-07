@@ -67,6 +67,11 @@ import type {
 } from "../../contracts/marketplace/marketplace-policy";
 import { getPrisma } from "../db/client";
 import {
+  canGovernMarketplacePolicy,
+  isInternallyAuthorized,
+} from "../../contracts/account/internal-authorization";
+import { resolveInternalAuthorizationSubject } from "../account/internal-authorization-service";
+import {
   activateMarketplacePolicyVersion,
   ensureMarketplacePolicy,
   getActiveMarketplacePolicyVersion,
@@ -127,6 +132,28 @@ export const BOOTSTRAP_REFUSALS = [
   "SHIPPED_VERSION_RETIRED",
   /** The account named as the recorder does not exist. */
   "RECORDING_ACCOUNT_NOT_FOUND",
+  /**
+   * The recorder exists but is `DISABLED` (Phase 1.20).
+   *
+   * Distinct from `RECORDING_ACCOUNT_NOT_FOUND` because the two are different
+   * operator problems with different fixes: one is a mistyped or stale id, the
+   * other is a real colleague whose access has been withdrawn. Both refuse.
+   *
+   * The gap this closes was specific: the existence check selected `id` alone,
+   * so a disabled account could record the marketplace's governing terms and —
+   * with `--activate` — put them in force, retiring the standing version on the
+   * way. Disabling an account withdrew every power except this one.
+   */
+  "RECORDING_ACCOUNT_NOT_ACTIVE",
+  /**
+   * The actor may not put a Marketplace Policy version in force (Phase 1.20).
+   *
+   * Raised only for an activating run. Recording a draft keeps the weaker rule,
+   * because a draft governs nobody; activation supersedes the terms every
+   * participant is operating under, and an existing enabled account is not
+   * authority to do that.
+   */
+  "ACTIVATION_NOT_AUTHORIZED",
   /**
    * The requested version is not one this deployment ships (Phase 1.10).
    *
@@ -401,10 +428,34 @@ export async function bootstrapMarketplacePolicy(
   if (plannedAction !== "NO_CHANGE_ALREADY_DRAFT") {
     const recorder = await db.account.findUnique({
       where: { id: input.recordedByAccountId },
-      select: { id: true },
+      /* Identity and status only. The email and display name are not selected,
+         so they cannot reach this decision even by accident. */
+      select: { id: true, status: true },
     });
     if (recorder === null) {
       return { ...out, action: "REFUSED", refusal: "RECORDING_ACCOUNT_NOT_FOUND" };
+    }
+    /* Phase 1.20 — and a DISABLED account is not an operator. Existence proved
+       the id names somebody; only status proves they are still entrusted with
+       anything. `chargeback-fee-policy-service` asks both, citing this module
+       as the precedent it was correcting; this closes the omission. */
+    if (recorder.status !== "ACTIVE") {
+      return { ...out, action: "REFUSED", refusal: "RECORDING_ACCOUNT_NOT_ACTIVE" };
+    }
+
+    /* Phase 1.20 — and activation asks one question more.
+     *
+     * Recording a draft governs nobody, so it keeps the weaker rule this module
+     * already applied. Putting a version in force replaces the terms every
+     * participant accepted, and until now the whole of that authority was a
+     * configured account id. Checked BEFORE the record half runs, so a command
+     * that records and activates in one operation cannot leave a half-applied
+     * state it was never entitled to reach. */
+    if (wouldActivate) {
+      const subject = await resolveInternalAuthorizationSubject(input.recordedByAccountId, { db });
+      if (!isInternallyAuthorized(canGovernMarketplacePolicy(subject))) {
+        return { ...out, action: "REFUSED", refusal: "ACTIVATION_NOT_AUTHORIZED" };
+      }
     }
   }
 
