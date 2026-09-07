@@ -792,6 +792,26 @@ export async function createStorefrontSourceVersion(
         ]);
       }
 
+      /* Phase 1.19 — the ACTOR's own standing, on the authoring directions only.
+       *
+       * Classified by the discriminators this function already computes, rather
+       * than by a new vocabulary: `standingDown` and `reducingExposure` are the
+       * reductions; becoming operational, widening, and the presentation branch
+       * all bring new marketplace state into existence and are therefore
+       * authoring. There is no genuinely neutral mode — every call here mints an
+       * immutable source version — so the split is exhaustive with two members.
+       *
+       * The asymmetry is the accepted one, now reaching the actor as well as the
+       * owner: a participant whose authoring standing is withheld may still stop.
+       * Suspending, closing, and narrowing visibility stay available to whoever
+       * holds the authority for them, which on all three is SUPER_OWNER-exclusive
+       * and unchanged. Making "cannot activate" mean "cannot withdraw" is exactly
+       * what this phase corrected one layer up, and it must not reappear here. */
+      const reducesExposure = standingDown || reducingExposure;
+      if (!reducesExposure) {
+        await requireActorMayAuthor(tx, facts.actorParticipantId);
+      }
+
       /* Phase 1.15 — `storefront:activate` reaches the act it is named for.
        *
        * Until now this scope had NO reader of any kind, and the operation it
@@ -818,32 +838,16 @@ export async function createStorefrontSourceVersion(
        * and Phase 1.18 routed stand-down to `canSuspendStorefrontRecord`,
        * `canCloseStorefrontRecord`, and `canReduceStorefrontExposure`. All are
        * SUPER_OWNER-exclusive. Governance authority and participant standing stay
-       * independent gates, asked in that order. */
-      /* Phase 1.19 — the ACTOR's own standing, on the authoring directions only.
+       * independent gates, asked in that order.
        *
-       * Classified by the discriminators this function already computes, rather
-       * than by a new vocabulary: `standingDown` and `reducingExposure` are the
-       * reductions; becoming operational, widening, and the presentation branch
-       * all bring new marketplace state into existence and are therefore
-       * authoring. There is no genuinely neutral mode — every call here mints an
-       * immutable source version — so the split is exhaustive with two members.
-       *
-       * The asymmetry is the accepted one, now reaching the actor as well as the
-       * owner: a participant whose authoring standing is withheld may still stop.
-       * Suspending, closing, and narrowing visibility stay available to whoever
-       * holds the authority for them, which on all three is SUPER_OWNER-exclusive
-       * and unchanged. Making "cannot activate" mean "cannot withdraw" is exactly
-       * what this phase corrected one layer up, and it must not reappear here. */
-      const reducesExposure = standingDown || reducingExposure;
-      if (!reducesExposure) {
-        await requireActorMayAuthor(tx, facts.actorParticipantId);
-      }
-
-      /* And the OWNER's separate question — may this Storefront be operational
-         at all. Unchanged, and deliberately not merged with the check above:
-         one asks whether the actor may act, the other whether the shop may go
-         live. A delegated governor passing the first does not answer the
-         second. */
+       * PHASE 1.19 AMENDS ONE CLAUSE ABOVE. "Presentation edits still land"
+       * remains true of THIS seam, and remains true for a RESTRICTED owner —
+       * but it is no longer true of the function as a whole. A SUSPENDED or
+       * CLOSED actor is refused by the actor-standing gate a few lines up,
+       * before this is reached. What this gate itself asks is unchanged: the
+       * OWNER's operational eligibility, and only on the two increasing
+       * branches. The two predicates are independent and neither substitutes
+       * for the other. */
       if (becomingOperational || wideningExposure) {
         await assertStorefrontMayBecomeOperational(tx, current.ownerParticipantId);
       }

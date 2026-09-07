@@ -72,19 +72,6 @@ export class RefundRefusedError extends RefundError {
 }
 
 /**
- * A second refund was requested for one Order.
- *
- * A **refusal**, never treated as idempotent, and the asymmetry with `0M.9`'s
- * payment replay is intentional — `1.2` drew it first: a repeated payment
- * confirmation is a provider redelivering one fact, whereas a second refund of
- * one sale is either a duplicate credit or a partial refund arriving under the
- * wrong name. Both deserve to be surfaced.
- *
- * Note that this is distinct from a *retried* refund. Retrying an existing
- * refund row is idempotent by construction, through a stable provider
- * idempotency key; what is refused here is a second refund **record**.
- */
-/**
  * An account tried to start a refund on a buyer's behalf without the
  * entitlement that permits it (Phase 1.19).
  *
@@ -112,6 +99,19 @@ export class RefundActorNotAuthorizedError extends RefundError {
   }
 }
 
+/**
+ * A second refund was requested for one Order.
+ *
+ * A **refusal**, never treated as idempotent, and the asymmetry with `0M.9`'s
+ * payment replay is intentional — `1.2` drew it first: a repeated payment
+ * confirmation is a provider redelivering one fact, whereas a second refund of
+ * one sale is either a duplicate credit or a partial refund arriving under the
+ * wrong name. Both deserve to be surfaced.
+ *
+ * Note that this is distinct from a *retried* refund. Retrying an existing
+ * refund row is idempotent by construction, through a stable provider
+ * idempotency key; what is refused here is a second refund **record**.
+ */
 export class RefundAlreadyExistsError extends RefundError {
   constructor() {
     super("REFUND_ALREADY_EXISTS", "This Order has already been refunded");

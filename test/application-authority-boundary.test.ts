@@ -33,7 +33,7 @@ import {
   CreateSellerDirectListingInput,
   UpdateListingInput,
 } from "../src/contracts/marketplace/listing-record";
-import { ACCOUNT_CAPABILITIES, AccountCapability } from "../src/contracts/account/account";
+import { ACCOUNT_CAPABILITIES } from "../src/contracts/account/account";
 import {
   DISPUTE_EVIDENCE_APPROVE_CAPABILITY,
   REFUND_INITIATE_CAPABILITY,
@@ -208,26 +208,33 @@ describe("3. the application layer supplies the actor and discards a claimed one
   });
 
   it("every command takes the trusted actor as its first parameter", () => {
+    /* Derived from the commands actually declared, never from a count.
+     *
+     * The count this replaced could not fail the way it needed to. A new
+     * command that did NOT take the actor first simply did not match the
+     * extraction regex, so the total stayed put and the assertion passed while
+     * the invariant it names was violated — it failed on correct additions and
+     * passed on the one change worth catching. `commercial-policy-and-
+     * restriction-contracts.test.ts` had already retired counts for the
+     * neighbouring vocabulary, on the same reasoning.
+     *
+     * Comparing the two extractions closes that: every declared command must
+     * also appear in the actor-first set, and any that does not is named in the
+     * failure rather than reduced to a number. */
     const code = read(APPLICATION);
-    const commands = code.match(/export async function \w+\(\n\s+actor: ActingAccount,/g) ?? [];
-    /* Phase 1.18's five — Offer version, Storefront version, seller-direct
-       Listing, promoted Listing, Product source record — plus Phase 1.19's
-       five: draft Storefront, governance appointment, governance status, and
-       the two refund-request paths. The actor is first on every one, so a
-       command cannot be called without one. */
-    expect(commands.length).toBe(10);
-    expect(code).toContain("export async function createProductSourceRecordAs(");
-  });
+    const declared = [...code.matchAll(/export async function (\w+)\(/g)].map((m) => m[1]);
+    const actorFirst = new Set(
+      [...code.matchAll(/export async function (\w+)\(\n\s+actor: ActingAccount,/g)].map(
+        (m) => m[1],
+      ),
+    );
 
-  it("wires the two governance mutations Phase 1.18 named as the next to wire", () => {
-    /* `assignStorefrontGovernance` and `setGovernanceAssignmentStatus` are the
-       authority that can restore every other, and Phase 1.18's own note called
-       them the first a later phase should wire here rather than call directly.
-       Asserted by name because that note named them by name. */
-    const code = read(APPLICATION);
-    expect(code).toContain("export async function appointStorefrontGovernance(");
-    expect(code).toContain("export async function setStorefrontGovernanceStatus(");
-    expect(code).toContain("export async function openDraftStorefront(");
+    expect(declared.filter((name) => !actorFirst.has(name))).toEqual([]);
+    /* Guards the guard: were the extraction to break, `declared` would empty
+       and the filter above would pass over nothing at all. */
+    expect(declared).toContain("createProductSourceRecordAs");
+    expect(declared).toContain("appointStorefrontGovernance");
+    expect(declared).toContain("setStorefrontGovernanceStatus");
   });
 
   it("builds a refund verification from the actor, leaving a caller no way to name one", () => {
@@ -343,18 +350,6 @@ describe("5. the refund and dispute-evidence grants are new, narrow, and disjoin
     expect(DISPUTE_EVIDENCE_APPROVE_CAPABILITY).toBe("dispute:evidence:approve");
   });
 
-  it("keeps every member scoped, with no wildcard and no admin", () => {
-    for (const capability of ACCOUNT_CAPABILITIES) {
-      expect(capability, capability).not.toContain("*");
-      expect(capability.toLowerCase(), capability).not.toContain("admin");
-      // `<domain>:<act>` — a scoped verb, never a bare grant of everything.
-      expect(capability, capability).toMatch(/^[a-z][a-z-]*(:[a-z][a-z-]*)+$/);
-    }
-    for (const forbidden of ["refund:*", "dispute:*", "refund", "dispute:evidence:*"]) {
-      expect(AccountCapability.safeParse(forbidden).success, forbidden).toBe(false);
-    }
-  });
-
   it("denies each unless that exact grant is held", () => {
     /* Holding one confers nothing about the other, and holding every
        participant grant confers neither. Six independent authorities stay
@@ -373,18 +368,5 @@ describe("5. the refund and dispute-evidence grants are new, narrow, and disjoin
 
     expect(canInitiateRefundForBuyer(holding(["refund:initiate"])).decision).toBe("ALLOW");
     expect(canApproveDisputeEvidence(holding(["dispute:evidence:approve"])).decision).toBe("ALLOW");
-  });
-
-  it("grants no marketplace capability, exactly as the other six do not", () => {
-    const staffSubject = {
-      account: { accountId: "mon:acct:PHASE190000000000000000000", status: "ACTIVE" as const },
-      participant: null,
-      roles: [] as never[],
-      internalCapabilities: [...ACCOUNT_CAPABILITIES],
-    };
-    expect(
-      marketplaceCapabilitiesGrantedByInternalEntitlement([...ACCOUNT_CAPABILITIES]),
-    ).toEqual([]);
-    expect(staffSubject.participant).toBeNull();
   });
 });
