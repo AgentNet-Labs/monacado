@@ -1,7 +1,8 @@
 /**
- * The marketplace application boundary — SERVER ONLY (Phase 1.18).
+ * The marketplace application boundary — SERVER ONLY (Phase 1.18, extended 1.19).
  *
- * **The governed way to reach an Offer, Listing, or Storefront mutation.** Each
+ * **The governed way to reach an Offer, Listing, Storefront, or refund
+ * mutation.** Each
  * command takes an `ActingAccount` — a value only `resolveActingAccount` can
  * mint, from a session cookie — and the business input a caller legitimately
  * supplies. It then calls the domain service with the acting account id filled
@@ -32,17 +33,31 @@
  * to call `resolveActingAccount`, refuse `UNAUTHENTICATED` with a bounded 401,
  * and map the domain errors.
  *
- * The five commands wired here are the highest-authority mutations in the
- * module: authoring a Product source record, taking a Storefront live, mutating
- * an Offer's commercial source version, and creating a Listing on either branch.
+ * Phase 1.18 wired five commands — authoring a Product source record, taking a
+ * Storefront live, mutating an Offer's commercial source version, and creating
+ * a Listing on either branch — and named the ones it left out:
+ *
+ * > "`assignStorefrontGovernance` and `setGovernanceAssignmentStatus` are the
+ * > ones worth naming: appointing and revoking governance is the authority that
+ * > can restore every other, so they are the first commands a future route
+ * > phase should wire here rather than call directly."
+ *
+ * **Phase 1.19 wires them, and closes the debt beside them.** Five more
+ * commands: the two governance mutations, `openDraftStorefront` (whose
+ * self-ownership is the only basis on which a first `SUPER_OWNER` can later be
+ * appointed), and the two refund-request paths.
+ *
+ * The refund commands differ from the others in one way worth stating. The
+ * Offer, Listing, and Storefront commands supply `actingAccountId` through
+ * `withActor`; the refund commands construct a whole `verification` from the
+ * actor instead, because the refund service distinguishes three requesters and
+ * a caller must not be able to choose which one it is. There is deliberately
+ * **no guest command** — a guest holds no account, and fabricating one would
+ * create exactly the account 0M.9 promised not to.
  *
  * The remaining mutations keep their existing service entry points, and are
  * equally safe by construction now that no authority input can be forged on any
  * of them — this layer adds the actor guarantee, not the authority one.
- * `assignStorefrontGovernance` and `setGovernanceAssignmentStatus` are the ones
- * worth naming: appointing and revoking governance is the authority that can
- * restore every other, so they are the first commands a future route phase
- * should wire here rather than call directly.
  */
 
 import "../server-only";
@@ -51,8 +66,18 @@ import { createOfferSourceVersion } from "./offer-service";
 import type { OfferServiceDeps, OfferSnapshot } from "./offer-service";
 import { createSellerDirectListing, createPromotedListing } from "./listing-service";
 import type { ListingServiceDeps, ListingSnapshot } from "./listing-service";
-import { createStorefrontSourceVersion } from "./storefront-service";
+import {
+  assignStorefrontGovernance,
+  createDraftStorefront,
+  createStorefrontSourceVersion,
+  setGovernanceAssignmentStatus,
+} from "./storefront-service";
 import type { StorefrontServiceDeps, StorefrontSnapshot } from "./storefront-service";
+import type { StorefrontGovernanceAssignmentRecord } from "../../contracts/marketplace/storefront-record";
+import { initiateRefundRequest } from "./refund-initiation-service";
+import type { InitiateRefundRequestInput } from "./refund-initiation-service";
+import type { RefundServiceDeps } from "./order-refund-service";
+import type { OrderRefundRecord } from "../../contracts/marketplace/order-refund";
 import { ProductRepository } from "../product/product-repository";
 import type { ProductSourceRecord } from "../../contracts/product/product-source-record";
 import { getPrisma } from "../db/client";
@@ -115,6 +140,59 @@ export async function submitStorefrontSourceVersion(
   deps: StorefrontServiceDeps = {},
 ): Promise<StorefrontSnapshot> {
   return await createStorefrontSourceVersion(withActor(input, actor), deps);
+}
+
+/**
+ * Create a draft Storefront owned by the acting participant.
+ *
+ * Wired here because of what it bootstraps rather than what it writes. A
+ * Storefront begins with no governance assignments at all, and the owner's
+ * self-ownership is the only basis on which the first `SUPER_OWNER` can be
+ * appointed — so an actor forged at this step pre-authorizes every governance
+ * appointment that follows it. The draft itself is `DRAFT` and `PRIVATE` by
+ * construction; the authority it confers is the part worth protecting.
+ */
+export async function openDraftStorefront(
+  actor: ActingAccount,
+  input: ApplicationCommandInput,
+  deps: StorefrontServiceDeps = {},
+): Promise<StorefrontSnapshot> {
+  return await createDraftStorefront(withActor(input, actor), deps);
+}
+
+/**
+ * Appoint a participant to a Storefront governance role, or change one.
+ *
+ * **The authority that can restore every other**, which is why Phase 1.18's own
+ * note named it first among the commands a later phase should wire here rather
+ * than call directly. Phase 1.19 is that phase.
+ *
+ * The appointee (`participantId`) and the role remain the caller's to state —
+ * they are the act, not a claim about the caller. What the caller can no longer
+ * state is who is doing the appointing.
+ */
+export async function appointStorefrontGovernance(
+  actor: ActingAccount,
+  input: ApplicationCommandInput,
+  deps: StorefrontServiceDeps = {},
+): Promise<StorefrontGovernanceAssignmentRecord> {
+  return await assignStorefrontGovernance(withActor(input, actor), deps);
+}
+
+/**
+ * Suspend, revoke, or restore a Storefront governance assignment.
+ *
+ * The other half of the pair, and the half that removes authority rather than
+ * granting it. Revocation is a state change rather than a delete, so this is
+ * also the command that writes the record of who used to hold power — which is
+ * exactly why the actor behind it must be resolved rather than claimed.
+ */
+export async function setStorefrontGovernanceStatus(
+  actor: ActingAccount,
+  input: ApplicationCommandInput,
+  deps: StorefrontServiceDeps = {},
+): Promise<StorefrontGovernanceAssignmentRecord> {
+  return await setGovernanceAssignmentStatus(withActor(input, actor), deps);
 }
 
 /**
@@ -213,3 +291,87 @@ export async function createProductSourceRecordAs(
 
   return await new ProductRepository(db).createInitialProductSourceRecord({ record: attributed });
 }
+
+// — Refund initiation (Phase 1.19) —
+
+/**
+ * What a refund requester may state.
+ *
+ * `verification` is removed rather than restated, and that omission is the
+ * control: the two commands below construct it from the resolved actor, so
+ * there is no member through which a caller could name the account they are
+ * acting as, claim `OPERATOR`, or present a claim code belonging to somebody
+ * else's Order alongside an account id.
+ *
+ * `Omit` rather than a fresh type, so a field added to the service input
+ * reaches these commands automatically and a field *renamed* breaks the build
+ * here rather than silently going unsupplied.
+ */
+export type RefundRequestCommandInput = Omit<InitiateRefundRequestInput, "verification">;
+
+/**
+ * An authenticated buyer asks for their own money back.
+ *
+ * The account is the session's, full stop. `initiateRefundRequest` still checks
+ * it against the Order's own `buyerAccountId`/`claimedByAccountId` — that check
+ * establishes *whose Order this is* and is not weakened here. What this command
+ * establishes is the other half: that the account being checked is the account
+ * that actually asked.
+ *
+ * Both halves are needed and neither substitutes for the other. Ownership
+ * without identity meant anyone who knew an account id and an Order id could
+ * request somebody's refund; identity without ownership would let any signed-in
+ * account request anybody's.
+ */
+export async function requestOrderRefundAsBuyer(
+  actor: ActingAccount,
+  input: RefundRequestCommandInput,
+  deps: RefundServiceDeps = {},
+): Promise<OrderRefundRecord> {
+  return await initiateRefundRequest(
+    { ...input, verification: { kind: "BUYER_ACCOUNT", accountId: actor.accountId } },
+    deps,
+  );
+}
+
+/**
+ * An entitled operator starts a refund on a buyer's behalf.
+ *
+ * A separate command from its buyer sibling rather than one branching on a
+ * caller-supplied kind — the same reason a promoter and a seller reach the
+ * marketplace through different Listing commands. One command choosing its
+ * verification from the payload is how an ordinary buyer eventually receives
+ * the operator path.
+ *
+ * **This command does not decide anything.** The `refund:initiate` entitlement
+ * is resolved and asserted inside `initiateRefundRequest`, against persisted
+ * state, before any Order is read. Deciding out here would be a forgeable
+ * conclusion one layer up and would open a window in which a revoked grant
+ * could go unseen — the property this whole layer exists to preserve.
+ *
+ * **And it does not move money.** A refund request commits a `PENDING`
+ * obligation; the refund processor executes it later, under its own gate. An
+ * authenticated request is not a provider call.
+ */
+export async function requestOrderRefundAsOperator(
+  actor: ActingAccount,
+  input: RefundRequestCommandInput,
+  deps: RefundServiceDeps = {},
+): Promise<OrderRefundRecord> {
+  return await initiateRefundRequest(
+    { ...input, verification: { kind: "OPERATOR", actingAccountId: actor.accountId } },
+    deps,
+  );
+}
+
+/* A guest refund request is deliberately absent from this module.
+   
+   A guest holds no account, so there is nothing for this boundary to supply.
+   `initiateRefundRequest` with `kind: "GUEST_CLAIM_CODE"` remains the path, and
+   it is already the right shape: the claim code is a real credential, verified
+   against a stored digest, and every failure answers identically so that
+   nothing here becomes an oracle for which Orders exist.
+   
+   Minting an `ActingAccount` for a guest would fabricate exactly the account
+   0M.9 promised not to create, and would do it at the moment a buyer is asking
+   for their money back. */

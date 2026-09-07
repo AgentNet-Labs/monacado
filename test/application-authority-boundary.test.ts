@@ -6,7 +6,8 @@
  *   1. no marketplace input schema accepts an authorization conclusion;
  *   2. the trusted actor context cannot be built from data;
  *   3. the application layer supplies the actor and discards a claimed one;
- *   4. an internal (Staff) entitlement grants no marketplace authority.
+ *   4. an internal (Staff) entitlement grants no marketplace authority;
+ *   5. Phase 1.19's two new grants are narrow, minted, and mutually disjoint.
  *
  * The *rules* those inputs used to feed are asserted where they always were —
  * `offer-source-model.test.ts` block 21 for Product authority,
@@ -32,7 +33,13 @@ import {
   CreateSellerDirectListingInput,
   UpdateListingInput,
 } from "../src/contracts/marketplace/listing-record";
-import { ACCOUNT_CAPABILITIES } from "../src/contracts/account/account";
+import { ACCOUNT_CAPABILITIES, AccountCapability } from "../src/contracts/account/account";
+import {
+  DISPUTE_EVIDENCE_APPROVE_CAPABILITY,
+  REFUND_INITIATE_CAPABILITY,
+  canApproveDisputeEvidence,
+  canInitiateRefundForBuyer,
+} from "../src/contracts/account/internal-authorization";
 import {
   canAccrueCommission,
   canActivateStorefront,
@@ -203,11 +210,53 @@ describe("3. the application layer supplies the actor and discards a claimed one
   it("every command takes the trusted actor as its first parameter", () => {
     const code = read(APPLICATION);
     const commands = code.match(/export async function \w+\(\n\s+actor: ActingAccount,/g) ?? [];
-    /* Offer version, Storefront version, seller-direct Listing, promoted
-       Listing, and Product source record. The actor is first on every one, so a
+    /* Phase 1.18's five — Offer version, Storefront version, seller-direct
+       Listing, promoted Listing, Product source record — plus Phase 1.19's
+       five: draft Storefront, governance appointment, governance status, and
+       the two refund-request paths. The actor is first on every one, so a
        command cannot be called without one. */
-    expect(commands.length).toBe(5);
+    expect(commands.length).toBe(10);
     expect(code).toContain("export async function createProductSourceRecordAs(");
+  });
+
+  it("wires the two governance mutations Phase 1.18 named as the next to wire", () => {
+    /* `assignStorefrontGovernance` and `setGovernanceAssignmentStatus` are the
+       authority that can restore every other, and Phase 1.18's own note called
+       them the first a later phase should wire here rather than call directly.
+       Asserted by name because that note named them by name. */
+    const code = read(APPLICATION);
+    expect(code).toContain("export async function appointStorefrontGovernance(");
+    expect(code).toContain("export async function setStorefrontGovernanceStatus(");
+    expect(code).toContain("export async function openDraftStorefront(");
+  });
+
+  it("builds a refund verification from the actor, leaving a caller no way to name one", () => {
+    /* The refund service distinguishes a guest, an account holder, and an
+       operator, and a caller choosing which one it is would be the forgery this
+       layer exists to prevent. The command input omits `verification`
+       structurally; these two lines are what fill it in. */
+    const code = read(APPLICATION);
+    expect(code).toContain('Omit<InitiateRefundRequestInput, "verification">');
+    expect(code).toContain(
+      'verification: { kind: "BUYER_ACCOUNT", accountId: actor.accountId }',
+    );
+    expect(code).toContain(
+      'verification: { kind: "OPERATOR", actingAccountId: actor.accountId }',
+    );
+    /* And no guest command: a guest holds no account, so there is nothing for
+       this boundary to supply and fabricating one would create exactly the
+       account 0M.9 promised not to.
+
+       Asserted over the verifications this module actually BUILDS rather than
+       over the file's text, which also discusses the guest path in prose. Two
+       constructions, both naming the resolved actor — a third would be a
+       requester this layer cannot vouch for. */
+    const built = code.match(/verification: \{ kind: "[A-Z_]+"/g) ?? [];
+    expect(built).toEqual([
+      'verification: { kind: "BUYER_ACCOUNT"',
+      'verification: { kind: "OPERATOR"',
+    ]);
+    expect(code).not.toContain("export async function requestOrderRefundAsGuest");
   });
 
   it("makes no authorization decision of its own", () => {
@@ -276,5 +325,66 @@ describe("4. an internal entitlement grants no marketplace authority", () => {
     const code = read(BOUNDARY);
     expect(code).not.toContain("principal.actorType");
     expect(code).not.toContain("INTERNAL_OPERATOR_CAPABILITIES");
+  });
+});
+
+// — 5. The two Phase 1.19 grants are narrow, and minted rather than folded in —
+
+describe("5. the refund and dispute-evidence grants are new, narrow, and disjoint", () => {
+  it("mints both rather than widening an existing grant", () => {
+    /* Six capabilities existed and every one of them acts on a PARTICIPANT's
+       standing. Starting a refund acts on a buyer's Order; approving evidence
+       authorises an irreversible transmission to a card network. Different
+       subjects, so new grants — the same argument `participant:suspend` made
+       when it refused to be folded into `participant:restrict`. */
+    expect(ACCOUNT_CAPABILITIES).toContain("refund:initiate");
+    expect(ACCOUNT_CAPABILITIES).toContain("dispute:evidence:approve");
+    expect(REFUND_INITIATE_CAPABILITY).toBe("refund:initiate");
+    expect(DISPUTE_EVIDENCE_APPROVE_CAPABILITY).toBe("dispute:evidence:approve");
+  });
+
+  it("keeps every member scoped, with no wildcard and no admin", () => {
+    for (const capability of ACCOUNT_CAPABILITIES) {
+      expect(capability, capability).not.toContain("*");
+      expect(capability.toLowerCase(), capability).not.toContain("admin");
+      // `<domain>:<act>` — a scoped verb, never a bare grant of everything.
+      expect(capability, capability).toMatch(/^[a-z][a-z-]*(:[a-z][a-z-]*)+$/);
+    }
+    for (const forbidden of ["refund:*", "dispute:*", "refund", "dispute:evidence:*"]) {
+      expect(AccountCapability.safeParse(forbidden).success, forbidden).toBe(false);
+    }
+  });
+
+  it("denies each unless that exact grant is held", () => {
+    /* Holding one confers nothing about the other, and holding every
+       participant grant confers neither. Six independent authorities stay
+       six. */
+    const holding = (capabilities: string[]) => ({
+      accountId: "mon:acct:PHASE190000000000000000000",
+      accountStatus: "ACTIVE" as const,
+      capabilities: capabilities as never,
+    });
+    expect(canInitiateRefundForBuyer(holding(["dispute:evidence:approve"])).decision).toBe("DENY");
+    expect(canApproveDisputeEvidence(holding(["refund:initiate"])).decision).toBe("DENY");
+
+    const everyParticipantGrant = ACCOUNT_CAPABILITIES.filter((c) => c.startsWith("participant:"));
+    expect(canInitiateRefundForBuyer(holding([...everyParticipantGrant])).decision).toBe("DENY");
+    expect(canApproveDisputeEvidence(holding([...everyParticipantGrant])).decision).toBe("DENY");
+
+    expect(canInitiateRefundForBuyer(holding(["refund:initiate"])).decision).toBe("ALLOW");
+    expect(canApproveDisputeEvidence(holding(["dispute:evidence:approve"])).decision).toBe("ALLOW");
+  });
+
+  it("grants no marketplace capability, exactly as the other six do not", () => {
+    const staffSubject = {
+      account: { accountId: "mon:acct:PHASE190000000000000000000", status: "ACTIVE" as const },
+      participant: null,
+      roles: [] as never[],
+      internalCapabilities: [...ACCOUNT_CAPABILITIES],
+    };
+    expect(
+      marketplaceCapabilitiesGrantedByInternalEntitlement([...ACCOUNT_CAPABILITIES]),
+    ).toEqual([]);
+    expect(staffSubject.participant).toBeNull();
   });
 });

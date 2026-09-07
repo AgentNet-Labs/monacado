@@ -23,7 +23,9 @@ import { resolveActingAccount } from "../src/server/account/acting-participant-b
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
 import { createDraftStorefront } from "../src/server/marketplace/storefront-service";
 import {
+  appointStorefrontGovernance,
   createProductSourceRecordAs,
+  openDraftStorefront,
   submitStorefrontSourceVersion,
 } from "../src/server/marketplace/marketplace-application-service";
 import { StorefrontNotAuthorizedError } from "../src/server/marketplace/storefront-errors";
@@ -226,6 +228,110 @@ describe.skipIf(!RUN)("Phase 1.18 — the application authority boundary (dispos
       where: { internalStorefrontId: storefront.record.internalStorefrontId },
     });
     expect(versions).toBe(1);
+  });
+
+  /* Phase 1.19 — the same forgery, against the command that can restore every
+     other authority.
+
+     Appointing governance is how a revoked SUPER_OWNER would get their power
+     back, so it is the one command where a claimed identity buys the most. The
+     rules themselves (SUPER_OWNER-exclusivity, DISABLED accounts, strangers,
+     seizure by revoke-then-appoint) are asserted in
+     `storefront-persistence.integration.test.ts` and are not re-proved here.
+     What is new is that the two governance commands now sit behind the actor
+     boundary at all. */
+  it("appoints governance as the session's account, ignoring a payload identity", async () => {
+    const victim = await signIn();
+    const attacker = await signIn();
+
+    const storefront = await createDraftStorefront(
+      {
+        ownerParticipantId: victim.participantId,
+        publicHandle: `p119-governance-${(seq += 1)}`,
+        presentation: { displayName: "Victim Shop", tagline: null, summary: null },
+        actingAccountId: victim.accountId,
+        now: NOW,
+      },
+      { db },
+    );
+    const internalStorefrontId = storefront.record.internalStorefrontId;
+
+    const attackerResolution = await resolveActingAccount(
+      { cookieHeader: attacker.cookieHeader, now: NOW },
+      { db },
+    );
+    if (attackerResolution.outcome !== "AUTHENTICATED") throw new Error("unreachable");
+
+    await expect(
+      appointStorefrontGovernance(
+        attackerResolution.actor,
+        {
+          internalStorefrontId,
+          // Appointing THEMSELVES, while claiming to be the owner.
+          participantId: attacker.participantId,
+          role: "SUPER_OWNER",
+          now: LATER,
+          actingAccountId: victim.accountId,
+        },
+        { db },
+      ),
+    ).rejects.toBeInstanceOf(StorefrontNotAuthorizedError);
+
+    expect(await db.storefrontGovernanceAssignment.count({ where: { internalStorefrontId } })).toBe(
+      0,
+    );
+
+    /* And the owner, acting as themselves, still may — so the refusal above is
+       the forged identity being rejected rather than the command being inert. */
+    const ownerResolution = await resolveActingAccount(
+      { cookieHeader: victim.cookieHeader, now: NOW },
+      { db },
+    );
+    if (ownerResolution.outcome !== "AUTHENTICATED") throw new Error("unreachable");
+
+    const appointed = await appointStorefrontGovernance(
+      ownerResolution.actor,
+      {
+        internalStorefrontId,
+        participantId: victim.participantId,
+        role: "SUPER_OWNER",
+        now: LATER,
+      },
+      { db },
+    );
+    expect(appointed.role).toBe("SUPER_OWNER");
+    expect(appointed.status).toBe("ACTIVE");
+  });
+
+  it("refuses a draft Storefront owned by somebody else, whatever the payload claims", async () => {
+    /* Self-ownership established at creation is the only basis on which a first
+       SUPER_OWNER can later be appointed, so forging the actor here would
+       pre-authorize every governance act that follows. */
+    const victim = await signIn();
+    const attacker = await signIn();
+
+    const attackerResolution = await resolveActingAccount(
+      { cookieHeader: attacker.cookieHeader, now: NOW },
+      { db },
+    );
+    if (attackerResolution.outcome !== "AUTHENTICATED") throw new Error("unreachable");
+
+    const handle = `p119-draft-${(seq += 1)}`;
+    await expect(
+      openDraftStorefront(
+        attackerResolution.actor,
+        {
+          ownerParticipantId: victim.participantId,
+          publicHandle: handle,
+          presentation: { displayName: "Not Theirs", tagline: null, summary: null },
+          now: NOW,
+          actingAccountId: victim.accountId,
+        },
+        { db },
+      ),
+    ).rejects.toBeInstanceOf(StorefrontNotAuthorizedError);
+
+    expect(await db.storefront.count({ where: { publicHandle: handle } })).toBe(0);
   });
 
   // — 3. Product authority originates at the authenticated write —

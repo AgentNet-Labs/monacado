@@ -219,6 +219,44 @@ export const ACCOUNT_CAPABILITIES = [
    * that can do neither.
    */
   "participant:suspend",
+  /**
+   * Phase 1.19. A SEVENTH NARROW GRANT, and the first that is not about a
+   * participant at all.
+   *
+   * It authorises **starting a refund on a buyer's behalf**. Every capability
+   * above it acts on a participant's standing; this one acts on a buyer's
+   * Order, which is a different subject entirely — and the subject is why it is
+   * minted rather than folded into `participant:commerce-approve`, the only
+   * existing grant framed as a commercial operations authority. Clearing a
+   * seller to take money and returning a buyer's money are opposite acts on
+   * opposite parties.
+   *
+   * It authorises the **request** and nothing further. Approving a refund and
+   * executing one against the provider are separate acts under separate
+   * governance, and the refund processor remains the only thing that contacts
+   * a provider.
+   */
+  "refund:initiate",
+  /**
+   * Phase 1.19. AN EIGHTH NARROW GRANT, for the one-shot act.
+   *
+   * It authorises approving an assembled dispute-evidence package for
+   * submission. Submission is effectively irreversible — a dispute may
+   * typically be answered once — and part of what is sent is supplied by the
+   * seller, an interested party. So the approval is a named decision by an
+   * entitled internal account, and until Phase 1.19 the account was whatever
+   * string the caller passed.
+   *
+   * Not `participant:risk-review`, whose own note scopes it to reading metrics
+   * and recording a conclusion and explicitly authorises nothing executable —
+   * approving evidence IS the execution authority. Not
+   * `participant:commerce-approve`, which would hand every commerce approver
+   * the power to spend a dispute's single response window.
+   *
+   * It authorises the approval decision only. It does not authorise the
+   * provider call, which `submitDisputeEvidence` performs as a separate act.
+   */
+  "dispute:evidence:approve",
 ] as const;
 export const AccountCapability = z.enum(ACCOUNT_CAPABILITIES);
 export type AccountCapability = z.infer<typeof AccountCapability>;

@@ -76,11 +76,41 @@ export interface FeeCommandOptions {
   amountMinorUnits: number | null;
   currency: string | null;
   confirmProduction: boolean;
+  /**
+   * The internal Account recorded as having recorded or activated a version.
+   *
+   * `null` only for `inspect`, which writes nothing. A mutating command cannot
+   * reach `null` here — parsing refuses first.
+   */
+  actingAccountId: string | null;
 }
 
 export class FeeUsageError extends Error {}
 
-export function parseCommandOptions(argv: readonly string[]): FeeCommandOptions {
+/**
+ * Read the invocation.
+ *
+ * The acting account comes from `MONACADO_OPERATOR_ACCOUNT_ID` or
+ * `--acting-account=`. It is **required for a mutating command**: a governance
+ * row records who set what a finalized chargeback costs a seller, and a command
+ * that invented a recorder would be manufacturing the one fact the row exists
+ * to hold.
+ *
+ * Until Phase 1.19 the two call sites read
+ * `env.MONACADO_OPERATOR_ACCOUNT_ID ?? "operator"`. The variable was never
+ * documented and is not set anywhere, so the literal `"operator"` — a string
+ * that is not an account id and names nobody — was not a fallback but the live
+ * path. An unconfigured deployment activated a fee policy signed by a fiction.
+ *
+ * `inspect` requires no actor because it writes nothing, and requiring one
+ * would break the read-only command an operator runs most. That is the same
+ * line `marketplace-policy-bootstrap` draws when it defers its existence check
+ * until a write is actually about to happen.
+ */
+export function parseCommandOptions(
+  argv: readonly string[],
+  env: Record<string, string | undefined> = {},
+): FeeCommandOptions {
   const flagValue = (prefix: string): string | null => {
     const arg = argv.find((a) => a.startsWith(prefix));
     const value = arg === undefined ? "" : arg.slice(prefix.length).trim();
@@ -109,6 +139,16 @@ export function parseCommandOptions(argv: readonly string[]): FeeCommandOptions 
     throw new FeeUsageError("--currency= must be a three-letter ISO 4217 code");
   }
 
+  const actingAccountId =
+    flagValue("--acting-account=") ?? (env.MONACADO_OPERATOR_ACCOUNT_ID ?? "").trim();
+  const resolvedActor = actingAccountId === "" ? null : actingAccountId;
+
+  if (command !== "inspect" && resolvedActor === null) {
+    throw new FeeUsageError(
+      "no acting account: set MONACADO_OPERATOR_ACCOUNT_ID or pass --acting-account=<accountId>",
+    );
+  }
+
   return {
     command,
     json: argv.includes("--json"),
@@ -116,6 +156,7 @@ export function parseCommandOptions(argv: readonly string[]): FeeCommandOptions 
     amountMinorUnits,
     currency,
     confirmProduction: argv.includes("--confirm-production"),
+    actingAccountId: resolvedActor,
   };
 }
 
@@ -169,7 +210,7 @@ export async function main(
 ): Promise<number> {
   let options: FeeCommandOptions;
   try {
-    options = parseCommandOptions(argv);
+    options = parseCommandOptions(argv, env);
   } catch (error) {
     out(error instanceof FeeUsageError ? error.message : "usage error");
     return 2;
@@ -199,15 +240,18 @@ export async function main(
         amountMinorUnits: options.amountMinorUnits,
         currency: options.currency ?? SELLER_CHARGEBACK_FEE_BOOTSTRAP_DEFAULT.currency,
         effectiveFrom: at,
-        /* The acting account, as the durable internal Account id. Never an email. */
-        recordedByAccountId: env.MONACADO_OPERATOR_ACCOUNT_ID ?? "operator",
+        /* The acting account, as the durable internal Account id. Never an
+           email, and since Phase 1.19 never a placeholder: parsing refused a
+           mutating run without one, and the service refuses an id that names no
+           enabled account. Non-null by construction on this branch. */
+        recordedByAccountId: options.actingAccountId!,
         at,
       });
     } else if (options.command === "activate") {
       if (options.version === null) throw new FeeUsageError("--version= is required");
       await activateChargebackFeePolicyVersion({
         policyVersion: options.version,
-        activatedByAccountId: env.MONACADO_OPERATOR_ACCOUNT_ID ?? "operator",
+        activatedByAccountId: options.actingAccountId!,
         at,
       });
     }

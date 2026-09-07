@@ -27,6 +27,15 @@ import { recordCommerceApproval } from "../src/server/marketplace/participant-co
 import { imposeParticipantRestriction } from "../src/server/marketplace/participant-restriction-service";
 import { grantAccountEntitlement } from "../src/server/account/account-entitlement-service";
 import {
+  ensureMarketplacePolicy,
+  recordMarketplacePolicyVersion,
+} from "../src/server/policy/marketplace-policy-service";
+import {
+  MARKETPLACE_POLICY_CONTENT_REF_1,
+  MARKETPLACE_POLICY_VERSION_1,
+  MONACADO_MARKETPLACE_POLICY_ID,
+} from "../src/contracts/marketplace/marketplace-policy-content";
+import {
   assignStorefrontGovernance,
   createDraftStorefront,
   createStorefrontSourceVersion,
@@ -186,6 +195,56 @@ async function seedGovernedStorefront(overrides: Record<string, unknown> = {}) {
     { db },
   );
   return seeded;
+}
+
+/** An ACTIVE suspension row, which is what `readParticipantStanding` counts. */
+async function suspend(participantId: string): Promise<void> {
+  /* The suspension FK needs a policy VERSION row to exist. Recorded, never
+     activated — nothing here changes which policy stands. */
+  await ensureMarketplacePolicy(
+    { policyId: MONACADO_MARKETPLACE_POLICY_ID, label: "Marketplace Policy", now: NOW },
+    { db },
+  );
+  const existing = await db.marketplacePolicyVersionRow.findFirst({
+    where: {
+      policyId: MONACADO_MARKETPLACE_POLICY_ID,
+      policyVersion: MARKETPLACE_POLICY_VERSION_1,
+    },
+  });
+  if (existing === null) {
+    await recordMarketplacePolicyVersion(
+      {
+        policyId: MONACADO_MARKETPLACE_POLICY_ID,
+        policyVersion: MARKETPLACE_POLICY_VERSION_1,
+        contentRef: MARKETPLACE_POLICY_CONTENT_REF_1,
+        requiresReacceptance: false,
+        effectiveFrom: NOW,
+        recordedByAccountId: await accountFor(participantId),
+        recordedAt: NOW,
+      },
+      { db },
+    );
+  }
+
+  seq += 1;
+  await db.participantSuspension.create({
+    data: {
+      id: `mon:psus:${pad26(`P19SUS${seq}`)}`,
+      participantId,
+      reasonCode: "ADVERSE_OUTCOME_LEVEL_UNSUSTAINABLE",
+      status: "ACTIVE",
+      statusBeforeSuspension: "ACTIVE",
+      imposedAt: new Date(NOW),
+      imposedByAccountId: await accountFor(participantId),
+      marketplacePolicyId: MONACADO_MARKETPLACE_POLICY_ID,
+      marketplacePolicyVersion: MARKETPLACE_POLICY_VERSION_1,
+      activeForParticipantId: participantId,
+    },
+  });
+  await db.marketplaceParticipant.update({
+    where: { id: participantId },
+    data: { status: "SUSPENDED" },
+  });
 }
 
 /**
@@ -862,6 +921,144 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
     expect(allowed.role).toBe("ADMIN");
   });
 
+  /* Phase 1.19 — governance has an exposure direction, and standing follows it.
+
+     Both governance commands shared one helper, so the authoring gate that
+     rightly guards appointment also reached revocation. That contradicted
+     `participant-standing-service`'s own stated rule — "SCOPED TO AUTHORING,
+     not to standing down... it never gates suspending, ending, withdrawing,
+     closing" — and trapped a suspended owner into leaving a compromised ADMIN
+     in place.
+
+     Only the asymmetry is asserted here. A DISABLED account is refused both
+     directions above; a stranger is refused revocation by the seizure test;
+     neither is re-proved. */
+  describe("governance standing follows the exposure direction", () => {
+    it("lets a SUSPENDED owner revoke and suspend an existing assignment", async () => {
+      /* The case the correction exists for. The owner is sanctioned; the ADMIN
+         they appointed is not, and holds live authority over their Storefront.
+         Trapping the owner would turn a sanction on one participant into a
+         freeze on somebody else's power over their shop. */
+      const { ownerParticipantId, snapshot } = await seedGovernedStorefront();
+      const id = snapshot.record.internalStorefrontId;
+      const admin = await seedSeller();
+      const ownerAccount = await accountFor(ownerParticipantId);
+
+      await assignStorefrontGovernance(
+        {
+          internalStorefrontId: id,
+          participantId: admin,
+          role: "ADMIN",
+          actingAccountId: ownerAccount,
+          now: LATER,
+        },
+        { db },
+      );
+
+      await suspend(ownerParticipantId);
+
+      const suspended = await setGovernanceAssignmentStatus(
+        {
+          internalStorefrontId: id,
+          participantId: admin,
+          status: "SUSPENDED",
+          actingAccountId: ownerAccount,
+          now: LATER,
+        },
+        { db },
+      );
+      expect(suspended.status).toBe("SUSPENDED");
+
+      const revoked = await setGovernanceAssignmentStatus(
+        {
+          internalStorefrontId: id,
+          participantId: admin,
+          status: "REVOKED",
+          actingAccountId: ownerAccount,
+          now: LATER,
+        },
+        { db },
+      );
+      expect(revoked.status).toBe("REVOKED");
+
+      /* And the suspension is untouched — withdrawing authority is something a
+         suspended participant may do, not something that lifts the sanction.
+         (That the same owner still cannot INCREASE exposure is the next test;
+         it is the half that keeps this correction narrow.) */
+      const stillSuspended = await db.participantSuspension.count({
+        where: { participantId: ownerParticipantId, status: "ACTIVE" },
+      });
+      expect(stillSuspended).toBe(1);
+    });
+
+    it("still refuses that owner appointing anyone, or restoring what they revoked", async () => {
+      /* The other half, and the one that keeps the correction narrow. Reducing
+         exposure is permitted; increasing it is not. "Cannot activate" must not
+         come to mean "cannot withdraw" — and equally, "may withdraw" must not
+         come to mean "may appoint". */
+      const { ownerParticipantId, snapshot } = await seedGovernedStorefront();
+      const id = snapshot.record.internalStorefrontId;
+      const admin = await seedSeller();
+      const newcomer = await seedSeller();
+      const ownerAccount = await accountFor(ownerParticipantId);
+
+      await assignStorefrontGovernance(
+        {
+          internalStorefrontId: id,
+          participantId: admin,
+          role: "ADMIN",
+          actingAccountId: ownerAccount,
+          now: LATER,
+        },
+        { db },
+      );
+      await suspend(ownerParticipantId);
+      await setGovernanceAssignmentStatus(
+        {
+          internalStorefrontId: id,
+          participantId: admin,
+          status: "REVOKED",
+          actingAccountId: ownerAccount,
+          now: LATER,
+        },
+        { db },
+      );
+
+      // Appointing somebody new: refused.
+      await expect(
+        assignStorefrontGovernance(
+          {
+            internalStorefrontId: id,
+            participantId: newcomer,
+            role: "ADMIN",
+            actingAccountId: ownerAccount,
+            now: LATER,
+          },
+          { db },
+        ),
+      ).rejects.toMatchObject({ code: "PARTICIPANT_ACTION_NOT_PERMITTED" });
+
+      // Restoring the one they just revoked: equally refused. Restoration puts
+      // authority back into somebody's hands, so it asks what appointing asks.
+      await expect(
+        setGovernanceAssignmentStatus(
+          {
+            internalStorefrontId: id,
+            participantId: admin,
+            status: "ACTIVE",
+            actingAccountId: ownerAccount,
+            now: LATER,
+          },
+          { db },
+        ),
+      ).rejects.toMatchObject({ code: "PARTICIPANT_ACTION_NOT_PERMITTED" });
+
+      const assignments = await listGovernanceAssignments(id, { db });
+      expect(assignments.find((a) => a.participantId === admin)?.status).toBe("REVOKED");
+      expect(assignments.some((a) => a.participantId === newcomer)).toBe(false);
+    });
+  });
+
   // — 16/17. Authorization —
 
   it("16. refuses a stranger naming another participant as owner (Phase 1.18)", async () => {
@@ -963,6 +1160,142 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
     );
     expect(after.currentVersion.presentation.displayName).toBe("Edited By Admin");
     expect(after.currentVersion.authorizedByParticipantId).toBe(admin);
+  });
+
+  /* Phase 1.19 — an assignment says what an actor MAY do, never that they still
+     may do it.
+
+     `StorefrontActorFacts` carries no participant status, deliberately, so no
+     pure 0M.3A decision can depend on one. The service never supplied the
+     missing question either: the sole standing call on the version path asked
+     `current.ownerParticipantId`. So an ADMIN whose own participation was later
+     suspended — or ended outright — kept authoring through the assignment,
+     because the row still said ACTIVE and nothing re-asked its holder.
+
+     That an eligible ADMIN succeeds is test 17 above; that an ADMIN may not
+     activate or stand down is asserted in the activation block. Neither is
+     re-proved. */
+  describe("a governance assignment is exercised, not merely held", () => {
+    async function storefrontWithAdmin() {
+      const { ownerParticipantId, snapshot } = await seedStorefront();
+      const id = snapshot.record.internalStorefrontId;
+      const admin = await seedSeller();
+      const ownerAccount = await accountFor(ownerParticipantId);
+
+      await assignStorefrontGovernance(
+        {
+          internalStorefrontId: id,
+          participantId: ownerParticipantId,
+          role: "SUPER_OWNER",
+          actingAccountId: ownerAccount,
+          now: NOW,
+        },
+        { db },
+      );
+      await assignStorefrontGovernance(
+        {
+          internalStorefrontId: id,
+          participantId: admin,
+          role: "ADMIN",
+          actingAccountId: ownerAccount,
+          now: NOW,
+        },
+        { db },
+      );
+      return { id, admin, ownerParticipantId, ownerAccount };
+    }
+
+    /* Both withheld states, one proof each. Parameterised because the guarantee
+       is identical and only the seam differs: suspension is counted from the
+       mitigation rows, CLOSED is an independent authoritative status no
+       mitigation act can produce. */
+    const withheld = [
+      {
+        label: "SUSPENDED",
+        denial: "PARTICIPANT_ACTION_NOT_PERMITTED",
+        apply: async (participantId: string) => {
+          await suspend(participantId);
+        },
+      },
+      {
+        label: "CLOSED",
+        denial: "PARTICIPANT_LIFECYCLE_TERMINATED",
+        apply: async (participantId: string) => {
+          await db.marketplaceParticipant.update({
+            where: { id: participantId },
+            data: { status: "CLOSED" },
+          });
+        },
+      },
+    ] as const;
+
+    for (const { label, denial, apply } of withheld) {
+      it(`refuses a ${label} ADMIN authoring a version, though the owner is eligible`, async () => {
+        const { id, admin, ownerParticipantId } = await storefrontWithAdmin();
+        await apply(admin);
+
+        await expect(
+          createStorefrontSourceVersion(
+            {
+              internalStorefrontId: id,
+              sourceRecordVersion: "2",
+              presentation: presentation({ displayName: `Edited While ${label}` }),
+              actingAccountId: await accountFor(admin),
+              now: LATER,
+            },
+            { db },
+          ),
+        ).rejects.toMatchObject({ code: denial });
+
+        /* The owner is untouched and still fully eligible — proved by them
+           authoring the very version the ADMIN was refused. So owner standing
+           is not what refused the ADMIN, and cannot stand in for the actor's
+           own. */
+        const owner = await db.marketplaceParticipant.findUniqueOrThrow({
+          where: { id: ownerParticipantId },
+        });
+        expect([owner.status]).not.toContain(label);
+        const stillEditable = await createStorefrontSourceVersion(
+          {
+            internalStorefrontId: id,
+            sourceRecordVersion: "2",
+            presentation: presentation({ displayName: "Owner Still Authors" }),
+            actingAccountId: await accountFor(ownerParticipantId),
+            now: LATER,
+          },
+          { db },
+        );
+        expect(stillEditable.currentVersion.presentation.displayName).toBe("Owner Still Authors");
+
+        /* And the assignment itself still stands. This is an exercise-time
+           refusal, not a silent revocation — nothing here withdrew authority,
+           and the row is exactly what an appeal or a reinstatement needs. */
+        const assignments = await listGovernanceAssignments(id, { db });
+        expect(assignments.find((a) => a.participantId === admin)?.status).toBe("ACTIVE");
+      });
+    }
+
+    it("still lets a SUSPENDED SUPER_OWNER stand the Storefront down", async () => {
+      /* The reduction half, on the version path this time. Standing down is
+         SUPER_OWNER-exclusive and stays so; what must not happen is the actor
+         gate spreading onto it and trapping a suspended owner into leaving a
+         shop reachable. */
+      const { ownerParticipantId, snapshot } = await seedGovernedStorefront();
+      const id = snapshot.record.internalStorefrontId;
+      await suspend(ownerParticipantId);
+
+      const closed = await createStorefrontSourceVersion(
+        {
+          internalStorefrontId: id,
+          sourceRecordVersion: "2",
+          lifecycle: "CLOSED",
+          actingAccountId: await accountFor(ownerParticipantId),
+          now: LATER,
+        },
+        { db },
+      );
+      expect(closed.currentVersion.lifecycle).toBe("CLOSED");
+    });
   });
 
   // — 20/21. Lifecycle and visibility —

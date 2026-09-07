@@ -66,6 +66,8 @@ import {
   assertParticipantMayAuthorMarketplaceState,
 } from "./participant-standing-service";
 import { ParticipantActionNotPermittedError } from "./participant-standing-errors";
+import { assertParticipantLifecycleIsLive } from "./participant-closure-service";
+import { ParticipantLifecycleTerminatedError } from "./participant-closure-errors";
 import { readActingAccountRows } from "./acting-subject-service";
 import { readReadinessIn } from "./payment-account-service";
 import { resolveCommerceApproval } from "./participant-commerce-approval-service";
@@ -135,6 +137,11 @@ function isDomainError(error: unknown): boolean {
        though the database had broken, and the bounded denial code the seam
        produced would be lost. */
     error instanceof ParticipantActionNotPermittedError ||
+    /* Phase 1.19 — and a terminated participation is the same kind of answer.
+       It arrives from `assertParticipantLifecycleIsLive` on the authoring
+       paths, and reporting "the database broke" for "this participant has
+       closed" would lose a bounded, actionable refusal. */
+    error instanceof ParticipantLifecycleTerminatedError ||
     error instanceof StorefrontNotFoundError ||
     error instanceof StorefrontVersionNotFoundError ||
     error instanceof StorefrontNotAuthorizedError ||
@@ -259,16 +266,104 @@ async function resolveAuthorizationFacts(
  * a suspension withholds authoring marketplace state, and an appointment is
  * marketplace state. Authority first, standing second — the same order, and the
  * same two questions, as every other governed write in this phase.
+ *
+ * **Phase 1.19 splits the two questions apart, because they answer different
+ * acts.** See `requireGovernanceActorEnabled` below.
+ */
+/**
+ * The acting account must be enabled. Asked of **every** governance act.
+ *
+ * This is the identity question — *is there an actor at all* — and it is never
+ * relaxed. A DISABLED account performs no governance write of any kind, in
+ * either direction. Disabling an account withdraws the actor; it is not a
+ * marketplace sanction with an exposure direction, and there is no act it
+ * merely narrows.
+ */
+function requireGovernanceActorEnabled(
+  facts: { actor: { accountStatus: string } },
+  capability: string,
+): void {
+  if (facts.actor.accountStatus !== "ACTIVE") {
+    throw new StorefrontNotAuthorizedError(capability, ["ACCOUNT_DISABLED"]);
+  }
+}
+
+/**
+ * The acting participant must additionally be able to AUTHOR marketplace state.
+ *
+ * Asked only of governance acts that **increase exposure** — appointing an
+ * assignment, elevating a role, restoring a revoked one. Those bring new
+ * marketplace authority into existence, which is exactly what
+ * `assertParticipantMayAuthorMarketplaceState` gates.
+ *
+ * **It is deliberately NOT asked of acts that reduce exposure**, and Phase 1.19
+ * corrects the phase before it for asking. Both governance commands shared one
+ * helper, so the authoring gate reached revocation too — and
+ * `participant-standing-service` states the opposite rule in terms that leave
+ * no room:
+ *
+ * > "SCOPED TO AUTHORING, not to standing down. It gates the acts that bring
+ * > new marketplace state into existence; it never gates suspending, ending,
+ * > withdrawing, closing... A suspended participant must still be able to
+ * > stop."
+ *
+ * The consequence was the wrong way round in the same shape the account-status
+ * omission had been: a suspended owner could not revoke a compromised ADMIN or
+ * SUPER_OWNER, so a sanction meant to reduce a participant's reach instead
+ * froze somebody else's authority over their Storefront in place. "Cannot
+ * activate" had come to mean "cannot withdraw".
+ *
+ * This is the same asymmetry `assertStorefrontMayBecomeOperational` already
+ * draws for the Storefront itself — go-live and widening are gated, standing
+ * down never is — applied to the governance layer that sits above it.
  */
 async function requireGovernanceAdministrationStanding(
   tx: Tx,
   facts: { actor: { accountStatus: string }; actorParticipantId: string },
   capability: string,
 ): Promise<void> {
-  if (facts.actor.accountStatus !== "ACTIVE") {
-    throw new StorefrontNotAuthorizedError(capability, ["ACCOUNT_DISABLED"]);
-  }
-  await assertParticipantMayAuthorMarketplaceState(tx, facts.actorParticipantId);
+  requireGovernanceActorEnabled(facts, capability);
+  await requireActorMayAuthor(tx, facts.actorParticipantId);
+}
+
+/**
+ * The ACTING participant may bring new marketplace state into existence.
+ *
+ * **The actor, never the owner.** Phase 1.19's second correction, and the
+ * omission it closes is specific: `StorefrontActorFacts` has no
+ * `participantStatus` member — deliberately, under 0M.3A, so that no pure
+ * decision can come to depend on one — and nothing in the service supplied the
+ * missing question either. The only standing call on the version path asked
+ * `current.ownerParticipantId`. So an ACTIVE governance assignee whose own
+ * participation was later suspended, or ended outright, kept exercising the
+ * delegated authority the assignment had granted: the row said ACTIVE and
+ * nothing re-asked whether its holder still could.
+ *
+ * Two independent questions, and an assignment answers only the first:
+ *
+ *   1. **Does this actor hold authority over this Storefront?** An ACTIVE
+ *      `StorefrontGovernanceAssignment` answers that, durably.
+ *   2. **May this actor exercise it, in this direction, right now?** That is
+ *      asked here, at the act, against the authoritative rows — because it is a
+ *      fact that changes after the appointment is recorded.
+ *
+ * Both terminal and suspended participation are refused, in that order:
+ * `CLOSED` is an independent authoritative fact no mitigation act can produce,
+ * so it is asked through its own seam rather than folded into standing.
+ *
+ * This does **not** replace the owner's own eligibility, which is asked
+ * separately and answers a different question — whether the *Storefront* may be
+ * operational at all. A delegated governor cannot make an ineligible owner's
+ * shop live, and an eligible owner cannot lend operational authority to a
+ * suspended or closed delegate. Both predicates must pass; neither substitutes.
+ *
+ * Restrictions are deliberately not consulted, inheriting
+ * `assertParticipantMayAuthorMarketplaceState`'s rule: a RESTRICTED participant
+ * must keep drafting, or the restriction becomes unanswerable.
+ */
+async function requireActorMayAuthor(tx: Tx, actorParticipantId: string): Promise<void> {
+  await assertParticipantLifecycleIsLive(tx, actorParticipantId);
+  await assertParticipantMayAuthorMarketplaceState(tx, actorParticipantId);
 }
 
 function requireAllowed(decision: StorefrontAuthorityDecision): void {
@@ -724,6 +819,31 @@ export async function createStorefrontSourceVersion(
        * `canCloseStorefrontRecord`, and `canReduceStorefrontExposure`. All are
        * SUPER_OWNER-exclusive. Governance authority and participant standing stay
        * independent gates, asked in that order. */
+      /* Phase 1.19 — the ACTOR's own standing, on the authoring directions only.
+       *
+       * Classified by the discriminators this function already computes, rather
+       * than by a new vocabulary: `standingDown` and `reducingExposure` are the
+       * reductions; becoming operational, widening, and the presentation branch
+       * all bring new marketplace state into existence and are therefore
+       * authoring. There is no genuinely neutral mode — every call here mints an
+       * immutable source version — so the split is exhaustive with two members.
+       *
+       * The asymmetry is the accepted one, now reaching the actor as well as the
+       * owner: a participant whose authoring standing is withheld may still stop.
+       * Suspending, closing, and narrowing visibility stay available to whoever
+       * holds the authority for them, which on all three is SUPER_OWNER-exclusive
+       * and unchanged. Making "cannot activate" mean "cannot withdraw" is exactly
+       * what this phase corrected one layer up, and it must not reappear here. */
+      const reducesExposure = standingDown || reducingExposure;
+      if (!reducesExposure) {
+        await requireActorMayAuthor(tx, facts.actorParticipantId);
+      }
+
+      /* And the OWNER's separate question — may this Storefront be operational
+         at all. Unchanged, and deliberately not merged with the check above:
+         one asks whether the actor may act, the other whether the shop may go
+         live. A delegated governor passing the first does not answer the
+         second. */
       if (becomingOperational || wideningExposure) {
         await assertStorefrontMayBecomeOperational(tx, current.ownerParticipantId);
       }
@@ -898,6 +1018,18 @@ export async function assignStorefrontGovernance(
  * them could not answer who used to hold authority. The active-SUPER_OWNER
  * marker is cleared whenever the row stops being an active SUPER_OWNER, which is
  * what frees the seat for a successor.
+ *
+ * **One command, two exposure directions (Phase 1.19).** `SUSPENDED` and
+ * `REVOKED` reduce exposure; `ACTIVE` restores it. The authority rule —
+ * the Storefront owner, or an active SUPER_OWNER — is identical either way and
+ * is never relaxed. What differs is the standing question: restoring an
+ * assignment asks the authoring question that appointing asks, because it has
+ * the same effect; withdrawing one does not, because a participant who has been
+ * suspended must still be able to withdraw authority they granted.
+ *
+ * Nothing here lets a suspended participant activate a Storefront, appoint
+ * anyone, elevate a role, or publish commerce. Those are separate acts with
+ * their own gates, and every one of them still asks.
  */
 export async function setGovernanceAssignmentStatus(
   input: unknown,
@@ -933,11 +1065,27 @@ export async function setGovernanceAssignmentStatus(
         internalStorefrontId: data.internalStorefrontId,
       });
 
-      await requireGovernanceAdministrationStanding(
-        tx,
-        facts,
-        "storefront:governance:revoke-admin",
-      );
+      /* Phase 1.19 — the exposure direction decides which questions are asked.
+
+         `SUSPENDED` and `REVOKED` withdraw an assignment; `ACTIVE` restores
+         one. Restoring is indistinguishable in effect from appointing — it
+         puts governance authority back into somebody's hands — so it asks the
+         authoring question. Withdrawing asks only that the actor exists.
+
+         A suspended owner must be able to revoke a compromised ADMIN. Trapping
+         them would make a sanction on one participant into a freeze on another
+         participant's authority over their Storefront, which is the opposite
+         of what a suspension is for. */
+      const reducesExposure = data.status !== "ACTIVE";
+      if (reducesExposure) {
+        requireGovernanceActorEnabled(facts, "storefront:governance:revoke-admin");
+      } else {
+        await requireGovernanceAdministrationStanding(
+          tx,
+          facts,
+          "storefront:governance:revoke-admin",
+        );
+      }
 
       const actingAsOwner = facts.actorParticipantId === stable.ownerParticipantId;
       const actingAsSuperOwner =

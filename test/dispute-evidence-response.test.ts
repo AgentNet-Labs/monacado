@@ -34,6 +34,14 @@ import {
 } from "../src/server/payments/stripe-dispute-evidence-adapter";
 import { disputeEvidenceIdempotencyKey } from "../src/server/marketplace/dispute-evidence-idempotency";
 import { evaluateDisputeReadiness } from "../src/server/operations/dispute-readiness";
+import {
+  EvidenceUsageError,
+  parseCommandOptions as parseEvidenceOptions,
+} from "../scripts/dispute-evidence";
+import {
+  FeeUsageError,
+  parseCommandOptions as parseFeeOptions,
+} from "../scripts/chargeback-fee-policy";
 import { DISPUTE_EVIDENCE_CODES_NEVER_AVAILABLE } from "../src/contracts/marketplace/dispute-operations";
 import {
   LATEST_MARKETPLACE_POLICY_VERSION,
@@ -1121,5 +1129,72 @@ describe("1.12 — fraud and risk analytics belong to Phase 1.13", () => {
       "IMPLEMENTED_TEXT_ONLY_TEST_MODE",
     );
     expect("requiresRuling" in DISPUTE_EVIDENCE_SUBMISSION_SEAM).toBe(false);
+  });
+});
+
+// — 1.19 · The governed CLI actor —
+
+/* Phase 1.19. Both mutating scripts stamped a persistent actor column with
+   `env.MONACADO_OPERATOR_ACCOUNT_ID ?? "operator"`. The variable was
+   undocumented and set nowhere, so `"operator"` — a string that is not an
+   account id and names nobody — was not a fallback but the live path. One of
+   the two columns it reached, `approvedByAccountId`, is what authorises an
+   irreversible one-shot response to a card network.
+
+   Behavioural where behaviour can prove it: both `parseCommandOptions`
+   functions are exported and pure, so a missing actor is a real refusal to
+   assert rather than a source string to grep for. */
+describe("1.19 — a governed CLI act names a real operator or refuses", () => {
+  const ACCOUNT = `mon:acct:${"P19CL10000000000000000000A".slice(0, 26)}`;
+
+  it("refuses to approve dispute evidence with no operator configured", () => {
+    expect(() => parseEvidenceOptions(["--submit", "--dispute=d1", "--approve"], {})).toThrow(
+      EvidenceUsageError,
+    );
+  });
+
+  it("takes the approving operator from the environment, or from argv", () => {
+    expect(
+      parseEvidenceOptions(["--submit", "--dispute=d1", "--approve"], {
+        MONACADO_OPERATOR_ACCOUNT_ID: ACCOUNT,
+      }).approvingAccountId,
+    ).toBe(ACCOUNT);
+    expect(
+      parseEvidenceOptions(
+        ["--submit", "--dispute=d1", "--approve", `--approving-account=${ACCOUNT}`],
+        {},
+      ).approvingAccountId,
+    ).toBe(ACCOUNT);
+  });
+
+  it("needs no operator for the commands that write no actor", () => {
+    /* `status`, `prepare`, and an unapproved `submit` do write rows — but none
+       of them writes an actor column, and requiring an operator id to read a
+       backlog would break the command an operator runs most. */
+    for (const argv of [[], ["--prepare", "--dispute=d1"], ["--submit", "--dispute=d1"]]) {
+      expect(parseEvidenceOptions(argv, {}).approvingAccountId).toBeNull();
+    }
+  });
+
+  it("refuses to record or activate a fee policy with no operator configured", () => {
+    expect(() => parseFeeOptions(["--record", "--version=1.1.0", "--amount=3500"], {})).toThrow(
+      FeeUsageError,
+    );
+    expect(() => parseFeeOptions(["--activate", "--version=1.1.0"], {})).toThrow(FeeUsageError);
+  });
+
+  it("inspects the fee policy without one, because inspection writes nothing", () => {
+    expect(parseFeeOptions([], {}).actingAccountId).toBeNull();
+    expect(parseFeeOptions(["--record", "--version=1.1.0", "--amount=3500"], {
+      MONACADO_OPERATOR_ACCOUNT_ID: ACCOUNT,
+    }).actingAccountId).toBe(ACCOUNT);
+  });
+
+  it("keeps no placeholder actor literal in either script", () => {
+    /* The one property a parse test cannot reach: that no OTHER call site
+       reintroduces the substitute. Absence is what silently regresses. */
+    for (const path of ["scripts/dispute-evidence.ts", "scripts/chargeback-fee-policy.ts"]) {
+      expect(readCode(path), path).not.toContain('?? "operator"');
+    }
   });
 });

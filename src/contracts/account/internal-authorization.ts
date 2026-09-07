@@ -287,6 +287,86 @@ export function canReviewParticipantRisk(
   return evaluateInternalCapability(PARTICIPANT_RISK_REVIEW_CAPABILITY, subject);
 }
 
+/**
+ * The capability that authorizes starting a refund on a buyer's behalf
+ * (Phase 1.19).
+ *
+ * **The first internal grant whose subject is not a participant.** Every
+ * capability before it withholds or confers something about a participant's
+ * standing; this one reaches a buyer's Order. That is why it is minted rather
+ * than folded into `participant:commerce-approve` — clearing a seller to take
+ * money and returning a buyer's money are opposite acts on opposite parties,
+ * and reusing the commerce grant would hand every commerce approver the power
+ * to move money back out.
+ *
+ * **It authorizes the request, not the money.** A refund request commits a
+ * `PENDING` obligation and contacts no provider; the processor executes it. So
+ * this grant is narrow in the direction that matters: it is the authority to
+ * say a refund is owed, checked once, at the only point where an operator's
+ * identity is known.
+ *
+ * Narrow by construction: not `admin`, not `refund:*`, not a wildcard.
+ */
+export const REFUND_INITIATE_CAPABILITY =
+  "refund:initiate" as const satisfies AccountCapability;
+
+/**
+ * May this internal account start a refund on a buyer's behalf?
+ *
+ * Requires an explicit active `refund:initiate` entitlement, on exactly the
+ * terms every decision above requires its own. **No marketplace role confers
+ * it, and neither does being the buyer** — a buyer proves themselves with their
+ * own account or their claim code, through a different path entirely, and this
+ * subject has no field capable of carrying either.
+ */
+export function canInitiateRefundForBuyer(
+  subject: InternalAuthorizationSubject | null,
+): InternalAuthorizationDecision {
+  return evaluateInternalCapability(REFUND_INITIATE_CAPABILITY, subject);
+}
+
+/**
+ * The capability that authorizes approving a dispute-evidence package for
+ * submission (Phase 1.19).
+ *
+ * **The grant behind a one-shot, irreversible act.** A dispute may typically be
+ * answered once, the provider's own finality flag defaults to *yes*, and part
+ * of what is sent is supplied by the seller — an interested party in the
+ * outcome. Phase 1.12 built the approval state for exactly that reason and then
+ * accepted the approving account as a caller-supplied string, so the state
+ * recorded *that* somebody approved without establishing *who could*.
+ *
+ * **Separate from `participant:risk-review` in the direction that matters.**
+ * That grant's own note scopes it to reading analytics and recording a
+ * conclusion, and says it authorizes nothing executable. Approving evidence is
+ * the execution authority: it is what makes `submitDisputeEvidence` willing to
+ * call a provider at all.
+ *
+ * **It does not authorize the provider call.** Approval and submission stay two
+ * acts, and this grant reaches only the first.
+ *
+ * Narrow by construction: not `admin`, not `dispute:*`, not a wildcard.
+ */
+export const DISPUTE_EVIDENCE_APPROVE_CAPABILITY =
+  "dispute:evidence:approve" as const satisfies AccountCapability;
+
+/**
+ * May this internal account approve a dispute-evidence package for submission?
+ *
+ * Requires an explicit active `dispute:evidence:approve` entitlement. **A
+ * seller cannot hold it in any capacity that matters**: it is an internal
+ * capability, the two vocabularies are permanently disjoint, and this subject
+ * has no field for a marketplace role, a participant, or an ownership relation.
+ * Supplying the evidence and authorizing its transmission stay different
+ * authorities held by different parties, which is the whole point of the
+ * Phase 1.12 review stage.
+ */
+export function canApproveDisputeEvidence(
+  subject: InternalAuthorizationSubject | null,
+): InternalAuthorizationDecision {
+  return evaluateInternalCapability(DISPUTE_EVIDENCE_APPROVE_CAPABILITY, subject);
+}
+
 /** May this internal account read publication-worker operational health? */
 export function canReadPublicationWorkerStatus(
   subject: InternalAuthorizationSubject | null,

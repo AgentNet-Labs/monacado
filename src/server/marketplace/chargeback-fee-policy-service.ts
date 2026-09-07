@@ -50,6 +50,46 @@ export interface ChargebackFeePolicyDeps {
   ids?: { nextChargebackFeePolicyId(): string };
 }
 
+/**
+ * Refuse unless the recording account is a real, enabled account (Phase 1.19).
+ *
+ * `recordedByAccountId` and `retiredByAccountId` are governance columns: they
+ * say who set what a finalized chargeback costs a seller. Until now the value
+ * arrived as a string and was written unread, and the only caller — the
+ * `chargeback:fee` script — substituted the literal `"operator"` when no
+ * operator was configured. That made an unconfigured deployment able to
+ * activate a fee policy signed by nobody.
+ *
+ * This is `marketplace-policy-bootstrap`'s rule, with the status check it
+ * omits: *a recorder that does not exist is not a record*, and a DISABLED
+ * account is not an operator. It is checked **only when something is about to
+ * be written**, on that same precedent — reading versions needs no actor,
+ * because reading them changes nothing.
+ *
+ * No capability is required here, and that is a deliberate boundary rather than
+ * an oversight: no grant in the closed vocabulary governs commercial policy
+ * versions today, and minting one would be new authority this phase did not
+ * scope. What is closed here is the placeholder-actor hole. Naming a capability
+ * for policy governance is recorded as remaining work.
+ */
+async function assertRecordingAccountResolvable(
+  db: ReturnType<typeof getPrisma>,
+  accountId: string,
+): Promise<void> {
+  const account = await db.account.findUnique({
+    where: { id: accountId },
+    /* Identity and status only. The email and display name are not selected, so
+       they cannot reach this decision even by accident. */
+    select: { id: true, status: true },
+  });
+  if (account === null) {
+    throw new DisputeEvidenceRefusedError("RECORDING_ACCOUNT_NOT_FOUND");
+  }
+  if (account.status !== "ACTIVE") {
+    throw new DisputeEvidenceRefusedError("RECORDING_ACCOUNT_NOT_ACTIVE");
+  }
+}
+
 /** The resolved governing value, or `null` when nothing stands. */
 export interface ActiveChargebackFeePolicy {
   policyId: string;
@@ -150,6 +190,9 @@ export async function recordChargebackFeePolicyVersion(
     throw new DisputeEvidenceRefusedError("FEE_CURRENCY_NOT_ISO_4217");
   }
 
+  /* Before the policy row can be created as a side effect below. */
+  await assertRecordingAccountResolvable(db, input.recordedByAccountId);
+
   const policy =
     (await db.sellerChargebackFeePolicy.findUnique({
       where: { policyKey: SELLER_CHARGEBACK_FEE_POLICY_KEY },
@@ -216,6 +259,11 @@ export async function activateChargebackFeePolicyVersion(
   deps: ChargebackFeePolicyDeps = {},
 ): Promise<SellerChargebackFeePolicyVersionView> {
   const db = deps.db ?? getPrisma();
+
+  /* Activation is the consequential half — it changes what the next finalized
+     chargeback costs a seller — so the actor is established before anything is
+     read, let alone retired. */
+  await assertRecordingAccountResolvable(db, input.activatedByAccountId);
 
   const policy = await db.sellerChargebackFeePolicy.findUnique({
     where: { policyKey: SELLER_CHARGEBACK_FEE_POLICY_KEY },

@@ -34,7 +34,12 @@ import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { grantProductCreatorAuthority } from "./support/product-authority-fixture";
 import { createAccount } from "../src/server/account/account-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
-import { grantAccountEntitlement } from "../src/server/account/account-entitlement-service";
+import {
+  grantAccountEntitlement,
+  revokeAccountEntitlement,
+} from "../src/server/account/account-entitlement-service";
+import { REFUND_INITIATE_CAPABILITY } from "../src/contracts/account/internal-authorization";
+import { setAccountStatus } from "../src/server/account/account-service";
 import { recordCommerceApproval } from "../src/server/marketplace/participant-commerce-approval-service";
 import type { CommerceApprovalIdProvider } from "../src/server/marketplace/participant-commerce-approval-ids";
 import { createSellerDirectListing } from "../src/server/marketplace/listing-service";
@@ -52,6 +57,7 @@ import {
 import {
   advanceProceedsObligation,
   cancelOrder,
+  claimGuestOrder,
   recordPaymentResult,
 } from "../src/server/marketplace/order-service";
 import { ProceedsPayoutHeldError } from "../src/server/marketplace/order-errors";
@@ -2609,6 +2615,204 @@ describeDb("1.9 — refunds and tax reversals", () => {
       ).rejects.toMatchObject({
         refusals: expect.arrayContaining(["SELLER_REFUND_POLICY_FORBIDS_REFUND"]),
       });
+    });
+  });
+
+  // — 11d(ii) · Requester authority (Phase 1.19) —
+
+  /* Three requesters, three different proofs. The guest arm above is unchanged
+     and its refusal-uniformity is asserted there; these cover the two arms that
+     had no authority check at all.
+
+     The `OPERATOR` arm is the sharp one: it skipped buyer verification entirely
+     AND named its own audit actor, so it was a universal refund primitive for
+     anyone who could reach the service. It was held shut only by the absence of
+     a route. */
+  describe("who may start a refund", () => {
+    async function refundCount(orderId: string): Promise<number> {
+      return await db.orderRefund.count({ where: { orderId } });
+    }
+
+    it("refuses an operator holding no refund entitlement, and writes nothing", async () => {
+      const sale = await paidSale();
+      await recordTax(sale);
+      await expect(
+        initiateRefundRequest(
+          {
+            orderId: sale.orderId,
+            verification: { kind: "OPERATOR", actingAccountId: await seedAccount() },
+            reasonCode: "CUSTOMER_REQUEST",
+            requestedAt: REFUND_AT,
+          },
+          refundDeps(),
+        ),
+      ).rejects.toMatchObject({
+        code: "REFUND_ACTOR_NOT_AUTHORIZED",
+        reasonCodes: ["INTERNAL_CAPABILITY_NOT_GRANTED"],
+      });
+      expect(await refundCount(sale.orderId)).toBe(0);
+    });
+
+    it("refuses an operator account id that names no account", async () => {
+      const sale = await paidSale();
+      await recordTax(sale);
+      await expect(
+        initiateRefundRequest(
+          {
+            orderId: sale.orderId,
+            verification: { kind: "OPERATOR", actingAccountId: "operator" },
+            reasonCode: "CUSTOMER_REQUEST",
+            requestedAt: REFUND_AT,
+          },
+          refundDeps(),
+        ),
+      ).rejects.toMatchObject({ reasonCodes: ["INTERNAL_ACCOUNT_REQUIRED"] });
+      expect(await refundCount(sale.orderId)).toBe(0);
+    });
+
+    it("refuses a DISABLED operator that holds the entitlement", async () => {
+      const sale = await paidSale();
+      await recordTax(sale);
+      const accountId = await seedInternalActor(REFUND_INITIATE_CAPABILITY);
+      await setAccountStatus(accountId, "DISABLED", { db });
+      await expect(
+        initiateRefundRequest(
+          {
+            orderId: sale.orderId,
+            verification: { kind: "OPERATOR", actingAccountId: accountId },
+            reasonCode: "CUSTOMER_REQUEST",
+            requestedAt: REFUND_AT,
+          },
+          refundDeps(),
+        ),
+      ).rejects.toMatchObject({ reasonCodes: ["INTERNAL_ACCOUNT_DISABLED"] });
+      expect(await refundCount(sale.orderId)).toBe(0);
+    });
+
+    it("refuses an unauthorized operator before reading the Order, so it is no oracle", async () => {
+      /* An Order id that does not exist. An authorized operator would get the
+         uniform `REFUND_REFUSED`; an unauthorized one gets the authority
+         refusal — which is only true if authority is checked first, and which
+         is why the two errors are distinct classes rather than one. */
+      await expect(
+        initiateRefundRequest(
+          {
+            orderId: `mon:order:${pad26(`${TAG}NOSUCHORDER`)}`,
+            verification: { kind: "OPERATOR", actingAccountId: await seedAccount() },
+            reasonCode: "CUSTOMER_REQUEST",
+            requestedAt: REFUND_AT,
+          },
+          refundDeps(),
+        ),
+      ).rejects.toMatchObject({ code: "REFUND_ACTOR_NOT_AUTHORIZED" });
+    });
+
+    it("lets an entitled operator start one, records that account, and calls no provider", async () => {
+      const sale = await paidSale();
+      await recordTax(sale);
+      const accountId = await seedInternalActor(REFUND_INITIATE_CAPABILITY);
+
+      const refund = await initiateRefundRequest(
+        {
+          orderId: sale.orderId,
+          verification: { kind: "OPERATOR", actingAccountId: accountId },
+          reasonCode: "CUSTOMER_REQUEST",
+          requestedAt: REFUND_AT,
+        },
+        refundDeps(),
+      );
+
+      expect(refund.requestorKind).toBe("OPERATOR");
+      expect(refund.requestedByAccountId).toBe(accountId);
+      /* A request is an obligation, not a payment. The processor executes it
+         later under its own gate; nothing here reached Stripe, and no port was
+         supplied that could have. */
+      expect(refund.status).toBe("PENDING");
+      const row = await db.orderRefund.findUniqueOrThrow({ where: { id: refund.refundId } });
+      expect(row.providerRefundRef).toBeNull();
+      expect(row.attemptCount).toBe(0);
+    });
+
+    it("fails closed on the very next request after the grant is revoked", async () => {
+      const first = await paidSale();
+      await recordTax(first);
+      const accountId = await seedInternalActor(REFUND_INITIATE_CAPABILITY);
+      await initiateRefundRequest(
+        {
+          orderId: first.orderId,
+          verification: { kind: "OPERATOR", actingAccountId: accountId },
+          reasonCode: "CUSTOMER_REQUEST",
+          requestedAt: REFUND_AT,
+        },
+        refundDeps(),
+      );
+
+      await revokeAccountEntitlement(
+        { accountId, capability: REFUND_INITIATE_CAPABILITY, revokedAt: REFUND_AT },
+        { db },
+      );
+
+      const second = await paidSale();
+      await recordTax(second);
+      await expect(
+        initiateRefundRequest(
+          {
+            orderId: second.orderId,
+            verification: { kind: "OPERATOR", actingAccountId: accountId },
+            reasonCode: "CUSTOMER_REQUEST",
+            requestedAt: REFUND_AT,
+          },
+          refundDeps(),
+        ),
+      ).rejects.toMatchObject({ reasonCodes: ["INTERNAL_CAPABILITY_NOT_GRANTED"] });
+      expect(await refundCount(second.orderId)).toBe(0);
+    });
+
+    it("refuses an account that is not this Order's buyer, without saying why", async () => {
+      /* The `BUYER_ACCOUNT` arm had no test at all. Ownership is checked against
+         the Order's own columns — knowing an account id is not being it. */
+      const sale = await paidSale();
+      await recordTax(sale);
+      const stranger = await seedAccount();
+      await expect(
+        initiateRefundRequest(
+          {
+            orderId: sale.orderId,
+            verification: { kind: "BUYER_ACCOUNT", accountId: stranger },
+            reasonCode: "CUSTOMER_REQUEST",
+            requestedAt: REFUND_AT,
+          },
+          refundDeps(),
+        ),
+      ).rejects.toBeInstanceOf(RefundInitiationRefusedError);
+      expect(await refundCount(sale.orderId)).toBe(0);
+    });
+
+    it("accepts the account that claimed the guest Order, and fabricates nothing", async () => {
+      const sale = await paidSale();
+      await recordTax(sale);
+      const buyer = await seedAccount();
+      await claimGuestOrder(
+        {
+          orderId: sale.orderId,
+          guestClaimCode: sale.guestClaimCode!,
+          claimedByAccountId: buyer,
+          claimedAt: LATER,
+        },
+        { db },
+      );
+
+      const refund = await initiateRefundRequest(
+        {
+          orderId: sale.orderId,
+          verification: { kind: "BUYER_ACCOUNT", accountId: buyer },
+          reasonCode: "CUSTOMER_REQUEST",
+          requestedAt: REFUND_AT,
+        },
+        refundDeps(),
+      );
+      expect(refund.requestorKind).toBe("BUYER");
+      expect(refund.requestedByAccountId).toBe(buyer);
     });
   });
 

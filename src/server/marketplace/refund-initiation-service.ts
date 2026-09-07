@@ -52,6 +52,29 @@
  * a guest holds no account, so the purchase evidence is the only thing standing
  * between them and a seller's later change of mind.
  *
+ * ## Three requesters, three different proofs (Phase 1.19)
+ *
+ * A guest proves the purchase with their claim code. An account holder is
+ * matched against the Order's own `buyerAccountId`/`claimedByAccountId`. An
+ * operator proves **nothing about the purchase** — they are not the buyer — and
+ * instead holds an active `refund:initiate` entitlement, resolved here from
+ * persisted state before any Order is read.
+ *
+ * That third arm is new. It previously returned the caller's own
+ * `actingAccountId` unchecked, deferring the entitlement to "whatever route
+ * exposes this" — and no route ever did. So `kind: "OPERATOR"` skipped the buyer
+ * check entirely and named its own audit actor: a universal bypass held shut
+ * only by the absence of a caller. The deferral is discharged here, in the
+ * service, inside the same call that writes, rather than in a route that may
+ * never be written.
+ *
+ * **The identity half is discharged elsewhere.** `requestOrderRefundAsBuyer` and
+ * `requestOrderRefundAsOperator` in the marketplace application service take a
+ * trusted `ActingAccount` and build the verification from it, so a caller cannot
+ * name the account they are acting as. A guest has no account and gets no such
+ * command — there is nothing for a boundary to supply, and fabricating one would
+ * be the account the buyer declined to create.
+ *
  * **This is not a support portal.** It is the smallest service contract that lets
  * a buyer — account holder or guest — start a governed refund.
  */
@@ -63,8 +86,13 @@ import type {
 import type { RefundReasonCode } from "../../contracts/marketplace/order-refund";
 import type { OrderRefundRecord } from "../../contracts/marketplace/order-refund";
 import { getPrisma } from "../db/client";
+import {
+  canInitiateRefundForBuyer,
+  isInternallyAuthorized,
+} from "../../contracts/account/internal-authorization";
+import { resolveInternalAuthorizationSubject } from "../account/internal-authorization-service";
 import { hashGuestClaimCode } from "./guest-claim-code";
-import { RefundError } from "./refund-errors";
+import { RefundActorNotAuthorizedError, RefundError } from "./refund-errors";
 import { requestOrderRefund, type RefundServiceDeps } from "./order-refund-service";
 
 /**
@@ -153,13 +181,46 @@ async function verifyBuyer(
     }
 
     case "OPERATOR": {
-      /* An operator acting on a buyer's behalf. The ENTITLEMENT that permits it
-         is checked by whatever route exposes this — an internal command or a
-         protected endpoint — on the same terms as every other operator action in
-         this repository. What is recorded here is WHO acted, which is the fact a
-         later audit needs. */
+      /* The entitlement was resolved and asserted by `assertOperatorMayInitiate`
+         BEFORE this Order was read (Phase 1.19). By the time control reaches
+         here the account exists, is ACTIVE, and holds `refund:initiate`, so the
+         id recorded is a resolved account rather than a caller's claim.
+
+         Nothing further is asked of an operator here, and that is deliberate:
+         an operator is not the buyer and cannot be made to prove they are one.
+         Their authority is the entitlement, and the audit records which
+         entitled account used it. */
       return { requestedByAccountId: verification.actingAccountId };
     }
+  }
+}
+
+/**
+ * Refuse unless the acting account holds an active `refund:initiate`
+ * entitlement (Phase 1.19).
+ *
+ * **Checked before the Order is read**, which is the whole reason it is a
+ * separate function rather than a branch inside `verifyBuyer`. An unauthorized
+ * caller must not be able to tell a real Order id from an invented one, and the
+ * only way to guarantee that is to refuse before anything is looked up.
+ *
+ * Resolved from persisted state on every call — never a token claim, never a
+ * cache — so a revocation fails closed on the very next request. That is
+ * `assertRestrictionAuthority`'s rule, and this is the same rule for the same
+ * reason.
+ *
+ * Until this existed, `kind: "OPERATOR"` was a universal bypass: it skipped the
+ * buyer check entirely and named its own audit actor, so anyone who could reach
+ * the service could refund any Order and sign it as anybody.
+ */
+async function assertOperatorMayInitiate(
+  db: ReturnType<typeof getPrisma>,
+  actingAccountId: string,
+): Promise<void> {
+  const subject = await resolveInternalAuthorizationSubject(actingAccountId, { db });
+  const decision = canInitiateRefundForBuyer(subject);
+  if (!isInternallyAuthorized(decision)) {
+    throw new RefundActorNotAuthorizedError([...decision.reasonCodes]);
   }
 }
 
@@ -179,6 +240,16 @@ export async function initiateRefundRequest(
   deps: RefundServiceDeps = {},
 ): Promise<OrderRefundRecord> {
   const db = deps.db ?? getPrisma();
+
+  /* Authority first, before a single Order row is read (Phase 1.19). The two
+     buyer paths prove themselves against the Order and therefore must read it;
+     an operator proves themselves against their own entitlement and must not,
+     because a refusal that had already looked would be a refusal that could be
+     timed or distinguished. */
+  if (input.verification.kind === "OPERATOR") {
+    await assertOperatorMayInitiate(db, input.verification.actingAccountId);
+  }
+
   const { requestedByAccountId } = await verifyBuyer(db, input.orderId, input.verification);
 
   return requestOrderRefund(

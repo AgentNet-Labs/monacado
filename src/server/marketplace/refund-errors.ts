@@ -28,6 +28,7 @@ export type RefundErrorCode =
   | "INVALID_REFUND_INPUT"
   | "REFUND_NOT_FOUND"
   | "REFUND_REFUSED"
+  | "REFUND_ACTOR_NOT_AUTHORIZED"
   | "REFUND_ALREADY_EXISTS"
   | "TAX_REVERSAL_NOT_FOUND"
   | "REFUND_REQUEUE_REFUSED"
@@ -83,6 +84,34 @@ export class RefundRefusedError extends RefundError {
  * refund row is idempotent by construction, through a stable provider
  * idempotency key; what is refused here is a second refund **record**.
  */
+/**
+ * An account tried to start a refund on a buyer's behalf without the
+ * entitlement that permits it (Phase 1.19).
+ *
+ * Carries the internal vocabulary's own bounded reason codes —
+ * `INTERNAL_ACCOUNT_REQUIRED`, `INTERNAL_ACCOUNT_DISABLED`,
+ * `INTERNAL_CAPABILITY_NOT_GRANTED` — and nothing else. No Order id, no buyer,
+ * no amount, and **no statement about whether the Order exists**: this is
+ * raised before any Order is read, so there is nothing about one to leak even
+ * accidentally.
+ *
+ * Deliberately distinct from `RefundInitiationRefusedError`, which answers a
+ * *buyer* who failed to prove themselves and must stay uniform to avoid
+ * becoming an Order oracle. These two refusals are told apart because they are
+ * told to different audiences: an operator reading this needs to know their
+ * grant is missing, and learns nothing about anybody's purchase by being told.
+ */
+export class RefundActorNotAuthorizedError extends RefundError {
+  readonly reasonCodes: readonly string[];
+  /** The internal capability that was required. Named for the operator, never for a buyer. */
+  readonly requiredCapability = "refund:initiate";
+  constructor(reasonCodes: readonly string[]) {
+    super("REFUND_ACTOR_NOT_AUTHORIZED", "That account may not start a refund");
+    this.name = "RefundActorNotAuthorizedError";
+    this.reasonCodes = reasonCodes;
+  }
+}
+
 export class RefundAlreadyExistsError extends RefundError {
   constructor() {
     super("REFUND_ALREADY_EXISTS", "This Order has already been refunded");

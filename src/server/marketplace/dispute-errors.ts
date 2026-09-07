@@ -28,7 +28,8 @@ export type DisputeErrorCode =
   | "DISPUTE_REMEDIATION_REQUIRED"
   | "CORRUPT_DISPUTE_RECORD"
   | "DISPUTE_PERSISTENCE_FAILURE"
-  | "DISPUTE_EVIDENCE_REFUSED";
+  | "DISPUTE_EVIDENCE_REFUSED"
+  | "DISPUTE_EVIDENCE_ACTOR_NOT_AUTHORIZED";
 
 export class DisputeError extends Error {
   readonly code: DisputeErrorCode;
@@ -115,5 +116,34 @@ export class DisputeEvidenceRefusedError extends DisputeError {
     super("DISPUTE_EVIDENCE_REFUSED", "That dispute evidence action was refused");
     this.name = "DisputeEvidenceRefusedError";
     this.reason = reason;
+  }
+}
+
+/**
+ * An account tried to approve a dispute-evidence package without the
+ * entitlement that permits it (Phase 1.19).
+ *
+ * Separate from `DisputeEvidenceRefusedError` on purpose. That one answers
+ * "this package may not be sent" and is read by an operator deciding whether to
+ * chase a seller or accept a loss. This one answers "you may not be the person
+ * deciding", which is a fact about the caller and not about the dispute — and
+ * keeping them apart is what stops an authorization failure from being logged,
+ * counted, or reported as an evidence problem.
+ *
+ * Carries the internal vocabulary's own bounded reason codes and nothing else.
+ * Raised **before the preparation is read**, so it discloses neither whether the
+ * preparation exists nor anything about the dispute behind it.
+ */
+export class DisputeEvidenceActorNotAuthorizedError extends DisputeError {
+  readonly reasonCodes: readonly string[];
+  /** The internal capability that was required. An operator's fact, never a seller's. */
+  readonly requiredCapability = "dispute:evidence:approve";
+  constructor(reasonCodes: readonly string[]) {
+    super(
+      "DISPUTE_EVIDENCE_ACTOR_NOT_AUTHORIZED",
+      "That account may not approve dispute evidence",
+    );
+    this.name = "DisputeEvidenceActorNotAuthorizedError";
+    this.reasonCodes = reasonCodes;
   }
 }

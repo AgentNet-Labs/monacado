@@ -27,7 +27,15 @@ import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { grantProductCreatorAuthority } from "./support/product-authority-fixture";
 import { createAccount } from "../src/server/account/account-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
-import { grantAccountEntitlement } from "../src/server/account/account-entitlement-service";
+import {
+  grantAccountEntitlement,
+  revokeAccountEntitlement,
+} from "../src/server/account/account-entitlement-service";
+import {
+  DISPUTE_EVIDENCE_APPROVE_CAPABILITY,
+  PARTICIPANT_RISK_REVIEW_CAPABILITY,
+} from "../src/contracts/account/internal-authorization";
+import { setAccountStatus } from "../src/server/account/account-service";
 import { recordCommerceApproval } from "../src/server/marketplace/participant-commerce-approval-service";
 import type { CommerceApprovalIdProvider } from "../src/server/marketplace/participant-commerce-approval-ids";
 import { createSellerDirectListing } from "../src/server/marketplace/listing-service";
@@ -2286,7 +2294,13 @@ describeDb("1.11 — disputes and chargebacks", () => {
         { db, ids: disputeIds },
       );
       const approved = await approveDisputeEvidence(
-        { preparationId: pkg.preparationId, accountId: "acct-operator", at: DISPUTE_LATER },
+        {
+          preparationId: pkg.preparationId,
+          /* Phase 1.19: an entitled, ACTIVE account. The literal
+             `"acct-operator"` this used to pass named no Account at all. */
+          actingAccountId: await seedInternalActor(DISPUTE_EVIDENCE_APPROVE_CAPABILITY),
+          at: DISPUTE_LATER,
+        },
         { db },
       );
       expect(approved.approved).toBe(true);
@@ -2313,7 +2327,11 @@ describeDb("1.11 — disputes and chargebacks", () => {
         { db, ids: disputeIds },
       );
       await approveDisputeEvidence(
-        { preparationId: pkg.preparationId, accountId: "acct-operator", at: DISPUTE_LATER },
+        {
+          preparationId: pkg.preparationId,
+          actingAccountId: await seedInternalActor(DISPUTE_EVIDENCE_APPROVE_CAPABILITY),
+          at: DISPUTE_LATER,
+        },
         { db },
       );
 
@@ -2345,6 +2363,162 @@ describeDb("1.11 — disputes and chargebacks", () => {
         where: { id: pkg.preparationId },
       });
       expect(row.status).toBe("SUPERSEDED");
+    });
+
+    /* Phase 1.19 — who may approve.
+
+       The approval STATE was always explicit: `PREPARED → SUBMITTED` is not a
+       legal transition and `submitDisputeEvidence` refuses `NOT_APPROVED`,
+       both already asserted above. What was missing was the actor. `accountId`
+       arrived as a caller-supplied string and went straight into
+       `approvedByAccountId`, so the column recorded that somebody approved
+       while establishing nothing about who could.
+
+       Only the authority is asserted here. Supersession, deadline, provider
+       configuration, and the seller-attestation boundary are covered above and
+       are not re-proved. */
+    describe("approving evidence is a governed act", () => {
+      async function preparedPackage() {
+        const sale = await paidSale();
+        const outcome = await dispute(sale);
+        return await prepareDisputeEvidence(
+          { disputeId: outcome.disputeId, at: DISPUTE_LATER },
+          { db, ids: disputeIds },
+        );
+      }
+
+      async function expectUnapproved(preparationId: string) {
+        const row = await db.disputeEvidencePreparation.findUniqueOrThrow({
+          where: { id: preparationId },
+        });
+        expect(row.status).toBe("PREPARED");
+        expect(row.approvedByAccountId).toBeNull();
+        expect(row.approvedAt).toBeNull();
+      }
+
+      it("refuses an account id that names no account, and writes nothing", async () => {
+        /* The exact shape of the corrected script fallback: a string that is
+           not an account id and resolves to nobody. */
+        const pkg = await preparedPackage();
+        await expect(
+          approveDisputeEvidence(
+            { preparationId: pkg.preparationId, actingAccountId: "operator", at: DISPUTE_LATER },
+            { db },
+          ),
+        ).rejects.toMatchObject({
+          code: "DISPUTE_EVIDENCE_ACTOR_NOT_AUTHORIZED",
+          reasonCodes: ["INTERNAL_ACCOUNT_REQUIRED"],
+        });
+        await expectUnapproved(pkg.preparationId);
+      });
+
+      it("refuses a real account holding no entitlement", async () => {
+        const pkg = await preparedPackage();
+        await expect(
+          approveDisputeEvidence(
+            {
+              preparationId: pkg.preparationId,
+              actingAccountId: await seedAccount(),
+              at: DISPUTE_LATER,
+            },
+            { db },
+          ),
+        ).rejects.toMatchObject({ reasonCodes: ["INTERNAL_CAPABILITY_NOT_GRANTED"] });
+        await expectUnapproved(pkg.preparationId);
+      });
+
+      it("refuses a neighbouring capability — the grant is not folded in", async () => {
+        /* `participant:risk-review` is the nearest internal grant by subject and
+           the furthest by authority: its own contract note scopes it to reading
+           metrics and recording a conclusion, and says it authorises nothing
+           executable. Approving evidence IS the execution authority. */
+        const pkg = await preparedPackage();
+        await expect(
+          approveDisputeEvidence(
+            {
+              preparationId: pkg.preparationId,
+              actingAccountId: await seedInternalActor(PARTICIPANT_RISK_REVIEW_CAPABILITY),
+              at: DISPUTE_LATER,
+            },
+            { db },
+          ),
+        ).rejects.toMatchObject({ reasonCodes: ["INTERNAL_CAPABILITY_NOT_GRANTED"] });
+        await expectUnapproved(pkg.preparationId);
+      });
+
+      it("refuses a DISABLED account that holds the entitlement", async () => {
+        const pkg = await preparedPackage();
+        const accountId = await seedInternalActor(DISPUTE_EVIDENCE_APPROVE_CAPABILITY);
+        await setAccountStatus(accountId, "DISABLED", { db });
+        await expect(
+          approveDisputeEvidence(
+            { preparationId: pkg.preparationId, actingAccountId: accountId, at: DISPUTE_LATER },
+            { db },
+          ),
+        ).rejects.toMatchObject({ reasonCodes: ["INTERNAL_ACCOUNT_DISABLED"] });
+        await expectUnapproved(pkg.preparationId);
+      });
+
+      it("refuses before reading the preparation, so an unauthorized caller learns nothing", async () => {
+        /* A preparation id that does not exist. An authorized caller would get
+           PREPARATION_NOT_FOUND; an unauthorized one must not be able to tell
+           the two apart, which is only true if authority is checked first. */
+        await expect(
+          approveDisputeEvidence(
+            {
+              preparationId: `mon:evprp:${pad26(`${TAG}NOSUCH`)}`,
+              actingAccountId: await seedAccount(),
+              at: DISPUTE_LATER,
+            },
+            { db },
+          ),
+        ).rejects.toMatchObject({ code: "DISPUTE_EVIDENCE_ACTOR_NOT_AUTHORIZED" });
+      });
+
+      it("fails closed on the very next call after the grant is revoked", async () => {
+        const accountId = await seedInternalActor(DISPUTE_EVIDENCE_APPROVE_CAPABILITY);
+        const first = await preparedPackage();
+        await approveDisputeEvidence(
+          { preparationId: first.preparationId, actingAccountId: accountId, at: DISPUTE_LATER },
+          { db },
+        );
+
+        await revokeAccountEntitlement(
+          { accountId, capability: DISPUTE_EVIDENCE_APPROVE_CAPABILITY, revokedAt: DISPUTE_LATER },
+          { db },
+        );
+
+        const second = await preparedPackage();
+        await expect(
+          approveDisputeEvidence(
+            { preparationId: second.preparationId, actingAccountId: accountId, at: DISPUTE_LATER },
+            { db },
+          ),
+        ).rejects.toMatchObject({ reasonCodes: ["INTERNAL_CAPABILITY_NOT_GRANTED"] });
+        await expectUnapproved(second.preparationId);
+      });
+
+      it("records the resolved account, and contacts no provider", async () => {
+        const accountId = await seedInternalActor(DISPUTE_EVIDENCE_APPROVE_CAPABILITY);
+        const pkg = await preparedPackage();
+        const approved = await approveDisputeEvidence(
+          { preparationId: pkg.preparationId, actingAccountId: accountId, at: DISPUTE_LATER },
+          { db },
+        );
+        expect(approved.approved).toBe(true);
+
+        const row = await db.disputeEvidencePreparation.findUniqueOrThrow({
+          where: { id: pkg.preparationId },
+        });
+        expect(row.status).toBe("APPROVED");
+        expect(row.approvedByAccountId).toBe(accountId);
+        /* Approval is not submission. The provider counter and the submitted
+           instant stay untouched, and nothing was sent — this function holds no
+           port and could not have. */
+        expect(row.submittedAt).toBeNull();
+        expect(row.providerSubmissionCountAfter).toBeNull();
+        expect(row.attemptCount).toBe(0);
+      });
     });
 
     it("refuses to prepare once the deadline has passed", async () => {
@@ -2474,19 +2648,23 @@ describeDb("1.11 — disputes and chargebacks", () => {
   describe("the seller fee for a finalized lost chargeback", () => {
     /** Record and activate a fee version. The governed admin path, not a raw write. */
     async function activateFee(version: string, amountMinorUnits: number, currency = "USD") {
+      /* Phase 1.19: a real, enabled Account. The literal `"acct-admin"` this
+         used to pass named no account at all, which is precisely the
+         placeholder the service now refuses. */
+      const admin = await seedAccount();
       await recordChargebackFeePolicyVersion(
         {
           policyVersion: version,
           amountMinorUnits,
           currency,
           effectiveFrom: DISPUTE_AT,
-          recordedByAccountId: "acct-admin",
+          recordedByAccountId: admin,
           at: DISPUTE_AT,
         },
         { db },
       );
       return activateChargebackFeePolicyVersion(
-        { policyVersion: version, activatedByAccountId: "acct-admin", at: DISPUTE_AT },
+        { policyVersion: version, activatedByAccountId: admin, at: DISPUTE_AT },
         { db },
       );
     }
@@ -2638,7 +2816,10 @@ describeDb("1.11 — disputes and chargebacks", () => {
             amountMinorUnits: 9_999,
             currency: "USD",
             effectiveFrom: DISPUTE_AT,
-            recordedByAccountId: "acct-admin",
+            /* A real operator, so the refusal under test is the version
+               redefinition rather than the Phase 1.19 actor check that now
+               runs before it. */
+            recordedByAccountId: await seedAccount(),
             at: DISPUTE_AT,
           },
           { db },

@@ -70,9 +70,53 @@ export interface EvidenceCommandOptions {
   requestSellerStatement: boolean;
   approve: boolean;
   confirm: string | null;
+  /**
+   * The internal Account recorded as having approved a package.
+   *
+   * `null` unless `--approve` was passed, and non-null whenever it was —
+   * parsing refuses otherwise.
+   */
+  approvingAccountId: string | null;
 }
 
-export function parseCommandOptions(argv: readonly string[]): EvidenceCommandOptions {
+/**
+ * A malformed or under-specified invocation. Exits 2, before any database work.
+ *
+ * Carries `reason` rather than relying on `message`, matching how every refusal
+ * in this script is reported: the file deliberately never prints `error.message`
+ * because a database error's message can carry a connection string, and a test
+ * asserts that absence. `reason` is self-authored guidance with nothing
+ * external in it.
+ */
+export class EvidenceUsageError extends Error {
+  readonly reason: string;
+  constructor(reason: string) {
+    super(reason);
+    this.name = "EvidenceUsageError";
+    this.reason = reason;
+  }
+}
+
+/**
+ * Read the invocation.
+ *
+ * The approving account comes from `MONACADO_OPERATOR_ACCOUNT_ID` or
+ * `--approving-account=`, and is **required whenever `--approve` is passed**.
+ *
+ * Until Phase 1.19 this read `env.MONACADO_OPERATOR_ACCOUNT_ID ?? "operator"`.
+ * The variable was undocumented and unset, so the literal `"operator"` was the
+ * live path — and it was stamped into `approvedByAccountId`, the column that
+ * authorises an irreversible, one-shot transmission to a card network. An
+ * approval nobody signed is not an approval, and a placeholder is worse than no
+ * record because it looks like one.
+ *
+ * Every other command needs no actor: `status`, `prepare`, and an unapproved
+ * `submit` write rows, but none of them writes an actor column.
+ */
+export function parseCommandOptions(
+  argv: readonly string[],
+  env: Record<string, string | undefined> = {},
+): EvidenceCommandOptions {
   const flagValue = (prefix: string): string | null => {
     const arg = argv.find((a) => a.startsWith(prefix));
     const value = arg === undefined ? "" : arg.slice(prefix.length).trim();
@@ -83,13 +127,25 @@ export function parseCommandOptions(argv: readonly string[]): EvidenceCommandOpt
     : argv.includes("--submit")
       ? "submit"
       : "status";
+  const approve = argv.includes("--approve");
+  const supplied =
+    flagValue("--approving-account=") ?? (env.MONACADO_OPERATOR_ACCOUNT_ID ?? "").trim();
+  const approvingAccountId = supplied === "" ? null : supplied;
+
+  if (approve && approvingAccountId === null) {
+    throw new EvidenceUsageError(
+      "no approving account: set MONACADO_OPERATOR_ACCOUNT_ID or pass --approving-account=<accountId>",
+    );
+  }
+
   return {
     command,
     json: argv.includes("--json"),
     disputeId: flagValue("--dispute="),
     requestSellerStatement: argv.includes("--request-seller-statement"),
-    approve: argv.includes("--approve"),
+    approve,
     confirm: flagValue("--confirm="),
+    approvingAccountId,
   };
 }
 
@@ -169,10 +225,18 @@ export function formatReport(outcome: EvidenceCommandOutcome): string {
 export async function main(
   argv: readonly string[] = process.argv.slice(2),
   out: (line: string) => void = console.log,
+  env: Record<string, string | undefined> = process.env,
 ): Promise<number> {
-  const options = parseCommandOptions(argv);
+  let options: EvidenceCommandOptions;
+  try {
+    options = parseCommandOptions(argv, env);
+  } catch (error) {
+    /* Refused BEFORE a database client is used and before any row is read.
+       Exit 2 is this repository's usage code, matching `policy:bootstrap`. */
+    out(error instanceof EvidenceUsageError ? error.reason : "usage error");
+    return 2;
+  }
   const at = new Date().toISOString();
-  const env = process.env;
 
   const readiness = evaluateDisputeReadiness(at, env);
   const rows = await inspectOpenDisputes({ at, limit: 200 });
@@ -212,14 +276,15 @@ export async function main(
       const prepared = await prepareDisputeEvidence({ disputeId: options.disputeId, at });
 
       if (options.approve) {
-        /* The approving account is the operator running the command. A real
-           deployment resolves an entitled internal subject here; the id is
-           recorded either way, because an approval nobody signed is not an
-           approval. */
-        const accountId = env.MONACADO_OPERATOR_ACCOUNT_ID ?? "operator";
+        /* The approving account was required at parse time and is resolved
+           against persisted entitlement state by `approveDisputeEvidence`
+           itself — the account must exist, be ACTIVE, and hold
+           `dispute:evidence:approve`. Nothing is recorded for a caller who
+           holds none, because an approval nobody could make is not an
+           approval. Non-null by construction on this branch. */
         outcome.package = await approveDisputeEvidence({
           preparationId: prepared.preparationId,
-          accountId,
+          actingAccountId: options.approvingAccountId!,
           at,
         });
       } else {

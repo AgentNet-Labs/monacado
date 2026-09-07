@@ -56,7 +56,16 @@ import {
 } from "../../contracts/marketplace/dispute-evidence";
 import type { DisputeEvidenceCode } from "../../contracts/marketplace/dispute-operations";
 import { getPrisma } from "../db/client";
-import { DisputeEvidenceRefusedError, DisputeNotFoundError } from "./dispute-errors";
+import {
+  canApproveDisputeEvidence,
+  isInternallyAuthorized,
+} from "../../contracts/account/internal-authorization";
+import { resolveInternalAuthorizationSubject } from "../account/internal-authorization-service";
+import {
+  DisputeEvidenceActorNotAuthorizedError,
+  DisputeEvidenceRefusedError,
+  DisputeNotFoundError,
+} from "./dispute-errors";
 import { disputeEvidenceIdempotencyKey } from "./dispute-evidence-idempotency";
 import { assembleDisputeEvidenceMetadata } from "./dispute-evidence-metadata-service";
 import { cryptoDisputeIdProvider, type DisputeIdProvider } from "./dispute-ids";
@@ -331,17 +340,61 @@ export async function recordSellerAttestation(
 }
 
 /**
+ * Refuse unless the acting account holds an active `dispute:evidence:approve`
+ * entitlement (Phase 1.19).
+ *
+ * **Checked before the preparation is read.** An unauthorized caller learns
+ * neither whether the preparation exists nor anything about the dispute behind
+ * it — the same order of checks `assertRiskReviewAuthority` and
+ * `assertCommerceApprovalAuthority` follow, for the same reason.
+ *
+ * Resolved from persisted entitlement state on every call, so a revocation
+ * fails closed on the very next approval.
+ */
+async function assertEvidenceApprovalAuthority(
+  db: ReturnType<typeof getPrisma>,
+  actingAccountId: string,
+): Promise<void> {
+  const subject = await resolveInternalAuthorizationSubject(actingAccountId, { db });
+  const decision = canApproveDisputeEvidence(subject);
+  if (!isInternallyAuthorized(decision)) {
+    throw new DisputeEvidenceActorNotAuthorizedError([...decision.reasonCodes]);
+  }
+}
+
+/**
  * Approve a prepared package for submission.
  *
- * The governed transition. Refuses if a provider event has arrived since the
- * package was prepared, because the approval would then describe a dispute that
- * has since moved.
+ * The governed transition, and since Phase 1.19 a governed *actor* as well.
+ *
+ * The state was always explicit — `PREPARED → APPROVED` is a real transition,
+ * and `submitDisputeEvidence` refuses `NOT_APPROVED` without it — so presence
+ * has never been approval at the package level. What was missing is who could
+ * make it: `accountId` arrived as a caller-supplied string, was never resolved,
+ * and went straight into `approvedByAccountId`. The column recorded *that*
+ * somebody approved while establishing nothing about *who could*, which is the
+ * one fact it exists to hold. A script with no configuration stamped the literal
+ * `"operator"` there.
+ *
+ * Now the actor is resolved and entitled before anything is read. The parameter
+ * is `actingAccountId` rather than `accountId` for the reason every other
+ * governed service in this repository names it that way: it is who is acting,
+ * and it is trusted only because this function verified it.
+ *
+ * Refuses if a provider event has arrived since the package was prepared,
+ * because the approval would then describe a dispute that has since moved.
+ *
+ * **Approving is not sending.** No provider is contacted here, and none can be:
+ * this function holds no port and reads none. `submitDisputeEvidence` is the
+ * separate act, and it re-reads the approval it depends on.
  */
 export async function approveDisputeEvidence(
-  input: { preparationId: string; accountId: string; at: string },
+  input: { preparationId: string; actingAccountId: string; at: string },
   deps: DisputeEvidenceServiceDeps = {},
 ): Promise<DisputeEvidencePackageView> {
   const db = deps.db ?? getPrisma();
+
+  await assertEvidenceApprovalAuthority(db, input.actingAccountId);
 
   const preparation = await db.disputeEvidencePreparation.findUnique({
     where: { id: input.preparationId },
@@ -367,7 +420,9 @@ export async function approveDisputeEvidence(
     where: { id: preparation.id },
     data: {
       status: "APPROVED",
-      approvedByAccountId: input.accountId,
+      /* A resolved, entitled, ACTIVE account — never the caller's claim about
+         one, and never a script's placeholder. */
+      approvedByAccountId: input.actingAccountId,
       approvedAt: new Date(input.at),
     },
   });
