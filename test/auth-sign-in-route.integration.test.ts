@@ -38,6 +38,7 @@ import {
   SIGN_IN_ERROR_CODES,
   handleSignInRequest,
 } from "../src/server/account/sign-in-route-handler";
+import { createFakeSignInThrottle } from "./support/sign-in-throttle-fake";
 
 const RUN = process.env.RUN_DB_TESTS === "1";
 const db = RUN ? getPrisma() : (undefined as unknown as ReturnType<typeof getPrisma>);
@@ -93,6 +94,13 @@ async function seedAccount() {
   return { accountId: account.accountId, email };
 }
 
+/* Phase 1.23 added shared abuse protection ahead of credential verification.
+   Production resolves a Redis-backed throttle and refuses when it is missing;
+   these cases are about the 1.22 pipe, so they inject a fake with a budget none
+   of them comes close to spending. Its behaviour is proved separately in
+   `auth-sign-in-abuse-protection.integration.test.ts`. */
+let throttle = createFakeSignInThrottle();
+
 const submit = (
   body: unknown,
   overrides: { contentType?: string | null; origin?: string | null } = {},
@@ -103,7 +111,7 @@ const submit = (
       originHeader: overrides.origin === undefined ? ORIGIN : overrides.origin,
       rawBody: typeof body === "string" ? body : JSON.stringify(body),
     },
-    { db, appOrigin: ORIGIN, now: () => NOW },
+    { db, appOrigin: ORIGIN, now: () => NOW, throttle },
   );
 
 /** The token as a browser would send it back. */
@@ -117,6 +125,7 @@ const describeDb = RUN ? describe : describe.skip;
 
 describeDb("1.22 — sign-in over HTTP", () => {
   beforeEach(async () => {
+    throttle = createFakeSignInThrottle();
     await cleanup();
   });
 

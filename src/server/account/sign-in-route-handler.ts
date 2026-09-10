@@ -45,6 +45,15 @@
  * `HttpOnly`, `SameSite=Strict`, `Path=/`, `Secure` on an https origin — and
  * never into the response body. A JSON field carrying it would put a live
  * credential into every log, proxy, and browser history that saw the response.
+ *
+ * ## Phase 1.23 — abuse protection wraps this, it does not change it
+ *
+ * Repeated automated attempts are now bounded by a shared counter in Redis, and
+ * every credential rule above is exactly as it was. The throttle decides only
+ * *whether* `authenticateAccount` is called; it never decides what the answer is,
+ * never reads or writes an Account row, and never changes an account's status.
+ * There is no lockout here — the budget expires on a timer and nothing durable
+ * records that it was ever spent. See `sign-in-abuse-protection.ts`.
  */
 
 import "../server-only";
@@ -57,6 +66,8 @@ import { buildSessionCookie } from "./session-cookie";
 import { InvalidCredentialsError } from "./account-errors";
 import { normalizeOrigin } from "../payments/checkout-runtime-config";
 import { getPrisma } from "../db/client";
+import { defaultSignInThrottle, type SignInThrottle } from "./sign-in-abuse-protection";
+import { SignInThrottleError } from "./sign-in-throttle-errors";
 
 type Db = ReturnType<typeof getPrisma>;
 
@@ -73,6 +84,13 @@ export const SIGN_IN_ERROR_CODES = {
   invalidCredentials: "INVALID_CREDENTIALS",
   crossOrigin: "CROSS_ORIGIN_REQUEST_REFUSED",
   invalidRequest: "INVALID_SIGN_IN_REQUEST",
+  /**
+   * Phase 1.23. The submitted identifier has spent its attempt budget for the
+   * current window. It says that and nothing else — not which bucket, not the
+   * count, not the threshold, and above all not whether the address names an
+   * account, because the budget is charged before anything knows.
+   */
+  tooManyAttempts: "TOO_MANY_ATTEMPTS",
   unavailable: "SIGN_IN_UNAVAILABLE",
 } as const;
 
@@ -98,6 +116,12 @@ export interface SignInRouteDeps {
   db?: Db | Prisma.TransactionClient;
   now?: () => string;
   appOrigin?: string | undefined;
+  /**
+   * Phase 1.23 abuse protection. Injected so a test can drive the throttle
+   * without a Redis endpoint; production takes `defaultSignInThrottle`, which
+   * has no in-memory fallback and refuses when Redis is unconfigured.
+   */
+  throttle?: SignInThrottle;
 }
 
 /**
@@ -140,8 +164,12 @@ export const NEVER_ON_SIGN_IN_REQUEST = [
   "maxAgeSeconds",
 ] as const;
 
-function refuse(status: number, code: string): SignInRouteResult {
-  return { status, body: { error: code }, headers: { ...SIGN_IN_HEADERS } };
+function refuse(
+  status: number,
+  code: string,
+  extraHeaders: Record<string, string> = {},
+): SignInRouteResult {
+  return { status, body: { error: code }, headers: { ...SIGN_IN_HEADERS, ...extraHeaders } };
 }
 
 /** A present origin must match; a missing one is permitted, as on checkout. */
@@ -155,10 +183,18 @@ function originAcceptable(originHeader: string | null, appOrigin: string | undef
 /**
  * Authenticate, and hand back a session cookie.
  *
- * Order: origin, then shape, then credentials. Unlike the governance routes
- * there is no session to resolve first — this is the endpoint that creates one —
- * so the body must be read before anything can be decided, and the strict parse
- * is what stops that from being an opening.
+ * Order: origin, then shape, then **attempt budget**, then credentials. Unlike
+ * the governance routes there is no session to resolve first — this is the
+ * endpoint that creates one — so the body must be read before anything can be
+ * decided, and the strict parse is what stops that from being an opening.
+ *
+ * Phase 1.23 inserts the budget check between the parse and the password, which
+ * is the only place it can go. Earlier, and a malformed body or a cross-site post
+ * would spend a real user's budget; later, and every attempt would pay for an
+ * Argon2 verification before being refused. Everything a caller can get wrong
+ * about *transport* — a bad origin, a wrong content type, unparseable JSON, an
+ * authority-shaped key — is still answered before the throttle is touched and
+ * still costs nothing.
  */
 export async function handleSignInRequest(
   request: SignInRouteRequest,
@@ -185,6 +221,35 @@ export async function handleSignInRequest(
   const now = (deps.now ?? (() => new Date().toISOString()))();
   const db = deps.db as Db | undefined;
 
+  /* Phase 1.23. The attempt is charged BEFORE the password is verified, so a
+     caller already over budget never reaches Argon2 and concurrent attempts
+     cannot race a read against an increment. `throttle` is resolved here rather
+     than at module scope so an unconfigured deployment fails on the request
+     rather than at import, and so the 503 below covers configuration and outage
+     alike. */
+  let throttle: SignInThrottle;
+  let decision;
+  try {
+    throttle = deps.throttle ?? defaultSignInThrottle();
+    decision = await throttle.admitAttempt(parsed.data.email);
+  } catch {
+    /* Configuration invalid, or the backend did not answer. Either way Monacado
+       cannot count attempts, so it does not check the password. Nothing about
+       Redis reaches the caller. */
+    return refuse(503, codes.unavailable);
+  }
+  if (decision.throttled) {
+    /* `Retry-After` only when the backend reported a real TTL — a guessed one is
+       worse than none, because a client will act on it. */
+    return refuse(
+      429,
+      codes.tooManyAttempts,
+      decision.retryAfterSeconds !== undefined
+        ? { "retry-after": String(decision.retryAfterSeconds) }
+        : {},
+    );
+  }
+
   try {
     /* Every credential rule — normalized lookup, the timing decoy, the ACTIVE
        requirement, and the single uniform failure — lives here. */
@@ -192,6 +257,14 @@ export async function handleSignInRequest(
       { email: parsed.data.email, password: parsed.data.password },
       { ...(db !== undefined ? { db } : {}) },
     );
+
+    /* Authentication succeeded, so the attempt just charged is released. A
+       legitimate user therefore never spends budget they can observe, and a
+       correct password is not a step toward being locked out. Before the session
+       is minted: if the throttle cannot be released, this request fails closed
+       like any other backend fault rather than issuing a cookie against state
+       nobody could update. */
+    await throttle.clear(parsed.data.email);
 
     const { token } = await createAccountSession(
       {
@@ -220,7 +293,16 @@ export async function handleSignInRequest(
     };
   } catch (error) {
     if (error instanceof InvalidCredentialsError) {
+      /* The attempt charged above stands. Unknown address, wrong password, and
+         disabled account all arrive here as the same error and all spend the
+         same budget, so throttling reveals nothing the 401 did not. */
       return refuse(401, codes.invalidCredentials);
+    }
+    /* A throttle release that failed is an abuse-control outage, not a sign-in
+       bug: 503, matching the precheck above and the repository's use of 503 for
+       an operator-side fault the caller should retry. */
+    if (error instanceof SignInThrottleError) {
+      return refuse(503, codes.unavailable);
     }
     return refuse(500, codes.unavailable);
   }
