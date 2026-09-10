@@ -1,19 +1,65 @@
 /*
- * Temporary Phase 0A styling for the placeholder landing page only.
- * These palette values are copied from docs/monacado-color-palette.png for
- * visual reference. This file is NOT the canonical design-token source; token
- * definitions, semantic naming, and light/dark mapping are deferred to later
- * design-system work.
+ * MONACADO STYLE TOKENS — the centralized styling layer.
+ *
+ *   official palette → base brand tokens → semantic role tokens → page styles
+ *
+ * **Base brand tokens (`--brand-*`) are the approved Monacado palette**, one
+ * canonical token per approved colour, named for the colour itself. This block
+ * is the only place an official hex is written down.
+ *
+ * **Semantic role tokens (`--color-*`) are the interface application styles
+ * consume.** They name a job — surface, focus, danger — rather than a colour,
+ * and each resolves to a base token. A page or component asks for the role it
+ * means; which brand colour currently answers is this layer's business.
+ *
+ * **Pages and components embed no raw brand colour, and no React component
+ * carries one at all.** A hex written into a rule is a second answer able to
+ * disagree with the palette, and it is the copy nobody finds when the palette
+ * changes.
+ *
+ * **A palette change is therefore normally an edit here and nowhere else.** A
+ * re-ruled brand colour is one line in the base block; a re-assigned role is one
+ * line in the semantic block. Selectors below should not need to move.
+ *
+ * Only roles with a current consumer exist. There are no speculative tokens, no
+ * scale, no light/dark mapping, and no token pipeline — that remains deferred to
+ * real design-system work, and this is deliberately not it.
+ *
+ * PROVENANCE, so a reader comparing the base block against the palette image
+ * does not read the difference as drift: the first eight tokens are the eight
+ * rows of docs/monacado-color-palette.png, in order. `--brand-red` is NOT in
+ * that image. It was added by an explicit brand ruling during Phase 1.25, which
+ * designated #C62828 as Monacado's danger/error colour — the palette as supplied
+ * had none, and structural-only error treatment was accepted until that ruling
+ * superseded it. The image remains authoritative for the other eight.
  */
 :root {
-  --color-primary: #003366;
-  --color-secondary: #1d4ed8;
-  --color-accent: #38b2ac;
-  --color-supporting: #43b649;
-  --color-background: #f5f7fa;
-  --color-surface: #ffffff;
-  --color-text: #1a1a1a;
-  --color-text-dark: #0d0d0d;
+  /* Base brand tokens — the approved palette. Raw hex lives only here. */
+  --brand-deep-navy: #003366;
+  --brand-bright-blue: #1d4ed8;
+  --brand-teal: #38b2ac;
+  --brand-fresh-green: #43b649;
+  --brand-light-gray: #f5f7fa;
+  --brand-white: #ffffff;
+  --brand-near-black: #1a1a1a;
+  --brand-rich-black: #0d0d0d;
+  /* Danger / Error. Brand ruling, Phase 1.25 — see PROVENANCE above. */
+  --brand-red: #c62828;
+
+  /* Semantic role tokens — what page styles below are allowed to reference. */
+  --color-background: var(--brand-light-gray);
+  --color-surface: var(--brand-white);
+  --color-text: var(--brand-near-black);
+  /* Stronger than body text, not weaker — labels and field values. */
+  --color-text-strong: var(--brand-rich-black);
+  --color-border: var(--brand-teal);
+  --color-primary: var(--brand-deep-navy);
+  --color-primary-hover: var(--brand-bright-blue);
+  /* Foreground on a primary fill; a surface colour used as text is not that. */
+  --color-on-primary: var(--brand-white);
+  --color-focus: var(--brand-teal);
+  --color-success: var(--brand-fresh-green);
+  --color-danger: var(--brand-red);
 }
 
 * {
@@ -59,5 +105,140 @@ main h1 {
 
 main p {
   margin: 0;
-  color: var(--color-text-dark);
+  color: var(--color-text-strong);
+}
+
+/*
+ * Phase 1.25 — the authenticated surfaces (/sign-in, /account).
+ *
+ * Every colour below is a **semantic role token** from the block above — never a
+ * hex and never a `--brand-*` token directly. These rules state the job they
+ * mean, so a re-ruled palette colour reaches them without any of them changing.
+ *
+ * This is not a design system and does not become one. It is the smallest set
+ * of rules that makes a form legible, focusable, and recognisably Monacado, and
+ * it is scoped under `.auth-*` so it cannot leak into the placeholder landing
+ * page whose styling above is still Phase 0A's.
+ *
+ * Errors carry the ruled danger colour, and still do not rely on it. The rule,
+ * the raised weight, and `role="alert"` were the whole signal while the palette
+ * had no error colour; they are all kept now that it has one, so the state
+ * survives a monochrome display, a colour-blind reader, and a screen reader
+ * that never sees the pixels. Colour supplements the signal here — it is not
+ * the signal.
+ */
+
+.auth-main {
+  /* The global `main` centres its children and centres their text. Centred
+     labels above left-aligned inputs read as a mistake, so the axis is reset
+     here while the centring of the card itself is kept. */
+  text-align: left;
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 24rem;
+  padding: 2rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+}
+
+.auth-card h1 {
+  /* Smaller than the 2.5rem landing headline: this is a page title, not a
+     product statement. */
+  font-size: 1.5rem;
+  margin: 0 0 0.25rem;
+  color: var(--color-primary);
+}
+
+.auth-lede {
+  margin: 0 0 1.5rem;
+  color: var(--color-text);
+}
+
+.auth-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  margin-bottom: 1rem;
+}
+
+.auth-field label {
+  font-weight: 600;
+  color: var(--color-text-strong);
+}
+
+.auth-field input {
+  padding: 0.5rem 0.625rem;
+  font: inherit;
+  color: var(--color-text-strong);
+  background: var(--color-surface);
+  border: 1px solid var(--color-primary);
+  border-radius: 0.25rem;
+}
+
+/* Focus is deliberately loud, and the same treatment everywhere it can land. */
+.auth-field input:focus-visible,
+.auth-button:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.auth-button {
+  width: 100%;
+  padding: 0.625rem 1rem;
+  font: inherit;
+  font-weight: 600;
+  color: var(--color-on-primary);
+  background: var(--color-primary);
+  border: 1px solid var(--color-primary);
+  border-radius: 0.25rem;
+  cursor: pointer;
+}
+
+.auth-button:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+}
+
+/* Disabled must be unmistakable while a submission is in flight: the fill drops
+   to the neutral background, the text to body colour, and the cursor says so. */
+.auth-button:disabled {
+  color: var(--color-text);
+  background: var(--color-background);
+  border-color: var(--color-text);
+  cursor: not-allowed;
+}
+
+/*
+ * The one danger surface. Both auth refusals render through this class — the
+ * sign-in form's and the sign-out button's — so the role is stated once and
+ * neither component carries a colour of its own.
+ *
+ * 5.24:1 against the Light Gray fill it sits on, and 5.62:1 against the White
+ * card behind it; both clear WCAG AA for normal text. Weight, rule, spacing and
+ * radius are unchanged from the structural-only treatment they replace.
+ */
+.auth-error {
+  margin: 0 0 1rem;
+  padding: 0.625rem 0.75rem;
+  font-weight: 600;
+  color: var(--color-danger);
+  background: var(--color-background);
+  border-left: 4px solid var(--color-danger);
+  border-radius: 0.25rem;
+}
+
+.auth-status {
+  margin: 0 0 1.5rem;
+  color: var(--color-text);
+}
+
+/* The one success surface: a state that is genuinely good. */
+.auth-signed-in {
+  font-weight: 600;
+  color: var(--color-primary);
+  border-left: 4px solid var(--color-success);
+  padding-left: 0.75rem;
 }
