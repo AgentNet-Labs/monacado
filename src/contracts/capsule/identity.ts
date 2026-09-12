@@ -183,6 +183,18 @@ export const ACCOUNT_SESSION_ID_RE = new RegExp(`^mon:asess:${OPAQUE_BODY}$`);
  */
 export const ACCOUNT_ENTITLEMENT_ID_RE = new RegExp(`^mon:aent:${OPAQUE_BODY}$`);
 
+/**
+ * Account email-verification challenge identifier (`mon:aevc:<opaque>`), Phase
+ * 1.27. Names one outstanding proof that somebody controls an Account's login
+ * address.
+ *
+ * Deliberately a different prefix from `mon:evch:`, which names a *participant*
+ * contact challenge. The two live in different tables, are consumed by different
+ * verifiers, and must never be mistaken for one another — a shared prefix would
+ * make that mistake look like a typo rather than a category error.
+ */
+export const ACCOUNT_EMAIL_CHALLENGE_ID_RE = new RegExp(`^mon:aevc:${OPAQUE_BODY}$`);
+
 // — Synthetic constructors (tests/demo only; a real Registrar issues ANS ids) —
 
 export function makeSyntheticNodeId(opaque: string): string {

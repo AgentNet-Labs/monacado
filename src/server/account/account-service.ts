@@ -74,16 +74,30 @@ export function accountRowToRecord(row: AccountRow): SafeAccount {
     normalizedEmail: row.normalizedEmail,
     status: row.status,
     createdAt: row.createdAt.toISOString(),
+    emailVerifiedAt: row.emailVerifiedAt === null ? null : row.emailVerifiedAt.toISOString(),
+    emailVerifiedVia: row.emailVerifiedVia,
   });
 }
 
 /**
  * Create an account.
  *
- * Administrative in this phase: there is no public signup route, and none is
- * added. Uniqueness is enforced by the database's unique index on
- * `normalizedEmail`, not by a read-then-write check, so two concurrent creations
- * cannot both succeed.
+ * Uniqueness is enforced by the database's unique index on `normalizedEmail`,
+ * not by a read-then-write check, so two concurrent creations cannot both
+ * succeed.
+ *
+ * ## Verification disposition is explicit, and defaults closed (Phase 1.27)
+ *
+ * `emailVerification` decides whether the new account may authenticate straight
+ * away. It defaults to `UNVERIFIED` — the direction where forgetting to think
+ * about it produces a locked door rather than an open one. Public sign-up passes
+ * it explicitly anyway, and a test asserts the account it creates is unverified,
+ * so the default is a safety net rather than the mechanism.
+ *
+ * `ADMINISTRATIVE` is for an operator, a fixture, or `scripts/db-check.ts`
+ * creating an account it intends to use immediately. It records that somebody
+ * vouched for the address, **not** that the address was ever proved — which is
+ * why the provenance is stored rather than collapsed into a boolean.
  */
 export async function createAccount(
   input: unknown,
@@ -99,6 +113,10 @@ export async function createAccount(
   // Hashing happens BEFORE any database work, so no transaction spans it.
   const passwordHash = await hashPassword(req.password);
 
+  /* Closed by default. An account created without an opinion about its address
+     cannot sign in until one is formed. */
+  const verified = (req.emailVerification ?? "UNVERIFIED") === "ADMINISTRATIVE";
+
   try {
     const row = await db.account.create({
       data: {
@@ -109,6 +127,8 @@ export async function createAccount(
         passwordHash,
         status: req.status ?? "ACTIVE",
         createdAt: new Date(req.createdAt),
+        emailVerifiedAt: verified ? new Date(req.createdAt) : null,
+        emailVerifiedVia: verified ? "ADMINISTRATIVE" : null,
       },
     });
     return accountRowToRecord(row);
@@ -153,7 +173,26 @@ export async function authenticateAccount(
   const storedHash = row?.passwordHash ?? (await timingDecoyHash());
   const passwordMatches = await verifyPassword(req.password, storedHash);
 
-  if (row === null || !passwordMatches || row.status !== "ACTIVE") {
+  /* Four ways of failing, one answer (Phase 1.27 added the fourth).
+
+     An unproved address collapses into `InvalidCredentialsError` beside unknown
+     address, wrong password, and disabled account — it does NOT get a code of its
+     own. "This account exists but has not confirmed its email" is an
+     account-existence oracle wearing a helpful tone: it tells a caller their
+     guess was a real address, which is exactly what the uniform 401 and the
+     timing decoy are built to withhold. A person who genuinely registered has the
+     email in their inbox and does not need the login form to tell them.
+
+     The check sits AFTER the password verification, like the status check, so an
+     unverified account costs the same time as an active one with a wrong
+     password. Moving it earlier would answer on the clock the question the
+     message refused to answer. */
+  if (
+    row === null ||
+    !passwordMatches ||
+    row.status !== "ACTIVE" ||
+    row.emailVerifiedAt === null
+  ) {
     throw new InvalidCredentialsError();
   }
   return accountRowToRecord(row);

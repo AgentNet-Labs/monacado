@@ -8,7 +8,7 @@
  * `tax-recording-operations.integration.test.ts`.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   CALCULATION_EXPIRY_REMEDIATION,
@@ -222,11 +222,19 @@ describe("1.8 · an authorized request runs one bounded cycle", () => {
     expect(TAX_RECORDER_SCHEDULE_GUIDANCE.productionPrerequisite).toBe(true);
   });
 
-  it("commits no cron declaration anywhere in the repository", () => {
+  it("declares no tax-recorder cron; the only committed cron is the email dispatcher's", () => {
     expect(TAX_RECORDER_SCHEDULE_GUIDANCE.committedCronDeclaration).toBe("NONE");
-    /* Asserted against the filesystem, not merely stated: a deployment file
-       reintroducing a plan-dependent schedule must fail this. */
-    expect(existsSync(new URL("../vercel.json", import.meta.url))).toBe(false);
+    /* Asserted against the deployment file, not merely stated. Phase 1.27
+       committed `vercel.json` for the email dispatch trigger once the Vercel plan
+       was confirmed as Pro. It holds that one cron and no other configuration,
+       and any further schedule — this recorder's included — must fail here until
+       it is decided deliberately. */
+    const vercel = JSON.parse(readFileSync(new URL("../vercel.json", import.meta.url), "utf8"));
+    expect(vercel).toEqual({
+      crons: [
+        { path: "/api/internal/operations/email-dispatcher/scheduled", schedule: "*/5 * * * *" },
+      ],
+    });
     /* And the endpoint a future scheduler will call is still named once, here. */
     expect(TAX_RECORDER_ENDPOINT_PATH).toBe("/api/internal/operations/tax-recorder");
   });

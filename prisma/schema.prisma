@@ -706,13 +706,48 @@ model Account {
 
   /// ACTIVE | DISABLED. A DISABLED account cannot authenticate, and every one of
   /// its existing sessions stops resolving immediately.
+  ///
+  /// Phase 1.27 deliberately did NOT add a third status for "email unverified".
+  /// Status answers whether an account is permitted to exist and act at all;
+  /// whether its address has been proved is a different question with a
+  /// different lifecycle, and folding them together would make "disabled by an
+  /// operator" and "has not clicked a link yet" the same fact.
   status String @db.VarChar(16)
+
+  /// When this account's `normalizedEmail` became proved (Phase 1.27). NULL
+  /// means unproved, and an unproved account cannot authenticate — see
+  /// `authenticateAccount`. This is the authoritative marker: there is no
+  /// derived or inferred verification state anywhere.
+  ///
+  /// It is NOT a `ParticipantEmailContact`. Account verification proves the
+  /// login address; participant contact verification proves a seller's public
+  /// support address. The two have different subjects, different lifecycles, and
+  /// deliberately separate tables.
+  emailVerifiedAt DateTime? @db.DateTime(3)
+
+  /// How `emailVerifiedAt` came to be set. Durable provenance, because the three
+  /// ways an address becomes usable are not equally strong evidence and a
+  /// timestamp alone cannot tell them apart:
+  ///
+  ///   SELF_SERVICE_TOKEN        — the account consumed a real verification
+  ///                               challenge sent to that address. Actual proof.
+  ///   ADMINISTRATIVE            — created already-verified by an operator, a
+  ///                               fixture, or `scripts/db-check.ts`. The
+  ///                               operator vouches; no link was ever sent.
+  ///   PRE_VERIFICATION_BACKFILL — existed before Phase 1.27 and was grandfathered
+  ///                               by the migration so it could still sign in.
+  ///                               A COMPATIBILITY TRANSITION, NOT EVIDENCE that
+  ///                               the address was ever proved.
+  ///
+  /// NULL exactly when `emailVerifiedAt` is NULL.
+  emailVerifiedVia String? @db.VarChar(32)
 
   createdAt DateTime @default(now()) @db.DateTime(3)
   updatedAt DateTime @updatedAt @db.DateTime(3)
 
-  sessions     AccountSession[]
-  entitlements AccountEntitlement[]
+  sessions        AccountSession[]
+  entitlements    AccountEntitlement[]
+  emailChallenges AccountEmailVerificationChallenge[]
 
   /// At most one marketplace participant (Phase 0M.5). The account remains the
   /// authentication identity; the participant is who transacts.
@@ -789,6 +824,64 @@ model AccountEntitlement {
   /// grant/revoke audit log is deliberately deferred.
   @@unique([accountId, capability])
   @@index([accountId, capability, status])
+}
+
+/// One outstanding proof that somebody controls an Account's login address
+/// (Phase 1.27).
+///
+/// ## Why this is not `EmailVerificationChallenge`
+///
+/// That table proves a **marketplace participant's** contact address, and its
+/// `contactId` is a required foreign key to `ParticipantEmailContact`. Reusing it
+/// for a bare Account would have meant creating a `MarketplaceParticipant` — and
+/// a participant that exists only because somebody registered would destroy the
+/// separation the schema is built around, where "has a login" and "may sell" are
+/// different facts about a person. So this is a second, parallel table with the
+/// same discipline and a different subject. Neither verifier accepts the other's
+/// token: they read different tables entirely.
+///
+/// ## What it stores, and what it refuses to
+///
+/// The raw token is NEVER persisted — only its SHA-256 digest, which is what a
+/// presented token is matched against. A dump of this table therefore yields no
+/// working link. There is no IP address, no user agent, and no attempt counter:
+/// throttling is Redis's job and is deliberately not durable here.
+model AccountEmailVerificationChallenge {
+  /// Opaque challenge identity (mon:aevc:<opaque>). Never the token.
+  id String @id @db.VarChar(191)
+
+  accountId String @db.VarChar(191)
+
+  /// SHA-256 of the normalised address this challenge proves, captured at
+  /// issuance. Consumption re-derives it from the account's CURRENT address and
+  /// refuses on a mismatch, so a challenge issued for one address can never
+  /// verify a different one — including after an address change.
+  addressDigest String @db.Char(64)
+
+  /// Hex SHA-256 of the raw token. UNIQUE, so a presented token resolves to at
+  /// most one challenge and single-use cannot be defeated by a collision.
+  tokenDigest String @unique @db.Char(64)
+
+  /// PENDING | CONSUMED | EXPIRED | SUPERSEDED. Single-use is enforced by the
+  /// transition out of PENDING, not by deleting the row — a consumed challenge
+  /// stays as evidence of when the address was proved.
+  state String @db.VarChar(16)
+
+  issuedAt   DateTime  @db.DateTime(3)
+  expiresAt  DateTime  @db.DateTime(3)
+  consumedAt DateTime? @db.DateTime(3)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+
+  /// CASCADE: a challenge is meaningless without the account it proves, and
+  /// unlike an entitlement it is not an authorization record worth blocking a
+  /// deletion over.
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  /// Supersession scans the account's outstanding challenges; expiry sweeps scan
+  /// by state and deadline.
+  @@index([accountId, state])
+  @@index([state, expiresAt])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3043,7 +3136,7 @@ model MarketplacePolicyVersionRow {
   /// path accepted and then discarded. Activation is its own governed act and is
   /// never inferred from the recorder of the version or from the retirement of
   /// its predecessor.
-  activatedByAccountId String?   @db.VarChar(191)
+  activatedByAccountId String? @db.VarChar(191)
 
   /// Set to `policyId` while ACTIVE and NULL otherwise, so the unique index
   /// enforces AT MOST ONE ACTIVE VERSION while permitting any number of DRAFT
@@ -4581,7 +4674,7 @@ model SellerRefundPolicyVersionRow {
   /// path accepted and then discarded. Activation is its own governed act and is
   /// never inferred from the recorder of the version or from the retirement of
   /// its predecessor.
-  activatedByAccountId String?   @db.VarChar(191)
+  activatedByAccountId String? @db.VarChar(191)
 
   /// Set to `policyId` while ACTIVE and NULL otherwise, so the unique index
   /// enforces AT MOST ONE ACTIVE VERSION per policy while permitting any number

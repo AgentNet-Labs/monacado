@@ -62,6 +62,12 @@ import {
   readVerificationLinkOrigin,
 } from "../policy/verification-link";
 import type { PolicyIdProvider } from "../policy/policy-ids";
+import { issueAccountEmailChallenge } from "../account/account-email-verification-service";
+import {
+  buildAccountVerificationUrl,
+  readAccountVerificationOrigin,
+  renderAccountVerificationMessage,
+} from "../account/account-verification-notice";
 import {
   renderBuyerConfirmation,
   renderBuyerOrderExpired,
@@ -86,6 +92,8 @@ export interface MessageResolverDeps {
   policyIds?: PolicyIdProvider;
   /** Injected so a test can assert the digest of a known verification token. */
   tokens?: { nextVerificationToken(): string };
+  /** Phase 1.27 — deterministic ACCOUNT challenge ids, separate from `policyIds`. */
+  accountChallengeIds?: { nextChallengeId(): string };
 }
 
 /**
@@ -121,7 +129,73 @@ export async function resolveOutboundMessage(
   if (delivery.subjectKind === "EMAIL_CONTACT") {
     return resolveVerificationMessage(db, delivery, at, deps);
   }
+  /* Phase 1.27. An ACCOUNT's own login address, with no participant anywhere in
+     the lookup — see `resolveAccountVerificationMessage`. */
+  if (delivery.subjectKind === "ACCOUNT_EMAIL") {
+    return resolveAccountVerificationMessage(db, delivery, at, deps);
+  }
   return resolveOrderMessage(db, delivery, at, deps);
+}
+
+// — Account email verification (Phase 1.27) —
+
+/**
+ * Resolve an account-verification message, and mint its challenge.
+ *
+ * Deliberately parallel to `resolveVerificationMessage` below rather than shared
+ * with it. That one reads a `ParticipantEmailContact` and mints a
+ * participant-scoped challenge; this one reads an `Account` by id and mints an
+ * account-scoped one. Merging them would mean a single function that decides
+ * which *kind* of identity it is verifying, and the two challenge tables exist
+ * precisely so nothing has to make that decision at runtime.
+ *
+ * The challenge is minted **here, at send time**, not when the delivery was
+ * enqueued — the same arrangement participant verification uses, and for the same
+ * reason: a retry never needs a stored plaintext token, and the link a person
+ * finally receives expires relative to the attempt that actually sent it.
+ */
+async function resolveAccountVerificationMessage(
+  db: Db,
+  delivery: OutboundEmailDeliveryRecord,
+  at: string,
+  deps: MessageResolverDeps,
+): Promise<ResolvedMessage> {
+  const account = await db.account.findUnique({
+    where: { id: delivery.subjectRef },
+    select: { id: true, email: true, emailVerifiedAt: true },
+  });
+  if (account === null) return unresolvable("RECIPIENT_UNRESOLVABLE");
+
+  /* Already proved — by an earlier link in this same series, most likely, since
+     every attempt mints a fresh challenge. Sending another would invite somebody
+     to re-verify an address that is already settled, so the delivery is refused
+     as unresolvable rather than dispatched. */
+  if (account.emailVerifiedAt !== null) return unresolvable("RECIPIENT_UNRESOLVABLE");
+
+  let origin: string;
+  try {
+    origin = deps.origin ?? readAccountVerificationOrigin(deps.env ?? process.env);
+  } catch {
+    /* A deployment that cannot state its own origin cannot build a usable link.
+       Configuration, not a bad recipient. */
+    return unresolvable("CHANNEL_NOT_CONFIGURED");
+  }
+
+  const { challenge, token } = await issueAccountEmailChallenge(
+    { accountId: account.id, address: account.email, issuedAt: at },
+    {
+      db,
+      ...(deps.accountChallengeIds !== undefined ? { ids: deps.accountChallengeIds } : {}),
+      ...(deps.tokens !== undefined ? { tokens: deps.tokens } : {}),
+    },
+  );
+
+  const { subject, body } = renderAccountVerificationMessage({
+    verificationUrl: buildAccountVerificationUrl(origin, token),
+    expiresAt: challenge.expiresAt,
+  });
+
+  return { resolved: true, destination: account.email, subject, text: body };
 }
 
 // — Orders —

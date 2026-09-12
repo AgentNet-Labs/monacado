@@ -125,7 +125,9 @@ is a sale that spent a day invisible to reconciliation for no reason.
 So the endpoint ships production-ready, the cadence is stated, and the deployment
 decision is made deliberately rather than inherited from a file. The guidance is
 `TAX_RECORDER_SCHEDULE_GUIDANCE` in `tax-recorder-route-handler.ts`, and a test
-asserts no `vercel.json` exists.
+asserts `vercel.json` declares no tax-recorder cron. (Phase 1.27 committed
+`vercel.json` for the email dispatch trigger only; that file's contents are pinned
+by the same test.)
 
 ### The scheduler need not be Vercel
 
@@ -139,14 +141,12 @@ uptime service. Readiness asks whether **a** scheduler is configured, not whose.
 2. **Choose a scheduler** and confirm it supports roughly five-minute execution.
    For Vercel Cron that means **Pro or Enterprise**; on Hobby, use an external
    scheduler instead.
-3. **Add the schedule.** For Vercel, create `vercel.json` with:
+3. **Add the schedule.** For Vercel, add this entry to the `crons` array of the
+   existing `vercel.json` (created in Phase 1.27 for the email dispatch trigger —
+   do not replace that entry), and update the test that pins the file:
 
    ```json
-   {
-     "crons": [
-       { "path": "/api/internal/operations/tax-recorder", "schedule": "*/5 * * * *" }
-     ]
-   }
+   { "path": "/api/internal/operations/tax-recorder", "schedule": "*/5 * * * *" }
    ```
 
    For any other scheduler, issue `GET` or `POST` to that path with

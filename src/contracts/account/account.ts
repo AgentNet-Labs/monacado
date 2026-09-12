@@ -29,6 +29,7 @@
 
 import { z } from "zod";
 import {
+  ACCOUNT_EMAIL_CHALLENGE_ID_RE,
   ACCOUNT_ENTITLEMENT_ID_RE,
   ACCOUNT_ID_RE,
   ACCOUNT_SESSION_ID_RE,
@@ -111,6 +112,49 @@ export type AccountStatus = z.infer<typeof AccountStatus>;
 
 export const AccountName = z.string().trim().min(1).max(191);
 
+/**
+ * How an account's address stands at the moment it is created (Phase 1.27).
+ *
+ * Explicit on the creation contract rather than implied by the caller, because
+ * the two dispositions have opposite security postures and the difference must
+ * be visible at every call site:
+ *
+ *   UNVERIFIED     — nobody has proved control of this address. The account
+ *                    cannot authenticate until a verification challenge is
+ *                    consumed. This is what **public sign-up** uses, and it is
+ *                    the default precisely so that a caller who does not think
+ *                    about it gets the closed door rather than the open one.
+ *   ADMINISTRATIVE — created already usable by an operator, a fixture, or
+ *                    `scripts/db-check.ts`. The operator vouches for the
+ *                    address; no link is sent and none is expected. It is NOT a
+ *                    claim that the address was ever proved, which is why the
+ *                    provenance is recorded rather than collapsed into a boolean.
+ */
+export const ACCOUNT_EMAIL_VERIFICATION_DISPOSITIONS = ["UNVERIFIED", "ADMINISTRATIVE"] as const;
+export const AccountEmailVerificationDisposition = z.enum(
+  ACCOUNT_EMAIL_VERIFICATION_DISPOSITIONS,
+);
+export type AccountEmailVerificationDisposition = z.infer<
+  typeof AccountEmailVerificationDisposition
+>;
+
+/**
+ * How an account's `emailVerifiedAt` came to be set. Durable provenance, because
+ * a timestamp alone cannot distinguish proof from convenience.
+ *
+ * `PRE_VERIFICATION_BACKFILL` marks an account that predates Phase 1.27 and was
+ * grandfathered by the migration so it could still sign in. It is a
+ * **compatibility state transition, not evidence** that the address was ever
+ * proved, and it is a distinct value so that a later reader can tell.
+ */
+export const ACCOUNT_EMAIL_VERIFICATION_SOURCES = [
+  "SELF_SERVICE_TOKEN",
+  "ADMINISTRATIVE",
+  "PRE_VERIFICATION_BACKFILL",
+] as const;
+export const AccountEmailVerificationSource = z.enum(ACCOUNT_EMAIL_VERIFICATION_SOURCES);
+export type AccountEmailVerificationSource = z.infer<typeof AccountEmailVerificationSource>;
+
 export const CreateAccountInput = z.strictObject({
   name: AccountName,
   email: AccountEmail,
@@ -118,6 +162,12 @@ export const CreateAccountInput = z.strictObject({
   createdAt: z.iso.datetime(),
   /** Defaults to ACTIVE; present so a disabled account can be seeded in a test. */
   status: AccountStatus.optional(),
+  /**
+   * Defaults to `UNVERIFIED` — the fail-closed direction. A caller that needs an
+   * immediately-usable account says so, and the one caller that must never say so
+   * is public sign-up.
+   */
+  emailVerification: AccountEmailVerificationDisposition.optional(),
 });
 export type CreateAccountInput = z.infer<typeof CreateAccountInput>;
 
@@ -140,8 +190,86 @@ export const AccountRecord = z.strictObject({
   normalizedEmail: z.string(),
   status: AccountStatus,
   createdAt: z.iso.datetime(),
+  /**
+   * When the address was proved, or `null` if it has not been (Phase 1.27).
+   *
+   * Safe to carry here: it describes the account's own state to code that has
+   * already resolved the account, and it is never returned to an unauthenticated
+   * caller — `handleSignUpRequest` answers `{ registered: true }` and nothing
+   * else, precisely so this cannot become an enumeration signal.
+   */
+  emailVerifiedAt: z.iso.datetime().nullable(),
+  /** Provenance for the above. `null` exactly when `emailVerifiedAt` is null. */
+  emailVerifiedVia: AccountEmailVerificationSource.nullable(),
 });
 export type AccountRecord = z.infer<typeof AccountRecord>;
+
+// — Account email verification (Phase 1.27) —
+
+export const AccountEmailChallengeId = z
+  .string()
+  .regex(ACCOUNT_EMAIL_CHALLENGE_ID_RE, "challengeId must be mon:aevc:<opaque>");
+export type AccountEmailChallengeId = z.infer<typeof AccountEmailChallengeId>;
+
+/**
+ * How long a verification link lives. Twenty-four hours, matching the
+ * participant-contact challenge — a person who registers in the evening should
+ * still be able to click the link the next morning, and a link that outlived that
+ * is a link sitting in an inbox long after it stopped being expected.
+ */
+export const ACCOUNT_VERIFICATION_TOKEN_TTL_SECONDS = 24 * 60 * 60;
+
+/** 256 bits. The token is the only secret in the link and is never stored raw. */
+export const ACCOUNT_VERIFICATION_TOKEN_BYTES = 32;
+
+export const ACCOUNT_EMAIL_CHALLENGE_STATES = [
+  "PENDING",
+  "CONSUMED",
+  "EXPIRED",
+  "SUPERSEDED",
+] as const;
+export const AccountEmailChallengeState = z.enum(ACCOUNT_EMAIL_CHALLENGE_STATES);
+export type AccountEmailChallengeState = z.infer<typeof AccountEmailChallengeState>;
+
+/** Hex SHA-256. The shape of both the token digest and the address digest. */
+export const AccountVerificationDigest = z.string().regex(/^[0-9a-f]{64}$/);
+
+/**
+ * The safe view of one challenge.
+ *
+ * There is no field for the raw token, so no projection can carry one — the same
+ * construction that keeps `passwordHash` off `AccountRecord`.
+ */
+export const AccountEmailChallengeRecord = z.strictObject({
+  challengeId: AccountEmailChallengeId,
+  accountId: AccountId,
+  addressDigest: AccountVerificationDigest,
+  tokenDigest: AccountVerificationDigest,
+  state: AccountEmailChallengeState,
+  issuedAt: z.iso.datetime(),
+  expiresAt: z.iso.datetime(),
+  consumedAt: z.iso.datetime().nullable(),
+});
+export type AccountEmailChallengeRecord = z.infer<typeof AccountEmailChallengeRecord>;
+
+/**
+ * Names that must never be persisted on an account verification challenge.
+ *
+ * Stated so a test can enumerate it. The raw token is first for the obvious
+ * reason; the network fields are there because a challenge row is not a log and
+ * an address in it would defeat the point of storing only a digest.
+ */
+export const NEVER_ON_ACCOUNT_EMAIL_CHALLENGE = [
+  "token",
+  "rawToken",
+  "email",
+  "address",
+  "password",
+  "passwordHash",
+  "ipAddress",
+  "userAgent",
+  "attemptCount",
+] as const;
 
 // — Capabilities —
 

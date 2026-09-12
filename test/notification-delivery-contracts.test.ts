@@ -9,7 +9,7 @@
  * a participant — lives in `order-expiry-and-notification.integration.test.ts`.
  */
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import Stripe from "stripe";
@@ -348,7 +348,17 @@ describe("1.1 · delivery is evidence, never the obligation", () => {
 
   it("keeps the vocabulary closed and small", () => {
     expect(DELIVERY_CHANNELS).toEqual(["EMAIL"]);
-    expect(DELIVERY_AUDIENCES).toEqual(["BUYER", "SELLER", "PROMOTER"]);
+    /* `ACCOUNT` added in Phase 1.27, under an explicit architecture ruling, for
+       account email verification. It is the one member that names no side of a
+       transaction — at registration a person holds no marketplace role, no
+       participant record, and no order — and it exists precisely so that case did
+       NOT get folded into `BUYER`. Audience is part of the deduplication key, so
+       stretching an existing member would have put "prove your login address" and
+       "here is your receipt" in the same bucket.
+
+       The vocabulary is still closed and still small; this asserts the new
+       member is deliberate rather than that the list never changes. */
+    expect(DELIVERY_AUDIENCES).toEqual(["BUYER", "SELLER", "PROMOTER", "ACCOUNT"]);
     expect(DELIVERY_STATUSES).toEqual(["ATTEMPTED", "ACCEPTED", "FAILED"]);
     /* No RETRYING: this phase sends at most once per key. */
     expect(DELIVERY_STATUSES as readonly string[]).not.toContain("RETRYING");
@@ -402,15 +412,19 @@ describe("1.1 · the deduplication key is one message per order per audience", (
 
 // — 5 —
 
-describe("1.1 · the mail boundary names no vendor", () => {
-  it("adds no email vendor to the repository", () => {
+describe("1.1 · the mail boundary names no vendor above the adapter", () => {
+  it("adds no email SaaS SDK to the repository", () => {
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
       dependencies: Record<string, string>;
       devDependencies: Record<string, string>;
     };
     const names = [...Object.keys(pkg.dependencies), ...Object.keys(pkg.devDependencies)];
+    /* Phase 1.27 correction, under an explicit architecture ruling: Monacado's
+       transport is Google Workspace over authenticated SMTP through Nodemailer,
+       mirroring AgentNet Portal. Nodemailer is an SMTP client rather than a mail
+       service, so it leaves this list — and the next test keeps the property this
+       one existed for: nothing above the port can reach it. */
     for (const vendor of [
-      "nodemailer",
       "@sendgrid/mail",
       "resend",
       "postmark",
@@ -419,6 +433,22 @@ describe("1.1 · the mail boundary names no vendor", () => {
     ]) {
       expect(names, vendor).not.toContain(vendor);
     }
+  });
+
+  it("imports nodemailer from exactly one file, the SMTP adapter", () => {
+    const root = new URL("../", import.meta.url);
+    const importers: string[] = [];
+    for (const dir of ["src", "app", "scripts"]) {
+      for (const entry of readdirSync(new URL(`${dir}/`, root), { recursive: true })) {
+        const rel = `${dir}/${String(entry)}`;
+        if (!/\.(ts|tsx|js|mjs|cjs)$/.test(rel)) continue;
+        const source = readFileSync(new URL(rel, root), "utf8");
+        if (/from\s+["']nodemailer|require\(\s*["']nodemailer|import\(\s*["']nodemailer/.test(source)) {
+          importers.push(rel);
+        }
+      }
+    }
+    expect(importers).toEqual(["src/server/notifications/smtp-mail-adapter.ts"]);
   });
 
   it("refuses everything when mail is not configured, rather than pretending", () => {

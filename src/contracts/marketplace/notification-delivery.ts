@@ -108,7 +108,16 @@ export type DeliveryChannel = z.infer<typeof DeliveryChannel>;
  * marketplace role at all. It is part of the deduplication key, so a promoter who
  * is also the buyer of something else receives both messages.
  */
-export const DELIVERY_AUDIENCES = ["BUYER", "SELLER", "PROMOTER"] as const;
+/*
+ * `ACCOUNT` (Phase 1.27) is the one member that names no side of a transaction,
+ * and it is deliberate. An account-email verification is addressed to somebody
+ * who may never buy or sell anything — at registration they hold no marketplace
+ * role, no participant record, and no order. Reusing `BUYER` for them would have
+ * been the convenient lie: it would put "prove your login address" and "here is
+ * your receipt" in the same audience, and audience is part of the deduplication
+ * key. So the vocabulary gains a member rather than stretching one.
+ */
+export const DELIVERY_AUDIENCES = ["BUYER", "SELLER", "PROMOTER", "ACCOUNT"] as const;
 export const DeliveryAudience = z.enum(DELIVERY_AUDIENCES);
 export type DeliveryAudience = z.infer<typeof DeliveryAudience>;
 

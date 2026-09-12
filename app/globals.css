@@ -242,3 +242,61 @@ main p {
   border-left: 4px solid var(--color-success);
   padding-left: 0.75rem;
 }
+
+/*
+ * Phase 1.27 — /sign-up.
+ *
+ * Three selectors, no new tokens. Every colour below is an existing semantic
+ * role, because nothing this page does is a genuinely new *job*: a field hint is
+ * body text, a cross-link is a primary action rendered quietly, and the button
+ * that is an anchor is the button that already exists. Adding `--color-hint` or
+ * `--color-link` would be inventing roles to describe styling that the current
+ * roles already describe correctly.
+ */
+
+/* The password requirement, under the field it constrains. Body colour and a
+   step down in size: it is a constraint, not a warning, and styling it as a
+   warning would make a first-time visitor read a normal form as an error. */
+.auth-hint {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--color-text);
+}
+
+/* The line between /sign-in and /sign-up. Separated by a rule so it reads as a
+   different offer rather than as part of the form above it. */
+.auth-alt {
+  margin: 1.25rem 0 0;
+  padding-top: 1rem;
+  border-top: 1px solid var(--color-border);
+  font-size: 0.875rem;
+  color: var(--color-text);
+}
+
+.auth-alt a {
+  font-weight: 600;
+  color: var(--color-primary);
+}
+
+.auth-alt a:hover {
+  color: var(--color-primary-hover);
+}
+
+.auth-alt a:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+/*
+ * The post-registration link that has to look like the button it replaces.
+ *
+ * An anchor, not a button, because it navigates — a person should be able to
+ * middle-click it, and a screen reader should call it a link. `.auth-button`
+ * alone would leave it inline and mis-centred, so this adds only the three
+ * properties an anchor needs to sit where the submit button sat.
+ */
+.auth-button-link {
+  display: block;
+  text-align: center;
+  text-decoration: none;
+}

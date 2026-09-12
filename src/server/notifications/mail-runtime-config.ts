@@ -45,12 +45,16 @@ const ENV_VAR_NAME_RE = /^[A-Z][A-Z0-9_]{2,63}$/;
  *
  * `POSTMARK` is added to `1.1`'s two as the additive change the seam was built
  * to take, and no caller above the port changed to accommodate it.
+ *
+ * `SMTP` (Phase 1.27 correction) is Google Workspace over authenticated SMTP,
+ * the transport Monacado's staging and production deployments use. It is added
+ * the same way, and for the same reason nothing above the port moved.
  */
-export const MAIL_TRANSPORTS = ["LOG", "CAPTURE", "POSTMARK"] as const;
+export const MAIL_TRANSPORTS = ["LOG", "CAPTURE", "POSTMARK", "SMTP"] as const;
 export type MailTransport = (typeof MAIL_TRANSPORTS)[number];
 
 /** What a delivery row records as having answered. */
-export const MAIL_PROVIDERS = ["DISABLED", "LOG", "CAPTURE", "POSTMARK"] as const;
+export const MAIL_PROVIDERS = ["DISABLED", "LOG", "CAPTURE", "POSTMARK", "SMTP"] as const;
 export type MailProvider = (typeof MAIL_PROVIDERS)[number];
 
 /** The master switch. Anything other than true/1/yes means disabled. */
@@ -154,4 +158,178 @@ export function resolvePostmarkWebhookSecret(
     throw new MailConfigurationError([`${config.webhookSecretEnvVar} is not set`]);
   }
   return secret;
+}
+
+// — SMTP: Google Workspace (Phase 1.27 correction) —
+
+/*
+ * Monacado sends through Google Workspace over authenticated SMTP, mirroring the
+ * AgentNet Portal transactional-email architecture: Nodemailer, configured
+ * entirely by server-side environment variables, with capture transports for
+ * tests. The variable names follow this repository's `MONACADO_` convention
+ * rather than the Portal's `EMAIL_*`, and the password follows this file's own
+ * rule — the config holds the NAME of the variable, never the value.
+ *
+ * ## Authentication is required, on every host
+ *
+ * The Portal also permits Workspace SMTP relay with no credentials, trusting an
+ * IP allow-list. Monacado does not: a Vercel function has no stable egress
+ * address to allow-list, so an unauthenticated relay configuration could only
+ * ever work by accident. A missing username or password refuses.
+ *
+ * ## Transport security
+ *
+ * `secure: true` is implicit TLS (465). `secure: false` with `requireTls: true`
+ * is STARTTLS (587), and the upgrade is mandatory — a server that does not offer
+ * it is refused rather than spoken to in plaintext. Both false is plaintext, and
+ * is accepted **only for a loopback host**, so a test can drive a disposable local
+ * SMTP server; anywhere else it is a configuration error, because it would put
+ * the password on the wire in the clear.
+ */
+
+const FALSY = new Set(["false", "0", "no"]);
+const LOOPBACK_SMTP_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
+
+/** Values an operator leaves behind from an example file. Never a real password. */
+const PLACEHOLDER_SMTP_PASSWORDS = new Set([
+  "changeme",
+  "change-me",
+  "password",
+  "placeholder",
+  "todo",
+  "xxx",
+  "your-password",
+]);
+
+export const DEFAULT_SMTP_PORT = 587;
+export const IMPLICIT_TLS_SMTP_PORT = 465;
+export const DEFAULT_SMTP_PASSWORD_ENV = "MONACADO_SMTP_PASSWORD";
+export const DEFAULT_MAIL_FROM_NAME = "Monacado";
+
+/** Bounded by default, and bounded when configured: 1s..60s. */
+export const SMTP_TIMEOUT_DEFAULTS_MS = { connection: 10_000, socket: 15_000, send: 20_000 } as const;
+const SmtpTimeoutMs = z.number().int().min(1_000).max(60_000);
+
+/** Which variable each field is read from, so a refusal names what to fix. */
+const SMTP_FIELD_ENV: Record<string, string> = {
+  host: "MONACADO_SMTP_HOST",
+  port: "MONACADO_SMTP_PORT",
+  secure: "MONACADO_SMTP_SECURE",
+  requireTls: "MONACADO_SMTP_REQUIRE_TLS",
+  username: "MONACADO_SMTP_USERNAME",
+  passwordEnvVar: "MONACADO_SMTP_PASSWORD_ENV",
+  fromAddress: "MONACADO_MAIL_FROM_ADDRESS",
+  fromName: "MONACADO_MAIL_FROM_NAME",
+  replyTo: "MONACADO_MAIL_REPLY_TO",
+  connectionTimeoutMs: "MONACADO_SMTP_CONNECTION_TIMEOUT_MS",
+  socketTimeoutMs: "MONACADO_SMTP_SOCKET_TIMEOUT_MS",
+  sendTimeoutMs: "MONACADO_SMTP_SEND_TIMEOUT_MS",
+};
+
+export function isLoopbackSmtpHost(host: string): boolean {
+  return LOOPBACK_SMTP_HOSTS.has(host.trim().toLowerCase());
+}
+
+/**
+ * The validated, **secret-free** configuration of the SMTP transport.
+ *
+ * There is no field here a password could occupy.
+ */
+export const SmtpRuntimeConfig = z
+  .strictObject({
+    host: z.string().min(1).max(253).regex(/^[A-Za-z0-9.:-]+$/, "must be a hostname"),
+    port: z.number().int().min(1).max(65_535),
+    secure: z.boolean(),
+    requireTls: z.boolean(),
+    /** The Workspace mailbox that authenticates. Not a secret, but required. */
+    username: z.string().min(1).max(320).regex(/^[^\s]+$/, "must be one token"),
+    /** The NAME of the variable holding the password. Never the password. */
+    passwordEnvVar: z.string().regex(ENV_VAR_NAME_RE, "must be an environment variable name"),
+    /**
+     * The sender. A deployment fact and never a request parameter — a caller that
+     * could name the From address could send as Monacado.
+     */
+    fromAddress: AccountEmail,
+    /** A display name bound into the From header, so no line breaks or quoting. */
+    fromName: z.string().min(1).max(64).regex(/^[^\r\n"<>]+$/, "must be a plain display name"),
+    replyTo: AccountEmail.nullable(),
+    connectionTimeoutMs: SmtpTimeoutMs,
+    socketTimeoutMs: SmtpTimeoutMs,
+    sendTimeoutMs: SmtpTimeoutMs,
+  })
+  .refine((c) => c.secure || c.requireTls || isLoopbackSmtpHost(c.host), {
+    path: ["requireTls"],
+    message: "plaintext SMTP is permitted only to a loopback host",
+  });
+export type SmtpRuntimeConfig = z.infer<typeof SmtpRuntimeConfig>;
+
+const envText = (raw: string | undefined): string => (raw ?? "").trim();
+
+/** Unset takes the default. Anything unrecognised is passed on for the schema to refuse. */
+function envBoolean(raw: string | undefined, fallback: boolean): boolean | string {
+  const value = envText(raw).toLowerCase();
+  if (value === "") return fallback;
+  if (TRUTHY.has(value)) return true;
+  if (FALSY.has(value)) return false;
+  return value;
+}
+
+function envInteger(raw: string | undefined, fallback: number): number {
+  const value = envText(raw);
+  if (value === "") return fallback;
+  return /^\d+$/.test(value) ? Number(value) : Number.NaN;
+}
+
+/**
+ * Read the SMTP block, or refuse with every variable at fault at once.
+ *
+ * Called only when `SMTP` is the selected transport, and at send time rather
+ * than at import, so a deployment using another adapter is never asked for a
+ * mailbox it does not have. The error names variables and never their values.
+ */
+export function readSmtpRuntimeConfig(env: Env = process.env): SmtpRuntimeConfig {
+  const port = envInteger(env.MONACADO_SMTP_PORT, DEFAULT_SMTP_PORT);
+  const replyTo = envText(env.MONACADO_MAIL_REPLY_TO);
+  const parsed = SmtpRuntimeConfig.safeParse({
+    host: envText(env.MONACADO_SMTP_HOST),
+    port,
+    /* Port 465 speaks TLS from the first byte; defaulting `secure` from it spares
+       the one misconfiguration that otherwise just hangs until the timeout. */
+    secure: envBoolean(env.MONACADO_SMTP_SECURE, port === IMPLICIT_TLS_SMTP_PORT),
+    requireTls: envBoolean(env.MONACADO_SMTP_REQUIRE_TLS, true),
+    username: envText(env.MONACADO_SMTP_USERNAME),
+    passwordEnvVar: envText(env.MONACADO_SMTP_PASSWORD_ENV) || DEFAULT_SMTP_PASSWORD_ENV,
+    fromAddress: envText(env.MONACADO_MAIL_FROM_ADDRESS),
+    fromName: envText(env.MONACADO_MAIL_FROM_NAME) || DEFAULT_MAIL_FROM_NAME,
+    replyTo: replyTo === "" ? null : replyTo,
+    connectionTimeoutMs: envInteger(
+      env.MONACADO_SMTP_CONNECTION_TIMEOUT_MS,
+      SMTP_TIMEOUT_DEFAULTS_MS.connection,
+    ),
+    socketTimeoutMs: envInteger(env.MONACADO_SMTP_SOCKET_TIMEOUT_MS, SMTP_TIMEOUT_DEFAULTS_MS.socket),
+    sendTimeoutMs: envInteger(env.MONACADO_SMTP_SEND_TIMEOUT_MS, SMTP_TIMEOUT_DEFAULTS_MS.send),
+  });
+  if (!parsed.success) {
+    throw new MailConfigurationError(
+      Array.from(
+        new Set(parsed.error.issues.map((i) => SMTP_FIELD_ENV[String(i.path[0])] ?? "(root)")),
+      ),
+    );
+  }
+  return parsed.data;
+}
+
+/**
+ * Resolve the SMTP password.
+ *
+ * **The one place it is read**, handed straight to the transport options and
+ * stored in nothing else. The error names the variable and never any part of the
+ * value, and a placeholder copied from an example file is refused as unset.
+ */
+export function resolveSmtpPassword(config: SmtpRuntimeConfig, env: Env = process.env): string {
+  const password = (env[config.passwordEnvVar] ?? "").trim();
+  if (password === "" || PLACEHOLDER_SMTP_PASSWORDS.has(password.toLowerCase())) {
+    throw new MailConfigurationError([`${config.passwordEnvVar} is not set`]);
+  }
+  return password;
 }

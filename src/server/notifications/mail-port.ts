@@ -18,6 +18,15 @@
  * knows what Postmark is, and **no caller above the port changed** to accommodate
  * it — which is exactly what the seam was built to demonstrate.
  *
+ * ## Google Workspace SMTP, added in the Phase 1.27 correction
+ *
+ * Monacado's staging and production transport is **Google Workspace over
+ * authenticated SMTP**, through Nodemailer, in `smtp-mail-adapter.ts` — mirroring
+ * the proven AgentNet Portal transactional-email architecture rather than adding
+ * a mail SaaS. It is the only file that imports `nodemailer`, it sits behind this
+ * same interface, and again no caller above the port changed. Postmark remains
+ * selectable and is not what a deployment is configured to use.
+ *
  * ## Disabled is a first-class state
  *
  * With `MONACADO_MAIL_ENABLED` unset, `resolveMailPort` returns a port that
@@ -40,6 +49,7 @@ import {
   type MailResult,
 } from "../../contracts/marketplace/notification-delivery";
 import { createPostmarkMailAdapter } from "./postmark-mail-adapter";
+import { createSmtpMailAdapter } from "./smtp-mail-adapter";
 import {
   isMailEnabled,
   selectedMailTransport,
@@ -139,6 +149,7 @@ export function resolveMailPort(env: Env = process.env): MailPort {
   const transport = selectedMailTransport(env);
   if (transport === "LOG") return createLogMailAdapter();
   if (transport === "POSTMARK") return createPostmarkMailAdapter({ env });
+  if (transport === "SMTP") return createSmtpMailAdapter({ env });
   /* An unrecognised transport is a misconfiguration, not a licence to fall back
      to something that silently accepts. */
   return createDisabledMailAdapter();
@@ -156,5 +167,6 @@ export function resolvedMailProvider(env: Env = process.env): MailProvider {
   const transport = selectedMailTransport(env);
   if (transport === "LOG") return "LOG";
   if (transport === "POSTMARK") return "POSTMARK";
+  if (transport === "SMTP") return "SMTP";
   return "DISABLED";
 }

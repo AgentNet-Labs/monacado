@@ -2747,6 +2747,9 @@ async function main(): Promise<void> {
         email: "DbCheck.Operator@example.com",
         password: ID_PASSWORD,
         createdAt: ID_T0,
+        // Phase 1.27: db:check authenticates these accounts, so the address is
+        // vouched for administratively rather than proved by a link.
+        emailVerification: "ADMINISTRATIVE",
       },
       { db },
     );
@@ -2770,6 +2773,7 @@ async function main(): Promise<void> {
           email: "DBCHECK.OPERATOR@EXAMPLE.COM",
           password: ID_PASSWORD,
           createdAt: ID_T0,
+          emailVerification: "ADMINISTRATIVE",
         },
         { db },
       );
@@ -2842,6 +2846,9 @@ async function main(): Promise<void> {
         email: "dbcheck.disabled@example.com",
         password: ID_PASSWORD,
         createdAt: ID_T0,
+        // Phase 1.27: db:check authenticates these accounts, so the address is
+        // vouched for administratively rather than proved by a link.
+        emailVerification: "ADMINISTRATIVE",
       },
       { db },
     );
@@ -2862,6 +2869,9 @@ async function main(): Promise<void> {
         email: "dbcheck.ordinary@example.com",
         password: ID_PASSWORD,
         createdAt: ID_T0,
+        // Phase 1.27: db:check authenticates these accounts, so the address is
+        // vouched for administratively rather than proved by a link.
+        emailVerification: "ADMINISTRATIVE",
       },
       { db },
     );

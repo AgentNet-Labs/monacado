@@ -88,7 +88,15 @@ async function seedAccount() {
   seq += 1;
   const email = `${EMAIL_PREFIX}${seq}@example.com`;
   const account = await createAccount(
-    { name: "Sign-In Caller", email, password: PASSWORD, createdAt: NOW },
+    {
+      name: "Sign-In Caller",
+      email,
+      password: PASSWORD,
+      createdAt: NOW,
+      /* Phase 1.27: this fixture signs in, so its address is vouched for rather
+         than proved. Public sign-up is the caller that must not say this. */
+      emailVerification: "ADMINISTRATIVE",
+    },
     { db },
   );
   return { accountId: account.accountId, email };

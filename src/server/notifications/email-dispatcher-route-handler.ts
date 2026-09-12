@@ -16,6 +16,10 @@
  * notification phase's. The endpoint is here so that decision is one line when
  * somebody makes it.
  *
+ * (Phase 1.27 made it: `vercel.json` schedules the sibling `GET …/scheduled`
+ * route, which has its own `CRON_SECRET` gate and calls the same cycle. This
+ * operator endpoint is unchanged.)
+ *
  * ## The gate
  *
  * A shared secret presented as `Authorization: Bearer …`, compared in constant
@@ -56,7 +60,17 @@ export interface DispatcherRouteResult {
   body: Record<string, unknown>;
 }
 
-function constantTimeEquals(presented: string, expected: string): boolean {
+/**
+ * Compare two secrets without leaking their relationship through timing.
+ *
+ * Hashed first so the comparison is over equal-length digests — `timingSafeEqual`
+ * throws on a length mismatch, and that throw would itself disclose the length of
+ * the expected secret.
+ *
+ * Exported in Phase 1.27 so the scheduled-trigger handler beside this one uses
+ * the same comparison rather than writing a second, subtly different, one.
+ */
+export function constantTimeEquals(presented: string, expected: string): boolean {
   const a = createHash("sha256").update(presented, "utf8").digest();
   const b = createHash("sha256").update(expected, "utf8").digest();
   return timingSafeEqual(a, b);

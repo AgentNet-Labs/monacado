@@ -167,7 +167,15 @@ export const OBLIGATION_FREE_PURPOSES = [
  * — which is what makes storing no body possible, and what makes a retry state
  * what is true now.
  */
-export const OUTBOUND_EMAIL_SUBJECT_KINDS = ["ORDER", "EMAIL_CONTACT"] as const;
+/*
+ * `ACCOUNT_EMAIL` (Phase 1.27) resolves an `Account`'s own login address by id
+ * and mints an **account-scoped** challenge. It is a third kind rather than a
+ * reuse of `EMAIL_CONTACT` because that kind's `subjectRef` is a
+ * `ParticipantEmailContact` id and its resolver cannot run without a
+ * `MarketplaceParticipant` — which a person who has merely registered does not
+ * have, and must not be given one merely to receive an email.
+ */
+export const OUTBOUND_EMAIL_SUBJECT_KINDS = ["ORDER", "EMAIL_CONTACT", "ACCOUNT_EMAIL"] as const;
 export const OutboundEmailSubjectKind = z.enum(OUTBOUND_EMAIL_SUBJECT_KINDS);
 export type OutboundEmailSubjectKind = z.infer<typeof OutboundEmailSubjectKind>;
 

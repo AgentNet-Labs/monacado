@@ -101,6 +101,10 @@ async function seedAccount(
       email: overrides.email ?? nextEmail(),
       password: overrides.password ?? PASSWORD,
       createdAt: NOW,
+      /* Phase 1.27: this suite authenticates, so its fixtures are created with
+         the address vouched for. The unverified path is proved by the sign-up
+         suite, which is the only caller that may create an unproved account. */
+      emailVerification: "ADMINISTRATIVE",
       ...(overrides.status !== undefined ? { status: overrides.status } : {}),
     },
     { db },

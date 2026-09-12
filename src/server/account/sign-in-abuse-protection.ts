@@ -63,9 +63,13 @@
  */
 
 import "../server-only";
-import { createHmac } from "node:crypto";
 import { Redis } from "@upstash/redis";
-import { normalizeEmail } from "../../contracts/account/account";
+import {
+  authThrottleKey,
+  redisAuthThrottle,
+  type AuthThrottleBackend,
+  type AuthThrottlePolicy,
+} from "./auth-throttle";
 import {
   readSignInThrottleRuntimeConfig,
   resolveSignInThrottleKeySecret,
@@ -91,27 +95,26 @@ export const SIGN_IN_THROTTLE_WINDOW_SECONDS = 900;
 export const SIGN_IN_THROTTLE_KEY_PREFIX = "monacado:signin:credential:";
 
 /**
- * Increment, set the expiry on first use, and report the count and remaining
- * time — as one atomic server-side operation.
+ * Sign-in's complete policy (Phase 1.23, unchanged by Phase 1.27).
  *
- * `INCR` alone is atomic, but the expiry has to be attached without a second
- * round trip that could be lost between them, and the caller needs the TTL to
- * answer `Retry-After`. One small script is the smallest correct way to get all
- * three; it is a fixed string, not a scripting facility, and nothing else in the
- * repository may use it.
+ * The atomic fixed-window script that enforces it moved to `auth-throttle.ts`
+ * when public sign-up needed a counter of its own — Phase 1.23 forbade attaching
+ * a second endpoint to *this* limiter, so the mechanism was extracted and the
+ * policies stayed apart. Nothing observable here changed: same prefix, same
+ * limit, same window, and the same key bytes.
  *
- * The expiry is set only when the counter is created, which is what makes this a
- * **fixed** window: attempts nine through nine hundred do not push the reset
- * further out, so a locked-out identifier always recovers within fifteen minutes
- * of its first failure.
+ * `hmacDomain: undefined` is load-bearing. It reproduces the original
+ * `HMAC(secret, normalizedEmail)` construction exactly, so counters already
+ * running in staging Redis keep counting. A domain label added here would reset
+ * every live budget on deploy and hand a mid-attack attacker a fresh eight
+ * attempts. `auth-throttle-domain-separation.test.ts` pins the bytes.
  */
-const ADMIT_SCRIPT = `
-local count = redis.call('INCR', KEYS[1])
-if count == 1 then
-  redis.call('EXPIRE', KEYS[1], ARGV[1])
-end
-return { count, redis.call('TTL', KEYS[1]) }
-`;
+export const SIGN_IN_THROTTLE_POLICY: AuthThrottlePolicy = {
+  keyPrefix: SIGN_IN_THROTTLE_KEY_PREFIX,
+  hmacDomain: undefined,
+  limit: SIGN_IN_ATTEMPT_LIMIT,
+  windowSeconds: SIGN_IN_THROTTLE_WINDOW_SECONDS,
+};
 
 export interface SignInThrottleDecision {
   /** True when this identifier has spent its budget for the current window. */
@@ -158,15 +161,11 @@ export interface SignInThrottle {
  * real one indistinguishable.
  */
 export function signInThrottleKey(submittedEmail: string, keySecret: string): string {
-  const digest = createHmac("sha256", keySecret).update(normalizeEmail(submittedEmail)).digest("hex");
-  return `${SIGN_IN_THROTTLE_KEY_PREFIX}${digest}`;
+  return authThrottleKey(SIGN_IN_THROTTLE_POLICY, submittedEmail, keySecret);
 }
 
 /** The minimal surface of the Upstash client this module uses. */
-interface ThrottleBackend {
-  eval(script: string, keys: string[], args: (string | number)[]): Promise<unknown>;
-  del(key: string): Promise<unknown>;
-}
+type ThrottleBackend = AuthThrottleBackend;
 
 /**
  * Build the production throttle over a shared Upstash Redis instance.
@@ -176,39 +175,15 @@ interface ThrottleBackend {
  * provider's own text survives only on the non-enumerable internal cause.
  */
 export function redisSignInThrottle(backend: ThrottleBackend, keySecret: string): SignInThrottle {
-  return {
-    async admitAttempt(submittedEmail: string): Promise<SignInThrottleDecision> {
-      const key = signInThrottleKey(submittedEmail, keySecret);
-      let raw: unknown;
-      try {
-        raw = await backend.eval(ADMIT_SCRIPT, [key], [SIGN_IN_THROTTLE_WINDOW_SECONDS]);
-      } catch (error) {
-        throw new SignInThrottleUnavailableError(error);
-      }
-
-      /* A reply that is not [count, ttl] means the backend is not behaving as
-         this module requires, which is an outage rather than a permission. */
-      if (!Array.isArray(raw) || raw.length < 2) {
-        throw new SignInThrottleUnavailableError();
-      }
-      const count = Number(raw[0]);
-      const ttl = Number(raw[1]);
-      if (!Number.isFinite(count)) throw new SignInThrottleUnavailableError();
-
-      if (count <= SIGN_IN_ATTEMPT_LIMIT) return { throttled: false };
-      return Number.isFinite(ttl) && ttl > 0
-        ? { throttled: true, retryAfterSeconds: Math.ceil(ttl) }
-        : { throttled: true };
-    },
-
-    async clear(submittedEmail: string): Promise<void> {
-      try {
-        await backend.del(signInThrottleKey(submittedEmail, keySecret));
-      } catch (error) {
-        throw new SignInThrottleUnavailableError(error);
-      }
-    },
-  };
+  return redisAuthThrottle(
+    backend,
+    keySecret,
+    SIGN_IN_THROTTLE_POLICY,
+    (cause) =>
+      cause === undefined
+        ? new SignInThrottleUnavailableError()
+        : new SignInThrottleUnavailableError(cause),
+  );
 }
 
 let cachedBackend: ThrottleBackend | undefined;

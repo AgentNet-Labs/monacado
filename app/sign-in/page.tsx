@@ -22,6 +22,7 @@
  * constant answers for the client navigation and this server one.
  */
 
+import Link from "next/link";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { resolvePageSession } from "../../src/server/account/page-session";
@@ -43,6 +44,12 @@ export default async function SignInPage() {
         <h1>Monacado</h1>
         <p className="auth-lede">Sign in to your account.</p>
         <SignInForm />
+        {/* Phase 1.27. One restrained line, below the form rather than beside
+            it: somebody who arrived here to sign in should not have their eye
+            pulled to a second call to action before they have tried the first. */}
+        <p className="auth-alt">
+          New to Monacado? <Link href="/sign-up">Create an account</Link>
+        </p>
       </div>
     </main>
   );

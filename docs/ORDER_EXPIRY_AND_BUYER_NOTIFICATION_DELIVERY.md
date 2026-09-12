@@ -227,13 +227,23 @@ rather than being assumed here. A `FAILED` row is visible and countable.
 
 ## 5. The email-provider boundary
 
-**No email vendor is installed or configured**, and a test asserts none of
-`nodemailer`, `@sendgrid/mail`, `resend`, `postmark`, `mailgun.js`, or
-`@aws-sdk/client-ses` is a dependency.
+**No mail SaaS SDK is a dependency**, and a test asserts none of
+`@sendgrid/mail`, `resend`, `postmark`, `mailgun.js`, or `@aws-sdk/client-ses`
+is. A vendor SDK couples callers to one provider's API shape, and that coupling
+remains disallowed.
 
-The repository identifies none, so choosing one here would be choosing a third
-party, a data-processing relationship, and a deliverability story on Monacado's
-behalf in a phase about notifications. What exists instead:
+> **Updated in Phase 1.27.** This section originally also listed `nodemailer` as
+> forbidden. That no longer holds: **`nodemailer` is the approved,
+> provider-neutral SMTP transport dependency**, through which Monacado sends via
+> Google Workspace over authenticated SMTP. SMTP configuration stays server-side
+> and environment-driven (`MONACADO_SMTP_*`, `MONACADO_MAIL_*`), and **only the
+> dedicated adapter, `src/server/notifications/smtp-mail-adapter.ts`, may import
+> `nodemailer`** — a test asserts that exactly that file does.
+
+When this phase shipped the repository identified no provider, so choosing one
+here would have been choosing a third party, a data-processing relationship, and
+a deliverability story on Monacado's behalf in a phase about notifications. What
+exists instead:
 
 - **`MailPort`** — provider-neutral. `MailMessage` is plain text with `to`,
   `subject`, `text` and no field for HTML, a template id, an attachment, a

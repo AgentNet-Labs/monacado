@@ -41,6 +41,15 @@ executed, no tax remitted, and no digital-delivery machinery built.
 injected `fetch`; the Postmark adapter is never constructed against the real
 endpoint, and no credential is in the repository.
 
+> **Updated in Phase 1.27.** Postmark is no longer the deployment transport.
+> Staging and production send through **Google Workspace over authenticated
+> SMTP**, via Nodemailer, in `smtp-mail-adapter.ts` (`MONACADO_MAIL_TRANSPORT=SMTP`),
+> behind the same `MailPort`; the outbox, retry policy and dispatcher described
+> here are unchanged. The Postmark adapter and webhook remain in the repository as
+> an unselected historical adapter, and no `MONACADO_POSTMARK_*` variable is
+> required. The `MONACADO_SMTP_*` / `MONACADO_MAIL_*` contract is documented in
+> `.env.example`.
+
 ---
 
 ## 1. Obligation, delivery, attempt — three records, three questions
@@ -218,9 +227,19 @@ No daemon, no scheduler, no `setInterval`, no self-rescheduling — the shape
 `worker:publication:once` established, so deciding to run a second cycle stays
 entirely outside and nothing inherits a hidden loop.
 
-**No cron schedule is wired.** There is no deployment configuration file in this
-repository to add one to, and inventing one is a deployment decision rather than a
-notification phase's. The endpoint exists so that decision is one line.
+**No cron schedule was wired in this phase.** There was no deployment configuration
+file in the repository to add one to, and inventing one was a deployment decision
+rather than a notification phase's. The endpoint existed so that decision would be
+one line.
+
+> **Updated in Phase 1.27.** That decision has been made. `vercel.json` declares a
+> Vercel Cron calling `GET /api/internal/operations/email-dispatcher/scheduled`
+> every five minutes — a sibling of this operator endpoint, with its own
+> `CRON_SECRET` bearer gate, that calls the same dispatch cycle.
+> **Production:** Vercel runs it automatically once deployed with `CRON_SECRET`
+> set. **Staging:** it is not assumed to run automatically; invoke the endpoint
+> manually with staging's `CRON_SECRET` when a retry proof is needed. The `POST`
+> operator endpoint above is unchanged.
 
 The endpoint is gated by a bearer shared secret compared in constant time, whose
 **variable name** is configuration and whose value is resolved per request. It
@@ -510,6 +529,15 @@ explicitly designed to take and which need no schema change.
 ## 13. Remaining production configuration
 
 Nothing below is code. Each is a deployment act, and none has been performed.
+
+> **Superseded in Phase 1.27.** The Postmark rows below describe this phase's
+> configuration and are **not** required for deployment. Configure instead:
+> `MONACADO_MAIL_ENABLED=true`, `MONACADO_MAIL_TRANSPORT=SMTP`, the
+> `MONACADO_SMTP_*` host/port/TLS/username/password variables and
+> `MONACADO_MAIL_FROM_ADDRESS` (see `.env.example`); SPF, DKIM and DMARC still
+> apply. Bounce and complaint webhook ingestion exists only for Postmark and has
+> no SMTP equivalent yet. Scheduling is `vercel.json`'s Production cron with
+> `CRON_SECRET` (§4); staging invokes the scheduled endpoint manually.
 
 | Step | Where |
 | --- | --- |
