@@ -36,3 +36,10 @@ yarn-error.log*
 *.pem
 .idea/
 .vscode/
+
+# Vercel CLI link state and pulled environment files. `vercel link` also appends
+# a broad `.env*` here; it is deliberately not kept, because it sits after the
+# `!.env.example` negation above and silently re-ignores the one env file this
+# repository does track. The existing `.env` / `.env.*` / `!.env.example` block
+# already covers everything `vercel env pull` writes.
+.vercel
