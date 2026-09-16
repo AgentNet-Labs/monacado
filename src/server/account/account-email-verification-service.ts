@@ -2,10 +2,14 @@
  * Account email verification (Phase 1.27) — SERVER ONLY.
  *
  * Proves that whoever registered an address can read mail sent to it. Until this
- * phase Monacado had no such proof for a login address at all: `createAccount`
- * made an `ACTIVE` account and `authenticateAccount` let it straight in, so a
- * person could register with somebody else's address and hold an account keyed to
- * it forever.
+ * phase Monacado had no such proof for a login address at all, so a person could
+ * register with somebody else's address and hold an account keyed to it forever.
+ *
+ * What the proof GATES was corrected after the phase first shipped. It gates
+ * taking a Storefront public — see `assertOwnerAccountEmailVerified` — and NOT
+ * sign-in. Blocking sign-in stopped a Seller from doing the onboarding work that
+ * exposes nothing to anybody, which is friction the requirement never needed in
+ * order to protect what it protects.
  *
  * ## Why this is not the participant verifier
  *

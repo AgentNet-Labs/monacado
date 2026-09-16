@@ -53,6 +53,7 @@ import {
   GovernanceAssignmentNotFoundError,
   InvalidStorefrontInputError,
   NoMaterialChangeError,
+  OwnerAccountEmailUnverifiedError,
   OwnerParticipantNotFoundError,
   StorefrontNotAuthorizedError,
   StorefrontNotFoundError,
@@ -144,6 +145,14 @@ async function accountFor(participantId: string): Promise<string> {
   const row = await db.marketplaceParticipant.findUnique({ where: { id: participantId } });
   if (row === null) throw new Error(`no participant ${participantId}`);
   return row.accountId;
+}
+
+/** Prove the owning account's address, as an operator or fixture would. */
+async function verifyOwnerAccount(participantId: string): Promise<void> {
+  await db.account.update({
+    where: { id: await accountFor(participantId) },
+    data: { emailVerifiedAt: new Date(NOW), emailVerifiedVia: "ADMINISTRATIVE" },
+  });
 }
 
 const presentation = (overrides: Record<string, unknown> = {}) => ({
@@ -265,6 +274,12 @@ async function makeOwnerGoLiveEligible(ownerParticipantId: string): Promise<void
     where: { id: ownerParticipantId },
     data: { status: "ACTIVE" },
   });
+  /* Going live now also requires the OWNING ACCOUNT's address to be proved.
+     `seedSeller` creates accounts through the real `createAccount`, which
+     defaults to UNVERIFIED — so every go-live fixture must say so explicitly.
+     ADMINISTRATIVE is the honest provenance here: a fixture vouches, no link was
+     ever sent, and the contract names fixtures as exactly that case. */
+  await verifyOwnerAccount(ownerParticipantId);
   await db.marketplaceRoleAssignment.updateMany({
     where: { participantId: ownerParticipantId },
     data: { status: "ACTIVE" },
@@ -1377,6 +1392,79 @@ describe.skipIf(!RUN)("Storefront persistence and governance (disposable MySQL)"
 
       const after = await goLive(snapshot.record.internalStorefrontId, ownerParticipantId);
       expect(after.currentVersion.lifecycle).toBe("ACTIVE");
+    });
+
+    it("refuses an eligible SUPER_OWNER whose own account address is unproved", async () => {
+      /* The requirement Phase 1.27 originally put on SIGN-IN, moved to the
+         boundary it actually protects. Everything else about this owner is in
+         order — ACTIVE participant, ACTIVE role, payable, commerce-approved —
+         so the ONLY thing refusing here is the unproved address. */
+      const { ownerParticipantId, snapshot } = await seedGovernedStorefront();
+      const id = snapshot.record.internalStorefrontId;
+      await makeOwnerGoLiveEligible(ownerParticipantId);
+      await db.account.update({
+        where: { id: await accountFor(ownerParticipantId) },
+        data: { emailVerifiedAt: null, emailVerifiedVia: null },
+      });
+
+      const error = await goLive(id, ownerParticipantId).catch((e) => e);
+      expect(error).toBeInstanceOf(OwnerAccountEmailUnverifiedError);
+      expect(error.code).toBe("OWNER_ACCOUNT_EMAIL_UNVERIFIED");
+      /* Not an authority refusal. The SUPER_OWNER's role is fine; telling them
+         otherwise would send them to fix the wrong thing. */
+      expect(error).not.toBeInstanceOf(StorefrontNotAuthorizedError);
+      /* And it carries no address, no account id, no participant id. */
+      expect(JSON.stringify({ ...error, message: error.message })).not.toContain("@");
+
+      /* The shop did not move. */
+      const row = await db.storefront.findUniqueOrThrow({ where: { internalStorefrontId: id } });
+      expect(row.lifecycle).toBe("DRAFT");
+    });
+
+    it("lets the same owner go live once the address is proved", async () => {
+      /* The positive half, on the SAME shop and the SAME owner, so the only
+         variable between refusal and success is `emailVerifiedAt`. */
+      const { ownerParticipantId, snapshot } = await seedGovernedStorefront();
+      const id = snapshot.record.internalStorefrontId;
+      await makeOwnerGoLiveEligible(ownerParticipantId);
+      await db.account.update({
+        where: { id: await accountFor(ownerParticipantId) },
+        data: { emailVerifiedAt: null, emailVerifiedVia: null },
+      });
+      expect(await goLive(id, ownerParticipantId).catch((e) => e)).toBeInstanceOf(
+        OwnerAccountEmailUnverifiedError,
+      );
+
+      await verifyOwnerAccount(ownerParticipantId);
+      const after = await goLive(id, ownerParticipantId);
+      expect(after.currentVersion.lifecycle).toBe("ACTIVE");
+    });
+
+    it("never blocks standing a Storefront DOWN on an unproved address", async () => {
+      /* The asymmetry every standing seam here already keeps: an owner who
+         cannot currently go live must still be able to close or hide the shop.
+         Going live first, then unproving the address, then closing. */
+      const { ownerParticipantId, snapshot } = await seedGovernedStorefront();
+      const id = snapshot.record.internalStorefrontId;
+      await makeOwnerGoLiveEligible(ownerParticipantId);
+      await goLive(id, ownerParticipantId);
+
+      await db.account.update({
+        where: { id: await accountFor(ownerParticipantId) },
+        data: { emailVerifiedAt: null, emailVerifiedVia: null },
+      });
+
+      const closed = await createStorefrontSourceVersion(
+        {
+          internalStorefrontId: id,
+          sourceRecordVersion: "3",
+          lifecycle: "CLOSED",
+          actingAccountId: await accountFor(ownerParticipantId),
+          now: LATER,
+        },
+        { db },
+      );
+      expect(closed.currentVersion.lifecycle).toBe("CLOSED");
     });
 
     it("refuses an ADMIN acting alone", async () => {

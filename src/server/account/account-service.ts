@@ -113,8 +113,9 @@ export async function createAccount(
   // Hashing happens BEFORE any database work, so no transaction spans it.
   const passwordHash = await hashPassword(req.password);
 
-  /* Closed by default. An account created without an opinion about its address
-     cannot sign in until one is formed. */
+  /* Unproved by default. An account created without an opinion about its
+     address is not treated as having proved it — the conservative direction,
+     which now costs public reachability rather than the login itself. */
   const verified = (req.emailVerification ?? "UNVERIFIED") === "ADMINISTRATIVE";
 
   try {
@@ -173,26 +174,28 @@ export async function authenticateAccount(
   const storedHash = row?.passwordHash ?? (await timingDecoyHash());
   const passwordMatches = await verifyPassword(req.password, storedHash);
 
-  /* Four ways of failing, one answer (Phase 1.27 added the fourth).
+  /* Three ways of failing, one answer.
 
-     An unproved address collapses into `InvalidCredentialsError` beside unknown
-     address, wrong password, and disabled account — it does NOT get a code of its
-     own. "This account exists but has not confirmed its email" is an
-     account-existence oracle wearing a helpful tone: it tells a caller their
-     guess was a real address, which is exactly what the uniform 401 and the
-     timing decoy are built to withhold. A person who genuinely registered has the
-     email in their inbox and does not need the login form to tell them.
+     **Email verification is deliberately NOT among them.** Phase 1.27 originally
+     added a fourth clause here — `emailVerifiedAt === null` — and the correction
+     removes it. The reasoning it was added under was sound about *disclosure* and
+     wrong about *where the requirement belongs*: proving an address is a
+     prerequisite for being PUBLICLY TRADEABLE, not for holding a session. A
+     Seller or Promoter who has just registered needs to sign in to do the
+     onboarding work — profile, business structure, payout configuration — none of
+     which exposes anything to a buyer, and all of which was unreachable while an
+     unconsumed link stood between them and their own account.
 
-     The check sits AFTER the password verification, like the status check, so an
-     unverified account costs the same time as an active one with a wrong
-     password. Moving it earlier would answer on the clock the question the
-     message refused to answer. */
-  if (
-    row === null ||
-    !passwordMatches ||
-    row.status !== "ACTIVE" ||
-    row.emailVerifiedAt === null
-  ) {
+     The requirement now sits at the boundary it actually protects:
+     `assertStorefrontMayBecomeOperational` refuses to take a shop live, or widen
+     its exposure, while the owning account's address is unproved. Buyer
+     payment/delivery carries its own separate rule at its own boundary.
+
+     What is unchanged: an account must still EXIST, match its password, and be
+     `ACTIVE`. The uniform answer across all three, and the timing decoy above,
+     stay exactly as they were — those defend against enumeration, which is a
+     different concern from verification and was never the thing being relaxed. */
+  if (row === null || !passwordMatches || row.status !== "ACTIVE") {
     throw new InvalidCredentialsError();
   }
   return accountRowToRecord(row);

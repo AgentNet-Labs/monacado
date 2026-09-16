@@ -154,8 +154,12 @@ describeDb("1.27 correction — verification mail through the SMTP adapter", () 
     });
     expect(pending.nextAttemptAt).not.toBeNull();
 
-    /* Unverified cannot sign in. */
-    const refused = await handleSignInRequest(
+    /* Unverified signs in anyway — and this is the case that shows WHY the
+       correction matters. The transport just failed, so the link is not in
+       anybody's inbox yet; under the original rule this person was locked out of
+       an account that genuinely exists, through no fault of their own, until a
+       retry succeeded. */
+    const admitted = await handleSignInRequest(
       {
         contentType: "application/json",
         originHeader: ORIGIN,
@@ -163,7 +167,7 @@ describeDb("1.27 correction — verification mail through the SMTP adapter", () 
       },
       { db, appOrigin: ORIGIN, now: () => NOW, throttle: signInThrottle },
     );
-    expect(refused.status).not.toBe(200);
+    expect(admitted.status).toBe(200);
 
     // 5–6. The scheduled trigger, given configuration and no port, resolves the
     //      SMTP adapter itself and delivers the now-due row.
@@ -230,9 +234,14 @@ describeDb("1.27 correction — verification mail through the SMTP adapter", () 
     );
     expect(signedOut.status).toBe(200);
     expect(signedOut.body).toEqual({ signedOut: true });
+    /* TWO sessions exist, not one: the pre-verification sign-in at step 4 is now
+       admitted and issues a real session, which is the point of the correction.
+       Sign-out revokes the session whose cookie was presented and leaves the
+       other alone — revoking every session of an account because one of them
+       signed out would be a different, wrong behaviour. */
     const sessions = await db.accountSession.findMany({ where: { accountId: account.id } });
-    expect(sessions).toHaveLength(1);
-    expect(sessions[0]!.revokedAt).not.toBeNull();
+    expect(sessions).toHaveLength(2);
+    expect(sessions.filter((row) => row.revokedAt !== null)).toHaveLength(1);
 
     /* A later tick has nothing left to send. */
     const idle = await handleScheduledDispatchRequest(

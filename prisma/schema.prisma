@@ -715,9 +715,10 @@ model Account {
   status String @db.VarChar(16)
 
   /// When this account's `normalizedEmail` became proved (Phase 1.27). NULL
-  /// means unproved, and an unproved account cannot authenticate — see
-  /// `authenticateAccount`. This is the authoritative marker: there is no
-  /// derived or inferred verification state anywhere.
+  /// means unproved. An unproved account CAN authenticate and do onboarding
+  /// work; what it cannot do is take a Storefront public — see
+  /// `assertOwnerAccountEmailVerified`. This is the authoritative marker: there
+  /// is no derived or inferred verification state anywhere.
   ///
   /// It is NOT a `ParticipantEmailContact`. Account verification proves the
   /// login address; participant contact verification proves a seller's public

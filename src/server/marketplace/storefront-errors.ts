@@ -29,6 +29,7 @@ export type StorefrontErrorCode =
   | "OWNER_PARTICIPANT_NOT_FOUND"
   | "GOVERNANCE_PARTICIPANT_NOT_FOUND"
   | "STOREFRONT_NOT_AUTHORIZED"
+  | "OWNER_ACCOUNT_EMAIL_UNVERIFIED"
   | "NO_MATERIAL_CHANGE"
   | "SUPER_OWNER_ALREADY_ACTIVE"
   | "GOVERNANCE_ASSIGNMENT_NOT_FOUND"
@@ -131,6 +132,34 @@ export class StorefrontNotAuthorizedError extends StorefrontError {
     this.name = "StorefrontNotAuthorizedError";
     this.capability = capability;
     this.reasonCodes = reasonCodes;
+  }
+}
+
+/**
+ * The owning account's email address has never been proved.
+ *
+ * Raised only on the two INCREASING branches of a Storefront source version —
+ * going live, and widening exposure toward the public. Never on standing one
+ * down, for the reason the standing seams already give: an owner who cannot
+ * currently go live must still be able to close or hide their shop.
+ *
+ * A member of the existing bounded vocabulary rather than a new error family,
+ * and deliberately NOT a `StorefrontNotAuthorizedError`: that error means an
+ * 0M.3A *authority* decision denied the actor, and this one means the owner's
+ * contact address is unproved. Collapsing them would tell a SUPER_OWNER their
+ * governance role was insufficient when their role is fine and their inbox is
+ * the problem — an unactionable message, and a wrong one.
+ *
+ * It carries no address, no account id, and no participant id. The owner knows
+ * which address they registered; a caller who is not the owner learns nothing.
+ */
+export class OwnerAccountEmailUnverifiedError extends StorefrontError {
+  constructor() {
+    super(
+      "OWNER_ACCOUNT_EMAIL_UNVERIFIED",
+      "The owning account's email address has not been confirmed",
+    );
+    this.name = "OwnerAccountEmailUnverifiedError";
   }
 }
 

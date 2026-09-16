@@ -25,6 +25,11 @@
  * form learns only that Monacado exists and that they can ignore it. The token
  * appears exactly once, inside the URL.
  *
+ * NOTE — confirming is no longer what unlocks SIGN-IN. It unlocks taking a
+ * Storefront public. The message says so rather than repeating the earlier,
+ * stricter promise, because copy that overstates a requirement trains people to
+ * disbelieve the ones that are real.
+ *
  * ## Delivery reuses the existing outbox, unchanged
  *
  * `enqueueEmailDelivery` commits a durable `OutboundEmailDelivery` row first, then
@@ -96,14 +101,14 @@ export function renderAccountVerificationMessage(input: {
     body: [
       "Someone created a Monacado account with this email address.",
       "",
-      "Confirm the address to finish setting up the account and sign in:",
+      "Confirm the address to finish setting up the account:",
       "",
       input.verificationUrl,
       "",
       `This link expires at ${expires} and can be used once.`,
       "",
       "If you did not create a Monacado account, you can ignore this message.",
-      "No account can be used until this address is confirmed.",
+      "An unconfirmed address cannot be used to open a public storefront.",
     ].join("\n"),
   };
 }

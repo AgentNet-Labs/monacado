@@ -120,10 +120,11 @@ export const AccountName = z.string().trim().min(1).max(191);
  * be visible at every call site:
  *
  *   UNVERIFIED     — nobody has proved control of this address. The account
- *                    cannot authenticate until a verification challenge is
+ *                    may authenticate and do onboarding work, but cannot take a
+ *                    Storefront public until a verification challenge is
  *                    consumed. This is what **public sign-up** uses, and it is
  *                    the default precisely so that a caller who does not think
- *                    about it gets the closed door rather than the open one.
+ *                    about it gets the unproved state rather than a vouched one.
  *   ADMINISTRATIVE — created already usable by an operator, a fixture, or
  *                    `scripts/db-check.ts`. The operator vouches for the
  *                    address; no link is sent and none is expected. It is NOT a

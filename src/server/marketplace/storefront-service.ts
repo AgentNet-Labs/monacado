@@ -83,6 +83,7 @@ import {
   GovernanceParticipantNotFoundError,
   InvalidStorefrontInputError,
   NoMaterialChangeError,
+  OwnerAccountEmailUnverifiedError,
   OwnerParticipantNotFoundError,
   StorefrontNotAuthorizedError,
   StorefrontNotFoundError,
@@ -147,6 +148,11 @@ function isDomainError(error: unknown): boolean {
     error instanceof StorefrontNotAuthorizedError ||
     error instanceof NoMaterialChangeError ||
     error instanceof GovernanceAssignmentNotFoundError ||
+    /* An unproved owner address is a DOMAIN answer for the same reason the two
+       above are: the caller can act on it — confirm the address — and wrapping
+       it as a persistence failure would tell them the database broke when
+       nothing did, losing the one bounded code that says what to do. */
+    error instanceof OwnerAccountEmailUnverifiedError ||
     error instanceof CorruptStorefrontRecordError
   );
 }
@@ -364,6 +370,46 @@ async function requireGovernanceAdministrationStanding(
 async function requireActorMayAuthor(tx: Tx, actorParticipantId: string): Promise<void> {
   await assertParticipantLifecycleIsLive(tx, actorParticipantId);
   await assertParticipantMayAuthorMarketplaceState(tx, actorParticipantId);
+}
+
+/**
+ * Refuse to make a Storefront publicly reachable while the owning account's
+ * email address is unproved.
+ *
+ * **Why here and not in `participant-standing-service`.** That module states its
+ * own invariant in its header: it reads GOVERNED DECISIONS ONLY —
+ * `ParticipantSuspension` and `ParticipantRestriction` — and nothing else may
+ * become a reason it denies. An unproved address is not a governed decision; no
+ * human decided anything about this participant. Putting the read there would
+ * have broken that invariant for every seam built on
+ * `assertParticipantMayPerform`, including Offer publication and checkout, which
+ * this correction deliberately does not change.
+ *
+ * So it sits immediately beside that seam instead: same transaction, same two
+ * increasing branches, same single place. Two independent gates asked in order,
+ * neither substituting for the other — exactly how governance authority and
+ * participant standing already relate here.
+ *
+ * **No schema change.** `MarketplaceParticipant.accountId` is already a unique
+ * FK to `Account`, so the owner's verification state is one relation away. This
+ * reads the `Account` row that authorization already trusts; it does not read,
+ * copy, or infer from `ParticipantEmailContact`, which proves a seller's PUBLIC
+ * SUPPORT address and is a different fact with a different lifecycle.
+ *
+ * A missing participant is reported as `OwnerParticipantNotFoundError` rather
+ * than as unverified: "no such owner" and "owner has not confirmed their
+ * address" are different failures and must not share a code.
+ */
+async function assertOwnerAccountEmailVerified(
+  tx: Tx,
+  ownerParticipantId: string,
+): Promise<void> {
+  const owner = await tx.marketplaceParticipant.findUnique({
+    where: { id: ownerParticipantId },
+    select: { account: { select: { emailVerifiedAt: true } } },
+  });
+  if (owner === null) throw new OwnerParticipantNotFoundError();
+  if (owner.account.emailVerifiedAt === null) throw new OwnerAccountEmailUnverifiedError();
 }
 
 function requireAllowed(decision: StorefrontAuthorityDecision): void {
@@ -850,6 +896,7 @@ export async function createStorefrontSourceVersion(
        * for the other. */
       if (becomingOperational || wideningExposure) {
         await assertStorefrontMayBecomeOperational(tx, current.ownerParticipantId);
+        await assertOwnerAccountEmailVerified(tx, current.ownerParticipantId);
       }
 
       await tx.storefrontSourceRecordVersionRow.create({

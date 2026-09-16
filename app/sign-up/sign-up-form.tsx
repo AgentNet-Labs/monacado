@@ -35,7 +35,7 @@
  * try. The copy is therefore conditional — "**if** that address can receive
  * mail" — and true on every branch: a new address is sent a link, an existing
  * unverified one is sent a fresh link, and an already-verified one is sent
- * nothing because its owner can already sign in. Wording that promised "we have
+ * nothing because its address is already proved. Wording that promised "we have
  * sent you an email" would be a lie on the third branch, and a lie a probing
  * caller could detect by owning a verified address and reading the page.
  *
@@ -95,8 +95,8 @@ export function SignUpForm() {
         </p>
         <p className="auth-status">
           If that address can receive mail, a confirmation link is on its way.
-          Open it to finish setting up the account — you will not be able to sign
-          in until the address is confirmed. The link expires in 24 hours.
+          You can sign in and start setting up now; confirming the address is
+          what lets a storefront go public. The link expires in 24 hours.
         </p>
         <Link className="auth-button auth-button-link" href={SIGN_UP_DESTINATION}>
           Go to sign in

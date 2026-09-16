@@ -34,6 +34,7 @@ import { handleSignInRequest } from "../src/server/account/sign-in-route-handler
 import { handleAccountVerifyEmailRequest } from "../src/server/account/account-verification-route-handler";
 import { createAccount } from "../src/server/account/account-service";
 import { createCapturingMailAdapter } from "../src/server/notifications/mail-port";
+import { CLAIMABLE_DELIVERY_STATUSES } from "../src/contracts/marketplace/outbound-email";
 import { createFakeSignInThrottle } from "./support/sign-in-throttle-fake";
 import { createFakeSignUpThrottle } from "./support/sign-up-throttle-fake";
 import { VERIFY_ACCOUNT_EMAIL_PATH } from "../src/server/account/account-verification-notice";
@@ -128,9 +129,14 @@ describeDb("1.27 — account email verification", () => {
     await disconnectPrisma();
   });
 
-  it("registers unverified, refuses sign-in, then admits it once the link is used", async () => {
+  it("registers unverified, ADMITS sign-in, and proves the address when the link is used", async () => {
     /* The whole phase in one case, because the value is in the ORDER: each step
-       must be false before the previous one happens and true after. */
+       must be false before the previous one happens and true after.
+
+       The correction changes ONE step of this sequence and nothing else. An
+       unverified account now signs in — that is the friction being removed. What
+       verification still governs is proved separately, at the Storefront gate,
+       in `storefront-persistence.integration.test.ts`. */
     const email = nextEmail();
     const { port } = await signUp(email);
 
@@ -145,13 +151,20 @@ describeDb("1.27 — account email verification", () => {
     expect(account!.emailVerifiedAt).toBeNull();
     expect(account!.emailVerifiedVia).toBeNull();
 
-    /* The gate. An unverified account is refused with the SAME bounded code as
-       an unknown address and a wrong password — never a code of its own, which
-       would tell a caller their guessed address is real. */
+    /* NOT a gate any more. The account has proved nothing about its address and
+       is admitted anyway, with a real session cookie, because signing in is how
+       a Seller reaches the onboarding work that exposes nothing to a buyer.
+
+       This is the assertion the correction inverts: it read 401 /
+       INVALID_CREDENTIALS before. */
     const before = await signIn(email);
-    expect(before.status).toBe(401);
-    expect(before.body).toEqual({ error: "INVALID_CREDENTIALS" });
-    expect(before.headers["set-cookie"]).toBeUndefined();
+    expect(before.status).toBe(200);
+    expect(before.headers["set-cookie"]).toContain("monacado_session=");
+
+    /* And the admission did not quietly verify anything on the way through. */
+    expect(
+      (await db.account.findUnique({ where: { id: account!.id } }))!.emailVerifiedAt,
+    ).toBeNull();
 
     /* The mail actually went out, through the real outbox and the real port. */
     expect(port.sent).toHaveLength(1);
@@ -196,11 +209,55 @@ describeDb("1.27 — account email verification", () => {
         .state,
     ).toBe("CONSUMED");
 
-    /* And now the door opens — with the password chosen at registration, through
-       the unchanged Phase 1.22 endpoint. */
+    /* Sign-in still works afterwards, and is unchanged by verification — the
+       door was never locked, so consuming the link neither opens nor closes it. */
     const after = await signIn(email);
     expect(after.status).toBe(200);
     expect(after.headers["set-cookie"]).toContain("monacado_session=");
+  });
+
+  it("still registers when the mail transport refuses, and leaves the message retryable", async () => {
+    /* The correction's other half: the immediate send is an OPTIMISATION over a
+       durable commitment, so a provider outage must not reach the person who
+       just registered.
+
+       `createCapturingMailAdapter` with a REFUSED result is the whole fault
+       injection — the route is given a port that behaves exactly as SMTP does
+       when Google is unreachable. No transport is stubbed, no timer is faked,
+       and no retry framework is exercised. */
+    const email = nextEmail();
+    const failing = createCapturingMailAdapter({
+      result: { outcome: "REFUSED", failureCode: "PROVIDER_UNAVAILABLE" },
+    });
+    const { result } = await signUp(email, failing);
+
+    /* Registration SUCCEEDED, with the byte-identical bounded body a working
+       transport produces. Nothing names mail, SMTP, a provider, or a failure. */
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ registered: true });
+    expect(JSON.stringify(result.body)).not.toMatch(/mail|smtp|provider|unavailable/i);
+
+    /* The account is real and usable — this is the state that used to be a dead
+       end, because an account that could not sign in and whose link never
+       arrived had no way forward at all. */
+    const account = await db.account.findUnique({
+      where: { normalizedEmail: email.toLowerCase() },
+    });
+    expect(account).not.toBeNull();
+    expect(account!.status).toBe("ACTIVE");
+    expect(account!.emailVerifiedAt).toBeNull();
+    expect((await signIn(email)).status).toBe(200);
+
+    /* The attempt genuinely happened — the port was called — and the durable row
+       survived it in a state the EXISTING dispatcher will pick up again. No new
+       queue, no new scheduler: `RETRY_PENDING` is a member of the
+       `CLAIMABLE_DELIVERY_STATUSES` this repository already had. */
+    expect(failing.sent).toHaveLength(1);
+    const delivery = await db.outboundEmailDelivery.findFirst({
+      where: { subjectRef: account!.id },
+    });
+    expect(delivery).not.toBeNull();
+    expect(CLAIMABLE_DELIVERY_STATUSES).toContain(delivery!.status);
   });
 
   it("refuses a token that is absent, malformed, expired, superseded, or for another account", async () => {

@@ -274,8 +274,9 @@ export async function handleSignUpRequest(
         password: parsed.data.password,
         createdAt: now,
         /* Explicit, not inherited from the default. Public registration proves
-           nothing about the address, so the account it creates cannot sign in
-           until a challenge is consumed. */
+           nothing about the address, so the account it creates starts unproved.
+           It may sign in and begin onboarding; what it cannot do until a
+           challenge is consumed is take a Storefront public. */
         emailVerification: "UNVERIFIED",
       },
       { ...(db !== undefined ? { db } : {}) },

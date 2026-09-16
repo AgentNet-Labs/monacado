@@ -140,8 +140,10 @@ describeDb("1.27 — account sign-up", () => {
     expect(row?.passwordHash).toMatch(/^\$argon2id\$/);
     expect(row?.passwordHash).not.toContain(PASSWORD);
 
-    /* And it cannot sign in yet — the gate this phase installed. */
-    expect((await signIn(email, PASSWORD)).status).toBe(401);
+    /* And it CAN sign in already. The correction removed the sign-in gate this
+       phase originally installed: an unproved address costs public storefront
+       reachability, not access to your own onboarding. */
+    expect((await signIn(email, PASSWORD)).status).toBe(200);
 
     /* Consume the link that registration sent, through the real verifier. */
     const link = mailPort.sent.at(-1)!.text.match(/https?:\/\/\S+/)![0];
