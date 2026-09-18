@@ -186,6 +186,26 @@ export const UpdateStorefrontInput = z.strictObject({
 });
 export type UpdateStorefrontInput = z.infer<typeof UpdateStorefrontInput>;
 
+/**
+ * Edit a Storefront's presentation, and nothing else (Phase 1.31).
+ *
+ * A narrowing of `UpdateStorefrontInput`, not a second update model: the service
+ * resolves the Storefront by its handle, labels the next version itself, and
+ * hands `createStorefrontSourceVersion` a presentation and nothing more — so no
+ * lifecycle, visibility, or handle change can ride along.
+ *
+ * `presentation` is the complete `StorefrontPresentation`, exactly as the source
+ * model holds it: a display name, and a tagline and summary that are each a
+ * non-blank string or `null`. `null` clears; there is no "omitted means keep".
+ */
+export const EditStorefrontPresentationInput = z.strictObject({
+  publicHandle: PublicHandle,
+  presentation: StorefrontPresentation,
+  actingAccountId: ActingAccountId,
+  now: z.iso.datetime(),
+});
+export type EditStorefrontPresentationInput = z.infer<typeof EditStorefrontPresentationInput>;
+
 export const AssignStorefrontGovernanceInput = z.strictObject({
   internalStorefrontId: InternalStorefrontId,
   participantId: MarketplaceParticipantId,

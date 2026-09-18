@@ -406,3 +406,46 @@ main p {
   color: var(--color-text-strong);
   overflow-wrap: anywhere;
 }
+
+/* Phase 1.31 — Storefront presentation on /account, and its editor. */
+.account-storefront-tagline,
+.account-storefront-summary {
+  margin: 0.375rem 0 0;
+  color: var(--color-text);
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+}
+
+.account-storefront-tagline {
+  font-style: italic;
+}
+
+.account-storefront-edit {
+  margin-top: 0.75rem;
+}
+
+.account-storefront-edit > summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--color-primary);
+}
+
+.account-storefront-edit > summary:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.account-storefront-edit .auth-field textarea {
+  padding: 0.5rem 0.625rem;
+  font: inherit;
+  color: var(--color-text-strong);
+  background: var(--color-surface);
+  border: 1px solid var(--color-primary);
+  border-radius: 0.25rem;
+  resize: vertical;
+}
+
+.account-storefront-edit .auth-field textarea:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+}

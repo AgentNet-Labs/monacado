@@ -37,6 +37,7 @@ import type { Prisma } from "@prisma/client";
 import {
   AssignStorefrontGovernanceInput,
   CreateDraftStorefrontInput,
+  EditStorefrontPresentationInput,
   INCLUDED_STOREFRONT_ALLOWANCE,
   OpenOwnedDraftStorefrontInput,
   SetGovernanceAssignmentStatusInput,
@@ -1054,6 +1055,80 @@ export async function createStorefrontSourceVersion(
     }
     throw new StorefrontPersistenceFailureError("createStorefrontSourceVersion", error);
   }
+}
+
+/**
+ * The label of the version after `current`: "1" → "2" (Phase 1.31).
+ *
+ * Self-service Storefronts are created at "1" and edited one version at a time,
+ * so their labels are consecutive integers. A label that is not a positive
+ * integer was written by some other path, and guessing a successor for it could
+ * collide or misorder history — so there is none, and the caller refuses.
+ */
+export function nextStorefrontSourceRecordVersion(current: string): string | undefined {
+  if (!/^[1-9][0-9]{0,15}$/.test(current)) return undefined;
+  return String(Number(current) + 1);
+}
+
+/**
+ * Replace a Storefront's presentation through the authoritative version path
+ * (Phase 1.31).
+ *
+ * Resolves the Storefront by its public handle and labels the next version, then
+ * delegates to `createStorefrontSourceVersion` with a presentation and nothing
+ * else. Everything that function decides is decided there, unchanged: the
+ * presentation-edit authority (an ACTIVE SUPER_OWNER or ADMIN on this
+ * Storefront), the acting participant's authoring standing, the refusal of an
+ * update that changes nothing material, the refusal of a CLOSED Storefront, and
+ * the one-transaction insert-and-advance that leaves earlier versions untouched.
+ * Lifecycle, visibility, handle, and owner cannot change here, because none of
+ * them is passed.
+ *
+ * **Concurrent edits.** The label is read before the version transaction starts,
+ * so two edits of the same version can compute the same next label. The
+ * `(storefrontSourceRecordId, sourceRecordVersion)` unique index then refuses the
+ * second with `DuplicateSourceVersionError`, and nothing is overwritten silently.
+ * Two edits in sequence are last-writer-wins on the whole presentation, as every
+ * version is a complete snapshot.
+ *
+ * A handle that names no Storefront, and one the actor may not edit, are both
+ * refusals; the route decides how much to tell the caller.
+ */
+export async function editStorefrontPresentation(
+  input: unknown,
+  deps: StorefrontServiceDeps = {},
+): Promise<StorefrontSnapshot> {
+  const parsed = EditStorefrontPresentationInput.safeParse(input);
+  if (!parsed.success) throw inputError(parsed.error);
+  const data = parsed.data;
+
+  const db = deps.db ?? getPrisma();
+  let stable;
+  try {
+    stable = await db.storefront.findUnique({
+      where: { publicHandle: data.publicHandle },
+      select: { internalStorefrontId: true, currentSourceRecordVersion: true },
+    });
+  } catch (error) {
+    throw new StorefrontPersistenceFailureError("editStorefrontPresentation", error);
+  }
+  if (stable === null) throw new StorefrontNotFoundError();
+
+  const sourceRecordVersion = nextStorefrontSourceRecordVersion(stable.currentSourceRecordVersion);
+  if (sourceRecordVersion === undefined) {
+    throw new StorefrontPersistenceFailureError("editStorefrontPresentation:version-label");
+  }
+
+  return await createStorefrontSourceVersion(
+    {
+      internalStorefrontId: stable.internalStorefrontId,
+      sourceRecordVersion,
+      presentation: data.presentation,
+      actingAccountId: data.actingAccountId,
+      now: data.now,
+    },
+    deps,
+  );
 }
 
 /**

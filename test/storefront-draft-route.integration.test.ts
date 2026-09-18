@@ -401,7 +401,15 @@ describeDb("1.30 — self-service draft Storefront", () => {
 
     const after = await readAccountHome(caller.accountId, { db });
     expect(after!.storefronts).toEqual([
-      { displayName: "Ada's Workshop", publicHandle: handle(), lifecycle: "DRAFT", visibility: "PRIVATE" },
+      {
+        displayName: "Ada's Workshop",
+        tagline: null,
+        summary: null,
+        publicHandle: handle(),
+        lifecycle: "DRAFT",
+        visibility: "PRIVATE",
+        canEditPresentation: true,
+      },
     ]);
     expect(JSON.stringify(after)).not.toMatch(/mon:/);
 

@@ -72,6 +72,7 @@ import {
   assignStorefrontGovernance,
   createDraftStorefront,
   createStorefrontSourceVersion,
+  editStorefrontPresentation,
   openOwnedDraftStorefront,
   setGovernanceAssignmentStatus,
 } from "./storefront-service";
@@ -179,6 +180,29 @@ export async function openOwnedDraftStorefrontAs(
   deps: StorefrontServiceDeps = {},
 ): Promise<{ storefront: StorefrontSnapshot; superOwner: StorefrontGovernanceAssignmentRecord }> {
   return await openOwnedDraftStorefront(
+    {
+      publicHandle: input.publicHandle,
+      presentation: input.presentation,
+      actingAccountId: actor.accountId,
+      now: input.now,
+    },
+    deps,
+  );
+}
+
+/**
+ * Replace a Storefront's presentation as the acting account (Phase 1.31).
+ *
+ * The input is rebuilt from the handle and the presentation, the two things the
+ * act consists of; the acting account is the resolved actor's and nothing else.
+ * Whether that actor may edit this Storefront is decided inside the domain.
+ */
+export async function editStorefrontPresentationAs(
+  actor: ActingAccount,
+  input: { publicHandle: unknown; presentation: unknown; now: string },
+  deps: StorefrontServiceDeps = {},
+): Promise<StorefrontSnapshot> {
+  return await editStorefrontPresentation(
     {
       publicHandle: input.publicHandle,
       presentation: input.presentation,

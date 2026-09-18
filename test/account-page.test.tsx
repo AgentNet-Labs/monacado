@@ -55,6 +55,16 @@ const {
   STOREFRONT_SIGNED_OUT,
   submitDraftStorefront,
 } = await import("../app/account/storefront-submission");
+const {
+  PRESENTATION_CONFLICT,
+  PRESENTATION_FAILURE,
+  PRESENTATION_INVALID,
+  PRESENTATION_NOT_EDITABLE,
+  PRESENTATION_SIGNED_OUT,
+  PRESENTATION_UNCHANGED,
+  storefrontPresentationEndpoint,
+  submitStorefrontPresentation,
+} = await import("../app/account/storefront-presentation-submission");
 
 const DRAFT_SELLER: AccountHome["marketplace"] = {
   status: "DRAFT",
@@ -182,7 +192,15 @@ describe("/account presentation", () => {
         canCreateStorefront: false,
         storefrontUpgradeRequired: true,
         storefronts: [
-          { displayName: "Ada's Workshop", publicHandle: "ada-workshop", lifecycle: "DRAFT", visibility: "PRIVATE" },
+          {
+            displayName: "Ada's Workshop",
+            tagline: "Small-batch ceramics",
+            summary: "Made by hand in Leeds.",
+            publicHandle: "ada-workshop",
+            lifecycle: "DRAFT",
+            visibility: "PRIVATE",
+            canEditPresentation: true,
+          },
         ],
       }),
     );
@@ -194,6 +212,65 @@ describe("/account presentation", () => {
     expect(html).not.toContain('name="publicHandle"');
     expect(html).toContain("Additional storefronts require an upgrade.");
     expect(html).not.toContain("mon:");
+  });
+
+  it("shows tagline and summary, and an editor for name, tagline, and summary — never the handle", async () => {
+    const html = await renderSignedIn(
+      home({
+        marketplace: DRAFT_SELLER,
+        storefrontUpgradeRequired: true,
+        storefronts: [
+          {
+            displayName: "Ada's Workshop",
+            tagline: "Small-batch ceramics",
+            summary: "Made by hand in Leeds.",
+            publicHandle: "ada-workshop",
+            lifecycle: "DRAFT",
+            visibility: "PRIVATE",
+            canEditPresentation: true,
+          },
+        ],
+      }),
+    );
+    const text = html.replaceAll("<!-- -->", "");
+
+    expect(text).toContain("Small-batch ceramics");
+    expect(text).toContain("Made by hand in Leeds.");
+    expect(text).toContain("Edit storefront details");
+    /* Prefilled from the current version. */
+    expect(html).toMatch(/name="displayName"[^>]*value="Ada&#x27;s Workshop"/);
+    expect(html).toMatch(/name="tagline"[^>]*value="Small-batch ceramics"/);
+    expect(html).toContain('name="summary"');
+    expect(text).toContain("Made by hand in Leeds.</textarea>");
+    /* The handle is shown, and there is no field for it. */
+    expect(text).toContain("Handle: ada-workshop. The handle can&#x27;t be changed yet.");
+    expect(html).not.toContain('name="publicHandle"');
+    expect(text).toContain("Leave one blank to remove it.");
+    expect(html).not.toContain("mon:");
+  });
+
+  it("offers no editor when the page may not edit the Storefront", async () => {
+    const html = await renderSignedIn(
+      home({
+        marketplace: DRAFT_SELLER,
+        storefrontUpgradeRequired: true,
+        storefronts: [
+          {
+            displayName: "Closed Shop",
+            tagline: null,
+            summary: null,
+            publicHandle: "closed-shop",
+            lifecycle: "CLOSED",
+            visibility: "PRIVATE",
+            canEditPresentation: false,
+          },
+        ],
+      }),
+    );
+
+    expect(html).toContain("Closed Shop");
+    expect(html).not.toContain("Edit storefront details");
+    expect(html).not.toContain('name="tagline"');
   });
 
   it("shows no storefront section to an account that cannot draft one and has none", async () => {
@@ -330,6 +407,75 @@ describe("draft storefront submission", () => {
       const { fetchImpl } = captureFetch(reply);
       expect(
         await submitDraftStorefront({ displayName: "Shop", publicHandle: "shop" }, { fetchImpl }),
+      ).toEqual({ outcome: "failed", message });
+    }
+  });
+});
+
+describe("storefront presentation submission", () => {
+  function captureFetch(reply: Response | (() => never)) {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const fetchImpl = (async (url: unknown, init: unknown) => {
+      calls.push({ url: String(url), init: (init ?? {}) as RequestInit });
+      if (typeof reply === "function") reply();
+      return reply;
+    }) as unknown as typeof fetch;
+    return { calls, fetchImpl };
+  }
+
+  const json = (status: number, body: unknown) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+  it("sends the complete presentation to the handle's endpoint, blank optional fields as null", async () => {
+    const { calls, fetchImpl } = captureFetch(json(200, {}));
+
+    expect(
+      await submitStorefrontPresentation(
+        "ada-workshop",
+        { displayName: "Ada's", tagline: "   ", summary: "About." },
+        { fetchImpl },
+      ),
+    ).toEqual({ outcome: "saved" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe("/api/storefronts/ada-workshop/presentation");
+    expect(storefrontPresentationEndpoint("a b")).toBe("/api/storefronts/a%20b/presentation");
+    expect(calls[0]!.init.method).toBe("POST");
+    expect(calls[0]!.init.credentials).toBe("same-origin");
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({
+      displayName: "Ada's",
+      tagline: null,
+      summary: "About.",
+    });
+  });
+
+  it("reports a no-op as unchanged, and every refusal as bounded copy", async () => {
+    const unchanged = captureFetch(json(409, { error: "STOREFRONT_PRESENTATION_UNCHANGED" }));
+    expect(
+      await submitStorefrontPresentation("shop", { displayName: "A", tagline: "", summary: "" }, {
+        fetchImpl: unchanged.fetchImpl,
+      }),
+    ).toEqual({ outcome: "unchanged", message: PRESENTATION_UNCHANGED });
+
+    const cases: Array<[Response | (() => never), string]> = [
+      [json(400, { error: "INVALID_STOREFRONT_PRESENTATION_REQUEST" }), PRESENTATION_INVALID],
+      [json(409, { error: "STOREFRONT_EDIT_CONFLICT" }), PRESENTATION_CONFLICT],
+      [json(403, { error: "STOREFRONT_NOT_EDITABLE" }), PRESENTATION_NOT_EDITABLE],
+      [json(404, { error: "STOREFRONT_NOT_FOUND" }), PRESENTATION_NOT_EDITABLE],
+      [json(401, { error: "UNAUTHENTICATED" }), PRESENTATION_SIGNED_OUT],
+      [json(403, { error: "CROSS_ORIGIN_REQUEST_REFUSED" }), PRESENTATION_FAILURE],
+      [json(500, { error: "anything" }), PRESENTATION_FAILURE],
+      [new Response("not json", { status: 502 }), PRESENTATION_FAILURE],
+      [
+        () => {
+          throw new TypeError("network");
+        },
+        PRESENTATION_FAILURE,
+      ],
+    ];
+    for (const [reply, message] of cases) {
+      const { fetchImpl } = captureFetch(reply);
+      expect(
+        await submitStorefrontPresentation("shop", { displayName: "A", tagline: "", summary: "" }, { fetchImpl }),
       ).toEqual({ outcome: "failed", message });
     }
   });

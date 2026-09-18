@@ -76,3 +76,10 @@ export const STOREFRONT_UPGRADE_NOTE = "Additional storefronts require an upgrad
 
 export const STOREFRONT_HANDLE_HINT =
   "3–63 characters: lowercase letters, numbers, and single hyphens. It will be part of your storefront's web address once it goes live.";
+
+// — Storefront presentation (Phase 1.31) —
+
+export const STOREFRONT_OPTIONAL_FIELD_HINT =
+  "Tagline and summary are optional. Leave one blank to remove it.";
+
+export const STOREFRONT_HANDLE_FIXED_NOTE = "The handle can't be changed yet.";

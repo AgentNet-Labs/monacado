@@ -5,11 +5,13 @@
  * 1.29 makes it useful to the person who just registered to sell or promote: who
  * they are signed in as, whether their address is verified, and the one step
  * they can take next — starting Seller and/or Promoter setup. Phase 1.30 adds
- * the step after that: opening a private draft Storefront, and seeing it.
+ * the step after that: opening a private draft Storefront, and seeing it; Phase
+ * 1.31 lets its owner edit that draft's name, tagline, and summary.
  *
  * It is still deliberately **not** a dashboard or a settings screen. Nothing
- * here edits the account, changes a password, lists sessions, edits a
- * Storefront, or reaches past setup into activation, payment, or publication.
+ * here edits the account, changes a password, lists sessions, changes a
+ * Storefront's handle, lifecycle, or visibility, or reaches past setup into
+ * activation, payment, or publication.
  *
  * ## The guard is here, in the page that renders the content
  *
@@ -55,6 +57,7 @@ import {
 } from "./account-home-copy";
 import { OnboardingForm } from "./onboarding-form";
 import { StorefrontForm } from "./storefront-form";
+import { StorefrontPresentationForm } from "./storefront-presentation-form";
 import { SignOutButton } from "./sign-out-button";
 import { SIGN_OUT_DESTINATION } from "./sign-out-submission";
 
@@ -134,6 +137,25 @@ export default async function AccountPage() {
                     {` — ${STOREFRONT_LIFECYCLE_LABELS[s.lifecycle]} · ${STOREFRONT_VISIBILITY_LABELS[s.visibility]}`}
                     <br />
                     <span className="auth-hint">{`Handle: ${s.publicHandle}`}</span>
+                    {s.tagline !== null ? (
+                      <p className="account-storefront-tagline">{s.tagline}</p>
+                    ) : null}
+                    {s.summary !== null ? (
+                      <p className="account-storefront-summary">{s.summary}</p>
+                    ) : null}
+                    {/* Phase 1.31: the presentation editor. The handle is shown
+                        inside it and is not editable. */}
+                    {s.canEditPresentation ? (
+                      <details className="account-storefront-edit">
+                        <summary>Edit storefront details</summary>
+                        <StorefrontPresentationForm
+                          publicHandle={s.publicHandle}
+                          displayName={s.displayName}
+                          tagline={s.tagline}
+                          summary={s.summary}
+                        />
+                      </details>
+                    ) : null}
                   </li>
                 ))}
               </ul>

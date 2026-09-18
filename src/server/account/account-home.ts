@@ -17,10 +17,11 @@
  */
 
 import "../server-only";
-import type {
-  MarketplaceRole,
-  ParticipantStatus,
-  RoleAssignmentStatus,
+import {
+  permitsDrafting,
+  type MarketplaceRole,
+  type ParticipantStatus,
+  type RoleAssignmentStatus,
 } from "../../contracts/marketplace/participant";
 import {
   SELF_SERVICE_ONBOARDING_ROLES,
@@ -50,9 +51,19 @@ export interface AccountHomeRole {
  */
 export interface AccountHomeStorefront {
   displayName: string;
+  /** `null` when unset — the source model's own representation (Phase 1.31). */
+  tagline: string | null;
+  summary: string | null;
   publicHandle: string;
   lifecycle: StorefrontLifecycleState;
   visibility: StorefrontVisibility;
+  /**
+   * Whether the page should offer the presentation editor (Phase 1.31): this
+   * participant holds an ACTIVE SUPER_OWNER or ADMIN assignment on it, it is not
+   * CLOSED, and the participant's status permits drafting. The route asks the
+   * domain again; this only decides what to show.
+   */
+  canEditPresentation: boolean;
 }
 
 export interface AccountHome {
@@ -98,7 +109,14 @@ export async function readAccountHome(
   if (rows === null) return undefined;
 
   const { account, participant, roles } = rows;
-  const storefronts = participant === null ? [] : await readOwnedStorefronts(db, participant.id);
+  const storefronts =
+    participant === null
+      ? []
+      : await readOwnedStorefronts(
+          db,
+          participant.id,
+          permitsDrafting(participant.status as ParticipantStatus),
+        );
   const mayDraftStorefront = isAllowed(
     canCreateDraftStorefront(
       toMarketplaceSubject({
@@ -150,11 +168,13 @@ export async function readAccountHome(
 async function readOwnedStorefronts(
   db: Db,
   ownerParticipantId: string,
+  participantMayDraft: boolean,
 ): Promise<AccountHomeStorefront[]> {
   const stores = await db.storefront.findMany({
     where: { ownerParticipantId },
     orderBy: { createdAt: "asc" },
     select: {
+      internalStorefrontId: true,
       storefrontSourceRecordId: true,
       currentSourceRecordVersion: true,
       publicHandle: true,
@@ -171,14 +191,44 @@ async function readOwnedStorefronts(
         sourceRecordVersion: s.currentSourceRecordVersion,
       })),
     },
-    select: { storefrontSourceRecordId: true, presentationDisplayName: true },
+    select: {
+      storefrontSourceRecordId: true,
+      presentationDisplayName: true,
+      presentationTagline: true,
+      presentationSummary: true,
+    },
   });
-  const names = new Map(versions.map((v) => [v.storefrontSourceRecordId, v.presentationDisplayName]));
+  const current = new Map(versions.map((v) => [v.storefrontSourceRecordId, v]));
 
-  return stores.map((s) => ({
-    displayName: names.get(s.storefrontSourceRecordId) ?? s.publicHandle,
-    publicHandle: s.publicHandle,
-    lifecycle: s.lifecycle as StorefrontLifecycleState,
-    visibility: s.visibility as StorefrontVisibility,
-  }));
+  /* The participant's own ACTIVE governance on these Storefronts — the
+     assignment `canEditStorefrontPresentation` requires. Ownership alone is not
+     governance (0M.3C §3). */
+  const governed = new Set(
+    (
+      await db.storefrontGovernanceAssignment.findMany({
+        where: {
+          participantId: ownerParticipantId,
+          status: "ACTIVE",
+          internalStorefrontId: { in: stores.map((s) => s.internalStorefrontId) },
+        },
+        select: { internalStorefrontId: true },
+      })
+    ).map((g) => g.internalStorefrontId),
+  );
+
+  return stores.map((s) => {
+    const version = current.get(s.storefrontSourceRecordId);
+    return {
+      displayName: version?.presentationDisplayName ?? s.publicHandle,
+      tagline: version?.presentationTagline ?? null,
+      summary: version?.presentationSummary ?? null,
+      publicHandle: s.publicHandle,
+      lifecycle: s.lifecycle as StorefrontLifecycleState,
+      visibility: s.visibility as StorefrontVisibility,
+      canEditPresentation:
+        participantMayDraft &&
+        s.lifecycle !== "CLOSED" &&
+        governed.has(s.internalStorefrontId),
+    };
+  });
 }
