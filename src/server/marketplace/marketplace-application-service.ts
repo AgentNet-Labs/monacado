@@ -72,6 +72,7 @@ import {
   assignStorefrontGovernance,
   createDraftStorefront,
   createStorefrontSourceVersion,
+  openOwnedDraftStorefront,
   setGovernanceAssignmentStatus,
 } from "./storefront-service";
 import type { StorefrontServiceDeps, StorefrontSnapshot } from "./storefront-service";
@@ -160,6 +161,30 @@ export async function beginOnboardingAs(
 ): Promise<ParticipantSnapshot> {
   return await beginParticipantOnboarding(
     { accountId: actor.accountId, roles: input.roles, now: input.now },
+    deps,
+  );
+}
+
+/**
+ * Open a draft Storefront for the acting account's own participant, with that
+ * participant as its first SUPER_OWNER, atomically (Phase 1.30).
+ *
+ * Like `beginOnboardingAs`, the input is rebuilt from the fields the act consists
+ * of — the handle and the presentation — rather than spread, so neither an
+ * `actingAccountId` nor an owner id in a caller's object has anywhere to land.
+ */
+export async function openOwnedDraftStorefrontAs(
+  actor: ActingAccount,
+  input: { publicHandle: unknown; presentation: unknown; now: string },
+  deps: StorefrontServiceDeps = {},
+): Promise<{ storefront: StorefrontSnapshot; superOwner: StorefrontGovernanceAssignmentRecord }> {
+  return await openOwnedDraftStorefront(
+    {
+      publicHandle: input.publicHandle,
+      presentation: input.presentation,
+      actingAccountId: actor.accountId,
+      now: input.now,
+    },
     deps,
   );
 }

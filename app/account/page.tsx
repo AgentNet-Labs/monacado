@@ -4,11 +4,12 @@
  * Phase 1.25 made this the smallest page that proves a session exists. Phase
  * 1.29 makes it useful to the person who just registered to sell or promote: who
  * they are signed in as, whether their address is verified, and the one step
- * they can take next — starting Seller and/or Promoter setup.
+ * they can take next — starting Seller and/or Promoter setup. Phase 1.30 adds
+ * the step after that: opening a private draft Storefront, and seeing it.
  *
  * It is still deliberately **not** a dashboard or a settings screen. Nothing
- * here edits the account, changes a password, lists sessions, or reaches past
- * setup into activation, payment, or publication.
+ * here edits the account, changes a password, lists sessions, edits a
+ * Storefront, or reaches past setup into activation, payment, or publication.
  *
  * ## The guard is here, in the page that renders the content
  *
@@ -29,7 +30,8 @@
  * Name, email, and verification status are read server-side on every render
  * from the account the session resolved to (`readAccountHome`); none of them is
  * carried in the session. No internal identifier — account, session,
- * participant, or role — is ever handed to this page, so none can be rendered.
+ * participant, role, or Storefront — is ever handed to this page, so none can be
+ * rendered.
  *
  * An unverified address is shown plainly and blocks nothing here. Verification
  * gates going live, which is enforced where going live happens, not on setup.
@@ -46,8 +48,13 @@ import {
   PARTICIPANT_STATUS_LABELS,
   ROLE_LABELS,
   ROLE_STATUS_LABELS,
+  STOREFRONT_INTRO,
+  STOREFRONT_LIFECYCLE_LABELS,
+  STOREFRONT_UPGRADE_NOTE,
+  STOREFRONT_VISIBILITY_LABELS,
 } from "./account-home-copy";
 import { OnboardingForm } from "./onboarding-form";
+import { StorefrontForm } from "./storefront-form";
 import { SignOutButton } from "./sign-out-button";
 import { SIGN_OUT_DESTINATION } from "./sign-out-submission";
 
@@ -113,6 +120,33 @@ export default async function AccountPage() {
             />
           ) : null}
         </section>
+
+        {home.storefronts.length > 0 || home.canCreateStorefront ? (
+          <section className="account-section" aria-labelledby="account-storefront-heading">
+            <h2 id="account-storefront-heading">Storefront</h2>
+            {home.storefronts.length === 0 ? (
+              <p className="auth-status">{STOREFRONT_INTRO}</p>
+            ) : (
+              <ul className="account-storefronts">
+                {home.storefronts.map((s) => (
+                  <li key={s.publicHandle}>
+                    <span className="account-storefront-name">{s.displayName}</span>
+                    {` — ${STOREFRONT_LIFECYCLE_LABELS[s.lifecycle]} · ${STOREFRONT_VISIBILITY_LABELS[s.visibility]}`}
+                    <br />
+                    <span className="auth-hint">{`Handle: ${s.publicHandle}`}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {/* A participant may own several Storefronts. The form appears while
+                the allowance has room — the included one today — and the note
+                once it is used. No upgrade path is offered here yet. */}
+            {home.canCreateStorefront ? <StorefrontForm /> : null}
+            {home.storefrontUpgradeRequired ? (
+              <p className="auth-hint">{STOREFRONT_UPGRADE_NOTE}</p>
+            ) : null}
+          </section>
+        ) : null}
 
         <SignOutButton />
       </div>

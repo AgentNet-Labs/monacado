@@ -27,7 +27,9 @@
  *   5. **Nothing reads a clock, generates randomness directly, or touches
  *      `process.env`.** Instants, identities, and the database are injected.
  *
- * No HTTP route, no UI, no Node issuance, no publication.
+ * No Node issuance, no publication. Phase 1.30 added `openOwnedDraftStorefront`,
+ * reached from `POST /api/storefronts` through `marketplace-application-service`,
+ * which creates a private draft and nothing more.
  */
 
 import "../server-only";
@@ -35,6 +37,8 @@ import type { Prisma } from "@prisma/client";
 import {
   AssignStorefrontGovernanceInput,
   CreateDraftStorefrontInput,
+  INCLUDED_STOREFRONT_ALLOWANCE,
+  OpenOwnedDraftStorefrontInput,
   SetGovernanceAssignmentStatusInput,
   UpdateStorefrontInput,
   type StorefrontGovernanceAssignmentRecord,
@@ -88,6 +92,7 @@ import {
   StorefrontNotAuthorizedError,
   StorefrontNotFoundError,
   StorefrontPersistenceFailureError,
+  StorefrontUpgradeRequiredError,
   StorefrontVersionNotFoundError,
   SuperOwnerAlreadyActiveError,
 } from "./storefront-errors";
@@ -541,6 +546,161 @@ export async function listGovernanceAssignments(
 // — Writes —
 
 /**
+ * The body of `createDraftStorefront`, inside a caller's transaction.
+ *
+ * Extracted in Phase 1.30 so `openOwnedDraftStorefront` can create the record
+ * and appoint its first SUPER_OWNER in ONE transaction without a second copy of
+ * either rule. Authority, standing, and the forced DRAFT + PRIVATE first version
+ * are exactly as they were.
+ */
+async function createDraftStorefrontInTx(
+  tx: Prisma.TransactionClient,
+  data: CreateDraftStorefrontInput,
+  ids: StorefrontIdProvider,
+): Promise<string> {
+  const internalStorefrontId = ids.nextInternalStorefrontId();
+  const storefrontSourceRecordId = ids.nextStorefrontSourceRecordId();
+  const at = new Date(data.now);
+
+  const facts = await resolveAuthorizationFacts(tx, {
+    ownerParticipantId: data.ownerParticipantId,
+    actingAccountId: data.actingAccountId,
+    /* No Storefront exists yet, so there is no assignment to resolve. */
+    internalStorefrontId: null,
+  });
+
+  requireAllowed(canCreateStorefrontRecord({ owner: facts.owner, actor: facts.actor }));
+
+  /* Phase 1.16 — an active suspension withholds authoring, whatever the
+     projected status says. A participant suspended before admission keeps
+     their onboarding stage, so `permitsDrafting` above still passes; the
+     authoritative row is the only place the answer exists. */
+  await assertParticipantMayAuthorMarketplaceState(tx, data.ownerParticipantId);
+
+  await tx.storefront.create({
+    data: {
+      internalStorefrontId,
+      storefrontSourceRecordId,
+      currentSourceRecordVersion: "1",
+      ownerParticipantId: data.ownerParticipantId,
+      publicHandle: data.publicHandle,
+      lifecycle: INITIAL_STOREFRONT_LIFECYCLE_STATE,
+      visibility: "PRIVATE",
+    },
+  });
+
+  await tx.storefrontSourceRecordVersionRow.create({
+    data: {
+      storefrontSourceRecordId,
+      sourceRecordVersion: "1",
+      supersedesSourceRecordVersion: null,
+      internalStorefrontId,
+      sourceSystem: "monacado",
+      sourceRecordType: "Storefront",
+      sourceClass: "governed-database-record",
+      ownerParticipantId: data.ownerParticipantId,
+      lifecycle: INITIAL_STOREFRONT_LIFECYCLE_STATE,
+      visibility: "PRIVATE",
+      publicHandle: data.publicHandle,
+      presentationDisplayName: data.presentation.displayName,
+      presentationTagline: data.presentation.tagline,
+      presentationSummary: data.presentation.summary,
+      authorizedByParticipantId: facts.actorParticipantId,
+      authorizedByActorId: data.actingAccountId,
+      recordedAt: at,
+    },
+  });
+
+  return internalStorefrontId;
+}
+
+/**
+ * The body of `assignStorefrontGovernance`, inside a caller's transaction.
+ *
+ * Extracted in Phase 1.30 for the same reason as `createDraftStorefrontInTx`.
+ * Every check — enabled actor, authoring standing, the owner-bootstraps-the-first-
+ * SUPER_OWNER rule, and SUPER_OWNER-only appointment otherwise — is unchanged.
+ */
+async function assignStorefrontGovernanceInTx(
+  tx: Prisma.TransactionClient,
+  data: AssignStorefrontGovernanceInput,
+  ids: StorefrontIdProvider,
+) {
+  const at = new Date(data.now);
+
+  const stable = await tx.storefront.findUnique({
+    where: { internalStorefrontId: data.internalStorefrontId },
+  });
+  if (stable === null) throw new StorefrontNotFoundError();
+
+  const facts = await resolveAuthorizationFacts(tx, {
+    ownerParticipantId: stable.ownerParticipantId,
+    actingAccountId: data.actingAccountId,
+    internalStorefrontId: data.internalStorefrontId,
+  });
+
+  /* Appointing and revoking ADMIN are SUPER_OWNER-exclusive authorities
+     (0M.3A). The owner's own first SUPER_OWNER appointment is permitted
+     through the create-record decision, since there is no SUPER_OWNER yet to
+     grant it. */
+  await requireGovernanceAdministrationStanding(
+    tx,
+    facts,
+    "storefront:governance:appoint-admin",
+  );
+
+  const superOwners = await activeSuperOwnerCount(tx, data.internalStorefrontId);
+  const isOwnerBootstrappingFirstSuperOwner =
+    data.role === "SUPER_OWNER" &&
+    superOwners === 0 &&
+    facts.actorParticipantId === stable.ownerParticipantId;
+
+  if (!isOwnerBootstrappingFirstSuperOwner) {
+    if (facts.actor.governanceRole !== "SUPER_OWNER" ||
+        facts.actor.governanceAssignmentStatus !== "ACTIVE") {
+      throw new StorefrontNotAuthorizedError("storefront:governance:appoint-admin", [
+        "SUPER_OWNER_REQUIRED",
+      ]);
+    }
+  }
+
+  const existing = await tx.storefrontGovernanceAssignment.findUnique({
+    where: {
+      internalStorefrontId_participantId: {
+        internalStorefrontId: data.internalStorefrontId,
+        participantId: data.participantId,
+      },
+    },
+  });
+
+  const activeMarker =
+    data.role === "SUPER_OWNER" ? data.internalStorefrontId : null;
+
+  return existing
+    ? await tx.storefrontGovernanceAssignment.update({
+        where: { id: existing.id },
+        data: {
+          role: data.role,
+          status: "ACTIVE",
+          assignedAt: at,
+          revokedAt: null,
+          activeSuperOwnerForStorefrontId: activeMarker,
+        },
+      })
+    : await tx.storefrontGovernanceAssignment.create({
+        data: {
+          id: ids.nextGovernanceAssignmentId(),
+          internalStorefrontId: data.internalStorefrontId,
+          participantId: data.participantId,
+          role: data.role,
+          status: "ACTIVE",
+          assignedAt: at,
+          activeSuperOwnerForStorefrontId: activeMarker,
+        },
+      });
+}
+
+/**
  * Create one draft Storefront and its first immutable source version.
  *
  * The first version is `DRAFT` + `PRIVATE`, and neither is a caller choice:
@@ -560,61 +720,10 @@ export async function createDraftStorefront(
 
   const db = deps.db ?? getPrisma();
   const ids = deps.ids ?? cryptoStorefrontIdProvider;
-  const internalStorefrontId = ids.nextInternalStorefrontId();
-  const storefrontSourceRecordId = ids.nextStorefrontSourceRecordId();
-  const at = new Date(data.now);
 
   try {
     return await db.$transaction(async (tx) => {
-      const facts = await resolveAuthorizationFacts(tx, {
-        ownerParticipantId: data.ownerParticipantId,
-        actingAccountId: data.actingAccountId,
-        /* No Storefront exists yet, so there is no assignment to resolve. */
-        internalStorefrontId: null,
-      });
-
-      requireAllowed(canCreateStorefrontRecord({ owner: facts.owner, actor: facts.actor }));
-
-      /* Phase 1.16 — an active suspension withholds authoring, whatever the
-         projected status says. A participant suspended before admission keeps
-         their onboarding stage, so `permitsDrafting` above still passes; the
-         authoritative row is the only place the answer exists. */
-      await assertParticipantMayAuthorMarketplaceState(tx, data.ownerParticipantId);
-
-      await tx.storefront.create({
-        data: {
-          internalStorefrontId,
-          storefrontSourceRecordId,
-          currentSourceRecordVersion: "1",
-          ownerParticipantId: data.ownerParticipantId,
-          publicHandle: data.publicHandle,
-          lifecycle: INITIAL_STOREFRONT_LIFECYCLE_STATE,
-          visibility: "PRIVATE",
-        },
-      });
-
-      await tx.storefrontSourceRecordVersionRow.create({
-        data: {
-          storefrontSourceRecordId,
-          sourceRecordVersion: "1",
-          supersedesSourceRecordVersion: null,
-          internalStorefrontId,
-          sourceSystem: "monacado",
-          sourceRecordType: "Storefront",
-          sourceClass: "governed-database-record",
-          ownerParticipantId: data.ownerParticipantId,
-          lifecycle: INITIAL_STOREFRONT_LIFECYCLE_STATE,
-          visibility: "PRIVATE",
-          publicHandle: data.publicHandle,
-          presentationDisplayName: data.presentation.displayName,
-          presentationTagline: data.presentation.tagline,
-          presentationSummary: data.presentation.summary,
-          authorizedByParticipantId: facts.actorParticipantId,
-          authorizedByActorId: data.actingAccountId,
-          recordedAt: at,
-        },
-      });
-
+      const internalStorefrontId = await createDraftStorefrontInTx(tx, data, ids);
       return await readSnapshotInTx(tx, internalStorefrontId);
     });
   } catch (error) {
@@ -969,83 +1078,11 @@ export async function assignStorefrontGovernance(
 
   const db = deps.db ?? getPrisma();
   const ids = deps.ids ?? cryptoStorefrontIdProvider;
-  const at = new Date(data.now);
 
   try {
-    return await db.$transaction(async (tx) => {
-      const stable = await tx.storefront.findUnique({
-        where: { internalStorefrontId: data.internalStorefrontId },
-      });
-      if (stable === null) throw new StorefrontNotFoundError();
-
-      const facts = await resolveAuthorizationFacts(tx, {
-        ownerParticipantId: stable.ownerParticipantId,
-        actingAccountId: data.actingAccountId,
-        internalStorefrontId: data.internalStorefrontId,
-      });
-
-      /* Appointing and revoking ADMIN are SUPER_OWNER-exclusive authorities
-         (0M.3A). The owner's own first SUPER_OWNER appointment is permitted
-         through the create-record decision, since there is no SUPER_OWNER yet to
-         grant it. */
-      await requireGovernanceAdministrationStanding(
-        tx,
-        facts,
-        "storefront:governance:appoint-admin",
-      );
-
-      const superOwners = await activeSuperOwnerCount(tx, data.internalStorefrontId);
-      const isOwnerBootstrappingFirstSuperOwner =
-        data.role === "SUPER_OWNER" &&
-        superOwners === 0 &&
-        facts.actorParticipantId === stable.ownerParticipantId;
-
-      if (!isOwnerBootstrappingFirstSuperOwner) {
-        if (facts.actor.governanceRole !== "SUPER_OWNER" ||
-            facts.actor.governanceAssignmentStatus !== "ACTIVE") {
-          throw new StorefrontNotAuthorizedError("storefront:governance:appoint-admin", [
-            "SUPER_OWNER_REQUIRED",
-          ]);
-        }
-      }
-
-      const existing = await tx.storefrontGovernanceAssignment.findUnique({
-        where: {
-          internalStorefrontId_participantId: {
-            internalStorefrontId: data.internalStorefrontId,
-            participantId: data.participantId,
-          },
-        },
-      });
-
-      const activeMarker =
-        data.role === "SUPER_OWNER" ? data.internalStorefrontId : null;
-
-      const row = existing
-        ? await tx.storefrontGovernanceAssignment.update({
-            where: { id: existing.id },
-            data: {
-              role: data.role,
-              status: "ACTIVE",
-              assignedAt: at,
-              revokedAt: null,
-              activeSuperOwnerForStorefrontId: activeMarker,
-            },
-          })
-        : await tx.storefrontGovernanceAssignment.create({
-            data: {
-              id: ids.nextGovernanceAssignmentId(),
-              internalStorefrontId: data.internalStorefrontId,
-              participantId: data.participantId,
-              role: data.role,
-              status: "ACTIVE",
-              assignedAt: at,
-              activeSuperOwnerForStorefrontId: activeMarker,
-            },
-          });
-
-      return governanceRowToRecord(row);
-    });
+    return await db.$transaction(async (tx) =>
+      governanceRowToRecord(await assignStorefrontGovernanceInTx(tx, data, ids)),
+    );
   } catch (error) {
     if (isDomainError(error)) throw error;
     if (error instanceof OwnerParticipantNotFoundError) throw error;
@@ -1058,6 +1095,108 @@ export async function assignStorefrontGovernance(
     }
     if (isForeignKeyViolation(error)) throw new GovernanceParticipantNotFoundError(error);
     throw new StorefrontPersistenceFailureError("assignStorefrontGovernance", error);
+  }
+}
+
+/**
+ * Open a draft Storefront for the acting account's own participant and appoint
+ * that participant its first SUPER_OWNER — both, or neither (Phase 1.30).
+ *
+ * Creating a Storefront confers no governance authority (0M.3C §3); the owner
+ * then bootstraps the first SUPER_OWNER seat for themselves. Self-service does
+ * both acts, and doing them in two transactions would let a failure between
+ * them strand a Storefront nobody can edit. So this runs the two existing
+ * bodies — `createDraftStorefrontInTx` and `assignStorefrontGovernanceInTx` —
+ * inside one transaction. Every authority and standing check each performs on
+ * its own is performed here, unchanged.
+ *
+ * The owner is resolved from `actingAccountId` through the shared Phase 1.18
+ * reader; no participant id is accepted. A participant may own several
+ * Storefronts: the first is included, and each further one needs an upgrade
+ * entitlement (`StorefrontUpgradeRequiredError` once the allowance is used). The
+ * allowance is checked here, as a service rule, not by a schema constraint. The
+ * first version is DRAFT + PRIVATE by construction, and nothing here reaches
+ * activation, visibility, payment, approval, or publication.
+ */
+export async function openOwnedDraftStorefront(
+  input: unknown,
+  deps: StorefrontServiceDeps = {},
+): Promise<{ storefront: StorefrontSnapshot; superOwner: StorefrontGovernanceAssignmentRecord }> {
+  const parsed = OpenOwnedDraftStorefrontInput.safeParse(input);
+  if (!parsed.success) throw inputError(parsed.error);
+  const data = parsed.data;
+
+  const db = deps.db ?? getPrisma();
+  const ids = deps.ids ?? cryptoStorefrontIdProvider;
+
+  try {
+    return await db.$transaction(async (tx) => {
+      const acting = await readActingAccountRows(tx, data.actingAccountId);
+      if (acting === null || acting.participant === null) {
+        throw new GovernanceParticipantNotFoundError();
+      }
+      const ownerParticipantId = acting.participant.id;
+
+      /* The Storefront allowance: owned < allowed, where ownership is
+         `Storefront.ownerParticipantId` — the one axis that says whose it is —
+         and allowed is the included Storefront plus any upgrade entitlement.
+         No Storefront entitlement exists yet, so allowed is the included one.
+
+         Two requests racing must not both pass with one slot left. The owner's
+         participant row is locked for the rest of this transaction, so a second
+         request for the same participant waits here until the first commits or
+         rolls back; and the count is a LOCKING read, which sees the latest
+         committed rows rather than this transaction's earlier snapshot, so the
+         waiter counts the Storefront the first one created. No schema
+         constraint: owning several stays possible for the model. */
+      const allowed = INCLUDED_STOREFRONT_ALLOWANCE;
+      await tx.$queryRaw`SELECT id FROM MarketplaceParticipant WHERE id = ${ownerParticipantId} FOR UPDATE`;
+      const [{ owned }] = await tx.$queryRaw<Array<{ owned: bigint }>>`
+        SELECT COUNT(*) AS owned FROM Storefront WHERE ownerParticipantId = ${ownerParticipantId} FOR SHARE`;
+      if (Number(owned) >= allowed) throw new StorefrontUpgradeRequiredError();
+
+      const internalStorefrontId = await createDraftStorefrontInTx(
+        tx,
+        {
+          ownerParticipantId,
+          publicHandle: data.publicHandle,
+          presentation: data.presentation,
+          actingAccountId: data.actingAccountId,
+          now: data.now,
+        },
+        ids,
+      );
+
+      const superOwner = await assignStorefrontGovernanceInTx(
+        tx,
+        {
+          internalStorefrontId,
+          participantId: ownerParticipantId,
+          role: "SUPER_OWNER",
+          actingAccountId: data.actingAccountId,
+          now: data.now,
+        },
+        ids,
+      );
+
+      return {
+        storefront: await readSnapshotInTx(tx, internalStorefrontId),
+        superOwner: governanceRowToRecord(superOwner),
+      };
+    });
+  } catch (error) {
+    if (isDomainError(error)) throw error;
+    if (error instanceof StorefrontUpgradeRequiredError) throw error;
+    if (error instanceof OwnerParticipantNotFoundError) throw error;
+    if (error instanceof GovernanceParticipantNotFoundError) throw error;
+    if (isUniqueViolation(error)) {
+      if (uniqueTarget(error).includes("publicHandle")) {
+        throw new DuplicatePublicHandleError(error);
+      }
+      throw new StorefrontPersistenceFailureError("openOwnedDraftStorefront", error);
+    }
+    if (isForeignKeyViolation(error)) throw new OwnerParticipantNotFoundError(error);
+    throw new StorefrontPersistenceFailureError("openOwnedDraftStorefront", error);
   }
 }
 

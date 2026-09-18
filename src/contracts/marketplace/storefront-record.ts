@@ -129,6 +129,36 @@ export const CreateDraftStorefrontInput = z.strictObject({
 export type CreateDraftStorefrontInput = z.infer<typeof CreateDraftStorefrontInput>;
 
 /**
+ * Open a draft Storefront owned by the acting account's own participant, with
+ * that participant appointed its first SUPER_OWNER, in one transaction
+ * (Phase 1.30).
+ *
+ * There is no `ownerParticipantId`: the owner is whichever participant the
+ * acting account holds, resolved server-side. Self-service never opens a
+ * Storefront for somebody else, so there is nothing for a caller to name.
+ */
+export const OpenOwnedDraftStorefrontInput = z.strictObject({
+  publicHandle: PublicHandle,
+  presentation: StorefrontPresentation,
+  actingAccountId: ActingAccountId,
+  now: z.iso.datetime(),
+});
+export type OpenOwnedDraftStorefrontInput = z.infer<typeof OpenOwnedDraftStorefrontInput>;
+
+/**
+ * Storefronts every participant may own without an upgrade (Phase 1.30).
+ *
+ * A participant may own several Storefronts (0M.3A §2); the first is included,
+ * and each one after it requires an upgrade entitlement. No authoritative record
+ * of such an entitlement exists yet — `AccountEntitlement` holds internal
+ * operational grants only and never marketplace authority (0M.1 §1) — so today a
+ * participant's allowance is exactly this included one. When the upgrade phase
+ * adds a Storefront entitlement, the allowance becomes this plus whatever it
+ * grants; the domain, the schema, and the ownership model need no change.
+ */
+export const INCLUDED_STOREFRONT_ALLOWANCE = 1;
+
+/**
  * A material update, minting a new immutable source version.
  *
  * Every member is optional: a caller states only what changes, and the service

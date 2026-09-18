@@ -45,6 +45,22 @@ const {
   ONBOARDING_SIGNED_OUT,
   submitOnboarding,
 } = await import("../app/account/onboarding-submission");
+const {
+  STOREFRONT_ENDPOINT,
+  STOREFRONT_FAILURE,
+  STOREFRONT_HANDLE_TAKEN,
+  STOREFRONT_INVALID,
+  STOREFRONT_UPGRADE_REQUIRED,
+  STOREFRONT_NOT_ELIGIBLE,
+  STOREFRONT_SIGNED_OUT,
+  submitDraftStorefront,
+} = await import("../app/account/storefront-submission");
+
+const DRAFT_SELLER: AccountHome["marketplace"] = {
+  status: "DRAFT",
+  roles: [{ role: "SELLER", status: "DRAFT" }],
+  onboardingOpen: true,
+};
 
 function home(overrides: Partial<AccountHome> = {}): AccountHome {
   return {
@@ -53,6 +69,9 @@ function home(overrides: Partial<AccountHome> = {}): AccountHome {
     emailVerified: true,
     marketplace: null,
     setupRolesAvailable: ["SELLER", "PROMOTER"],
+    storefronts: [],
+    canCreateStorefront: false,
+    storefrontUpgradeRequired: false,
     ...overrides,
   };
 }
@@ -143,6 +162,47 @@ describe("/account presentation", () => {
     expect(html).toContain("Sign out");
   });
 
+  it("offers a draft storefront to an eligible participant that has none", async () => {
+    const html = await renderSignedIn(
+      home({ marketplace: DRAFT_SELLER, setupRolesAvailable: ["PROMOTER"], canCreateStorefront: true }),
+    );
+
+    expect(html).toContain("<h2 id=\"account-storefront-heading\">Storefront</h2>");
+    expect(html).toContain("Create a private draft storefront");
+    expect(html).toContain('name="displayName"');
+    expect(html).toContain('name="publicHandle"');
+    expect(html).toContain("Create draft storefront");
+  });
+
+  it("shows the included draft by name, state, and handle, then says more need an upgrade", async () => {
+    const html = await renderSignedIn(
+      home({
+        marketplace: DRAFT_SELLER,
+        setupRolesAvailable: ["PROMOTER"],
+        canCreateStorefront: false,
+        storefrontUpgradeRequired: true,
+        storefronts: [
+          { displayName: "Ada's Workshop", publicHandle: "ada-workshop", lifecycle: "DRAFT", visibility: "PRIVATE" },
+        ],
+      }),
+    );
+    const text = html.replaceAll("<!-- -->", "");
+
+    expect(text).toContain("Ada&#x27;s Workshop");
+    expect(text).toContain(" — Draft · Private");
+    expect(text).toContain("Handle: ada-workshop");
+    expect(html).not.toContain('name="publicHandle"');
+    expect(html).toContain("Additional storefronts require an upgrade.");
+    expect(html).not.toContain("mon:");
+  });
+
+  it("shows no storefront section to an account that cannot draft one and has none", async () => {
+    const html = await renderSignedIn(home());
+
+    expect(html).not.toContain("account-storefront-heading");
+    expect(html).not.toContain("Create draft storefront");
+  });
+
   it("still sends a visitor without a session to sign-in", async () => {
     resolvePageSession.mockResolvedValue(undefined);
 
@@ -215,6 +275,62 @@ describe("Seller/Promoter setup submission", () => {
         outcome: "failed",
         message,
       });
+    }
+  });
+});
+
+describe("draft storefront submission", () => {
+  function captureFetch(reply: Response | (() => never)) {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const fetchImpl = (async (url: unknown, init: unknown) => {
+      calls.push({ url: String(url), init: (init ?? {}) as RequestInit });
+      if (typeof reply === "function") reply();
+      return reply;
+    }) as unknown as typeof fetch;
+    return { calls, fetchImpl };
+  }
+
+  const json = (status: number, body: unknown) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+  it("sends exactly the name and handle typed, unaltered", async () => {
+    const { calls, fetchImpl } = captureFetch(json(201, {}));
+
+    expect(
+      await submitDraftStorefront({ displayName: " Ada's ", publicHandle: "Ada-Shop" }, { fetchImpl }),
+    ).toEqual({ outcome: "created" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe(STOREFRONT_ENDPOINT);
+    expect(calls[0]!.init.method).toBe("POST");
+    expect(calls[0]!.init.credentials).toBe("same-origin");
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({
+      displayName: " Ada's ",
+      publicHandle: "Ada-Shop",
+    });
+  });
+
+  it("maps every refusal onto bounded copy", async () => {
+    const cases: Array<[Response | (() => never), string]> = [
+      [json(400, { error: "INVALID_STOREFRONT_REQUEST" }), STOREFRONT_INVALID],
+      [json(409, { error: "STOREFRONT_HANDLE_UNAVAILABLE" }), STOREFRONT_HANDLE_TAKEN],
+      [json(403, { error: "STOREFRONT_NOT_ELIGIBLE" }), STOREFRONT_NOT_ELIGIBLE],
+      [json(409, { error: "STOREFRONT_UPGRADE_REQUIRED" }), STOREFRONT_UPGRADE_REQUIRED],
+      [json(401, { error: "UNAUTHENTICATED" }), STOREFRONT_SIGNED_OUT],
+      [json(403, { error: "CROSS_ORIGIN_REQUEST_REFUSED" }), STOREFRONT_FAILURE],
+      [json(500, { error: "anything the server says" }), STOREFRONT_FAILURE],
+      [new Response("not json", { status: 502 }), STOREFRONT_FAILURE],
+      [
+        () => {
+          throw new TypeError("network");
+        },
+        STOREFRONT_FAILURE,
+      ],
+    ];
+    for (const [reply, message] of cases) {
+      const { fetchImpl } = captureFetch(reply);
+      expect(
+        await submitDraftStorefront({ displayName: "Shop", publicHandle: "shop" }, { fetchImpl }),
+      ).toEqual({ outcome: "failed", message });
     }
   });
 });

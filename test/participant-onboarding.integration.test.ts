@@ -238,6 +238,9 @@ describeDb("1.29 — self-service Seller/Promoter onboarding", () => {
       emailVerified: false,
       marketplace: null,
       setupRolesAvailable: ["SELLER", "PROMOTER"],
+      storefronts: [],
+      canCreateStorefront: false,
+      storefrontUpgradeRequired: false,
     });
 
     await request(caller.cookieHeader, { roles: ["PROMOTER"] });

@@ -393,3 +393,16 @@ main p {
   outline: 3px solid var(--color-focus);
   outline-offset: 2px;
 }
+
+/* Phase 1.30 — the Storefront section of /account. Same tokens, same rhythm. */
+.account-storefronts {
+  margin: 0 0 1rem;
+  padding-left: 1.25rem;
+  color: var(--color-text);
+}
+
+.account-storefront-name {
+  font-weight: 600;
+  color: var(--color-text-strong);
+  overflow-wrap: anywhere;
+}

@@ -15,6 +15,10 @@ import type {
   ParticipantStatus,
   RoleAssignmentStatus,
 } from "../../src/contracts/marketplace/participant";
+import type {
+  StorefrontLifecycleState,
+  StorefrontVisibility,
+} from "../../src/contracts/marketplace/storefront-source";
 
 export const EMAIL_VERIFIED_LABEL = "Verified";
 export const EMAIL_UNVERIFIED_LABEL = "Email not verified";
@@ -47,3 +51,28 @@ export const PARTICIPANT_STATUS_LABELS: Readonly<Record<ParticipantStatus, strin
   SUSPENDED: "Suspended",
   CLOSED: "Closed",
 };
+
+// — Storefronts (Phase 1.30) —
+
+export const STOREFRONT_LIFECYCLE_LABELS: Readonly<Record<StorefrontLifecycleState, string>> = {
+  DRAFT: "Draft",
+  ACTIVE: "Live",
+  SUSPENDED: "Suspended",
+  CLOSED: "Closed",
+};
+
+export const STOREFRONT_VISIBILITY_LABELS: Readonly<Record<StorefrontVisibility, string>> = {
+  PRIVATE: "Private",
+  UNLISTED: "Unlisted",
+  PUBLIC: "Public",
+};
+
+/** Shown before the first Storefront. Drafting is open; going live is what waits. */
+export const STOREFRONT_INTRO =
+  "Create a private draft storefront. Nothing is public until your storefront is approved to go live.";
+
+/** Shown once the included Storefront exists. No price, plan, or link — the upgrade is not built yet. */
+export const STOREFRONT_UPGRADE_NOTE = "Additional storefronts require an upgrade.";
+
+export const STOREFRONT_HANDLE_HINT =
+  "3–63 characters: lowercase letters, numbers, and single hyphens. It will be part of your storefront's web address once it goes live.";

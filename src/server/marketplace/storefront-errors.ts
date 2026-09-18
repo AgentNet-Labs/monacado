@@ -33,6 +33,7 @@ export type StorefrontErrorCode =
   | "NO_MATERIAL_CHANGE"
   | "SUPER_OWNER_ALREADY_ACTIVE"
   | "GOVERNANCE_ASSIGNMENT_NOT_FOUND"
+  | "STOREFRONT_UPGRADE_REQUIRED"
   | "CORRUPT_STOREFRONT_RECORD"
   | "STOREFRONT_PERSISTENCE_FAILURE";
 
@@ -174,6 +175,24 @@ export class NoMaterialChangeError extends StorefrontError {
   constructor() {
     super("NO_MATERIAL_CHANGE", "The update changes no material Storefront fact");
     this.name = "NoMaterialChangeError";
+  }
+}
+
+/**
+ * The participant already owns every Storefront its allowance covers
+ * (Phase 1.30).
+ *
+ * Not a domain limit: a participant may own several Storefronts. The first is
+ * included, and more require an upgrade entitlement — which is what this says.
+ * Carries no identifier, no count, and nothing about billing.
+ */
+export class StorefrontUpgradeRequiredError extends StorefrontError {
+  constructor() {
+    super(
+      "STOREFRONT_UPGRADE_REQUIRED",
+      "This participant owns all the Storefronts its allowance includes; another requires an upgrade",
+    );
+    this.name = "StorefrontUpgradeRequiredError";
   }
 }
 
