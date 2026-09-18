@@ -301,6 +301,34 @@ export const AssignParticipantRoleInput = z.strictObject({
 export type AssignParticipantRoleInput = z.infer<typeof AssignParticipantRoleInput>;
 
 /**
+ * The roles a signed-in account may claim for itself (Phase 1.29).
+ *
+ * BUYER is deliberately absent. Buying needs no account at all, and 0M.1 §3.1
+ * makes a BUYER role an explicit act of its own — never a side effect of setting
+ * up to sell or promote.
+ */
+export const SELF_SERVICE_ONBOARDING_ROLES = [
+  "SELLER",
+  "PROMOTER",
+] as const satisfies readonly MarketplaceRole[];
+export const SelfServiceOnboardingRole = z.enum(SELF_SERVICE_ONBOARDING_ROLES);
+export type SelfServiceOnboardingRole = z.infer<typeof SelfServiceOnboardingRole>;
+
+/**
+ * Begin (or extend) an account's own marketplace onboarding (Phase 1.29).
+ *
+ * Creates the account's participant if it has none, then grants each requested
+ * role it does not already hold — at the role's own initial status, which for
+ * both members here is DRAFT. Nothing in this input can reach activation.
+ */
+export const BeginParticipantOnboardingInput = z.strictObject({
+  accountId: AccountId,
+  roles: z.array(SelfServiceOnboardingRole).min(1).max(SELF_SERVICE_ONBOARDING_ROLES.length),
+  now: z.iso.datetime(),
+});
+export type BeginParticipantOnboardingInput = z.infer<typeof BeginParticipantOnboardingInput>;
+
+/**
  * Create or update the private profile.
  *
  * Every marker and gate is optional so a caller may set one section without

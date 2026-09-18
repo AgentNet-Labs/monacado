@@ -47,14 +47,17 @@
  *      an address, a document, or a provider identifier, so none can be written
  *      and none can later be projected.
  *
- * No HTTP route, no UI, no activation approval, no payment provider, no Node, no
- * capsule, no publication.
+ * No activation approval, no payment provider, no Node, no capsule, no
+ * publication. Phase 1.29 added `beginParticipantOnboarding`, the one operation
+ * here with a participant-facing route; it reaches the database only through
+ * `marketplace-application-service`, with the account taken from the session.
  */
 
 import "../server-only";
 import type { Prisma } from "@prisma/client";
 import {
   AssignParticipantRoleInput,
+  BeginParticipantOnboardingInput,
   CreateDraftParticipantInput,
   UpdateParticipantProfileInput,
   isDraftWritableParticipantStatus,
@@ -86,6 +89,7 @@ import {
   InvalidParticipantInputError,
   InvalidParticipantTransitionError,
   ParticipantNotFoundError,
+  ParticipantOnboardingClosedError,
   ParticipantPersistenceFailureError,
 } from "./participant-errors";
 import {
@@ -195,20 +199,7 @@ export async function createDraftParticipant(
       });
 
       for (const role of roles) {
-        const status = initialRoleAssignmentStatus(role);
-        await tx.marketplaceRoleAssignment.create({
-          data: {
-            id: ids.nextRoleAssignmentId(),
-            participantId,
-            role,
-            status,
-            grantedAt: at,
-            // A role created ACTIVE was activated at the moment it was granted.
-            // Only BUYER reaches this branch, and only via
-            // `initialRoleAssignmentStatus` — never by a caller's assertion.
-            activatedAt: status === "ACTIVE" ? at : null,
-          },
-        });
+        await grantRoleInTx(tx, ids, participantId, role, at);
       }
 
       return await readSnapshotInTx(tx, participantId);
@@ -255,17 +246,7 @@ export async function assignParticipantRole(
       });
 
       if (existing === null) {
-        const status = initialRoleAssignmentStatus(role);
-        await tx.marketplaceRoleAssignment.create({
-          data: {
-            id: ids.nextRoleAssignmentId(),
-            participantId,
-            role,
-            status,
-            grantedAt: at,
-            activatedAt: status === "ACTIVE" ? at : null,
-          },
-        });
+        await grantRoleInTx(tx, ids, participantId, role, at);
       }
 
       return await readSnapshotInTx(tx, participantId);
@@ -274,6 +255,70 @@ export async function assignParticipantRole(
     if (isDomainError(error)) throw error;
     if (isUniqueViolation(error)) throw new DuplicateParticipantError(error);
     throw new ParticipantPersistenceFailureError("assignParticipantRole", error);
+  }
+}
+
+/**
+ * Begin, or extend, the signed-in account's own marketplace onboarding
+ * (Phase 1.29).
+ *
+ * Creates the account's participant if it has none, then grants each requested
+ * SELLER or PROMOTER role it does not yet hold — in one transaction, so the
+ * status check and the grants see the same participant. Both roles start DRAFT
+ * via `initialRoleAssignmentStatus`; this writes no activation, no profile, and
+ * no status other than the participant's initial DRAFT.
+ *
+ * **Idempotent** in the same sense as `assignParticipantRole`: a role already
+ * held is left exactly as it is, including a REVOKED one, which is never revived.
+ *
+ * **Only while drafting.** An existing participant outside
+ * `DRAFT_WRITABLE_PARTICIPANT_STATUSES` is refused with
+ * `ParticipantOnboardingClosedError`: adding a role to a participant under
+ * review, admitted, restricted, suspended, or closed would change what Monacado
+ * reviewed or decided, and that is a governed act rather than a self-service one.
+ */
+export async function beginParticipantOnboarding(
+  input: unknown,
+  deps: ParticipantServiceDeps = {},
+): Promise<ParticipantSnapshot> {
+  const parsed = BeginParticipantOnboardingInput.safeParse(input);
+  if (!parsed.success) throw inputError(parsed.error);
+  const { accountId, roles, now } = parsed.data;
+
+  const db = deps.db ?? getPrisma();
+  const ids = deps.ids ?? cryptoParticipantIdProvider;
+  const requested = Array.from(new Set(roles));
+  const at = new Date(now);
+
+  try {
+    return await db.$transaction(async (tx) => {
+      let participant = await tx.marketplaceParticipant.findUnique({ where: { accountId } });
+      if (participant === null) {
+        participant = await tx.marketplaceParticipant.create({
+          data: { id: ids.nextParticipantId(), accountId, status: INITIAL_PARTICIPANT_STATUS },
+        });
+      } else if (!isDraftWritableParticipantStatus(participant.status as ParticipantStatus)) {
+        throw new ParticipantOnboardingClosedError();
+      }
+
+      const held = await tx.marketplaceRoleAssignment.findMany({
+        where: { participantId: participant.id },
+        select: { role: true },
+      });
+      const heldRoles = new Set(held.map((r) => r.role));
+      for (const role of requested) {
+        if (!heldRoles.has(role)) await grantRoleInTx(tx, ids, participant.id, role, at);
+      }
+
+      return await readSnapshotInTx(tx, participant.id);
+    });
+  } catch (error) {
+    if (error instanceof ParticipantOnboardingClosedError || isDomainError(error)) throw error;
+    // Two first-time requests racing for the same account: the unique index on
+    // `accountId` refuses the second, exactly as for `createDraftParticipant`.
+    if (isUniqueViolation(error)) throw new DuplicateParticipantError(error);
+    if (isForeignKeyViolation(error)) throw new AccountNotFoundForParticipantError(error);
+    throw new ParticipantPersistenceFailureError("beginParticipantOnboarding", error);
   }
 }
 
@@ -531,6 +576,33 @@ export async function materializeMarketplaceSubject(
 }
 
 /** Shared read used inside and outside a transaction. */
+/**
+ * Write one role assignment at the role's own initial status.
+ *
+ * The status is `initialRoleAssignmentStatus`'s answer, never a caller's. A role
+ * created ACTIVE was activated at the moment it was granted — only BUYER reaches
+ * that branch.
+ */
+async function grantRoleInTx(
+  tx: Prisma.TransactionClient,
+  ids: ParticipantIdProvider,
+  participantId: string,
+  role: MarketplaceRole,
+  at: Date,
+): Promise<void> {
+  const status = initialRoleAssignmentStatus(role);
+  await tx.marketplaceRoleAssignment.create({
+    data: {
+      id: ids.nextRoleAssignmentId(),
+      participantId,
+      role,
+      status,
+      grantedAt: at,
+      activatedAt: status === "ACTIVE" ? at : null,
+    },
+  });
+}
+
 async function readSnapshotInTx(
   tx: Db | Prisma.TransactionClient,
   participantId: string,

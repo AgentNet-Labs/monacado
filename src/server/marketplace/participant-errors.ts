@@ -36,6 +36,7 @@ export type ParticipantErrorCode =
   | "ACTIVATION_REVIEWER_NOT_AUTHORIZED"
   | "ACTIVATION_SELF_REVIEW_NOT_PERMITTED"
   | "INCOHERENT_ACTIVATION_DECISION"
+  | "PARTICIPANT_ONBOARDING_CLOSED"
   | "CORRUPT_PARTICIPANT_RECORD"
   | "PARTICIPANT_PERSISTENCE_FAILURE";
 
@@ -239,6 +240,25 @@ export class ParticipantSuspendedError extends ParticipantError {
       "This participant is suspended; admission is restored by reinstatement, not by activation review",
     );
     this.name = "ParticipantSuspendedError";
+  }
+}
+
+/**
+ * Self-service onboarding cannot add a role to this participant (Phase 1.29).
+ *
+ * A participant claims roles for itself only while it is still drafting —
+ * DRAFT, PROFILE_INCOMPLETE, or PROFILE_COMPLETE. Once it is under review,
+ * admitted, restricted, suspended, or closed, a new role changes what Monacado
+ * reviewed or decided, and that is not a change the participant makes alone.
+ * Carries no status: the caller already knows its own, and nobody else asked.
+ */
+export class ParticipantOnboardingClosedError extends ParticipantError {
+  constructor() {
+    super(
+      "PARTICIPANT_ONBOARDING_CLOSED",
+      "Self-service onboarding is only open while the participant is drafting",
+    );
+    this.name = "ParticipantOnboardingClosedError";
   }
 }
 

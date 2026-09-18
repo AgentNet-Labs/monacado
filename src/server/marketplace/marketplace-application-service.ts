@@ -62,6 +62,8 @@
 
 import "../server-only";
 import type { ActingAccount } from "../account/acting-participant-boundary";
+import { beginParticipantOnboarding } from "./participant-service";
+import type { ParticipantServiceDeps, ParticipantSnapshot } from "./participant-service";
 import { createOfferSourceVersion } from "./offer-service";
 import type { OfferServiceDeps, OfferSnapshot } from "./offer-service";
 import { createSellerDirectListing, createPromotedListing } from "./listing-service";
@@ -140,6 +142,26 @@ export async function submitStorefrontSourceVersion(
   deps: StorefrontServiceDeps = {},
 ): Promise<StorefrontSnapshot> {
   return await createStorefrontSourceVersion(withActor(input, actor), deps);
+}
+
+/**
+ * Begin, or extend, the acting account's own Seller/Promoter onboarding
+ * (Phase 1.29).
+ *
+ * The participant is always the acting account's own: `accountId` is taken from
+ * the resolved actor and from nothing else, and the input is rebuilt from the two
+ * fields the act consists of rather than spread, so a stray `accountId` in a
+ * caller's object has nowhere to land.
+ */
+export async function beginOnboardingAs(
+  actor: ActingAccount,
+  input: { roles: unknown; now: string },
+  deps: ParticipantServiceDeps = {},
+): Promise<ParticipantSnapshot> {
+  return await beginParticipantOnboarding(
+    { accountId: actor.accountId, roles: input.roles, now: input.now },
+    deps,
+  );
 }
 
 /**

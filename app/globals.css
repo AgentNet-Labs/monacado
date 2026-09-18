@@ -320,3 +320,76 @@ main p {
   text-align: center;
   text-decoration: none;
 }
+
+/*
+ * Phase 1.29 — the /account home.
+ *
+ * No new tokens. Account details are body text in a two-column list, the
+ * marketplace section is set off by the same rule `.auth-alt` uses, and the role
+ * checkboxes sit on the field treatment the auth forms already use.
+ */
+.account-details {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.375rem 1rem;
+  margin: 1.25rem 0 0.75rem;
+}
+
+.account-details dt {
+  font-weight: 600;
+  color: var(--color-text-strong);
+}
+
+.account-details dd {
+  margin: 0;
+  color: var(--color-text);
+  overflow-wrap: anywhere;
+}
+
+.account-note {
+  margin-bottom: 0.75rem;
+}
+
+.account-section {
+  margin: 1.25rem 0 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--color-border);
+}
+
+.account-section h2 {
+  font-size: 1.125rem;
+  margin: 0 0 0.5rem;
+  color: var(--color-primary);
+}
+
+.account-roles {
+  margin: -0.75rem 0 1rem;
+  padding-left: 1.25rem;
+  color: var(--color-text);
+}
+
+.account-roles-choice {
+  display: flex;
+  gap: 1.25rem;
+  margin: 0 0 1rem;
+  padding: 0;
+  border: 0;
+}
+
+.account-roles-choice legend {
+  margin-bottom: 0.375rem;
+  font-weight: 600;
+  color: var(--color-text-strong);
+}
+
+.account-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  color: var(--color-text);
+}
+
+.account-checkbox input:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+}
