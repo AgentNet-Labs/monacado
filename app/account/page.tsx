@@ -5,8 +5,7 @@
  * destination in `app/` at all before this phase — the landing page, the listing
  * page, and the checkout result page are all reachable signed out — so sign-in
  * had nowhere to send anybody. This is that destination and it is nothing more:
- * a statement that the visitor is signed in, the account the session resolved
- * to, and the control that ends it.
+ * a statement that the visitor is signed in and the control that ends it.
  *
  * It is deliberately **not** a dashboard, a profile, or a settings screen. None
  * of those was asked for, each would need data this page does not fetch, and a
@@ -47,15 +46,10 @@ export default async function AccountPage() {
       <div className="auth-card">
         <h1>Monacado</h1>
         <p className="auth-signed-in">You are signed in.</p>
-        {/* The account's own opaque id, shown to the account it belongs to. It
-            is what the session resolved to and what `/api/auth/sign-in` already
-            returns to the caller, so it discloses nothing the browser was not
-            told a moment ago — and it makes this page evidence of *which*
-            session is live rather than merely that one is. No email, no name,
-            no status: those would need a profile read this phase does not do. */}
-        <p className="auth-status">
-          Account <code>{session.accountId}</code>
-        </p>
+        {/* No account identifier here. The opaque `mon:acct:` id is for
+            persistence, audit, and operator tooling, not something a person
+            needs to read. Name, email, and verification status would need a
+            profile read this page does not do. */}
         <SignOutButton />
       </div>
     </main>
