@@ -287,6 +287,26 @@ main p {
   outline-offset: 2px;
 }
 
+/* Phase 1.28 — "Forgot password?" under the sign-in button. No rule above it:
+   it belongs to the form it sits under, unlike the /sign-up offer below. */
+.auth-forgot {
+  margin: 0.75rem 0 0;
+  font-size: 0.875rem;
+}
+
+.auth-forgot a {
+  color: var(--color-primary);
+}
+
+.auth-forgot a:hover {
+  color: var(--color-primary-hover);
+}
+
+.auth-forgot a:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
 /*
  * The post-registration link that has to look like the button it replaces.
  *

@@ -746,9 +746,10 @@ model Account {
   createdAt DateTime @default(now()) @db.DateTime(3)
   updatedAt DateTime @updatedAt @db.DateTime(3)
 
-  sessions        AccountSession[]
-  entitlements    AccountEntitlement[]
-  emailChallenges AccountEmailVerificationChallenge[]
+  sessions                AccountSession[]
+  entitlements            AccountEntitlement[]
+  emailChallenges         AccountEmailVerificationChallenge[]
+  passwordResetChallenges AccountPasswordResetChallenge[]
 
   /// At most one marketplace participant (Phase 0M.5). The account remains the
   /// authentication identity; the participant is who transacts.
@@ -881,6 +882,47 @@ model AccountEmailVerificationChallenge {
 
   /// Supersession scans the account's outstanding challenges; expiry sweeps scan
   /// by state and deadline.
+  @@index([accountId, state])
+  @@index([state, expiresAt])
+}
+
+/// One outstanding permission to replace an Account's password (Phase 1.28).
+///
+/// Deliberately NOT a row in `AccountEmailVerificationChallenge`. Proving an
+/// address and recovering a password are different authorities: consuming this
+/// never sets `emailVerifiedAt`, and a verification token can never reset a
+/// password, because each consumer looks its digest up in its own table only.
+///
+/// The raw token is NEVER persisted — only its SHA-256 digest. Consumption
+/// replaces the password hash, marks this row CONSUMED, and revokes every live
+/// session for the account, in one transaction.
+model AccountPasswordResetChallenge {
+  /// Opaque challenge identity (mon:aprc:<opaque>). Never the token.
+  id String @id @db.VarChar(191)
+
+  accountId String @db.VarChar(191)
+
+  /// SHA-256 of the normalised address the link was mailed to. Consumption
+  /// refuses if the account's current address differs, so a link sent to an
+  /// address the account no longer uses cannot take it over.
+  addressDigest String @db.Char(64)
+
+  /// Hex SHA-256 of the raw token. UNIQUE.
+  tokenDigest String @unique @db.Char(64)
+
+  /// PENDING | CONSUMED | EXPIRED | SUPERSEDED. Single-use is the transition out
+  /// of PENDING.
+  state String @db.VarChar(16)
+
+  issuedAt   DateTime  @db.DateTime(3)
+  expiresAt  DateTime  @db.DateTime(3)
+  consumedAt DateTime? @db.DateTime(3)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+
+  /// CASCADE, as for verification: meaningless without its account.
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
   @@index([accountId, state])
   @@index([state, expiresAt])
 }

@@ -43,6 +43,13 @@ import {
   SIGN_UP_THROTTLE_POLICY,
   SIGN_UP_THROTTLE_WINDOW_SECONDS,
 } from "../src/server/account/sign-up-abuse-protection";
+import {
+  PASSWORD_RESET_ATTEMPT_LIMIT,
+  PASSWORD_RESET_THROTTLE_KEY_PREFIX,
+  PASSWORD_RESET_THROTTLE_POLICY,
+  PASSWORD_RESET_THROTTLE_WINDOW_SECONDS,
+  redisPasswordResetThrottle,
+} from "../src/server/account/password-reset-abuse-protection";
 
 const SECRET = "a-test-pepper-long-enough-to-be-plausible-0123456789";
 const EMAIL = "Person@Example.com";
@@ -185,5 +192,35 @@ describe("1.27 — auth throttle primitive", () => {
       const b = redisAuthThrottle(odd, SECRET, SIGN_UP_THROTTLE_POLICY, wrap);
       await expect(b.admitAttempt(EMAIL)).rejects.toThrow();
     }
+  });
+
+  it("keeps password reset (Phase 1.28) in a third key space with its own budget", async () => {
+    const signIn = authThrottleKey(SIGN_IN_THROTTLE_POLICY, EMAIL, SECRET);
+    const signUp = authThrottleKey(SIGN_UP_THROTTLE_POLICY, EMAIL, SECRET);
+    const reset = authThrottleKey(PASSWORD_RESET_THROTTLE_POLICY, EMAIL, SECRET);
+
+    /* Distinct as whole keys and as bare digests, so neither a shared prefix nor
+       a shared HMAC input could merge reset's budget into another endpoint's. */
+    const digest = (key: string) => key.slice(key.lastIndexOf(":") + 1);
+    expect(new Set([signIn, signUp, reset]).size).toBe(3);
+    expect(new Set([digest(signIn), digest(signUp), digest(reset)]).size).toBe(3);
+    expect(reset.startsWith(PASSWORD_RESET_THROTTLE_KEY_PREFIX)).toBe(true);
+    expect(PASSWORD_RESET_THROTTLE_POLICY.hmacDomain).toBe("monacado.password-reset.v1");
+    expect(reset).not.toContain("example.com");
+    expect(authThrottleKey(PASSWORD_RESET_THROTTLE_POLICY, " PERSON@example.COM", SECRET)).toBe(
+      reset,
+    );
+
+    expect(PASSWORD_RESET_ATTEMPT_LIMIT).toBe(5);
+    expect(PASSWORD_RESET_THROTTLE_WINDOW_SECONDS).toBe(3600);
+
+    const backend = fakeBackend();
+    const throttle = redisPasswordResetThrottle(backend, SECRET);
+    for (let i = 1; i <= PASSWORD_RESET_ATTEMPT_LIMIT; i += 1) {
+      expect(await throttle.admitAttempt(EMAIL)).toEqual({ throttled: false });
+    }
+    expect((await throttle.admitAttempt(EMAIL)).throttled).toBe(true);
+    expect(backend.keys.every((k) => k === reset)).toBe(true);
+    expect(new Set(backend.windows)).toEqual(new Set([PASSWORD_RESET_THROTTLE_WINDOW_SECONDS]));
   });
 });

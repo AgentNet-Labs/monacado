@@ -44,6 +44,10 @@ export default async function SignInPage() {
         <h1>Monacado</h1>
         <p className="auth-lede">Sign in to your account.</p>
         <SignInForm />
+        {/* Phase 1.28. */}
+        <p className="auth-forgot">
+          <Link href="/forgot-password">Forgot password?</Link>
+        </p>
         {/* Phase 1.27. One restrained line, below the form rather than beside
             it: somebody who arrived here to sign in should not have their eye
             pulled to a second call to action before they have tried the first. */}

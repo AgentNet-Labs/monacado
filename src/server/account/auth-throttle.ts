@@ -13,9 +13,10 @@
  * What lives here is the atomic fixed-window counter and nothing else. There is
  * still no registry, no route key, no configuration table, and no way to attach
  * this to an arbitrary endpoint: a caller must construct an explicit
- * `AuthThrottlePolicy` in source, and exactly two exist — `sign-in-abuse-protection.ts`
- * and `sign-up-abuse-protection.ts`. Adding a third is a code change somebody
- * reviews, which is the property Phase 1.23 was protecting.
+ * `AuthThrottlePolicy` in source, and exactly three exist — `sign-in-abuse-protection.ts`,
+ * `sign-up-abuse-protection.ts`, and (Phase 1.28) `password-reset-abuse-protection.ts`.
+ * Each was a code change somebody reviewed, which is the property Phase 1.23 was
+ * protecting.
  *
  * ## Redis remains ephemeral coordination, and authoritative for nothing
  *

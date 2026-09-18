@@ -195,6 +195,17 @@ export const ACCOUNT_ENTITLEMENT_ID_RE = new RegExp(`^mon:aent:${OPAQUE_BODY}$`)
  */
 export const ACCOUNT_EMAIL_CHALLENGE_ID_RE = new RegExp(`^mon:aevc:${OPAQUE_BODY}$`);
 
+/**
+ * Account password-reset challenge identifier (`mon:aprc:<opaque>`), Phase 1.28.
+ * Names one outstanding permission to replace an Account's password.
+ *
+ * A different prefix from `mon:aevc:` for the same reason that one differs from
+ * `mon:evch:`: proving an address and recovering a password are different
+ * authorities held in different tables, and neither token may be mistaken for the
+ * other.
+ */
+export const ACCOUNT_PASSWORD_RESET_CHALLENGE_ID_RE = new RegExp(`^mon:aprc:${OPAQUE_BODY}$`);
+
 // — Synthetic constructors (tests/demo only; a real Registrar issues ANS ids) —
 
 export function makeSyntheticNodeId(opaque: string): string {

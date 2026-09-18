@@ -68,6 +68,11 @@ import {
   readAccountVerificationOrigin,
   renderAccountVerificationMessage,
 } from "../account/account-verification-notice";
+import { issueAccountPasswordResetChallenge } from "../account/account-password-reset-service";
+import {
+  buildPasswordResetUrl,
+  renderPasswordResetMessage,
+} from "../account/account-password-reset-notice";
 import {
   renderBuyerConfirmation,
   renderBuyerOrderExpired,
@@ -94,6 +99,10 @@ export interface MessageResolverDeps {
   tokens?: { nextVerificationToken(): string };
   /** Phase 1.27 — deterministic ACCOUNT challenge ids, separate from `policyIds`. */
   accountChallengeIds?: { nextChallengeId(): string };
+  /** Phase 1.28 — deterministic password-reset challenge ids. */
+  passwordResetChallengeIds?: { nextChallengeId(): string };
+  /** Phase 1.28 — pin a reset token so a test can assert its digest. */
+  passwordResetTokens?: { nextPasswordResetToken(): string };
 }
 
 /**
@@ -134,7 +143,62 @@ export async function resolveOutboundMessage(
   if (delivery.subjectKind === "ACCOUNT_EMAIL") {
     return resolveAccountVerificationMessage(db, delivery, at, deps);
   }
+  /* Phase 1.28. The same address, a different authority — see
+     `resolveAccountPasswordResetMessage`. */
+  if (delivery.subjectKind === "ACCOUNT_PASSWORD_RESET") {
+    return resolveAccountPasswordResetMessage(db, delivery, at, deps);
+  }
   return resolveOrderMessage(db, delivery, at, deps);
+}
+
+// — Account password reset (Phase 1.28) —
+
+/**
+ * Resolve a password-reset message, and mint its challenge at send time.
+ *
+ * Parallel to `resolveAccountVerificationMessage`, with two differences. It does
+ * not care whether the address is verified — an unverified account may still
+ * recover its password, and a reset does not verify it. And it refuses a
+ * `DISABLED` account, which a link must not be a path back into.
+ */
+async function resolveAccountPasswordResetMessage(
+  db: Db,
+  delivery: OutboundEmailDeliveryRecord,
+  at: string,
+  deps: MessageResolverDeps,
+): Promise<ResolvedMessage> {
+  const account = await db.account.findUnique({
+    where: { id: delivery.subjectRef },
+    select: { id: true, email: true, status: true },
+  });
+  if (account === null || account.status !== "ACTIVE") {
+    return unresolvable("RECIPIENT_UNRESOLVABLE");
+  }
+
+  let origin: string;
+  try {
+    origin = deps.origin ?? readAccountVerificationOrigin(deps.env ?? process.env);
+  } catch {
+    return unresolvable("CHANNEL_NOT_CONFIGURED");
+  }
+
+  const { challenge, token } = await issueAccountPasswordResetChallenge(
+    { accountId: account.id, address: account.email, issuedAt: at },
+    {
+      db,
+      ...(deps.passwordResetChallengeIds !== undefined
+        ? { ids: deps.passwordResetChallengeIds }
+        : {}),
+      ...(deps.passwordResetTokens !== undefined ? { tokens: deps.passwordResetTokens } : {}),
+    },
+  );
+
+  const { subject, body } = renderPasswordResetMessage({
+    resetUrl: buildPasswordResetUrl(origin, token),
+    expiresAt: challenge.expiresAt,
+  });
+
+  return { resolved: true, destination: account.email, subject, text: body };
 }
 
 // — Account email verification (Phase 1.27) —

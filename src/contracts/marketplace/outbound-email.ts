@@ -147,6 +147,12 @@ export const OUTBOUND_EMAIL_PURPOSES = [
   "DISPUTE_EVIDENCE_SUBMITTED",
   /** Proof-of-control for an email contact. Owed to nobody; obligation-free. */
   "EMAIL_VERIFICATION",
+  /**
+   * A single-use link to choose a new account password (Phase 1.28). Asked for,
+   * not owed; obligation-free. Distinct from `EMAIL_VERIFICATION` because the
+   * link grants a different authority and must never render as the other.
+   */
+  "PASSWORD_RESET",
 ] as const;
 export const OutboundEmailPurpose = z.enum(OUTBOUND_EMAIL_PURPOSES);
 export type OutboundEmailPurpose = z.infer<typeof OutboundEmailPurpose>;
@@ -154,6 +160,7 @@ export type OutboundEmailPurpose = z.infer<typeof OutboundEmailPurpose>;
 /** Purposes that never carry a `NotificationObligation`. Asserted by a test. */
 export const OBLIGATION_FREE_PURPOSES = [
   "EMAIL_VERIFICATION",
+  "PASSWORD_RESET",
 ] as const satisfies readonly OutboundEmailPurpose[];
 
 // — Subject —
@@ -175,7 +182,18 @@ export const OBLIGATION_FREE_PURPOSES = [
  * `MarketplaceParticipant` — which a person who has merely registered does not
  * have, and must not be given one merely to receive an email.
  */
-export const OUTBOUND_EMAIL_SUBJECT_KINDS = ["ORDER", "EMAIL_CONTACT", "ACCOUNT_EMAIL"] as const;
+/*
+ * `ACCOUNT_PASSWORD_RESET` (Phase 1.28) resolves the same `Account` address by id
+ * but mints a **password-reset** challenge. A separate kind rather than a purpose
+ * switch inside `ACCOUNT_EMAIL`, so the resolver never has to decide at runtime
+ * which of two authorities a link it is about to mail should carry.
+ */
+export const OUTBOUND_EMAIL_SUBJECT_KINDS = [
+  "ORDER",
+  "EMAIL_CONTACT",
+  "ACCOUNT_EMAIL",
+  "ACCOUNT_PASSWORD_RESET",
+] as const;
 export const OutboundEmailSubjectKind = z.enum(OUTBOUND_EMAIL_SUBJECT_KINDS);
 export type OutboundEmailSubjectKind = z.infer<typeof OutboundEmailSubjectKind>;
 

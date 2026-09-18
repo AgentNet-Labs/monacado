@@ -32,6 +32,7 @@ import {
   ACCOUNT_EMAIL_CHALLENGE_ID_RE,
   ACCOUNT_ENTITLEMENT_ID_RE,
   ACCOUNT_ID_RE,
+  ACCOUNT_PASSWORD_RESET_CHALLENGE_ID_RE,
   ACCOUNT_SESSION_ID_RE,
 } from "../capsule/identity";
 
@@ -271,6 +272,46 @@ export const NEVER_ON_ACCOUNT_EMAIL_CHALLENGE = [
   "userAgent",
   "attemptCount",
 ] as const;
+
+// — Account password reset (Phase 1.28) —
+
+export const AccountPasswordResetChallengeId = z
+  .string()
+  .regex(ACCOUNT_PASSWORD_RESET_CHALLENGE_ID_RE, "challengeId must be mon:aprc:<opaque>");
+export type AccountPasswordResetChallengeId = z.infer<typeof AccountPasswordResetChallengeId>;
+
+/**
+ * How long a reset link lives. One hour — a twenty-fourth of a verification
+ * link's life, because what this link grants is not "this address is yours" but
+ * "choose this account's password". A person who asked for one is waiting for it;
+ * a link still valid the next day is a credential sitting in an inbox.
+ */
+export const ACCOUNT_PASSWORD_RESET_TOKEN_TTL_SECONDS = 60 * 60;
+
+/** 256 bits, as for verification. Never stored raw. */
+export const ACCOUNT_PASSWORD_RESET_TOKEN_BYTES = 32;
+
+/** The same bounded lifecycle as a verification challenge. */
+export const ACCOUNT_PASSWORD_RESET_CHALLENGE_STATES = ACCOUNT_EMAIL_CHALLENGE_STATES;
+export const AccountPasswordResetChallengeState = z.enum(ACCOUNT_PASSWORD_RESET_CHALLENGE_STATES);
+export type AccountPasswordResetChallengeState = z.infer<
+  typeof AccountPasswordResetChallengeState
+>;
+
+/** The safe view of one reset challenge. No field can carry the raw token. */
+export const AccountPasswordResetChallengeRecord = z.strictObject({
+  challengeId: AccountPasswordResetChallengeId,
+  accountId: AccountId,
+  addressDigest: AccountVerificationDigest,
+  tokenDigest: AccountVerificationDigest,
+  state: AccountPasswordResetChallengeState,
+  issuedAt: z.iso.datetime(),
+  expiresAt: z.iso.datetime(),
+  consumedAt: z.iso.datetime().nullable(),
+});
+export type AccountPasswordResetChallengeRecord = z.infer<
+  typeof AccountPasswordResetChallengeRecord
+>;
 
 // — Capabilities —
 
