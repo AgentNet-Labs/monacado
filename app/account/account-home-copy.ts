@@ -95,9 +95,6 @@ export const PRODUCT_INTRO =
 
 export const PRODUCT_DRAFT_STATUS = "Draft · Not listed for sale";
 
-/** Shown once the free plan's Products are used. No price, plan, or link — the upgrade is not built yet. */
-export const PRODUCT_UPGRADE_NOTE = "Additional products require an upgrade.";
-
 export const DELIVERY_MODE_LABELS: Readonly<Record<DeliveryMode, string>> = {
   DIGITAL: "Digital",
   PHYSICAL: "Physical (shipped)",

@@ -71,7 +71,6 @@ const {
   PRODUCT_INVALID,
   PRODUCT_NOT_ELIGIBLE,
   PRODUCT_SIGNED_OUT,
-  PRODUCT_UPGRADE_REQUIRED,
   submitDraftProduct,
 } = await import("../app/account/product-submission");
 
@@ -93,7 +92,6 @@ function home(overrides: Partial<AccountHome> = {}): AccountHome {
     storefrontUpgradeRequired: false,
     products: [],
     canCreateProduct: false,
-    productUpgradeRequired: false,
     ...overrides,
   };
 }
@@ -334,7 +332,7 @@ describe("/account presentation", () => {
     expect(html).not.toContain("mon:");
   });
 
-  it("keeps the Products listed but offers no form once the free plan's Products are used", async () => {
+  it("keeps offering Product creation beyond five Products, with no upgrade message (Phase 1.33)", async () => {
     const draft = {
       description: null,
       promotable: false,
@@ -345,23 +343,17 @@ describe("/account presentation", () => {
     const html = await renderSignedIn(
       home({
         marketplace: DRAFT_SELLER,
-        canCreateProduct: false,
-        productUpgradeRequired: true,
-        products: [1, 2, 3, 4, 5].map((n) => ({ ...draft, name: `Product ${n}` })),
+        canCreateProduct: true,
+        products: [1, 2, 3, 4, 5, 6].map((n) => ({ ...draft, name: `Library product ${n}` })),
       }),
     );
+    const text = html.replaceAll("<!-- -->", "").replace(/<[^>]+>/g, "");
 
-    expect(html).toContain("Product 5");
-    expect(html).toContain("Additional products require an upgrade.");
-    expect(html).not.toContain("Add draft product");
-    expect(html).not.toContain('name="deliveryMode"');
-    expect(html).not.toContain("mon:");
-  });
-
-  it("offers the form, and no upgrade note, below the allowance", async () => {
-    const html = await renderSignedIn(home({ marketplace: DRAFT_SELLER, canCreateProduct: true }));
+    expect(text).toContain("Library product 6 — Draft · Not listed for sale");
     expect(html).toContain("Add draft product");
-    expect(html).not.toContain("Additional products require an upgrade.");
+    expect(html).toContain('name="deliveryMode"');
+    expect(text).not.toMatch(/require[s]? an upgrade/i);
+    expect(html).not.toContain("mon:");
   });
 
   it("gives a Promoter-only account no Product section", async () => {
@@ -632,7 +624,6 @@ describe("draft Product submission", () => {
     const cases: Array<[Response | (() => never), string]> = [
       [json(400, { error: "INVALID_PRODUCT_REQUEST" }), PRODUCT_INVALID],
       [json(403, { error: "PRODUCT_NOT_ELIGIBLE" }), PRODUCT_NOT_ELIGIBLE],
-      [json(409, { error: "PRODUCT_UPGRADE_REQUIRED" }), PRODUCT_UPGRADE_REQUIRED],
       [json(401, { error: "UNAUTHENTICATED" }), PRODUCT_SIGNED_OUT],
       [json(403, { error: "CROSS_ORIGIN_REQUEST_REFUSED" }), PRODUCT_FAILURE],
       [json(409, { error: "PRODUCT_CREATE_CONFLICT" }), PRODUCT_FAILURE],

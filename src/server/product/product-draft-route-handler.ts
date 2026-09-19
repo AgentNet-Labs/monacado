@@ -8,10 +8,6 @@
  * strict JSON body, then the domain through `marketplace-application-service`,
  * then a bounded error mapping.
  *
- * **Within the Product allowance.** The free plan includes
- * `INCLUDED_PRODUCT_ALLOWANCE` Products; a Seller who authors that many is
- * refused with 409 `PRODUCT_UPGRADE_REQUIRED`, decided inside the write.
- *
  * **SELLER only, and draft only.** `canCreateDraftProduct` decides — a SELLER
  * role in a drafting status on a participant permitted to draft; a promoter
  * never authors Product facts. The version is `draft`, its creator Node is
@@ -31,7 +27,6 @@ import {
   DuplicateProductError,
   ProductCreatorNotEligibleError,
   ProductCreatorParticipantRequiredError,
-  ProductUpgradeRequiredError,
   ValidationError,
 } from "./errors";
 import { ParticipantActionNotPermittedError } from "../marketplace/participant-standing-errors";
@@ -47,7 +42,6 @@ export const PRODUCT_DRAFT_ROUTE_ERROR_CODES = {
   invalidRequest: "INVALID_PRODUCT_REQUEST",
   notEligible: "PRODUCT_NOT_ELIGIBLE",
   conflict: "PRODUCT_CREATE_CONFLICT",
-  upgradeRequired: "PRODUCT_UPGRADE_REQUIRED",
   unavailable: "PRODUCT_UNAVAILABLE",
 } as const;
 
@@ -140,9 +134,6 @@ export async function handleCreateDraftProductRequest(
     };
   } catch (error) {
     if (error instanceof ValidationError) return refuse(400, codes.invalidRequest);
-    /* The Seller authors every Product the free plan includes. Same status and
-       shape as the Storefront allowance's refusal. */
-    if (error instanceof ProductUpgradeRequiredError) return refuse(409, codes.upgradeRequired);
     /* No participant, no SELLER role in a drafting status, a participant status
        that does not permit drafting, a suspension, or a closure — one bounded
        answer. The page already shows the person what setup they have. */

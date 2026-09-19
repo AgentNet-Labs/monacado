@@ -119,23 +119,6 @@ export const INITIAL_PRODUCT_CAPSULE_SEMVER = "1.0.0" as const;
 export const SELF_SERVICE_PRODUCT_MAPPING_VERSION = GENERATOR_VERSION;
 
 /**
- * Products a Seller may author on the free plan (Phase 1.32 correction).
- *
- * The allowance, not a domain limit: a participant may author any number of
- * Products, and the sixth onward requires a paid Product allowance. No
- * authoritative record of such an entitlement exists yet — `AccountEntitlement`
- * holds internal operational grants only and never marketplace or commercial
- * authority (0M.1 §1) — so today a Seller's allowance is exactly this. When the
- * upgrade phase adds one, the allowance becomes this plus the entitled quantity;
- * no schema, uniqueness constraint, or ownership model change is needed.
- *
- * Every Product whose CURRENT source version names the participant as creator
- * counts, whatever its `recordStatus` — draft, authoring-complete, or withdrawn.
- * Placement in a Storefront and publication state are irrelevant.
- */
-export const INCLUDED_PRODUCT_ALLOWANCE = 5;
-
-/**
  * What a SELLER supplies to open a private Product draft (Phase 1.32) — and
  * nothing else.
  *

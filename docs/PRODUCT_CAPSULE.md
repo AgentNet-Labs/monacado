@@ -190,6 +190,15 @@ validation + schema generation), `contracts:export` (derived JSON Schema),
 `contracts:demo` (offline end-to-end). `validate` runs
 `lint → typecheck → contracts:validate → test → build`.
 
+## Product library and placement (Phase 1.33)
+
+Creating a Product consumes no capacity of any kind: there is no Product-count
+quota, and a Product may sit unplaced in its Seller's library. Capacity is
+counted in **active Listings per Storefront**, and `promotable` means eligible for
+third-party promotion — never exclusivity, and never changed by seller-direct
+placement. See
+[`MARKETPLACE_ASSORTMENT_AND_LISTING_RULES.md`](MARKETPLACE_ASSORTMENT_AND_LISTING_RULES.md).
+
 ## Deferred (later phases)
 
 - **Product media and presentation (recorded in Phase 1.32; not implemented).**

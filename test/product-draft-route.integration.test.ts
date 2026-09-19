@@ -9,8 +9,8 @@
  * authority and NULL creator columns (ADR §10.3) — nothing fabricated; several
  * Products per SELLER are fine; and no Listing, Offer, Node, publication, or
  * outbox state appears. Also proves `readAccountHome` lists the drafts without
- * identifiers, and that the free-plan allowance (`INCLUDED_PRODUCT_ALLOWANCE`)
- * is enforced inside the write — including under concurrency.
+ * identifiers, and (Phase 1.33) that the Product library has no count quota —
+ * capacity is counted in active Listings per Storefront, not in Products.
  */
 
 import "dotenv/config";
@@ -26,14 +26,8 @@ import {
   handleCreateDraftProductRequest,
 } from "../src/server/product/product-draft-route-handler";
 import { ProductRepository } from "../src/server/product/product-repository";
-import {
-  INCLUDED_PRODUCT_ALLOWANCE,
-  ProductCreatorIdentityUnboundError,
-} from "../src/contracts/product/product-source-record";
+import { ProductCreatorIdentityUnboundError } from "../src/contracts/product/product-source-record";
 import type { MarketplaceRole } from "../src/contracts/marketplace/participant";
-import { createDraftProductAs } from "../src/server/marketplace/marketplace-application-service";
-import { resolveActingAccount } from "../src/server/account/acting-participant-boundary";
-import { ProductUpgradeRequiredError } from "../src/server/product/errors";
 
 const RUN = process.env.RUN_DB_TESTS === "1";
 const db = RUN ? getPrisma() : (undefined as unknown as ReturnType<typeof getPrisma>);
@@ -310,57 +304,35 @@ describeDb("1.32 — SELLER-only private draft Product", () => {
     expect(promoterHome!.products).toEqual([]);
   });
 
-  it("includes the free-plan allowance of Products; the next requires an upgrade and writes nothing", async () => {
-    expect(INCLUDED_PRODUCT_ALLOWANCE).toBe(5);
+  it("imposes no Product-count quota: a Seller's sixth and seventh Products succeed (Phase 1.33)", async () => {
     const seller = await signIn(["SELLER"]);
-
-    for (let i = 1; i <= INCLUDED_PRODUCT_ALLOWANCE; i += 1) {
-      expect((await create(seller.cookieHeader, { ...GOOD, name: `Product ${i}` })).status).toBe(201);
+    const statuses: number[] = [];
+    for (let i = 1; i <= 7; i += 1) {
+      statuses.push((await create(seller.cookieHeader, { ...GOOD, name: `Library product ${i}` })).status);
     }
-    const home = await readAccountHome(seller.accountId, { db });
-    expect(home!.products).toHaveLength(INCLUDED_PRODUCT_ALLOWANCE);
-    expect(home!.canCreateProduct).toBe(false);
-    expect(home!.productUpgradeRequired).toBe(true);
-
-    const refused = await create(seller.cookieHeader, { ...GOOD, name: "One too many" });
-    expect(refused).toEqual({
-      status: 409,
-      body: { error: CODES.upgradeRequired },
-      headers: expect.any(Object),
-    });
-    expect(JSON.stringify(refused.body)).not.toMatch(/mon:|\d/);
+    /* Products 1, 5, 6, and 7 named explicitly: the old five-Product limit is gone. */
+    expect([statuses[0], statuses[4], statuses[5], statuses[6]]).toEqual([201, 201, 201, 201]);
+    expect(statuses.every((status) => status === 201)).toBe(true);
 
     const versions = await versionsBy(seller.participantId!);
-    expect(versions).toHaveLength(INCLUDED_PRODUCT_ALLOWANCE);
-    expect(versions.some((v) => v.factName === "One too many")).toBe(false);
-    expect(await db.product.count({ where: { internalProductId: { in: versions.map((v) => v.internalProductId) } } })).toBe(
-      INCLUDED_PRODUCT_ALLOWANCE,
-    );
+    expect(versions).toHaveLength(7);
+    const productIds = new Set(versions.map((v) => v.internalProductId));
+    expect(productIds.size).toBe(7);
+    /* Seven independent Products, each with exactly one version 1 under the
+       Seller's authority and no public creator identity. */
+    expect(versions.every((v) => v.sourceRecordVersion === "1" && v.recordStatus === "draft")).toBe(true);
+    expect(versions.every((v) => v.authorityCreatorId === null && v.factCreatorRef === null && v.factOfferRef === null)).toBe(true);
+    const ids = [...productIds];
+    expect(await db.product.count({ where: { internalProductId: { in: ids } } })).toBe(7);
+    expect(await db.listing.count({ where: { internalProductId: { in: ids } } })).toBe(0);
+    expect(await db.offer.count({ where: { internalProductId: { in: ids } } })).toBe(0);
+    expect(await db.productNode.count({ where: { internalProductId: { in: ids } } })).toBe(0);
+    expect(await db.productPublication.count({ where: { internalProductId: { in: ids } } })).toBe(0);
 
-    /* The allowance is per Seller: another still gets their own. */
-    const other = await signIn(["SELLER"]);
-    expect((await create(other.cookieHeader, GOOD)).status).toBe(201);
-    const otherHome = await readAccountHome(other.accountId, { db });
-    expect([otherHome!.canCreateProduct, otherHome!.productUpgradeRequired]).toEqual([true, false]);
-  });
-
-  it("never lets concurrent requests take a Seller past the allowance", async () => {
-    const seller = await signIn(["SELLER"]);
-    for (let i = 1; i < INCLUDED_PRODUCT_ALLOWANCE; i += 1) {
-      expect((await create(seller.cookieHeader, { ...GOOD, name: `Product ${i}` })).status).toBe(201);
-    }
-
-    const resolution = await resolveActingAccount({ cookieHeader: seller.cookieHeader, now: LATER }, { db });
-    if (resolution.outcome !== "AUTHENTICATED") throw new Error("unreachable");
-    const outcomes = await Promise.allSettled(
-      ["Race A", "Race B"].map((name) =>
-        createDraftProductAs(resolution.actor, { ...GOOD, name }, { db, now: LATER }),
-      ),
-    );
-
-    expect(outcomes.filter((o) => o.status === "fulfilled")).toHaveLength(1);
-    const [rejected] = outcomes.filter((o) => o.status === "rejected") as PromiseRejectedResult[];
-    expect(rejected!.reason).toBeInstanceOf(ProductUpgradeRequiredError);
-    expect(await versionsBy(seller.participantId!)).toHaveLength(INCLUDED_PRODUCT_ALLOWANCE);
+    /* The account page keeps offering Product creation and lists all seven. */
+    const home = await readAccountHome(seller.accountId, { db });
+    expect(home!.canCreateProduct).toBe(true);
+    expect(home!.products).toHaveLength(7);
+    expect(JSON.stringify(home)).not.toMatch(/mon:|an:node/);
   });
 });

@@ -18,10 +18,11 @@
  *   3. **Standing** — a closed participation authors nothing further, and a
  *      suspension withholds authoring. A RESTRICTED participant still drafts,
  *      deliberately: restrictions never gate drafting.
- *   4. **Allowance** — owned < allowed, where owned is every Product whose
- *      current source version credits this participant, and allowed is
- *      `INCLUDED_PRODUCT_ALLOWANCE` plus any paid Product entitlement (none
- *      exists yet). Otherwise `ProductUpgradeRequiredError`.
+ *
+ * There is deliberately **no Product-count allowance** (Phase 1.33): the
+ * Product library consumes no capacity. Capacity is counted in active Listings
+ * per Storefront, at Listing activation — see
+ * docs/MARKETPLACE_ASSORTMENT_AND_LISTING_RULES.md.
  *
  * Asked here rather than in `marketplace-application-service`, which resolves
  * identity and decides nothing, so that the decision and the write see the same
@@ -37,9 +38,7 @@ import { assertParticipantLifecycleIsLive } from "./participant-closure-service"
 import {
   ProductCreatorNotEligibleError,
   ProductCreatorParticipantRequiredError,
-  ProductUpgradeRequiredError,
 } from "../product/errors";
-import { INCLUDED_PRODUCT_ALLOWANCE } from "../../contracts/product/product-source-record";
 
 export async function assertAccountMayAuthorProductIn(
   tx: Prisma.TransactionClient,
@@ -55,37 +54,4 @@ export async function assertAccountMayAuthorProductIn(
 
   await assertParticipantLifecycleIsLive(tx, participantId);
   await assertParticipantMayAuthorMarketplaceState(tx, participantId);
-
-  await assertProductAllowanceIn(tx, participantId);
-}
-
-/**
- * The Product allowance: owned < allowed, safe under concurrency.
- *
- * The same construction as the Storefront allowance (Phase 1.30): the
- * participant row is locked for the rest of the write transaction, so a second
- * request for the same Seller waits here until the first commits or rolls back;
- * and the count is a LOCKING read, which sees the latest committed rows rather
- * than this transaction's earlier snapshot, so the waiter counts the Product the
- * first one wrote. Two requests for the last free slot cannot both pass.
- *
- * Owned is counted from each Product's CURRENT version, the same present-fact
- * reading `participantHoldsProductAuthority` and the account page use. No schema
- * constraint: a larger allowance needs no migration.
- */
-async function assertProductAllowanceIn(
-  tx: Prisma.TransactionClient,
-  participantId: string,
-): Promise<void> {
-  const allowed = INCLUDED_PRODUCT_ALLOWANCE;
-  await tx.$queryRaw`SELECT id FROM MarketplaceParticipant WHERE id = ${participantId} FOR UPDATE`;
-  const [{ owned }] = await tx.$queryRaw<Array<{ owned: bigint }>>`
-    SELECT COUNT(*) AS owned
-    FROM Product p
-    JOIN ProductSourceRecordVersionRow v
-      ON v.sourceRecordId = p.sourceRecordId
-     AND v.sourceRecordVersion = p.currentSourceRecordVersion
-    WHERE v.authorityCreatorParticipantId = ${participantId}
-    FOR SHARE`;
-  if (Number(owned) >= allowed) throw new ProductUpgradeRequiredError();
 }

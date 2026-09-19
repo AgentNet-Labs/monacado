@@ -17,7 +17,6 @@ export const PRODUCT_ENDPOINT = "/api/products";
 export const PRODUCT_INVALID =
   "Check the product details. A name and a delivery type are required; the name can be up to 200 characters.";
 export const PRODUCT_NOT_ELIGIBLE = "Only a Seller can add products.";
-export const PRODUCT_UPGRADE_REQUIRED = "Additional products require an upgrade.";
 export const PRODUCT_SIGNED_OUT = "Your session has ended. Please sign in again.";
 export const PRODUCT_FAILURE = "Unable to add the product. Please try again.";
 
@@ -70,8 +69,6 @@ export async function submitDraftProduct(
       ? PRODUCT_INVALID
       : code === "PRODUCT_NOT_ELIGIBLE"
         ? PRODUCT_NOT_ELIGIBLE
-        : code === "PRODUCT_UPGRADE_REQUIRED"
-          ? PRODUCT_UPGRADE_REQUIRED
-          : PRODUCT_FAILURE;
+        : PRODUCT_FAILURE;
   return { outcome: "failed", message };
 }

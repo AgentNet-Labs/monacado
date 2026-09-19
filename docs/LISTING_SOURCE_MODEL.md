@@ -428,6 +428,7 @@ override the creator's Product facts.**
 
 ## Reference
 
+- [`MARKETPLACE_ASSORTMENT_AND_LISTING_RULES.md`](MARKETPLACE_ASSORTMENT_AND_LISTING_RULES.md) — governing assortment rules (Phase 1.33): per-Storefront active-Listing capacity, many Storefronts per Product, and seller-direct vs promoted by economic principal
 - [`AUTHORITATIVE_OFFER_SOURCE_MODEL.md`](AUTHORITATIVE_OFFER_SOURCE_MODEL.md) — wholesale economics this depends on
 - [`AUTHORITATIVE_STOREFRONT_SOURCE_MODEL.md`](AUTHORITATIVE_STOREFRONT_SOURCE_MODEL.md) — placement container and accessibility rules
 - [`PARTICIPANT_PERSISTENCE.md`](PARTICIPANT_PERSISTENCE.md) — the controlling participant

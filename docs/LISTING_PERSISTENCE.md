@@ -376,6 +376,7 @@ risk-management engine (`0M.R`); participant capsule; HTTP routes and UI.
 ## Reference
 
 - [`LISTING_SOURCE_MODEL.md`](LISTING_SOURCE_MODEL.md)
+- [`MARKETPLACE_ASSORTMENT_AND_LISTING_RULES.md`](MARKETPLACE_ASSORTMENT_AND_LISTING_RULES.md) — governing assortment rules and the gaps before promoted Listings launch (Phase 1.33)
 - [`LISTING_CAPSULE_PROJECTION.md`](LISTING_CAPSULE_PROJECTION.md)
 - [`OFFER_PERSISTENCE.md`](OFFER_PERSISTENCE.md)
 - [`STOREFRONT_PERSISTENCE.md`](STOREFRONT_PERSISTENCE.md)
