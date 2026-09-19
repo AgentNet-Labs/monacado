@@ -141,7 +141,12 @@ model ProductSourceRecordVersionRow {
   /// it is a different identifier scheme from `mon:mpart:`, and rewriting it
   /// would either invent a participant that never existed or silently rename a
   /// committed identity convention.
-  authorityCreatorId          String  @db.VarChar(191)
+  ///
+  /// NULLABLE since the creator-identity ruling (ADR §10.3): a participant-
+  /// authored draft names its author in `authorityCreatorParticipantId` and has
+  /// no `mon:creator:` reference. NULL is absence, never a placeholder; existing
+  /// values are untouched.
+  authorityCreatorId          String? @db.VarChar(191)
   authorityScope              String  @db.VarChar(64)
   authorityAuthorizationState String  @db.VarChar(32)
   authorityAuthorizationRef   String? @db.VarChar(191)
@@ -187,7 +192,11 @@ model ProductSourceRecordVersionRow {
   /// Validated JSON: string[]. Validated by the ProductData Zod contract.
   factCapabilities   Json?
   /// facts.relationships.creator (opaque ANS node reference an:node:<opaque>).
-  factCreatorRef     String  @db.VarChar(191)
+  /// NULLABLE since the creator-identity ruling (ADR §10.3): a private draft's
+  /// public creator identity is bound at governed admission/publication, and
+  /// until then this is NULL — never a synthetic Node. A version with NULL here
+  /// cannot become a capsule (PRODUCT_CREATOR_IDENTITY_UNBOUND).
+  factCreatorRef     String? @db.VarChar(191)
   /// facts.relationships.offer (optional opaque ANS node reference).
   factOfferRef       String? @db.VarChar(191)
 

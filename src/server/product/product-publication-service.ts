@@ -30,7 +30,10 @@ import {
   candidateHash as computeCandidateHash,
   publishedContentHash as computePublishedContentHash,
 } from "../../contracts/integrity/hash";
-import { productSourceRecordToCapsuleCandidate } from "../../contracts/product/product-source-record";
+import {
+  hasBoundCreatorIdentity,
+  productSourceRecordToCapsuleCandidate,
+} from "../../contracts/product/product-source-record";
 import type { ProductSourceRecord } from "../../contracts/product/product-source-record";
 import { finalizeProductCapsule } from "../../contracts/product/product.factory";
 import { ProductPublisherError } from "../../contracts/product/product.authority";
@@ -54,6 +57,7 @@ import {
   IdempotencyConflictError,
   InvalidPublicationInputError,
   NodeNotEligibleError,
+  ProductCreatorIdentityUnboundError,
   ProductNodeMismatchError,
   ProductPublicationError,
   ProductSourceMismatchError,
@@ -105,6 +109,13 @@ export class ProductPublicationService {
     const record: ProductSourceRecord = versionRowToDomain(versionRow);
     if (record.internalProductId !== req.internalProductId) {
       throw new ProductSourceMismatchError();
+    }
+
+    /* Creator-identity ruling (ADR §10.3): a private draft may lack its public
+       creator identity; a published capsule may not. Refused here, before the
+       Node is consulted or anything is generated, prepared, or queued. */
+    if (!hasBoundCreatorIdentity(record)) {
+      throw new ProductCreatorIdentityUnboundError();
     }
 
     // — 3-5. Product Node: exists, belongs to this Product, and is Active —

@@ -24,6 +24,15 @@ import {
   SYN_NODE_ID,
   SYN_SEMANTIC_NODE_ID,
 } from "../src/contracts/fixtures/synthetic-product";
+import {
+  DraftProductData,
+  ProductData,
+  PublishedProductCapsule,
+} from "../src/contracts/product/product.capsule";
+import {
+  ProductCreatorIdentityUnboundError,
+  hasBoundCreatorIdentity,
+} from "../src/contracts/product/product-source-record";
 
 function record(): ProductSourceRecord {
   return structuredClone(syntheticProductSourceRecord());
@@ -412,5 +421,121 @@ describe("schema export", () => {
     const schema = generateProductSourceRecordJsonSchema();
     expect(schema).toBeTypeOf("object");
     expect("properties" in schema || "$ref" in schema || "allOf" in schema).toBe(true);
+  });
+});
+
+// — Creator-identity ruling (ADR §10.3 amendment) —
+
+const PARTICIPANT = "mon:mpart:01ARZ3NDEKTSV4RRFFQ69G5FAV";
+
+/** A participant-authored private draft: participant authority, no public creator identity. */
+function unboundDraft(): ProductSourceRecord {
+  const r = record();
+  const { creatorId: _dropped, ...authority } = r.authority;
+  const { creator: _unbound, ...relationships } = r.facts.relationships;
+  return {
+    ...r,
+    recordStatus: "draft",
+    authority: { ...authority, creatorParticipantId: PARTICIPANT },
+    facts: { ...r.facts, relationships },
+  } as ProductSourceRecord;
+}
+
+describe("creator-identity ruling — private drafts", () => {
+  it("a participant-authored draft validates without relationships.creator or a mon:creator reference", () => {
+    const result = validateProductSourceRecord(unboundDraft());
+    expect(result.ok).toBe(true);
+    expect(result.value!.authority.creatorParticipantId).toBe(PARTICIPANT);
+    /* Nothing is fabricated to fill the gap. */
+    expect(result.value!.authority.creatorId).toBeUndefined();
+    expect(result.value!.facts.relationships.creator).toBeUndefined();
+    expect(hasBoundCreatorIdentity(result.value!)).toBe(false);
+  });
+
+  it("a record naming no creator authority at all is refused", () => {
+    const r = unboundDraft();
+    delete (r.authority as Record<string, unknown>).creatorParticipantId;
+    const result = validateProductSourceRecord(r);
+    expect(result.ok).toBe(false);
+    expect(result.errors!.some((e) => e.startsWith("authority:"))).toBe(true);
+  });
+
+  it("an existing creator-backed record is unchanged and still valid, with or without a participant", () => {
+    expect(validateProductSourceRecord(record()).ok).toBe(true);
+    const withParticipant = record();
+    withParticipant.authority.creatorParticipantId = PARTICIPANT;
+    expect(validateProductSourceRecord(withParticipant).ok).toBe(true);
+    expect(hasBoundCreatorIdentity(withParticipant)).toBe(true);
+  });
+
+  it("an unbound draft may be revised and stays unbound until a creator is actually supplied", () => {
+    const draft = unboundDraft();
+    const renamed = reviseProductSourceRecord({
+      prior: draft,
+      sourceRecordVersion: "draft-2",
+      updatedAt: SYN_UPDATED_AT_V2,
+      capsuleGeneratedAt: SYN_CAPSULE_GENERATED_AT_V2,
+      facts: { ...draft.facts, name: "Renamed draft" },
+    });
+    expect(hasBoundCreatorIdentity(renamed)).toBe(false);
+
+    const bound = reviseProductSourceRecord({
+      prior: renamed,
+      sourceRecordVersion: "draft-3",
+      updatedAt: SYN_UPDATED_AT_V2,
+      capsuleGeneratedAt: SYN_CAPSULE_GENERATED_AT_V2,
+      facts: { ...renamed.facts, relationships: { creator: SYN_NODE_ID } },
+    });
+    expect(bound.facts.relationships.creator).toBe(SYN_NODE_ID);
+  });
+
+  it("forbidden commercial fields stay forbidden in a draft", () => {
+    const r = unboundDraft() as unknown as { facts: Record<string, unknown> };
+    r.facts.price = 10;
+    expect(validateProductSourceRecord(r).ok).toBe(false);
+  });
+});
+
+describe("creator-identity ruling — the capsule boundary", () => {
+  it("refuses to generate a candidate from an unbound draft, and emits none", () => {
+    let emitted: unknown = "not-called";
+    let thrown: unknown;
+    try {
+      emitted = productSourceRecordToCapsuleCandidate(unboundDraft());
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(ProductCreatorIdentityUnboundError);
+    expect((thrown as ProductCreatorIdentityUnboundError).code).toBe(
+      "PRODUCT_CREATOR_IDENTITY_UNBOUND",
+    );
+    expect(emitted).toBe("not-called");
+  });
+
+  it("an unbound draft is reported as unmappable, never as a match", () => {
+    const candidate = productSourceRecordToCapsuleCandidate(record());
+    expect(verifyProductSourceCandidateMapping(unboundDraft(), candidate)).toEqual({
+      ok: false,
+      reason: "creator-identity-unbound",
+      mismatches: [],
+    });
+  });
+
+  it("a bound record still generates a candidate carrying its creator", () => {
+    const candidate = productSourceRecordToCapsuleCandidate(record());
+    expect(candidate.data.relationships.creator).toBe(record().facts.relationships.creator);
+  });
+
+  it("the capsule shapes still require the creator; only the draft source shape relaxes it", () => {
+    const { creator: _c, ...withoutCreator } = record().facts.relationships;
+    const facts = { ...record().facts, relationships: withoutCreator };
+    expect(DraftProductData.safeParse(facts).success).toBe(true);
+    expect(ProductData.safeParse(facts).success).toBe(false);
+
+    const published = PublishedProductCapsule.safeParse({
+      ...productSourceRecordToCapsuleCandidate(record()),
+      data: facts,
+    });
+    expect(published.success).toBe(false);
   });
 });

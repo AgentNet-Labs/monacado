@@ -97,6 +97,35 @@ export const ProductData = z.strictObject({
 });
 export type ProductData = z.infer<typeof ProductData>;
 
+/**
+ * Draft relationships: the creator Node may not be bound yet (creator-identity
+ * ruling, ADR §10.3).
+ *
+ * A participant-authored Product is drafted before its creator has a governed
+ * public identity — no participant Node is issued merely to draft (ADR §11.5,
+ * participant doc §8). Its authorship is carried by
+ * `authority.creatorParticipantId` on the source record instead. `creator` is
+ * bound at governed admission or publication; until then it is ABSENT, never a
+ * placeholder, and a synthetic `an:node:` is never minted to fill it.
+ */
+export const DraftProductRelationships = ProductRelationships.extend({
+  creator: AnsNodeId.optional(),
+});
+export type DraftProductRelationships = z.infer<typeof DraftProductRelationships>;
+
+/**
+ * Product facts as the authoritative SOURCE RECORD holds them.
+ *
+ * Identical to `ProductData` except that `relationships.creator` may be unbound.
+ * Only the source record uses this shape. The capsule candidate and the
+ * published capsule keep `ProductData`, where the creator is required — so an
+ * unbound draft can be stored and edited, but can never become a capsule.
+ */
+export const DraftProductData = ProductData.extend({
+  relationships: DraftProductRelationships,
+});
+export type DraftProductData = z.infer<typeof DraftProductData>;
+
 /** Reject foreign-authority / private / payment fields anywhere in the capsule. */
 function forbiddenFieldRefine(capsule: unknown, ctx: z.RefinementCtx): void {
   for (const finding of findForbiddenFields(capsule)) {

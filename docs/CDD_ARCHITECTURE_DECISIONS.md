@@ -411,6 +411,35 @@ precisely express Monacado's marketplace authority relationship. A future
 **Creator capsule** will define that node's descriptive and authoritative
 representation.
 
+#### Amendment — creator identity for participant-authored drafts
+
+The requirement above is a requirement of the **public capsule**. It applies from
+publication onward, not from the moment a Product is first drafted:
+
+- **Draft authority is the participant.** For a participant-authored Product, the
+  source record's `authority.creatorParticipantId` — the authoritative
+  `MarketplaceParticipant` — is sufficient and authoritative for draft
+  authorship, authorization, provenance, audit, draft editing, and internal
+  persistence. A source record must name a creator authority: that participant,
+  or a legitimate existing `mon:creator:` reference.
+- **`relationships.creator` is optional while the Product is a private draft.** A
+  participant has no governed public identity merely because they have begun to
+  draft, and none is issued for drafting (§11.5).
+- **It is required for public publication.** The canonical creator identity —
+  creator Node and canonical creator IRI — is bound during governed
+  admission/publication. Candidate generation and the publication path refuse a
+  source version whose creator identity is unbound
+  (`PRODUCT_CREATOR_IDENTITY_UNBOUND`); the public capsule contract itself is
+  unchanged and still requires `creator`.
+- **No synthetic creator identity.** A placeholder or synthetic creator Node,
+  creator relationship, or `mon:creator:` reference must never be written to make
+  a draft validate. Absence is recorded as absence.
+- **Existing records are unaffected.** Source versions that already carry a valid
+  creator relationship or `mon:creator:` reference remain valid unchanged.
+
+This mirrors the Storefront precedent: drafting may precede public identity and
+admission; public exposure requires the governed publication identity.
+
 ### 10.4 Content hash
 
 The Product capsule content hash is stored at **`provenance.contentHash`**.

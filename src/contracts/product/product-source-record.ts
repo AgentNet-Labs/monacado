@@ -24,8 +24,9 @@ import { findForbiddenFields } from "../integrity/forbidden-fields";
 import { candidateHash } from "../integrity/hash";
 import { canonicalJsonString } from "../integrity/canonical-json";
 import {
-  ProductData,
+  DraftProductData,
   ProductCapsuleCandidate,
+  type ProductData,
   type ProductCapsuleCandidate as ProductCapsuleCandidateT,
 } from "./product.capsule";
 import { generateProductCandidate } from "./product.factory";
@@ -59,7 +60,15 @@ export const CreatorParticipantId = z
   .regex(MARKETPLACE_PARTICIPANT_ID_RE, "creatorParticipantId must be opaque (mon:mpart:<opaque>)");
 
 export const InternalProductAuthority = z.strictObject({
-  creatorId: InternalCreatorId,
+  /**
+   * A legitimate `mon:creator:` authority reference.
+   *
+   * **Optional since the creator-identity ruling (ADR §10.3)**, and only because
+   * `creatorParticipantId` now carries participant-authored authority: a record
+   * must name at least one of the two (enforced on the source record). Existing
+   * references stay valid; one is never fabricated for a record that has none.
+   */
+  creatorId: InternalCreatorId.optional(),
   authorityScope: z.enum(AUTHORITY_SCOPES),
   authorizationState: z.enum(AUTHORIZATION_STATES),
   authorizationRef: z.string().min(1).optional(),
@@ -115,8 +124,11 @@ export const ProductSourceRecordBase = z.strictObject({
   sourceClass: z.literal("governed-database-record"),
   // Internal authority
   authority: InternalProductAuthority,
-  // Product facts (Product/Offer boundary enforced by ProductData + scan)
-  facts: ProductData,
+  // Product facts (Product/Offer boundary enforced by ProductData + scan).
+  // `DraftProductData`: the creator Node may be unbound while the Product is a
+  // private draft (ADR §10.3). The candidate and published capsule still
+  // require it — see `productSourceRecordToCapsuleCandidate`.
+  facts: DraftProductData,
   // Record control (deterministic mapping/audit only)
   //
   // Timestamp semantics (four distinct events — never conflated):
@@ -167,6 +179,20 @@ export const ProductSourceRecordSchema = ProductSourceRecordBase
         message: "internalProductId must differ from sourceRecordId",
       });
     }
+    /* Creator-identity ruling (ADR §10.3): a record must name WHO holds creator
+       authority — the authoritative participant, or a legitimate existing
+       `mon:creator:` reference. A record naming neither has no author at all. */
+    if (
+      record.authority.creatorId === undefined &&
+      record.authority.creatorParticipantId === undefined
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["authority"],
+        message:
+          "authority must name a creatorParticipantId or an existing creatorId; a Product source record needs a creator authority",
+      });
+    }
     for (const finding of findForbiddenFields(record)) {
       ctx.addIssue({
         code: "custom",
@@ -195,6 +221,29 @@ export function validateProductSourceRecord(value: unknown): SourceRecordValidat
 // — Mapping: source record → capsule candidate —
 
 /**
+ * The source version's public creator identity is not bound yet (ADR §10.3).
+ *
+ * A private draft may lack `relationships.creator`; a capsule may not. This is
+ * the refusal at the one place a source record becomes a capsule candidate, so
+ * nothing without the governed creator identity can be projected, published, or
+ * submitted to the Registrar. It carries no identifier.
+ */
+export class ProductCreatorIdentityUnboundError extends Error {
+  readonly code = "PRODUCT_CREATOR_IDENTITY_UNBOUND" as const;
+  constructor() {
+    super(
+      "The Product's public creator identity is not bound; a draft without relationships.creator cannot become a capsule",
+    );
+    this.name = "ProductCreatorIdentityUnboundError";
+  }
+}
+
+/** Whether this source version carries a bound public creator identity. */
+export function hasBoundCreatorIdentity(record: Pick<ProductSourceRecord, "facts">): boolean {
+  return record.facts.relationships.creator !== undefined;
+}
+
+/**
  * Deterministically map a source record to a Product capsule candidate. Validates
  * the record first, derives ANS provenance from source-record fields (Asserted),
  * preserves exact source identity/version, and introduces no publication metadata
@@ -211,6 +260,12 @@ export function validateProductSourceRecord(value: unknown): SourceRecordValidat
  */
 export function productSourceRecordToCapsuleCandidate(record: unknown): ProductCapsuleCandidate {
   const parsed = ProductSourceRecordSchema.parse(record);
+  const creator = parsed.facts.relationships.creator;
+  if (creator === undefined) throw new ProductCreatorIdentityUnboundError();
+  const facts: ProductData = {
+    ...parsed.facts,
+    relationships: { ...parsed.facts.relationships, creator },
+  };
   return generateProductCandidate({
     source: {
       sourceRecordId: parsed.sourceRecordId,
@@ -219,7 +274,7 @@ export function productSourceRecordToCapsuleCandidate(record: unknown): ProductC
       sourceRecordType: parsed.sourceRecordType,
       sourceClass: parsed.sourceClass,
       acquiredAt: parsed.acquiredAt,
-      facts: parsed.facts,
+      facts,
     },
     version: parsed.capsuleSemver,
     generatedAt: parsed.capsuleGeneratedAt,
@@ -316,6 +371,11 @@ export function verifyProductSourceCandidateMapping(
   if (!cand.success) {
     return { ok: false, reason: "invalid-candidate", mismatches: [] };
   }
+  /* An unbound draft maps to no candidate at all, so no candidate can be its
+     mapping. */
+  if (!hasBoundCreatorIdentity(rec.data)) {
+    return { ok: false, reason: "creator-identity-unbound", mismatches: [] };
+  }
 
   const expected = productSourceRecordToCapsuleCandidate(rec.data);
   const mismatches: MappingMismatch[] = [];
@@ -370,7 +430,7 @@ export interface ReviseSourceRecordInput {
    * prior record's value is permitted.
    */
   capsuleGeneratedAt: string;
-  facts?: ProductData;
+  facts?: DraftProductData;
   capsuleSemver?: string;
   mappingVersion?: string;
   recordStatus?: RecordStatus;

@@ -17,6 +17,7 @@ export type ProductPublicationErrorCode =
   | "SOURCE_RECORD_VERSION_NOT_FOUND"
   | "PRODUCT_SOURCE_MISMATCH"
   | "PRODUCT_NODE_MISMATCH"
+  | "PRODUCT_CREATOR_IDENTITY_UNBOUND"
   | "NODE_NOT_ELIGIBLE"
   | "INVALID_PUBLICATION_INPUT"
   | "DUPLICATE_CAPSULE_ID"
@@ -76,6 +77,21 @@ export class NodeNotEligibleError extends ProductPublicationError {
     );
     this.name = "NodeNotEligibleError";
     this.lifecycleState = lifecycleState;
+  }
+}
+
+/**
+ * The source version's public creator identity is not bound (ADR §10.3).
+ *
+ * A private draft may exist without `relationships.creator`; publication may
+ * not. Refused before any Node check, candidate, capsule, outbox row, or
+ * Registrar interaction — nothing is prepared for a Product whose creator has no
+ * governed public identity. Carries no identifier.
+ */
+export class ProductCreatorIdentityUnboundError extends ProductPublicationError {
+  constructor(message = "The source version has no bound public creator identity; it cannot be published") {
+    super("PRODUCT_CREATOR_IDENTITY_UNBOUND", message);
+    this.name = "ProductCreatorIdentityUnboundError";
   }
 }
 

@@ -38,7 +38,10 @@ export function versionRowToDomain(row: ProductSourceRecordVersionRow): ProductS
     sourceRecordType: row.sourceRecordType,
     sourceClass: row.sourceClass,
     authority: {
-      creatorId: row.authorityCreatorId,
+      /* Creator-identity ruling (ADR §10.3): NULL is absence — a participant-
+         authored draft with no `mon:creator:` reference — and is omitted rather
+         than defaulted. */
+      ...(row.authorityCreatorId !== null ? { creatorId: row.authorityCreatorId } : {}),
       authorityScope: row.authorityScope,
       authorizationState: row.authorityAuthorizationState,
       ...(row.authorityAuthorizationRef !== null
@@ -62,7 +65,9 @@ export function versionRowToDomain(row: ProductSourceRecordVersionRow): ProductS
       ...(specifications !== null && specifications !== undefined ? { specifications } : {}),
       ...(capabilities !== null && capabilities !== undefined ? { capabilities } : {}),
       relationships: {
-        creator: row.factCreatorRef,
+        /* NULL until the public creator identity is bound at admission or
+           publication. Omitted, never substituted. */
+        ...(row.factCreatorRef !== null ? { creator: row.factCreatorRef } : {}),
         ...(row.factOfferRef !== null ? { offer: row.factOfferRef } : {}),
       },
     },
@@ -104,7 +109,7 @@ export function domainToVersionCreateInput(
     sourceSystem: record.sourceSystem,
     sourceRecordType: record.sourceRecordType,
     sourceClass: record.sourceClass,
-    authorityCreatorId: record.authority.creatorId,
+    authorityCreatorId: record.authority.creatorId ?? null,
     authorityScope: record.authority.authorityScope,
     authorityAuthorizationState: record.authority.authorizationState,
     authorityAuthorizationRef: record.authority.authorizationRef ?? null,
@@ -124,7 +129,7 @@ export function domainToVersionCreateInput(
       record.facts.capabilities === undefined
         ? undefined
         : (record.facts.capabilities as Prisma.InputJsonValue),
-    factCreatorRef: record.facts.relationships.creator,
+    factCreatorRef: record.facts.relationships.creator ?? null,
     factOfferRef: record.facts.relationships.offer ?? null,
     capsuleSemver: record.capsuleSemver,
     mappingVersion: record.mappingVersion,
