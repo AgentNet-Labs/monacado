@@ -88,7 +88,14 @@ import { getPrisma } from "../db/client";
 import { resolveActingSubject } from "./acting-subject-service";
 import { assertParticipantMayAuthorMarketplaceState } from "./participant-standing-service";
 import { assertParticipantLifecycleIsLive } from "./participant-closure-service";
-import { ProductCreatorParticipantRequiredError } from "../product/errors";
+import {
+  ProductCreatorParticipantRequiredError,
+  ValidationError,
+} from "../product/errors";
+import { assertAccountMayAuthorProductIn } from "./product-authoring-service";
+import { DraftProductInput } from "../../contracts/product/product-source-record";
+import { buildDraftProductSourceRecord } from "../product/draft-product-builder";
+import { cryptoProductIdProvider, type ProductIdProvider } from "../product/product-ids";
 
 /**
  * What a caller may state.
@@ -298,6 +305,37 @@ export async function openPromotedListing(
 }
 
 /**
+ * Open a private Product draft as the acting SELLER (Phase 1.32).
+ *
+ * Parses the creator's facts against `DraftProductInput`, builds the first
+ * source version server-side, and hands it to `createProductSourceRecordAs` —
+ * which resolves the acting participant, refuses anyone `canCreateDraftProduct`
+ * does not allow, checks standing, stamps `creatorParticipantId`, and persists
+ * the Product and its version 1 in one transaction. No Listing, Offer, Node,
+ * capsule, or publication is created, and the creator Node stays unbound.
+ */
+export async function createDraftProductAs(
+  actor: ActingAccount,
+  input: unknown,
+  deps: { db?: ReturnType<typeof getPrisma>; now: string; ids?: ProductIdProvider },
+): Promise<ProductSourceRecord> {
+  const parsed = DraftProductInput.safeParse(input);
+  if (!parsed.success) {
+    throw new ValidationError(
+      "Invalid draft Product input",
+      parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`),
+    );
+  }
+  const record = buildDraftProductSourceRecord(parsed.data, {
+    now: deps.now,
+    ids: deps.ids ?? cryptoProductIdProvider,
+  });
+  return await createProductSourceRecordAs(actor, record, {
+    ...(deps.db !== undefined ? { db: deps.db } : {}),
+  });
+}
+
+/**
  * Create a Product source record under the acting participant's creator authority.
  *
  * **This is where Product authority originates (Phase 1.18).** Offer and
@@ -338,29 +376,24 @@ export async function createProductSourceRecordAs(
   const participantId = subject.participant?.participantId;
   if (participantId === undefined) throw new ProductCreatorParticipantRequiredError();
 
-  /* Authority and standing stay separate questions, asked in that order — the
-     same composition every other governed write in this phase uses. Resolving
-     the participant answers "may this actor act as itself"; these answer "may
-     that otherwise-authorized act occur now".
-     
-     Suspension withholds authoring, and a closed participation authors nothing
-     further. A RESTRICTED participant still authors, deliberately: restrictions
-     never gate drafting, because a participant must be able to correct the work
-     that caused the restriction.
-     
-     Checked before the repository opens its own transaction, so a suspension
-     landing in between could let one record through. Bounded on purpose rather
-     than by oversight: the Product it stamps still backs no Offer and no
-     seller-direct Listing, because both re-ask standing at their own write. */
-  await assertParticipantLifecycleIsLive(db, participantId);
-  await assertParticipantMayAuthorMarketplaceState(db, participantId);
 
+  /* Whether this participant may author a Product is decided in the domain,
+     INSIDE the repository's write transaction (Phase 1.32): authority
+     (`canCreateDraftProduct` — SELLER only) and then standing (closure,
+     suspension), against the same rows the write sees. Before Phase 1.32 only
+     standing was asked, and here, before the transaction opened — so any
+     participant, a promoter-only one included, could author a Product, and a
+     suspension could land between the check and the write. See
+     `product-authoring-service`. */
   const attributed: ProductSourceRecord = {
     ...record,
     authority: { ...record.authority, creatorParticipantId: participantId },
   };
 
-  return await new ProductRepository(db).createInitialProductSourceRecord({ record: attributed });
+  return await new ProductRepository(db).createInitialProductSourceRecord({
+    record: attributed,
+    authorize: (tx) => assertAccountMayAuthorProductIn(tx, actor.accountId, participantId),
+  });
 }
 
 // — Refund initiation (Phase 1.19) —

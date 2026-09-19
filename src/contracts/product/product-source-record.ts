@@ -24,7 +24,9 @@ import { findForbiddenFields } from "../integrity/forbidden-fields";
 import { candidateHash } from "../integrity/hash";
 import { canonicalJsonString } from "../integrity/canonical-json";
 import {
+  DeliveryMode,
   DraftProductData,
+  GeneralAvailabilityState,
   ProductCapsuleCandidate,
   type ProductData,
   type ProductCapsuleCandidate as ProductCapsuleCandidateT,
@@ -32,6 +34,7 @@ import {
 import { generateProductCandidate } from "./product.factory";
 import { ProductTaxClassification } from "./product-tax-classification";
 import { MARKETPLACE_PARTICIPANT_ID_RE } from "../capsule/identity";
+import { GENERATOR_VERSION } from "./product.authority";
 
 // — Opaque internal identifiers (distinct from ANS Node/capsule IDs) —
 
@@ -97,6 +100,49 @@ export const InternalProductAuthority = z.strictObject({
   creatorParticipantId: CreatorParticipantId.optional(),
 });
 export type InternalProductAuthority = z.infer<typeof InternalProductAuthority>;
+
+// — Self-service draft constants (Phase 1.32) —
+
+/**
+ * The capsule semver a self-service Product draft's first source version
+ * carries. Every Product source record to date starts at "1.0.0"; it becomes the
+ * candidate's `metadata.version` only if and when the draft is published.
+ */
+export const INITIAL_PRODUCT_CAPSULE_SEMVER = "1.0.0" as const;
+
+/**
+ * The mapping version a self-service Product draft is stamped with: the Product
+ * capsule generator's own version, which is exactly what `mappingVersion`
+ * becomes in provenance (`generatorVersion`). Reused, not re-declared, so the
+ * two can never disagree.
+ */
+export const SELF_SERVICE_PRODUCT_MAPPING_VERSION = GENERATOR_VERSION;
+
+/**
+ * What a SELLER supplies to open a private Product draft (Phase 1.32) — and
+ * nothing else.
+ *
+ * Every member is a Product fact the creator asserts; everything else on the
+ * source record — identifiers, version labels, authority, status, mapping
+ * controls, timestamps — is the server's. No creator relationship, no
+ * `mon:creator:`, no participant, no price or other Offer term: the first three
+ * are derived or deliberately unbound (ADR §10.3), and the last are forbidden in
+ * a Product altogether.
+ *
+ * `deliveryMode` is required here although `ProductData` keeps it optional for
+ * historical versions: checkout refuses a Product whose delivery is unknown, and
+ * a new draft has no history to be compatible with. The length bounds are the
+ * persisted columns' (`factName` 512, `factDescription` TEXT) tightened to what a
+ * person types, so a refusal is a validation answer rather than a database one.
+ */
+export const DraftProductInput = z.strictObject({
+  name: z.string().trim().min(1).max(200),
+  description: z.string().trim().min(1).max(5_000).nullable(),
+  promotable: z.boolean(),
+  generalAvailabilityState: GeneralAvailabilityState,
+  deliveryMode: DeliveryMode,
+});
+export type DraftProductInput = z.infer<typeof DraftProductInput>;
 
 // — Internal record status (NOT ANS lifecycle) —
 

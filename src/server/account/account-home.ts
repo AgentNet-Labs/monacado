@@ -33,7 +33,16 @@ import type {
   StorefrontVisibility,
 } from "../../contracts/marketplace/storefront-source";
 import { INCLUDED_STOREFRONT_ALLOWANCE } from "../../contracts/marketplace/storefront-record";
-import { canCreateDraftStorefront, isAllowed } from "../../contracts/marketplace/capability";
+import {
+  canCreateDraftProduct,
+  canCreateDraftStorefront,
+  isAllowed,
+} from "../../contracts/marketplace/capability";
+import type {
+  DeliveryMode,
+  GeneralAvailabilityState,
+} from "../../contracts/product/product.capsule";
+import type { RecordStatus } from "../../contracts/product/product-source-record";
 import { readActingAccountRows } from "../marketplace/acting-subject-service";
 import { toMarketplaceSubject } from "../marketplace/participant-mapper";
 import { getPrisma } from "../db/client";
@@ -64,6 +73,19 @@ export interface AccountHomeStorefront {
    * domain again; this only decides what to show.
    */
   canEditPresentation: boolean;
+}
+
+/**
+ * One Product the account's participant authors (Phase 1.32): the facts the page
+ * shows, from the CURRENT source version. No internal id of any kind.
+ */
+export interface AccountHomeProduct {
+  name: string;
+  description: string | null;
+  promotable: boolean;
+  generalAvailabilityState: GeneralAvailabilityState;
+  deliveryMode: DeliveryMode | null;
+  recordStatus: RecordStatus;
 }
 
 export interface AccountHome {
@@ -97,6 +119,13 @@ export interface AccountHome {
    * covers: the next needs an upgrade. Never true alongside `canCreateStorefront`.
    */
   storefrontUpgradeRequired: boolean;
+  /** Products the participant authors, oldest first (Phase 1.32). */
+  products: AccountHomeProduct[];
+  /**
+   * Whether the page should offer to draft a Product: the 0M.1
+   * `canCreateDraftProduct` decision — SELLER only. The route asks again.
+   */
+  canCreateProduct: boolean;
 }
 
 /** `undefined` when the account no longer exists — the page treats that as signed out. */
@@ -117,16 +146,15 @@ export async function readAccountHome(
           participant.id,
           permitsDrafting(participant.status as ParticipantStatus),
         );
-  const mayDraftStorefront = isAllowed(
-    canCreateDraftStorefront(
-      toMarketplaceSubject({
-        account,
-        participant,
-        roles,
-        internalCapabilities: rows.internalCapabilities,
-      }),
-    ),
-  );
+  const subject = toMarketplaceSubject({
+    account,
+    participant,
+    roles,
+    internalCapabilities: rows.internalCapabilities,
+  });
+  const mayDraftStorefront = isAllowed(canCreateDraftStorefront(subject));
+  const canCreateProduct = isAllowed(canCreateDraftProduct(subject));
+  const products = participant === null ? [] : await readAuthoredProducts(db, participant.id);
   /* The same allowance `openOwnedDraftStorefront` enforces: the included
      Storefront, plus any upgrade entitlement — of which none exists yet. */
   const withinAllowance = storefronts.length < INCLUDED_STOREFRONT_ALLOWANCE;
@@ -141,6 +169,8 @@ export async function readAccountHome(
       ? SELF_SERVICE_ONBOARDING_ROLES.filter((role) => !held.has(role))
       : [],
     storefronts,
+    products,
+    canCreateProduct,
     canCreateStorefront,
     storefrontUpgradeRequired,
     name: account.name,
@@ -230,5 +260,60 @@ async function readOwnedStorefronts(
         s.lifecycle !== "CLOSED" &&
         governed.has(s.internalStorefrontId),
     };
+  });
+}
+
+/**
+ * The participant's Products (Phase 1.32), each from its CURRENT source version.
+ *
+ * Authorship is the version's `authorityCreatorParticipantId` — the column
+ * Product authority is read from everywhere else — and it is a present fact: a
+ * Product whose current version names someone else is not listed, whoever wrote
+ * an earlier one.
+ */
+async function readAuthoredProducts(
+  db: Db,
+  participantId: string,
+): Promise<AccountHomeProduct[]> {
+  const products = await db.product.findMany({
+    where: { versions: { some: { authorityCreatorParticipantId: participantId } } },
+    orderBy: { productRowCreatedAt: "asc" },
+    select: { sourceRecordId: true, currentSourceRecordVersion: true },
+  });
+  if (products.length === 0) return [];
+
+  const versions = await db.productSourceRecordVersionRow.findMany({
+    where: {
+      OR: products.map((p) => ({
+        sourceRecordId: p.sourceRecordId,
+        sourceRecordVersion: p.currentSourceRecordVersion,
+      })),
+    },
+    select: {
+      sourceRecordId: true,
+      authorityCreatorParticipantId: true,
+      factName: true,
+      factDescription: true,
+      factPromotable: true,
+      factGeneralAvailabilityState: true,
+      factDeliveryMode: true,
+      recordStatus: true,
+    },
+  });
+  const current = new Map(versions.map((v) => [v.sourceRecordId, v]));
+
+  return products.flatMap((p) => {
+    const v = current.get(p.sourceRecordId);
+    if (v === undefined || v.authorityCreatorParticipantId !== participantId) return [];
+    return [
+      {
+        name: v.factName,
+        description: v.factDescription,
+        promotable: v.factPromotable,
+        generalAvailabilityState: v.factGeneralAvailabilityState as GeneralAvailabilityState,
+        deliveryMode: v.factDeliveryMode as DeliveryMode | null,
+        recordStatus: v.recordStatus as RecordStatus,
+      },
+    ];
   });
 }

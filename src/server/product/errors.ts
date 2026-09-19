@@ -22,6 +22,7 @@ export type ProductRepositoryErrorCode =
   | "CONCURRENCY_CONFLICT"
   | "PERSISTED_CONTRACT_VIOLATION"
   | "CREATOR_PARTICIPANT_REQUIRED"
+  | "CREATOR_NOT_ELIGIBLE"
   | "DATABASE_ERROR";
 
 export class ProductRepositoryError extends Error {
@@ -113,6 +114,22 @@ export class DatabaseError extends ProductRepositoryError {
  * Carries no account id, no email, and no participant reference — there is
  * nothing here for a caller to learn about anyone.
  */
+/**
+ * The acting participant may not draft a Product (Phase 1.32).
+ *
+ * `canCreateDraftProduct` denied: no SELLER role in a drafting status, a
+ * participant status that does not permit drafting, or a disabled account. A
+ * PROMOTER curates other creators' Products and never authors their facts, so a
+ * promoter-only participant lands here too. Carries no reason code and no
+ * identifier — the participant knows which roles they hold.
+ */
+export class ProductCreatorNotEligibleError extends ProductRepositoryError {
+  constructor() {
+    super("CREATOR_NOT_ELIGIBLE", "The acting participant may not draft a Product");
+    this.name = "ProductCreatorNotEligibleError";
+  }
+}
+
 export class ProductCreatorParticipantRequiredError extends ProductRepositoryError {
   constructor() {
     super(

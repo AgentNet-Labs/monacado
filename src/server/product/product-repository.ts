@@ -67,6 +67,15 @@ function mapRevisionError(e: unknown): never {
 
 export interface CreateInitialInput {
   record: ProductSourceRecord;
+  /**
+   * An authority check run INSIDE the write transaction, before anything is
+   * written (Phase 1.32). A caller creating a Product on someone's behalf passes
+   * the governed decision here so that it and the write see the same rows — a
+   * suspension or role change cannot land between them. Whatever it throws is
+   * rethrown unchanged, never disguised as a database failure. Omitted, the
+   * repository behaves exactly as before: it stays usable without a participant.
+   */
+  authorize?: (tx: Prisma.TransactionClient) => Promise<void>;
 }
 
 export interface ReviseInput {
@@ -94,8 +103,17 @@ export class ProductRepository {
     if (record.sourceRecordId === record.internalProductId) {
       throw new ImmutableIdentityError("sourceRecordId must differ from internalProductId");
     }
+    let refusal: unknown;
     try {
       await this.db.$transaction(async (tx) => {
+        if (input.authorize !== undefined) {
+          try {
+            await input.authorize(tx);
+          } catch (error) {
+            refusal = error;
+            throw error;
+          }
+        }
         await tx.product.create({
           data: {
             internalProductId: record.internalProductId,
@@ -109,6 +127,7 @@ export class ProductRepository {
         });
       });
     } catch (e) {
+      if (refusal !== undefined && e === refusal) throw e;
       mapUnique(e, "product");
     }
     return record;

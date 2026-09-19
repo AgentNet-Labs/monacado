@@ -65,6 +65,14 @@ const {
   storefrontPresentationEndpoint,
   submitStorefrontPresentation,
 } = await import("../app/account/storefront-presentation-submission");
+const {
+  PRODUCT_ENDPOINT,
+  PRODUCT_FAILURE,
+  PRODUCT_INVALID,
+  PRODUCT_NOT_ELIGIBLE,
+  PRODUCT_SIGNED_OUT,
+  submitDraftProduct,
+} = await import("../app/account/product-submission");
 
 const DRAFT_SELLER: AccountHome["marketplace"] = {
   status: "DRAFT",
@@ -82,6 +90,8 @@ function home(overrides: Partial<AccountHome> = {}): AccountHome {
     storefronts: [],
     canCreateStorefront: false,
     storefrontUpgradeRequired: false,
+    products: [],
+    canCreateProduct: false,
     ...overrides,
   };
 }
@@ -278,6 +288,65 @@ describe("/account presentation", () => {
 
     expect(html).not.toContain("account-storefront-heading");
     expect(html).not.toContain("Create draft storefront");
+  });
+
+  it("offers a Seller a draft Product form with only the creator's facts", async () => {
+    const html = await renderSignedIn(home({ marketplace: DRAFT_SELLER, canCreateProduct: true }));
+
+    expect(html).toContain('<h2 id="account-product-heading">Products</h2>');
+    expect(html).toContain("Drafts are not listed and not for sale.");
+    for (const field of ['name="name"', 'name="description"', 'name="deliveryMode"', 'name="generalAvailabilityState"', 'name="promotable"']) {
+      expect(html).toContain(field);
+    }
+    expect(html).toContain('value="DIGITAL"');
+    expect(html).toContain('value="PHYSICAL"');
+    /* No commercial or placement field, and no delivery chosen for the creator. */
+    for (const absent of ["price", "commission", "discount", 'name="storefront"', "checked=\"\" value=\"DIGITAL\"", "checked=\"\" value=\"PHYSICAL\""]) {
+      expect(html).not.toContain(absent);
+    }
+    expect(html).toContain("Add draft product");
+  });
+
+  it("lists draft Products as not for sale, with no identifiers", async () => {
+    const html = await renderSignedIn(
+      home({
+        marketplace: DRAFT_SELLER,
+        canCreateProduct: true,
+        products: [
+          {
+            name: "Hand-thrown mug",
+            description: "Stoneware, 350 ml.",
+            promotable: true,
+            generalAvailabilityState: "available",
+            deliveryMode: "PHYSICAL",
+            recordStatus: "draft",
+          },
+        ],
+      }),
+    );
+    const text = html.replaceAll("<!-- -->", "").replace(/<[^>]+>/g, "");
+
+    expect(text).toContain("Hand-thrown mug — Draft · Not listed for sale");
+    expect(text).toContain("Physical (shipped) · Available · Promoters may feature it");
+    expect(text).toContain("Stoneware, 350 ml.");
+    expect(html).not.toContain("mon:");
+  });
+
+  it("gives a Promoter-only account no Product section", async () => {
+    const html = await renderSignedIn(
+      home({
+        marketplace: { status: "DRAFT", roles: [{ role: "PROMOTER", status: "DRAFT" }], onboardingOpen: true },
+        setupRolesAvailable: ["SELLER"],
+        canCreateStorefront: true,
+        canCreateProduct: false,
+      }),
+    );
+
+    expect(html).not.toContain("account-product-heading");
+    expect(html).not.toContain("Add draft product");
+    /* The Storefront and onboarding sections are untouched. */
+    expect(html).toContain("account-storefront-heading");
+    expect(html).toContain("Sell or promote on Monacado");
   });
 
   it("still sends a visitor without a session to sign-in", async () => {
@@ -477,6 +546,74 @@ describe("storefront presentation submission", () => {
       expect(
         await submitStorefrontPresentation("shop", { displayName: "A", tagline: "", summary: "" }, { fetchImpl }),
       ).toEqual({ outcome: "failed", message });
+    }
+  });
+});
+
+describe("draft Product submission", () => {
+  function captureFetch(reply: Response | (() => never)) {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const fetchImpl = (async (url: unknown, init: unknown) => {
+      calls.push({ url: String(url), init: (init ?? {}) as RequestInit });
+      if (typeof reply === "function") reply();
+      return reply;
+    }) as unknown as typeof fetch;
+    return { calls, fetchImpl };
+  }
+  const json = (status: number, body: unknown) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  const fields = {
+    name: "Mug",
+    description: "   ",
+    promotable: false,
+    generalAvailabilityState: "available" as const,
+    deliveryMode: "PHYSICAL" as const,
+  };
+
+  it("sends exactly the creator's facts, a blank description as null", async () => {
+    const { calls, fetchImpl } = captureFetch(json(201, {}));
+
+    expect(await submitDraftProduct(fields, { fetchImpl })).toEqual({ outcome: "created" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe(PRODUCT_ENDPOINT);
+    expect(calls[0]!.init.method).toBe("POST");
+    expect(calls[0]!.init.credentials).toBe("same-origin");
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({
+      name: "Mug",
+      description: null,
+      promotable: false,
+      generalAvailabilityState: "available",
+      deliveryMode: "PHYSICAL",
+    });
+  });
+
+  it("asks for a delivery type before sending anything", async () => {
+    const { calls, fetchImpl } = captureFetch(json(201, {}));
+    expect(await submitDraftProduct({ ...fields, deliveryMode: null }, { fetchImpl })).toEqual({
+      outcome: "failed",
+      message: PRODUCT_INVALID,
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("maps every refusal onto bounded copy", async () => {
+    const cases: Array<[Response | (() => never), string]> = [
+      [json(400, { error: "INVALID_PRODUCT_REQUEST" }), PRODUCT_INVALID],
+      [json(403, { error: "PRODUCT_NOT_ELIGIBLE" }), PRODUCT_NOT_ELIGIBLE],
+      [json(401, { error: "UNAUTHENTICATED" }), PRODUCT_SIGNED_OUT],
+      [json(403, { error: "CROSS_ORIGIN_REQUEST_REFUSED" }), PRODUCT_FAILURE],
+      [json(409, { error: "PRODUCT_CREATE_CONFLICT" }), PRODUCT_FAILURE],
+      [new Response("not json", { status: 502 }), PRODUCT_FAILURE],
+      [
+        () => {
+          throw new TypeError("network");
+        },
+        PRODUCT_FAILURE,
+      ],
+    ];
+    for (const [reply, message] of cases) {
+      const { fetchImpl } = captureFetch(reply);
+      expect(await submitDraftProduct(fields, { fetchImpl })).toEqual({ outcome: "failed", message });
     }
   });
 });

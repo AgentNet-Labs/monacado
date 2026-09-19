@@ -192,6 +192,15 @@ validation + schema generation), `contracts:export` (derived JSON Schema),
 
 ## Deferred (later phases)
 
+- **Product media and presentation (recorded in Phase 1.32; not implemented).**
+  When a Product media phase is built: the original uploaded media must be
+  preserved unaltered; Monacado's standard Product display derivatives use a
+  uniform light-gray solid background treatment; any non-standard Product
+  presentation requires an applicable paid presentation entitlement (as
+  non-standard Storefront presentation does). Presentation styling is display
+  treatment, never Product semantic truth — it is not a Product fact and does
+  not enter `data`.
+
 - Real Registrar integration (opaque Node ID generation, registration, receipts)
   and Effective Policy evaluation.
 - Relational persistence and deterministic reconstruction from records.

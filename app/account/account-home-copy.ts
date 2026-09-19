@@ -19,6 +19,10 @@ import type {
   StorefrontLifecycleState,
   StorefrontVisibility,
 } from "../../src/contracts/marketplace/storefront-source";
+import type {
+  DeliveryMode,
+  GeneralAvailabilityState,
+} from "../../src/contracts/product/product.capsule";
 
 export const EMAIL_VERIFIED_LABEL = "Verified";
 export const EMAIL_UNVERIFIED_LABEL = "Email not verified";
@@ -83,3 +87,27 @@ export const STOREFRONT_OPTIONAL_FIELD_HINT =
   "Tagline and summary are optional. Leave one blank to remove it.";
 
 export const STOREFRONT_HANDLE_FIXED_NOTE = "The handle can't be changed yet.";
+
+// — Products (Phase 1.32) —
+
+export const PRODUCT_INTRO =
+  "Add a product as a private draft. Drafts are not listed and not for sale.";
+
+export const PRODUCT_DRAFT_STATUS = "Draft · Not listed for sale";
+
+export const DELIVERY_MODE_LABELS: Readonly<Record<DeliveryMode, string>> = {
+  DIGITAL: "Digital",
+  PHYSICAL: "Physical (shipped)",
+};
+
+export const AVAILABILITY_LABELS: Readonly<Record<GeneralAvailabilityState, string>> = {
+  available: "Available",
+  "pre-release": "Pre-release",
+  unavailable: "Unavailable",
+  discontinued: "Discontinued",
+};
+
+export const PROMOTABLE_LABELS = {
+  true: "Promoters may feature it",
+  false: "Not open to promoters",
+} as const;
