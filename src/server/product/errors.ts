@@ -23,6 +23,7 @@ export type ProductRepositoryErrorCode =
   | "PERSISTED_CONTRACT_VIOLATION"
   | "CREATOR_PARTICIPANT_REQUIRED"
   | "CREATOR_NOT_ELIGIBLE"
+  | "PRODUCT_UPGRADE_REQUIRED"
   | "DATABASE_ERROR";
 
 export class ProductRepositoryError extends Error {
@@ -127,6 +128,24 @@ export class ProductCreatorNotEligibleError extends ProductRepositoryError {
   constructor() {
     super("CREATOR_NOT_ELIGIBLE", "The acting participant may not draft a Product");
     this.name = "ProductCreatorNotEligibleError";
+  }
+}
+
+/**
+ * The Seller authors every Product their allowance covers (Phase 1.32
+ * correction).
+ *
+ * Not a domain limit: the free plan includes `INCLUDED_PRODUCT_ALLOWANCE`, and
+ * more require a paid Product allowance. Carries no count, identifier, or
+ * billing detail.
+ */
+export class ProductUpgradeRequiredError extends ProductRepositoryError {
+  constructor() {
+    super(
+      "PRODUCT_UPGRADE_REQUIRED",
+      "This Seller authors all the Products their allowance includes; another requires an upgrade",
+    );
+    this.name = "ProductUpgradeRequiredError";
   }
 }
 

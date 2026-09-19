@@ -9,7 +9,8 @@
  * authority and NULL creator columns (ADR §10.3) — nothing fabricated; several
  * Products per SELLER are fine; and no Listing, Offer, Node, publication, or
  * outbox state appears. Also proves `readAccountHome` lists the drafts without
- * identifiers.
+ * identifiers, and that the free-plan allowance (`INCLUDED_PRODUCT_ALLOWANCE`)
+ * is enforced inside the write — including under concurrency.
  */
 
 import "dotenv/config";
@@ -25,8 +26,14 @@ import {
   handleCreateDraftProductRequest,
 } from "../src/server/product/product-draft-route-handler";
 import { ProductRepository } from "../src/server/product/product-repository";
-import { ProductCreatorIdentityUnboundError } from "../src/contracts/product/product-source-record";
+import {
+  INCLUDED_PRODUCT_ALLOWANCE,
+  ProductCreatorIdentityUnboundError,
+} from "../src/contracts/product/product-source-record";
 import type { MarketplaceRole } from "../src/contracts/marketplace/participant";
+import { createDraftProductAs } from "../src/server/marketplace/marketplace-application-service";
+import { resolveActingAccount } from "../src/server/account/acting-participant-boundary";
+import { ProductUpgradeRequiredError } from "../src/server/product/errors";
 
 const RUN = process.env.RUN_DB_TESTS === "1";
 const db = RUN ? getPrisma() : (undefined as unknown as ReturnType<typeof getPrisma>);
@@ -301,5 +308,59 @@ describeDb("1.32 — SELLER-only private draft Product", () => {
     const promoterHome = await readAccountHome(promoter.accountId, { db });
     expect(promoterHome!.canCreateProduct).toBe(false);
     expect(promoterHome!.products).toEqual([]);
+  });
+
+  it("includes the free-plan allowance of Products; the next requires an upgrade and writes nothing", async () => {
+    expect(INCLUDED_PRODUCT_ALLOWANCE).toBe(5);
+    const seller = await signIn(["SELLER"]);
+
+    for (let i = 1; i <= INCLUDED_PRODUCT_ALLOWANCE; i += 1) {
+      expect((await create(seller.cookieHeader, { ...GOOD, name: `Product ${i}` })).status).toBe(201);
+    }
+    const home = await readAccountHome(seller.accountId, { db });
+    expect(home!.products).toHaveLength(INCLUDED_PRODUCT_ALLOWANCE);
+    expect(home!.canCreateProduct).toBe(false);
+    expect(home!.productUpgradeRequired).toBe(true);
+
+    const refused = await create(seller.cookieHeader, { ...GOOD, name: "One too many" });
+    expect(refused).toEqual({
+      status: 409,
+      body: { error: CODES.upgradeRequired },
+      headers: expect.any(Object),
+    });
+    expect(JSON.stringify(refused.body)).not.toMatch(/mon:|\d/);
+
+    const versions = await versionsBy(seller.participantId!);
+    expect(versions).toHaveLength(INCLUDED_PRODUCT_ALLOWANCE);
+    expect(versions.some((v) => v.factName === "One too many")).toBe(false);
+    expect(await db.product.count({ where: { internalProductId: { in: versions.map((v) => v.internalProductId) } } })).toBe(
+      INCLUDED_PRODUCT_ALLOWANCE,
+    );
+
+    /* The allowance is per Seller: another still gets their own. */
+    const other = await signIn(["SELLER"]);
+    expect((await create(other.cookieHeader, GOOD)).status).toBe(201);
+    const otherHome = await readAccountHome(other.accountId, { db });
+    expect([otherHome!.canCreateProduct, otherHome!.productUpgradeRequired]).toEqual([true, false]);
+  });
+
+  it("never lets concurrent requests take a Seller past the allowance", async () => {
+    const seller = await signIn(["SELLER"]);
+    for (let i = 1; i < INCLUDED_PRODUCT_ALLOWANCE; i += 1) {
+      expect((await create(seller.cookieHeader, { ...GOOD, name: `Product ${i}` })).status).toBe(201);
+    }
+
+    const resolution = await resolveActingAccount({ cookieHeader: seller.cookieHeader, now: LATER }, { db });
+    if (resolution.outcome !== "AUTHENTICATED") throw new Error("unreachable");
+    const outcomes = await Promise.allSettled(
+      ["Race A", "Race B"].map((name) =>
+        createDraftProductAs(resolution.actor, { ...GOOD, name }, { db, now: LATER }),
+      ),
+    );
+
+    expect(outcomes.filter((o) => o.status === "fulfilled")).toHaveLength(1);
+    const [rejected] = outcomes.filter((o) => o.status === "rejected") as PromiseRejectedResult[];
+    expect(rejected!.reason).toBeInstanceOf(ProductUpgradeRequiredError);
+    expect(await versionsBy(seller.participantId!)).toHaveLength(INCLUDED_PRODUCT_ALLOWANCE);
   });
 });

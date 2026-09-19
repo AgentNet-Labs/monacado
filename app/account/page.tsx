@@ -59,6 +59,7 @@ import {
   DELIVERY_MODE_LABELS,
   PRODUCT_DRAFT_STATUS,
   PRODUCT_INTRO,
+  PRODUCT_UPGRADE_NOTE,
   PROMOTABLE_LABELS,
 } from "./account-home-copy";
 import { OnboardingForm } from "./onboarding-form";
@@ -177,7 +178,7 @@ export default async function AccountPage() {
           </section>
         ) : null}
 
-        {home.products.length > 0 || home.canCreateProduct ? (
+        {home.products.length > 0 || home.canCreateProduct || home.productUpgradeRequired ? (
           <section className="account-section" aria-labelledby="account-product-heading">
             <h2 id="account-product-heading">Products</h2>
             <p className="auth-status">{PRODUCT_INTRO}</p>
@@ -211,6 +212,9 @@ export default async function AccountPage() {
                 <summary>Add a product</summary>
                 <ProductForm />
               </details>
+            ) : null}
+            {home.productUpgradeRequired ? (
+              <p className="auth-hint">{PRODUCT_UPGRADE_NOTE}</p>
             ) : null}
           </section>
         ) : null}

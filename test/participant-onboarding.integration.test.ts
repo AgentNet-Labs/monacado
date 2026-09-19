@@ -243,6 +243,7 @@ describeDb("1.29 — self-service Seller/Promoter onboarding", () => {
       storefrontUpgradeRequired: false,
       products: [],
       canCreateProduct: false,
+      productUpgradeRequired: false,
     });
 
     await request(caller.cookieHeader, { roles: ["PROMOTER"] });

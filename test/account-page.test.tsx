@@ -71,6 +71,7 @@ const {
   PRODUCT_INVALID,
   PRODUCT_NOT_ELIGIBLE,
   PRODUCT_SIGNED_OUT,
+  PRODUCT_UPGRADE_REQUIRED,
   submitDraftProduct,
 } = await import("../app/account/product-submission");
 
@@ -92,6 +93,7 @@ function home(overrides: Partial<AccountHome> = {}): AccountHome {
     storefrontUpgradeRequired: false,
     products: [],
     canCreateProduct: false,
+    productUpgradeRequired: false,
     ...overrides,
   };
 }
@@ -330,6 +332,36 @@ describe("/account presentation", () => {
     expect(text).toContain("Physical (shipped) · Available · Promoters may feature it");
     expect(text).toContain("Stoneware, 350 ml.");
     expect(html).not.toContain("mon:");
+  });
+
+  it("keeps the Products listed but offers no form once the free plan's Products are used", async () => {
+    const draft = {
+      description: null,
+      promotable: false,
+      generalAvailabilityState: "available" as const,
+      deliveryMode: "DIGITAL" as const,
+      recordStatus: "draft" as const,
+    };
+    const html = await renderSignedIn(
+      home({
+        marketplace: DRAFT_SELLER,
+        canCreateProduct: false,
+        productUpgradeRequired: true,
+        products: [1, 2, 3, 4, 5].map((n) => ({ ...draft, name: `Product ${n}` })),
+      }),
+    );
+
+    expect(html).toContain("Product 5");
+    expect(html).toContain("Additional products require an upgrade.");
+    expect(html).not.toContain("Add draft product");
+    expect(html).not.toContain('name="deliveryMode"');
+    expect(html).not.toContain("mon:");
+  });
+
+  it("offers the form, and no upgrade note, below the allowance", async () => {
+    const html = await renderSignedIn(home({ marketplace: DRAFT_SELLER, canCreateProduct: true }));
+    expect(html).toContain("Add draft product");
+    expect(html).not.toContain("Additional products require an upgrade.");
   });
 
   it("gives a Promoter-only account no Product section", async () => {
@@ -600,6 +632,7 @@ describe("draft Product submission", () => {
     const cases: Array<[Response | (() => never), string]> = [
       [json(400, { error: "INVALID_PRODUCT_REQUEST" }), PRODUCT_INVALID],
       [json(403, { error: "PRODUCT_NOT_ELIGIBLE" }), PRODUCT_NOT_ELIGIBLE],
+      [json(409, { error: "PRODUCT_UPGRADE_REQUIRED" }), PRODUCT_UPGRADE_REQUIRED],
       [json(401, { error: "UNAUTHENTICATED" }), PRODUCT_SIGNED_OUT],
       [json(403, { error: "CROSS_ORIGIN_REQUEST_REFUSED" }), PRODUCT_FAILURE],
       [json(409, { error: "PRODUCT_CREATE_CONFLICT" }), PRODUCT_FAILURE],

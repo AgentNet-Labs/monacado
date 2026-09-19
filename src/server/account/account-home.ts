@@ -42,7 +42,10 @@ import type {
   DeliveryMode,
   GeneralAvailabilityState,
 } from "../../contracts/product/product.capsule";
-import type { RecordStatus } from "../../contracts/product/product-source-record";
+import {
+  INCLUDED_PRODUCT_ALLOWANCE,
+  type RecordStatus,
+} from "../../contracts/product/product-source-record";
 import { readActingAccountRows } from "../marketplace/acting-subject-service";
 import { toMarketplaceSubject } from "../marketplace/participant-mapper";
 import { getPrisma } from "../db/client";
@@ -123,9 +126,15 @@ export interface AccountHome {
   products: AccountHomeProduct[];
   /**
    * Whether the page should offer to draft a Product: the 0M.1
-   * `canCreateDraftProduct` decision — SELLER only. The route asks again.
+   * `canCreateDraftProduct` decision — SELLER only — AND a Product left in the
+   * Seller's allowance. The route asks again.
    */
   canCreateProduct: boolean;
+  /**
+   * The Seller may draft Products but authors every one their allowance covers:
+   * the next needs an upgrade. Never true alongside `canCreateProduct`.
+   */
+  productUpgradeRequired: boolean;
 }
 
 /** `undefined` when the account no longer exists — the page treats that as signed out. */
@@ -153,8 +162,12 @@ export async function readAccountHome(
     internalCapabilities: rows.internalCapabilities,
   });
   const mayDraftStorefront = isAllowed(canCreateDraftStorefront(subject));
-  const canCreateProduct = isAllowed(canCreateDraftProduct(subject));
+  const mayDraftProduct = isAllowed(canCreateDraftProduct(subject));
   const products = participant === null ? [] : await readAuthoredProducts(db, participant.id);
+  /* The same allowance the write enforces, over the same present-fact count. */
+  const productWithinAllowance = products.length < INCLUDED_PRODUCT_ALLOWANCE;
+  const canCreateProduct = mayDraftProduct && productWithinAllowance;
+  const productUpgradeRequired = mayDraftProduct && !productWithinAllowance;
   /* The same allowance `openOwnedDraftStorefront` enforces: the included
      Storefront, plus any upgrade entitlement — of which none exists yet. */
   const withinAllowance = storefronts.length < INCLUDED_STOREFRONT_ALLOWANCE;
@@ -171,6 +184,7 @@ export async function readAccountHome(
     storefronts,
     products,
     canCreateProduct,
+    productUpgradeRequired,
     canCreateStorefront,
     storefrontUpgradeRequired,
     name: account.name,
