@@ -23,6 +23,7 @@ import "dotenv/config";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { grantProductCreatorAuthority } from "./support/product-authority-fixture";
+import { syntheticProductRef } from "./support/product-ref-fixture";
 import { createAccount } from "../src/server/account/account-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
 import { createDraftOffer } from "../src/server/marketplace/offer-service";
@@ -263,6 +264,7 @@ async function seedProduct(creatorParticipantId?: string): Promise<string> {
   )}`;
   await db.product.create({
     data: {
+      productRef: syntheticProductRef(),
       internalProductId,
       sourceRecordId: `mon:srec:${pad26(`M9TPSREC${n}`)}`,
       currentSourceRecordVersion: "1",

@@ -307,6 +307,20 @@ function mapData(
 
   if (source.placement.listingType === "SELLER_DIRECT") {
     const { retail, sale } = source.placement;
+    /* Phase 1.34 — an unpriced private draft has no public price, and a capsule
+       is a public artifact. It cannot reach here in practice: a placement with
+       no price cannot become ACTIVE, and `buyerActive` already refused
+       everything that is not. Kept as the structural half of that guarantee, so
+       a capsule can never be generated with a fabricated or omitted price
+       however the eligibility rules later move.
+
+       Reported as the existing coarse `NOT_BUYER_ACTIVE`, deliberately: this
+       boundary states one reason for every upstream block, and a distinct
+       public code would turn a projection failure into a probe for a seller's
+       drafting state. */
+    if (retail === null) {
+      throw new ListingProjectionError("NOT_PROJECTION_ELIGIBLE", "NOT_BUYER_ACTIVE");
+    }
     return {
       listingType: "SELLER_DIRECT",
       price: {

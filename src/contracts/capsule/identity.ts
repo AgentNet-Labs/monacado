@@ -71,6 +71,35 @@ export const SOURCE_RECORD_ID_RE = new RegExp(`^mon:srec:${OPAQUE_BODY}$`);
 /** Internal Monacado Product identifier (`mon:product:<opaque>`). Not an ANS identity. */
 export const INTERNAL_PRODUCT_ID_RE = new RegExp(`^mon:product:${OPAQUE_BODY}$`);
 
+/**
+ * Application-reference body: 32 chars, Crockford base32 (uppercase, no I/L/O/U).
+ *
+ * Longer than `OPAQUE_BODY` on purpose. 32 characters is what lets BOTH
+ * generators clear 128 bits: the application mints 32 CSPRNG-drawn Crockford
+ * characters (160 bits), and a MySQL backfill on a populated installation
+ * writes `HEX(RANDOM_BYTES(16))` — 32 characters of 128 bits over `[0-9A-F]`,
+ * a strict subset of this alphabet. At 26 characters the SQL path could carry
+ * only 104 bits, and a reference whose entropy depended on which path created
+ * it would be the weaker of the two everywhere it mattered.
+ */
+export const APPLICATION_REF_BODY = "[0-9A-HJKMNP-TV-Z]{32}";
+
+/**
+ * Stable application-facing Product reference (Phase 1.34).
+ *
+ * The selector a route, a form action, or a page link names a Product by —
+ * opaque, immutable, server-generated, and carrying no business semantics.
+ *
+ * **It is deliberately un-namespaced, and that is the guarantee.** Every other
+ * identifier here wears a `mon:` or `an:` prefix, so a bare 32-character body
+ * cannot be — not "should not be", cannot be — an internal Product id, a
+ * source-record id, a creator reference, an ANS Node ID, or a capsule ID. It is
+ * also not this table's primary key and not a ProductNode identity. Nothing
+ * about the Product, its version, or its position in any sequence is recoverable
+ * from it, and no caller may supply one.
+ */
+export const PRODUCT_REF_RE = new RegExp(`^${APPLICATION_REF_BODY}$`);
+
 /** Internal creator authority identifier (`mon:creator:<opaque>`). Internal only. */
 export const INTERNAL_CREATOR_ID_RE = new RegExp(`^mon:creator:${OPAQUE_BODY}$`);
 

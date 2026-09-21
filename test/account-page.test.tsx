@@ -314,6 +314,7 @@ describe("/account presentation", () => {
         canCreateProduct: true,
         products: [
           {
+            productRef: "0123456789ABCDEFGHJKMNPQRSTVWXYZ",
             name: "Hand-thrown mug",
             description: "Stoneware, 350 ml.",
             promotable: true,
@@ -334,6 +335,7 @@ describe("/account presentation", () => {
 
   it("keeps offering Product creation beyond five Products, with no upgrade message (Phase 1.33)", async () => {
     const draft = {
+      productRef: "0123456789ABCDEFGHJKMNPQRSTVWXYZ",
       description: null,
       promotable: false,
       generalAvailabilityState: "available" as const,

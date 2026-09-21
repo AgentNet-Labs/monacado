@@ -355,8 +355,23 @@ describe("schema shape", () => {
     expect(versionTable).toMatch(/listingType\s+String\s+@db\.VarChar\(16\)/);
     expect(versionTable).toMatch(/salePriceMinorUnits\s+BigInt\?/);
     expect(versionTable).toMatch(/acceptedOfferSourceRecordVersion\s+String\?/);
-    /* Retail is on BOTH branches, so it is NOT NULL. */
-    expect(versionTable).toMatch(/retailPriceMinorUnits\s+BigInt\b/);
+  });
+
+  it("stores retail price and currency as a NULLABLE PAIR (Phase 1.34)", () => {
+    const versionTable = SCHEMA_CODE.slice(
+      SCHEMA_CODE.indexOf("model ListingSourceRecordVersionRow {"),
+    );
+    /* Nullable since Phase 1.34: a private DRAFT Listing is placement, and
+       placement precedes commercial terms. Before it, expressing "in this shop,
+       price not decided" required a zero or a placeholder — a fabricated
+       commercial fact in an authoritative record.
+
+       BOTH columns move together or the pairing is a lie: an amount that can be
+       NULL beside a currency that cannot would make "no currency for this
+       price" unrepresentable and "a currency for no price" storable, which is
+       exactly backwards. */
+    expect(versionTable).toMatch(/retailPriceMinorUnits\s+BigInt\?/);
+    expect(versionTable).toMatch(/retailPriceCurrency\s+String\?/);
   });
 
   it("adds no reverse Listing column to the Storefront tables", () => {

@@ -14,8 +14,10 @@
  * unbound (ADR §10.3), and no Listing, Offer, Node, capsule, or publication is
  * created. Email verification is not required to draft.
  *
- * The answer carries the facts the page shows and the draft status — never the
- * internal Product or source-record id, and never the participant.
+ * The answer carries the facts the page shows, the draft status, and the stable
+ * application reference the next action will name the Product by (Phase 1.34) —
+ * never the internal Product or source-record id, never a Node identity, and
+ * never the participant.
  */
 
 import "../server-only";
@@ -116,13 +118,21 @@ export async function handleCreateDraftProductRequest(
   if (parsed === null) return refuse(400, codes.invalidRequest);
 
   try {
-    const record = await createDraftProductAs(resolution.actor, parsed, {
+    const { record, productRef } = await createDraftProductAs(resolution.actor, parsed, {
       now,
       ...(deps.db !== undefined ? { db: deps.db } : {}),
     });
     return {
       status: 201,
       body: {
+        /* The stable application reference (Phase 1.34). The ONE identifier
+           that may leave here, and it is not an identity: opaque, server-minted,
+           carrying no business meaning, and namespaced by nothing — so it can
+           be a route segment or a form action without ever putting a
+           `mon:product:`, a `mon:srec:`, or an ANS Node id in front of a caller.
+           Returned so the page that just drafted a Product can act on it next;
+           nothing requires it to be displayed to a person. */
+        productRef,
         name: record.facts.name,
         description: record.facts.description ?? null,
         promotable: record.facts.promotable,

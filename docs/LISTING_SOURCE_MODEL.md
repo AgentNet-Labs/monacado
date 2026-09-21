@@ -39,7 +39,7 @@ rather than merely being rejected by a rule:
 | | `SELLER_DIRECT` | `PROMOTED` |
 | --- | --- | --- |
 | Controlled by | the seller | the promoter |
-| Retail price | seller's own | promoter's own |
+| Retail price | seller's own; **may be absent on a private draft** (§3a) | promoter's own; **required** |
 | Scheduled sale | **optional** | **no such field** |
 | Offer dependency | **no such field** | **required, exact version** |
 | Upstream review state | **no such field** | required |
@@ -48,6 +48,69 @@ A seller selling their own Product has no wholesale counterparty, so a dependenc
 would imply one. A promoter's price is already their own, so a "sale" field there
 would create a second place a promoted price could move — invisible to the
 economics check that keeps proceeds non-negative.
+
+## 2a. A private DRAFT Listing may carry no commercial price
+
+**(amended at Phase 1.34. Supersedes the earlier reading that every Listing,
+draft included, already carries a retail price.)**
+
+The three-layer separation the whole model rests on:
+
+```
+Product  = the item          (creator authority)
+Listing  = the placement     (placement authority)
+Offer    = commercial terms  (creator authority)
+```
+
+Placement is not pricing. A `SELLER_DIRECT` placement in the `DRAFT` lifecycle
+states *which Product appears in which Storefront*, and that statement stands on
+its own: a seller may put an item in a shop before deciding what to charge for
+it. Establishing private placement therefore requires **no Offer and no price**.
+
+On a seller-direct placement, `retail` is consequently **nullable**:
+
+- `retail: null` — the placement carries no commercial price;
+- `retail: { retailPriceMinorUnits, retailPriceCurrency }` — it carries one.
+
+**Nullable, not optional.** The key is always present, so "unpriced" is *stated*
+rather than omitted, and a caller who simply forgot is not indistinguishable from
+one who meant it.
+
+**Price and currency are a pair.** They live in one nested object, exactly as the
+sale schedule's fields do, so an amount without a currency — or a currency
+without an amount — has nowhere to go rather than being caught by a refinement
+someone can forget. Half a price is not a price. One present without the other is
+**invalid**.
+
+**No fabricated stand-in, ever.** A zero price is not "no price": it says the
+item is free, which is a commercial claim nobody made. A default currency is a
+commercial claim too. Absence is the only honest representation of absence, and
+the authoritative record holds absence rather than a placeholder.
+
+### What absence does NOT license
+
+- **A `PROMOTED` placement still requires a retail price.** It exists only
+  against an accepted priced Offer, and its non-negative-proceeds check (§6) has
+  no meaning without a price to check.
+- **A scheduled sale still requires one** (§3): a sale is an overlay that must be
+  strictly lower than an ordinary price and in the same currency as one, and
+  neither rule has anything to hold against without it.
+- **`effectiveSellerRetailPrice` refuses to answer.** There is no honest value
+  for it to return, so it raises `LISTING_NOT_PRICED` rather than inventing one.
+- **No capsule may be projected from it.** A capsule is a public artifact and a
+  public artifact with no price is not a Listing anyone can act on.
+
+### Commercial activation requires the commercial terms
+
+Existing priced Listings are unaffected and remain valid exactly as recorded.
+
+**Going live is where placement stops being enough.** `DRAFT → ACTIVE` puts an
+item in front of buyers, and an item in front of buyers at no stated price is not
+a draft with a gap in it. The narrow guard enforced today refuses `ACTIVE` when a
+placement carries no retail price. The **governed commercial-readiness gate** —
+required Offer terms, promoted economics, and the active-Listing allowance
+([`MARKETPLACE_ASSORTMENT_AND_LISTING_RULES.md`](MARKETPLACE_ASSORTMENT_AND_LISTING_RULES.md) §2)
+— belongs to the activation phase and is **not** anticipated here.
 
 ## 3. Seller-only scheduled sales
 

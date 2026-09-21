@@ -82,7 +82,7 @@ import { initiateRefundRequest } from "./refund-initiation-service";
 import type { InitiateRefundRequestInput } from "./refund-initiation-service";
 import type { RefundServiceDeps } from "./order-refund-service";
 import type { OrderRefundRecord } from "../../contracts/marketplace/order-refund";
-import { ProductRepository } from "../product/product-repository";
+import { ProductRepository, type CreatedProduct } from "../product/product-repository";
 import type { ProductSourceRecord } from "../../contracts/product/product-source-record";
 import { getPrisma } from "../db/client";
 import { resolveActingSubject } from "./acting-subject-service";
@@ -318,7 +318,7 @@ export async function createDraftProductAs(
   actor: ActingAccount,
   input: unknown,
   deps: { db?: ReturnType<typeof getPrisma>; now: string; ids?: ProductIdProvider },
-): Promise<ProductSourceRecord> {
+): Promise<CreatedProduct> {
   const parsed = DraftProductInput.safeParse(input);
   if (!parsed.success) {
     throw new ValidationError(
@@ -369,7 +369,7 @@ export async function createProductSourceRecordAs(
   actor: ActingAccount,
   record: ProductSourceRecord,
   deps: { db?: ReturnType<typeof getPrisma> } = {},
-): Promise<ProductSourceRecord> {
+): Promise<CreatedProduct> {
   const db = deps.db ?? getPrisma();
 
   const subject = await resolveActingSubject(db, actor.accountId);

@@ -798,7 +798,29 @@ export function minimumViablePromotedRetailPrice(input: {
  */
 export const SellerDirectPlacement = z.strictObject({
   listingType: z.literal("SELLER_DIRECT"),
-  retail: RetailPrice,
+  /**
+   * The ordinary commercial retail price, or `null` for a placement that has
+   * none yet (Phase 1.34).
+   *
+   * **A Listing is placement; an Offer is commercial terms.** A private DRAFT
+   * placement says which Product appears in which Storefront, and that
+   * statement stands on its own: a seller may put an item in a shop before
+   * deciding what to charge for it. Requiring a price to express it forced a
+   * zero or a placeholder into an authoritative record, which is a fabricated
+   * commercial fact rather than a missing one.
+   *
+   * **Nullable, not optional, and the whole object at once.** The key is always
+   * present, so "unpriced" is stated rather than omitted; and price and currency
+   * are one nested object, so there is no way to supply an amount without a
+   * currency or a currency without an amount — the same treatment `sale` gets,
+   * for the same reason. Half a price is not a price.
+   *
+   * **Absence is a drafting state, never a commercial one.** Commercial
+   * activation requires the terms: `effectiveSellerRetailPrice` refuses to
+   * answer without them, the projection refuses to publish without them, and
+   * the persistence layer refuses `DRAFT -> ACTIVE` without them.
+   */
+  retail: RetailPrice.nullable(),
   /** Optional temporary sale. Absent when the seller is not running one. */
   sale: SellerSaleSchedule.nullable(),
 });
@@ -813,6 +835,13 @@ export const SellerDirectPlacement = z.strictObject({
  */
 export const PromotedPlacement = z.strictObject({
   listingType: z.literal("PROMOTED"),
+  /**
+   * **Required, and NOT loosened by Phase 1.34.** A promoted placement exists
+   * only against an accepted priced Offer, and its viability check — promoter
+   * net proceeds must not be negative — has no meaning without a retail price
+   * to check. Making it optional here would let a promoted placement be created
+   * that no economics could ever validate.
+   */
   retail: RetailPrice,
   offerDependency: AcceptedOfferDependency,
   upstreamReviewState: ListingUpstreamReviewState,
@@ -824,6 +853,20 @@ export const ListingPlacement = z
     if (placement.listingType !== "SELLER_DIRECT") return;
     const sale = placement.sale;
     if (sale === null) return;
+
+    /* A sale is an OVERLAY on an ordinary price: it must be strictly lower than
+       one and in the same currency as one. With no ordinary price there is
+       nothing for either rule to hold against, and "20% off nothing" is not a
+       discount anyone could honour. Refused rather than silently treated as the
+       price itself. */
+    if (placement.retail === null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["sale"],
+        message: "a scheduled sale requires an ordinary retail price to discount",
+      });
+      return;
+    }
 
     if (sale.salePriceCurrency !== placement.retail.retailPriceCurrency) {
       ctx.addIssue({
@@ -882,6 +925,18 @@ export function effectiveSellerRetailPrice(input: {
   now: string;
 }): EffectiveSellerPrice {
   const { retail, sale } = input.placement;
+  /* Phase 1.34 — an unpriced private draft has no effective price, and there is
+     no honest value to return for one. Zero would read as free, and a fallback
+     currency would be invented. Refused with the calculators' own bounded error
+     type, so every caller that already maps `ListingEconomicsError` — checkout,
+     transaction accounting — surfaces this as the commercial refusal it is
+     rather than as an outage. */
+  if (retail === null) {
+    throw new ListingEconomicsError(
+      "LISTING_NOT_PRICED",
+      "this placement carries no commercial retail price",
+    );
+  }
   const active = sale !== null && isSaleActive({ sale, now: input.now });
   return {
     effectivePriceMinorUnits: active ? sale!.salePriceMinorUnits : retail.retailPriceMinorUnits,

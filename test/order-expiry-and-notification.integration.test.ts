@@ -31,6 +31,7 @@ import {
 } from "./support/marketplace-policy-fixture";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { grantProductCreatorAuthority } from "./support/product-authority-fixture";
+import { syntheticProductRef } from "./support/product-ref-fixture";
 import { createAccount } from "../src/server/account/account-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
 import { grantAccountEntitlement } from "../src/server/account/account-entitlement-service";
@@ -590,6 +591,7 @@ async function seedSellerDirect(deliveryMode: "DIGITAL" | "PHYSICAL" = "DIGITAL"
   const sourceRecordId = `mon:srec:${pad26(`P11TPSREC${n}`)}`;
   await db.product.create({
     data: {
+      productRef: syntheticProductRef(),
       internalProductId,
       sourceRecordId,
       currentSourceRecordVersion: "1",

@@ -43,6 +43,24 @@ model Product {
   /// versions of this product; distinct from internalProductId.
   sourceRecordId String @unique @db.VarChar(191)
 
+  /// Stable APPLICATION-FACING reference to this Product (Phase 1.34).
+  ///
+  /// The selector a route, a form action, or a page link names a Product by. It
+  /// is opaque, immutable, server-generated from 32 bytes of CSPRNG output over
+  /// the Crockford alphabet (160 bits), unique, and carries no business meaning:
+  /// not the name, not a sequence, not the source-record version, and not
+  /// derivable from anything a caller knows.
+  ///
+  /// It is NOT any of the identities around it, and the bare 32-character body
+  /// makes that structural rather than merely intended: it has no `mon:` or
+  /// `an:` namespace, so it cannot be an internalProductId, a sourceRecordId, a
+  /// ProductNode/AgentNet Node identity, a capsule id, or this table's primary
+  /// key. It carries no public semantic meaning and is never published.
+  ///
+  /// There is deliberately no client-settable path to it: the repository mints
+  /// it inside the creating transaction and nothing accepts one as input.
+  productRef String @unique @db.VarChar(32)
+
   /// Pointer to the current immutable version's sourceRecordVersion.
   currentSourceRecordVersion String @db.VarChar(64)
 
@@ -2302,6 +2320,29 @@ model Listing {
   /// with the pointer in the same transaction, never independently.
   lifecycle String @db.VarChar(16)
 
+  /// CURRENT-PLACEMENT MARKER (Phase 1.34) — the structural half of
+  /// "at most one current Listing per Product + Storefront"
+  /// (docs/MARKETPLACE_ASSORTMENT_AND_LISTING_RULES.md §5).
+  ///
+  /// Exactly two values are legal: the canonical string `CURRENT` while this
+  /// aggregate still holds the pair, and NULL once a TERMINAL lifecycle state
+  /// (`ENDED`, `WITHDRAWN`) has definitively released it. Derived from the
+  /// lifecycle by `currentPlacementMarkerFor` and written in the SAME statement
+  /// that moves the lifecycle, so the two cannot disagree. It is NOT a second
+  /// answer to lifecycle and is never read as one.
+  ///
+  /// The `@@unique` below then makes the invariant a database guarantee rather
+  /// than an application convention: MySQL's unique indexes do not constrain
+  /// NULLs, so ANY number of released (terminal) Listings may exist for a pair
+  /// while at most one may be current. Immutable historical SOURCE VERSIONS are
+  /// unaffected — they live on the version table and are not aggregates.
+  ///
+  /// Deliberately NOT a Boolean: `false` would be a second "current" namespace
+  /// that the unique index would police as its own, so two Listings could be
+  /// current-by-another-name for the same pair. One canonical value or absence
+  /// is the only shape that says what is meant.
+  currentPlacementMarker String? @db.VarChar(16)
+
   createdAt DateTime @default(now()) @db.DateTime(3)
   updatedAt DateTime @updatedAt @db.DateTime(3)
 
@@ -2319,6 +2360,12 @@ model Listing {
   /// Orders placed against this Listing (0M.9). RESTRICT.
   orders               Order[]
 
+  /// AT MOST ONE CURRENT LISTING PER PRODUCT + STOREFRONT (Phase 1.34).
+  /// The concurrency backstop: the application refuses a duplicate with a
+  /// bounded `LISTING_ALREADY_EXISTS`, and this index refuses the one that
+  /// slipped between that check and the insert. Named explicitly because the
+  /// generated name would exceed MySQL's 64-character identifier limit.
+  @@unique([internalProductId, storefrontId, currentPlacementMarker], map: "Listing_current_placement_unique")
   @@index([internalProductId])
   @@index([storefrontId])
   @@index([controllingParticipantId])
@@ -2363,12 +2410,23 @@ model ListingSourceRecordVersionRow {
   /// The union discriminator. NOT NULL: every placement is one branch or the other.
   listingType String @db.VarChar(16)
 
-  /// The ordinary commercial retail price — the merchandise price alone. Both
-  /// branches carry one. BIGINT because minor units are integers up to
-  /// Number.MAX_SAFE_INTEGER. Tax and shipping are NOT part of it and have no
-  /// column anywhere.
-  retailPriceMinorUnits BigInt
-  retailPriceCurrency   String @db.VarChar(3)
+  /// The ordinary commercial retail price — the merchandise price alone. BIGINT
+  /// because minor units are integers up to Number.MAX_SAFE_INTEGER. Tax and
+  /// shipping are NOT part of it and have no column anywhere.
+  ///
+  /// NULLABLE SINCE PHASE 1.34, and only the SELLER_DIRECT branch may use that.
+  /// A private DRAFT Listing is PLACEMENT — which Product appears in which
+  /// Storefront — and placement precedes commercial terms. The alternative was
+  /// a zero or a placeholder price, which is a fabricated commercial fact
+  /// sitting in an authoritative record; absence is the honest representation.
+  /// A PROMOTED placement still requires both, and commercial activation still
+  /// requires them on either branch.
+  ///
+  /// THE TWO COLUMNS ARE A PAIR: both present or both NULL, never one. The
+  /// contract holds them in one nested object so that is the shape rather than
+  /// a rule anyone can forget, and the mapper refuses a half-populated row.
+  retailPriceMinorUnits BigInt?
+  retailPriceCurrency   String? @db.VarChar(3)
 
   // — SELLER_DIRECT arm: the optional scheduled sale —
   //

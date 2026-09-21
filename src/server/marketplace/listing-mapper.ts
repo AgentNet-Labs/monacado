@@ -44,11 +44,40 @@ import { MAX_MINOR_UNIT_AMOUNT } from "../../contracts/marketplace/offer-source"
 import {
   ListingSourceRecord,
   ListingSourceVersion,
+  isTerminalListingLifecycleState,
+  type ListingLifecycleState,
   type ListingPlacement,
   type ListingSourceRecord as SourceRecord,
   type ListingSourceVersion as SourceVersion,
 } from "../../contracts/marketplace/listing-source";
 import { CorruptListingRecordError } from "./listing-errors";
+
+/**
+ * The one canonical value `Listing.currentPlacementMarker` ever holds
+ * (Phase 1.34). Its only alternative is NULL.
+ */
+export const CURRENT_PLACEMENT_MARKER = "CURRENT" as const;
+
+/** The MySQL index name the composite placement constraint is mapped to. */
+export const CURRENT_PLACEMENT_INDEX = "Listing_current_placement_unique";
+
+/**
+ * The marker a Listing in this lifecycle state carries.
+ *
+ * **Driven by 0M.4A's own terminal predicate, never by a hand-written list.** A
+ * lifecycle state that gains or loses an exit transition changes what "current"
+ * means here automatically, so the marker and the lifecycle cannot drift apart.
+ * `ENDED` and `WITHDRAWN` — the states the transition table leaves with no exit
+ * — release the Product + Storefront pair; every other state holds it.
+ *
+ * No release transition is invented here: both terminal states already existed,
+ * and this reads them rather than adding to them.
+ */
+export function currentPlacementMarkerFor(
+  lifecycle: ListingLifecycleState,
+): typeof CURRENT_PLACEMENT_MARKER | null {
+  return isTerminalListingLifecycleState(lifecycle) ? null : CURRENT_PLACEMENT_MARKER;
+}
 
 const iso = (d: Date): string => d.toISOString();
 
@@ -141,19 +170,39 @@ function offerDependencyFromRow(row: VersionRow): unknown {
  * An unrecognised discriminator falls through to the contract, which refuses it
  * rather than guessing a branch.
  */
-function placementFromRow(row: VersionRow): unknown {
-  const retail = {
-    retailPriceMinorUnits: minorUnits(
-      row.retailPriceMinorUnits,
-      "placement.retail.retailPriceMinorUnits",
-    ),
-    retailPriceCurrency: row.retailPriceCurrency,
+/**
+ * Rebuild the ordinary retail price from its two columns.
+ *
+ * **All-or-none, exactly as the sale arm is** (Phase 1.34). Both present is a
+ * price; both NULL is an unpriced private draft; one without the other is
+ * corruption — a currency naming no amount, or an amount in no currency — and
+ * is refused rather than repaired, because every repair would invent a
+ * commercial fact. This is where the pair rule is actually held: MySQL cannot
+ * express it as a column constraint.
+ */
+function retailFromRow(row: VersionRow): unknown {
+  const amount = row.retailPriceMinorUnits;
+  const currency = row.retailPriceCurrency;
+  if (amount === null && currency === null) return null;
+  if (amount === null || currency === null) {
+    throw new CorruptListingRecordError(["placement.retail"]);
+  }
+  return {
+    retailPriceMinorUnits: minorUnits(amount, "placement.retail.retailPriceMinorUnits"),
+    retailPriceCurrency: currency,
   };
+}
+
+function placementFromRow(row: VersionRow): unknown {
+  const retail = retailFromRow(row);
 
   if (row.listingType === "SELLER_DIRECT") {
     return { listingType: "SELLER_DIRECT", retail, sale: saleFromRow(row) };
   }
   if (row.listingType === "PROMOTED") {
+    /* The promoted branch's contract keeps `retail` NON-nullable, so a promoted
+       row whose price columns are NULL fails at the contract rather than
+       producing a promoted placement nobody could price. */
     return {
       listingType: "PROMOTED",
       retail,
@@ -240,8 +289,8 @@ export function listingRowToSourceRecord(
  */
 export function placementToColumns(placement: ListingPlacement): {
   listingType: string;
-  retailPriceMinorUnits: bigint;
-  retailPriceCurrency: string;
+  retailPriceMinorUnits: bigint | null;
+  retailPriceCurrency: string | null;
   salePriceMinorUnits: bigint | null;
   salePriceCurrency: string | null;
   saleStartsAt: Date | null;
@@ -257,11 +306,15 @@ export function placementToColumns(placement: ListingPlacement): {
 } {
   const sale = placement.listingType === "SELLER_DIRECT" ? placement.sale : null;
   const dep = placement.listingType === "PROMOTED" ? placement.offerDependency : null;
+  /* Written as an explicit pair of NULLs, never one of each: the exact inverse
+     of `retailFromRow`, so a version that is unpriced carries no residue of a
+     currency and a priced one carries no orphaned amount. */
+  const retail = placement.retail;
 
   return {
     listingType: placement.listingType,
-    retailPriceMinorUnits: BigInt(placement.retail.retailPriceMinorUnits),
-    retailPriceCurrency: placement.retail.retailPriceCurrency,
+    retailPriceMinorUnits: retail === null ? null : BigInt(retail.retailPriceMinorUnits),
+    retailPriceCurrency: retail?.retailPriceCurrency ?? null,
 
     salePriceMinorUnits: sale === null ? null : BigInt(sale.salePriceMinorUnits),
     salePriceCurrency: sale?.salePriceCurrency ?? null,

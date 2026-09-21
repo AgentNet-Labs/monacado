@@ -1,4 +1,4 @@
-# Marketplace Assortment and Listing Rules (Phase 1.33)
+# Marketplace Assortment and Listing Rules (Phase 1.33, amended at Phase 1.34)
 
 The governing commercial rules for **what a Seller may hold, where it may be
 placed, and what that placement costs a Storefront**. Archived here so later
@@ -71,6 +71,12 @@ is where "owned active < allowed" must be decided — inside the write, under th
 same lock-then-locking-count construction the Storefront allowance uses
 (Phase 1.30), so two activations cannot both take the last slot.
 
+**The active-Listing quota remains separate from §5 and is still unenforced.**
+Phase 1.34 made *placement uniqueness* structural and added a narrow guard
+refusing activation of an unpriced placement; it did **not** add a count, an
+allowance, or a paid entitlement. Capacity belongs to activation and is that
+phase's work.
+
 ### Where the paid upgrade lives
 
 The paid capacity entitlement belongs to **the Storefront's Listing capacity**.
@@ -107,15 +113,29 @@ Storefronts, and other eligible Storefronts.
 
 ## 5. At most one current placement per Product + Storefront
 
-**(governing, not yet enforced.)**
+**(implemented structurally — Phase 1.34.)**
 
-At most **one current / active Listing** exists for a given **Product +
+At most **one current Listing aggregate** exists for a given **Product +
 Storefront** pair. Historical immutable Listing versions are expected and are not
-duplicates.
+duplicates: a Listing with fifty source versions is one placement, not fifty.
 
-The schema does not express this today (§9). Enforcing it is Listing-phase work,
-and may need a schema change — which that phase must surface for approval rather
-than assume.
+`Listing.currentPlacementMarker` holds the canonical string `CURRENT` while an
+aggregate holds its pair and NULL once a **terminal** lifecycle state (`ENDED`,
+`WITHDRAWN`) has released it, and the composite unique index
+`(internalProductId, storefrontId, currentPlacementMarker)` enforces the rule in
+the database. MySQL's unique indexes do not constrain NULLs, so any number of
+released placements may exist for a pair while at most one may be current — a
+seller who withdraws a placement may make a new one, and the withdrawn one's
+history survives beside it. No release transition was invented for this: both
+terminal states already existed.
+
+The application also asks, inside the write transaction, so an ordinary caller
+receives the bounded `LISTING_ALREADY_EXISTS` rather than a database error; the
+index is the concurrency backstop, and its collision is mapped back to the same
+error. **The rule governs both branches** — placement uniqueness is a property of
+the shelf, not of who put the item on it.
+
+See [`LISTING_PERSISTENCE.md`](LISTING_PERSISTENCE.md) §11.
 
 ## 6. Seller Storefronts may mix owned and promoted Products
 
@@ -192,12 +212,16 @@ from listing the same promotable Product.
 
 Recorded at Phase 1.33 from the code and schema as they stand.
 
+Updated at Phase 1.34 where that phase changed the answer.
+
 | Question | Today |
 | --- | --- |
 | Many Listings per Product? | **Yes, structurally.** `Listing.internalProductId` is indexed, not unique. |
 | Many Listings per Storefront? | **Yes, structurally.** `Listing.storefrontId` is indexed, not unique. |
 | Same Product in several Storefronts? | **Permitted.** |
-| Two Listings for the same Product + Storefront? | **Permitted — no constraint** (§5 gap). |
+| Two CURRENT Listings for the same Product + Storefront? | **Refused — Phase 1.34.** Composite unique index over `(internalProductId, storefrontId, currentPlacementMarker)`, plus a bounded `LISTING_ALREADY_EXISTS` in the write path. Released (terminal) placements are unconstrained. |
+| Must a DRAFT Listing carry a price? | **No — Phase 1.34.** A private `SELLER_DIRECT` draft may carry none; price and currency are a nullable pair. A `PROMOTED` placement still requires both, and `DRAFT → ACTIVE` refuses an unpriced placement. |
+| Does a Product have an application-facing reference? | **Yes — Phase 1.34.** `Product.productRef`: opaque, immutable, server-minted, unique. Application routing identity only — not a semantic or public AgentNet identity. |
 | Listing lifecycle | `DRAFT`, `ACTIVE`, `SUSPENDED`, `ENDED`, `WITHDRAWN`; created `DRAFT`; `→ ACTIVE` is a separate governed act. |
 | Seller-direct pathway | `createSellerDirectListing` / `openSellerDirectListing`: `canCreateSellerDirectListing` (SELLER role), controller is the acting participant, controller holds Product authority (`participantHoldsProductAuthority`), and Storefront placement authority (owner, or ACTIVE governance assignment). |
 | Promoted pathway | `createPromotedListing` / `openPromotedListing`: `canCreatePromotedListing` (PROMOTER role), controller is the acting participant, Storefront placement authority, and an exact accepted Offer version whose terms are PAID and `PROMOTABLE`. |
@@ -210,15 +234,20 @@ Recorded at Phase 1.33 from the code and schema as they stand.
 1. **Self-promotion refusal (same participant).** The promoted path does not
    compare the promoter with the Offer's seller / the Product's creator
    participant; a participant holding both roles could promote its own Offer.
-   Refuse at minimum when they are the same participant.
+   Refuse at minimum when they are the same participant. **Unresolved, and
+   Phase 1.34 did not touch it** — promoted Listing anti-gaming and
+   economic-principal resolution remain REQUIRED before promoted Listing
+   self-service is exposed. Promoted Listings stay non-self-service until both
+   are settled.
 2. **Economic-principal resolution (§8.2).** A governed principal established
    through onboarding/underwriting, so self-promotion across separate accounts
    can be refused.
-3. **One current placement per Product + Storefront (§5)** — likely a schema
-   decision (e.g. a nullable "current placement" marker, as the Storefront
-   SUPER_OWNER seat uses).
+3. ~~**One current placement per Product + Storefront (§5)**~~ — **closed at
+   Phase 1.34** with a nullable current-placement marker and a composite unique
+   index, exactly as anticipated here.
 4. **Active-Listing allowance at activation (§2)** — 5 per Storefront, lock-and-
-   count inside the `→ ACTIVE` write.
+   count inside the `→ ACTIVE` write. **Still open**, and separate from §5:
+   Phase 1.34 added no count, allowance, or paid entitlement.
 5. **Promotability reconciliation (§7)** — whether a promoted Listing must also
    require the Product fact `promotable`, beside the Offer's `PROMOTABLE` terms.
 6. **Seller-direct Listing self-service** — the placement route and UI for a

@@ -80,6 +80,17 @@ export interface AccountHomeStorefront {
  * shows, from the CURRENT source version. No internal id of any kind.
  */
 export interface AccountHomeProduct {
+  /**
+   * The stable application reference (Phase 1.34) — how a page action names
+   * this Product.
+   *
+   * Safe to carry here, and the ONLY Product identifier that is: it is opaque,
+   * un-namespaced, immutable, and carries no business meaning, so it exposes
+   * nothing about the Product, its author, or how many exist. The internal
+   * `mon:product:` and `mon:srec:` identities remain absent, as does every Node
+   * identity. Nothing requires it to be shown to a person.
+   */
+  productRef: string;
   name: string;
   description: string | null;
   promotable: boolean;
@@ -278,7 +289,7 @@ async function readAuthoredProducts(
   const products = await db.product.findMany({
     where: { versions: { some: { authorityCreatorParticipantId: participantId } } },
     orderBy: { productRowCreatedAt: "asc" },
-    select: { sourceRecordId: true, currentSourceRecordVersion: true },
+    select: { sourceRecordId: true, currentSourceRecordVersion: true, productRef: true },
   });
   if (products.length === 0) return [];
 
@@ -307,6 +318,7 @@ async function readAuthoredProducts(
     if (v === undefined || v.authorityCreatorParticipantId !== participantId) return [];
     return [
       {
+        productRef: p.productRef,
         name: v.factName,
         description: v.factDescription,
         promotable: v.factPromotable,

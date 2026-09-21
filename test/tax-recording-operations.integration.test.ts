@@ -89,6 +89,7 @@ import {
   ensureSellerRefundPolicy,
   verifyPrimarySupportContact,
 } from "./support/marketplace-policy-fixture";
+import { syntheticProductRef } from "./support/product-ref-fixture";
 
 const RUN = process.env.RUN_DB_TESTS === "1";
 const db = RUN ? getPrisma() : (undefined as unknown as ReturnType<typeof getPrisma>);
@@ -526,6 +527,7 @@ async function seedSellerDirect(
   const sourceRecordId = `mon:srec:${pad26(`P18TPSREC${n}`)}`;
   await db.product.create({
     data: {
+      productRef: syntheticProductRef(),
       internalProductId,
       sourceRecordId,
       currentSourceRecordVersion: "1",

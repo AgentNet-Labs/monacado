@@ -28,6 +28,7 @@ import { grantAccountEntitlement } from "../src/server/account/account-entitleme
 import { recordCommerceApproval } from "../src/server/marketplace/participant-commerce-approval-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
 import { grantProductCreatorAuthority } from "./support/product-authority-fixture";
+import { syntheticProductRef } from "./support/product-ref-fixture";
 import { createDraftOffer } from "../src/server/marketplace/offer-service";
 import {
   createListingSourceVersion,
@@ -178,6 +179,7 @@ async function seedProduct(creatorParticipantId?: string): Promise<string> {
   )}`;
   await db.product.create({
     data: {
+      productRef: syntheticProductRef(),
       internalProductId,
       sourceRecordId: `mon:srec:${pad26(`M7PSREC${seq}`)}`,
       currentSourceRecordVersion: "1",
@@ -534,9 +536,9 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
     );
 
     const v1 = await getSourceVersion(snapshot.record.internalListingId, "1", { db });
-    expect(v1.placement.retail.retailPriceMinorUnits).toBe(10_000);
+    expect(v1.placement.retail!.retailPriceMinorUnits).toBe(10_000);
     const current = await getCurrentSourceVersion(snapshot.record.internalListingId, { db });
-    expect(current.placement.retail.retailPriceMinorUnits).toBe(11_000);
+    expect(current.placement.retail!.retailPriceMinorUnits).toBe(11_000);
 
     const versions = await listSourceVersions(snapshot.record.internalListingId, { db });
     expect(versions.map((v) => v.sourceRecordVersion)).toEqual(["1", "2"]);
@@ -899,7 +901,7 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
     });
     /* And the minimum itself must succeed. */
     const ok = await attempt(minimum);
-    expect(ok.currentVersion.placement.retail.retailPriceMinorUnits).toBe(minimum);
+    expect(ok.currentVersion.placement.retail!.retailPriceMinorUnits).toBe(minimum);
   });
 
   // — Authorization —

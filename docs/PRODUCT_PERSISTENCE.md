@@ -24,9 +24,43 @@ authoritative record; the published capsule is a downstream, regenerable artifac
 | --- | --- |
 | `internalProductId` (PK) | Opaque `mon:product:<opaque>`; immutable. |
 | `sourceRecordId` (unique) | Opaque `mon:srec:<opaque>`; constant across versions; distinct from `internalProductId`. |
+| `productRef` (unique) | **Application routing identity** (Phase 1.34) — see below. |
 | `currentSourceRecordVersion` | Pointer to the current immutable version. |
 | `recordStatus` | Internal Monacado authoring status (not ANS lifecycle). |
 | `productRowCreatedAt` | DB row creation (operational; not a domain field). |
+
+#### `productRef` — the stable application-facing Product reference (Phase 1.34)
+
+The selector a route, a form action, or a page link names a Product by. It exists
+because every identifier beside it is something else: `mon:product:` and
+`mon:srec:` are internal identities, `an:node:` is an AgentNet Node, and the
+primary key is a primary key. Using any of them in a URL would publish an
+internal identity in order to get a link.
+
+- **Opaque, and carrying no business semantics.** Not the name, not a sequence,
+  not the source-record version, and not derivable from anything a caller knows.
+- **Server-generated, with no client-settable path.** Minted by
+  `ProductRepository.createInitialProductSourceRecord` inside the creating
+  transaction. There is no input member for it anywhere, which is the control —
+  not a rule that discards a supplied one.
+- **Cryptographically random.** 32 characters drawn one CSPRNG byte each from the
+  Crockford alphabet: 160 bits, non-enumerable. A populated-database backfill
+  writes `HEX(RANDOM_BYTES(16))` — 32 characters of 128 bits over `[0-9A-F]`, a
+  strict subset of the same alphabet — so both paths clear 128 bits and produce
+  the same shape.
+- **Immutable and stable for the life of the Product**, and independent of its
+  source-record version: revising a Product advances the version pointer and the
+  record status and touches nothing else on the row. A link handed out against
+  version 1 still names the same Product at version 12.
+- **Un-namespaced, and that is the guarantee.** Every other identifier carries a
+  `mon:` or `an:` prefix, so a bare 32-character body **cannot** be read or used
+  as an internal Product id, a source-record id, a creator reference, an ANS Node
+  ID, a capsule ID, or a ProductNode identity.
+
+It is **application routing identity, not semantic or public AgentNet identity**.
+It is not a capsule fact, takes part in no source version, appears in no
+projection, and is never published. It may travel to the UI and the API — it is
+the only Product identifier that may — and it need not be shown to a person.
 
 ### `ProductSourceRecordVersionRow` — immutable version history
 
@@ -41,6 +75,7 @@ record status.
 
 - `Product.internalProductId` — primary key (unique).
 - `Product.sourceRecordId` — unique.
+- `Product.productRef` — unique (Phase 1.34); NOT NULL.
 - `ProductSourceRecordVersionRow (sourceRecordId, sourceRecordVersion)` — unique
   (prevents duplicate versions; hard-guards concurrent revisions).
 - FK `ProductSourceRecordVersionRow.internalProductId → Product.internalProductId`

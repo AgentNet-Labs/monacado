@@ -21,6 +21,7 @@ import {
 } from "../../contracts/product/product-source-record";
 import type { ProductCapsuleCandidate } from "../../contracts/product/product.capsule";
 import { getPrisma } from "../db/client";
+import { cryptoProductRefProvider, type ProductRefProvider } from "./product-ids";
 import { domainToVersionCreateInput, versionRowToDomain } from "./persistence-mapper";
 import {
   ConcurrencyConflictError,
@@ -94,12 +95,41 @@ export interface ReviseInput {
   internalProductIdOverride?: string;
 }
 
+/**
+ * A created Product: its validated source record, and the stable
+ * application-facing reference minted for it (Phase 1.34).
+ *
+ * The reference is returned rather than folded into `ProductSourceRecord`
+ * because it is **not a source-record fact**. It names no business truth, takes
+ * part in no version, appears in no capsule projection, and does not change
+ * when the record is revised — putting it on the record would make a routing
+ * selector look like something a version asserts.
+ */
+export interface CreatedProduct {
+  record: ProductSourceRecord;
+  /** Opaque, immutable, server-minted. Safe to put in a URL or a form action. */
+  productRef: string;
+}
+
 export class ProductRepository {
-  constructor(private readonly db: Db = getPrisma()) {}
+  /**
+   * `refs` is injectable only so a test may pin the minted value. There is no
+   * path by which a caller — let alone a client — supplies one: the reference
+   * is not a member of `CreateInitialInput`, so there is nothing to supply.
+   */
+  constructor(
+    private readonly db: Db = getPrisma(),
+    private readonly refs: ProductRefProvider = cryptoProductRefProvider,
+  ) {}
 
   /** Create the stable Product and its first immutable source-record version, atomically. */
-  async createInitialProductSourceRecord(input: CreateInitialInput): Promise<ProductSourceRecord> {
+  async createInitialProductSourceRecord(input: CreateInitialInput): Promise<CreatedProduct> {
     const record = validateDomain(input.record);
+    /* Minted here, once, for the life of the Product. Immutable in behaviour
+       because nothing in this repository — or anywhere else — ever writes the
+       column again: the revision path advances the version pointer and the
+       record status, and touches nothing else on this row. */
+    const productRef = this.refs.nextProductRef();
     if (record.sourceRecordId === record.internalProductId) {
       throw new ImmutableIdentityError("sourceRecordId must differ from internalProductId");
     }
@@ -118,6 +148,7 @@ export class ProductRepository {
           data: {
             internalProductId: record.internalProductId,
             sourceRecordId: record.sourceRecordId,
+            productRef,
             currentSourceRecordVersion: record.sourceRecordVersion,
             recordStatus: record.recordStatus,
           },
@@ -130,7 +161,7 @@ export class ProductRepository {
       if (refusal !== undefined && e === refusal) throw e;
       mapUnique(e, "product");
     }
-    return record;
+    return { record, productRef };
   }
 
   /** Read the current source record for a Product. */

@@ -31,6 +31,8 @@ export type ListingErrorCode =
   | "OFFER_VERSION_NOT_FOUND"
   | "OFFER_PRODUCT_MISMATCH"
   | "LISTING_NOT_AUTHORIZED"
+  | "LISTING_ALREADY_EXISTS"
+  | "LISTING_COMMERCIAL_TERMS_REQUIRED"
   | "NO_MATERIAL_CHANGE"
   | "LISTING_ECONOMICS_REFUSED"
   | "CORRUPT_LISTING_RECORD"
@@ -147,6 +149,61 @@ export class ListingNotAuthorizedError extends ListingError {
     this.name = "ListingNotAuthorizedError";
     this.capability = capability;
     this.reasonCodes = reasonCodes;
+  }
+}
+
+/**
+ * A current Listing already places this Product in this Storefront (Phase 1.34).
+ *
+ * `MARKETPLACE_ASSORTMENT_AND_LISTING_RULES.md` §5: at most one current Listing
+ * aggregate exists per Product + Storefront pair. Immutable historical source
+ * versions are not duplicates, and neither is a placement a terminal lifecycle
+ * state has released.
+ *
+ * **Raised from two places, and both are load-bearing.** The service asks
+ * inside the write transaction so an ordinary caller gets this bounded semantic
+ * answer; the composite unique index catches the racing second caller that
+ * passed that check before the first committed. The index's own P2002 is
+ * translated back into this error rather than escaping as a generic persistence
+ * failure — the concurrent caller asked a legitimate question and deserves the
+ * same answer as the sequential one.
+ *
+ * Carries no identifier. Which Listing already holds the pair, and who controls
+ * it, are not facts a refused caller is owed.
+ */
+export class ListingAlreadyExistsError extends ListingError {
+  constructor(cause?: unknown) {
+    super(
+      "LISTING_ALREADY_EXISTS",
+      "A current Listing already places this Product in this Storefront",
+      cause,
+    );
+    this.name = "ListingAlreadyExistsError";
+  }
+}
+
+/**
+ * A commercial transition was attempted on a placement carrying no price
+ * (Phase 1.34).
+ *
+ * A private DRAFT Listing may exist without commercial terms — placement is not
+ * pricing. **Going live is where that stops being true.** `DRAFT -> ACTIVE` puts
+ * an item in front of buyers, and an item in front of buyers at no stated price
+ * is not a draft with a gap in it; it is an unanswerable commercial offer.
+ *
+ * This is the narrow guard, not the governed commercial-readiness gate. The full
+ * gate — required Offer terms, promoted economics, the active-Listing
+ * allowance — belongs to the activation phase, and nothing here anticipates it.
+ */
+export class ListingCommercialTermsRequiredError extends ListingError {
+  readonly fields: string[];
+  constructor(fields: string[]) {
+    super(
+      "LISTING_COMMERCIAL_TERMS_REQUIRED",
+      "That Listing cannot become commercially active without its commercial terms",
+    );
+    this.name = "ListingCommercialTermsRequiredError";
+    this.fields = fields;
   }
 }
 

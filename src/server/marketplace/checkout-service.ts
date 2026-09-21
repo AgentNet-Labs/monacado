@@ -374,6 +374,15 @@ export async function prepareCheckout(
     });
 
     const placement = sourceVersion.placement;
+    /* Phase 1.34 — a placement may carry no commercial price at all. Unreachable
+       in the ordinary case, because `requirePurchasable` above already refused
+       everything that is not ACTIVE and an unpriced placement cannot become
+       ACTIVE. Kept because checkout is the money boundary: the thing it must
+       never do is quote a buyer a price it invented, and the only safe answer to
+       "what does this cost" when nothing says is to refuse the sale. */
+    if (placement.retail === null) {
+      throw new ListingNotPurchasableError(["LISTING_NOT_PRICED"]);
+    }
     if (placement.retail.retailPriceCurrency !== v.currency) {
       throw new OrderCurrencyMismatchError("listingRetailCurrency");
     }

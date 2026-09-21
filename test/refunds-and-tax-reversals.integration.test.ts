@@ -83,6 +83,7 @@ import {
   ensureSellerRefundPolicy,
   verifyPrimarySupportContact,
 } from "./support/marketplace-policy-fixture";
+import { syntheticProductRef } from "./support/product-ref-fixture";
 
 // — Phase 1.9 under test —
 import {
@@ -685,6 +686,7 @@ async function seedSellerDirect(
   const sourceRecordId = `mon:srec:${pad26(`${TAG}PSREC${n}`)}`;
   await db.product.create({
     data: {
+      productRef: syntheticProductRef(),
       internalProductId,
       sourceRecordId,
       currentSourceRecordVersion: "1",

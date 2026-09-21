@@ -62,6 +62,7 @@ import {
   SellerRiskReviewPolicyNotConfiguredError,
 } from "../src/server/risk/seller-risk-errors";
 import type { RiskReviewReason } from "../src/contracts/marketplace/seller-risk-review";
+import { syntheticProductRef } from "./support/product-ref-fixture";
 
 const RUN = process.env.RUN_DB_TESTS === "1";
 const db = RUN ? getPrisma() : (undefined as unknown as ReturnType<typeof getPrisma>);
@@ -148,6 +149,7 @@ async function seedGraph(): Promise<Graph> {
   const sourceRecordId = `mon:srec:${pad26(`${TAG}PSREC${n}`)}`;
   await db.product.create({
     data: {
+      productRef: syntheticProductRef(),
       internalProductId,
       sourceRecordId,
       currentSourceRecordVersion: "1",

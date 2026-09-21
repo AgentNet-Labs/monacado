@@ -96,6 +96,8 @@ import {
   CorruptListingRecordError,
   DuplicateListingSourceVersionError,
   InvalidListingInputError,
+  ListingAlreadyExistsError,
+  ListingCommercialTermsRequiredError,
   ListingEconomicsRefusedError,
   ListingNotAuthorizedError,
   ListingNotFoundError,
@@ -108,6 +110,9 @@ import {
 } from "./listing-errors";
 import { resolveCommerceApproval } from "./participant-commerce-approval-service";
 import {
+  CURRENT_PLACEMENT_INDEX,
+  CURRENT_PLACEMENT_MARKER,
+  currentPlacementMarkerFor,
   listingRowToSourceRecord,
   placementToColumns,
   versionRowToSourceVersion,
@@ -129,6 +134,31 @@ const prismaCode = (error: unknown): string | undefined => {
 const isUniqueViolation = (e: unknown): boolean => prismaCode(e) === "P2002";
 const isForeignKeyViolation = (e: unknown): boolean => prismaCode(e) === "P2003";
 
+/**
+ * Which unique constraint a P2002 names.
+ *
+ * Prisma reports the index name on MySQL and a field list elsewhere; both are
+ * flattened to one string so the caller can ask about either. Needed because
+ * the Listing tables now carry TWO unique constraints with entirely different
+ * meanings — a reused version label, and a second current placement for a
+ * Product + Storefront pair — and answering the second with the first's error
+ * would tell a caller their version number was taken when it was not.
+ */
+const uniqueViolationTarget = (e: unknown): string => {
+  if (typeof e !== "object" || e === null || !("meta" in e)) return "";
+  const meta = (e as { meta?: { target?: unknown } }).meta;
+  const target = meta?.target;
+  if (typeof target === "string") return target;
+  if (Array.isArray(target)) return target.join(",");
+  return "";
+};
+
+/** A racing second current placement for the same Product + Storefront pair. */
+const isCurrentPlacementCollision = (e: unknown): boolean =>
+  isUniqueViolation(e) &&
+  (uniqueViolationTarget(e).includes(CURRENT_PLACEMENT_INDEX) ||
+    uniqueViolationTarget(e).includes("currentPlacementMarker"));
+
 function inputError(error: {
   issues: Array<{ path: PropertyKey[]; message: string }>;
 }): InvalidListingInputError {
@@ -148,6 +178,8 @@ function isDomainError(error: unknown): boolean {
     error instanceof ListingNotFoundError ||
     error instanceof ListingVersionNotFoundError ||
     error instanceof ListingNotAuthorizedError ||
+    error instanceof ListingAlreadyExistsError ||
+    error instanceof ListingCommercialTermsRequiredError ||
     error instanceof NoMaterialListingChangeError ||
     error instanceof CorruptListingRecordError ||
     error instanceof ListingProductNotFoundError ||
@@ -545,7 +577,18 @@ export async function getEffectivePrice(
       saleActive: false,
     };
   }
-  return effectiveSellerRetailPrice({ placement, now });
+  try {
+    return effectiveSellerRetailPrice({ placement, now });
+  } catch (error) {
+    /* Phase 1.34 — an unpriced private draft has no effective price. The
+       contract's bounded refusal is translated into this module's own error
+       type, so every escape from this service is a `ListingError` and a caller
+       does not have to catch two vocabularies to ask one question. */
+    if (error instanceof ListingEconomicsError) {
+      throw new ListingEconomicsRefusedError(error.code);
+    }
+    throw error;
+  }
 }
 
 /**
@@ -677,6 +720,49 @@ async function requirePlacementReferences(
   if (controller === null) throw new ControllerParticipantNotFoundError();
 }
 
+/**
+ * At most one CURRENT Listing may place this Product in this Storefront.
+ *
+ * `MARKETPLACE_ASSORTMENT_AND_LISTING_RULES.md` §5, asked INSIDE the write
+ * transaction so the check and the insert see the same rows. It exists to give
+ * a caller a bounded semantic answer — `LISTING_ALREADY_EXISTS` — rather than a
+ * database error, and it is **not** the guarantee: two callers can both pass it
+ * before either commits. The composite unique index is the guarantee, and
+ * `mapWriteError` translates its collision back to this same error.
+ *
+ * Released placements are invisible to it. A Listing whose lifecycle reached
+ * `ENDED` or `WITHDRAWN` carries a NULL marker, so a seller who withdrew a
+ * placement may make a new one, and the immutable history of the old one
+ * survives untouched.
+ *
+ * **The rule is the same for both branches**, deliberately: placement
+ * uniqueness is a property of the shelf, not of who put the item on it. A
+ * promoter cannot add a second current placement of a Product a seller-direct
+ * Listing already holds in that Storefront, or the reverse.
+ *
+ * **Asked LAST, after every authority and standing decision**, following the
+ * same rule `requireStorefrontPlacementAuthority` already states: a refusal
+ * names the most specific thing the subject actually failed. It is also a
+ * privacy boundary — whether a Storefront already carries a placement of a
+ * Product is a fact about someone's assortment, and answering it to a caller
+ * who may not place there would turn this refusal into a probe for a
+ * competitor's shelf.
+ */
+async function requireNoCurrentPlacement(
+  tx: Tx,
+  input: { internalProductId: string; storefrontId: string },
+): Promise<void> {
+  const existing = await tx.listing.findFirst({
+    where: {
+      internalProductId: input.internalProductId,
+      storefrontId: input.storefrontId,
+      currentPlacementMarker: CURRENT_PLACEMENT_MARKER,
+    },
+    select: { internalListingId: true },
+  });
+  if (existing !== null) throw new ListingAlreadyExistsError();
+}
+
 async function insertFirstVersion(
   tx: Tx,
   args: {
@@ -701,6 +787,10 @@ async function insertFirstVersion(
       storefrontId: args.storefrontId,
       controllingParticipantId: args.controllingParticipantId,
       lifecycle: INITIAL_LISTING_LIFECYCLE_STATE,
+      /* Derived from the lifecycle being written, in the same statement, so the
+         two can never disagree. A Listing is born DRAFT, which is non-terminal,
+         so a new placement always claims the pair. */
+      currentPlacementMarker: currentPlacementMarkerFor(INITIAL_LISTING_LIFECYCLE_STATE),
     },
   });
 
@@ -727,6 +817,12 @@ async function insertFirstVersion(
 
 function mapWriteError(stage: string, error: unknown): never {
   if (isDomainError(error)) throw error;
+  /* The database's own answer to a concurrent duplicate placement, translated
+     back into the SAME bounded domain error the sequential path produces. A
+     caller that lost a race must not receive a different — or generic — answer
+     from one that simply asked second, and a raw driver message must never
+     reach a client. */
+  if (isCurrentPlacementCollision(error)) throw new ListingAlreadyExistsError(error);
   if (isUniqueViolation(error)) throw new DuplicateListingSourceVersionError(error);
   if (isForeignKeyViolation(error)) throw new ListingProductNotFoundError(error);
   throw new ListingPersistenceFailureError(stage, error);
@@ -747,9 +843,12 @@ export async function createSellerDirectListing(
   if (!parsed.success) throw inputError(parsed.error);
   const data = parsed.data;
 
+  /* One absent state, not two: an omitted `retail` and an explicit `null` both
+     mean "this private draft carries no commercial price". Normalized here so
+     nothing downstream has to distinguish `undefined` from `null`. */
   const placement = parsePlacement({
     listingType: "SELLER_DIRECT",
-    retail: data.retail,
+    retail: data.retail ?? null,
     sale: data.sale ?? null,
   });
 
@@ -780,6 +879,13 @@ export async function createSellerDirectListing(
       });
       /* Phase 1.16 — suspension withholds authoring; see the standing service. */
       await assertParticipantMayAuthorMarketplaceState(tx, data.controllingParticipantId);
+
+      /* Phase 1.34 — asked LAST, after every authority and standing decision.
+         Whether a Storefront already carries a placement of a Product is a fact
+         about someone's shelf, and answering it to a caller who may not place
+         there would turn the duplicate refusal into a probe for a competitor's
+         assortment. A caller who fails authority learns only that. */
+      await requireNoCurrentPlacement(tx, data);
 
       await insertFirstVersion(tx, {
         internalListingId,
@@ -879,6 +985,11 @@ export async function createPromotedListing(
         }),
       });
 
+      /* Phase 1.34 — asked last, on the seller-direct path's own reasoning: a
+         caller who may not place in this Storefront learns that and nothing
+         about what is already on its shelf. */
+      await requireNoCurrentPlacement(tx, data);
+
       await insertFirstVersion(tx, {
         internalListingId,
         listingSourceRecordId,
@@ -947,16 +1058,23 @@ export async function createListingSourceVersion(
       const current = versionRowToSourceVersion(currentRow);
       const currentPlacement = current.placement;
 
-      const retail = data.retail ?? currentPlacement.retail;
-
       let nextPlacementCandidate: unknown;
       if (currentPlacement.listingType === "SELLER_DIRECT") {
+        /* May be `null` on this branch since Phase 1.34: an unpriced private
+           draft that is being edited for some other reason stays unpriced. An
+           update cannot CLEAR a price — `UpdateListingInput.retail` is not
+           nullable — so pricing is one-way here, and un-pricing a placement is
+           not something this phase gives anyone. */
         nextPlacementCandidate = {
           listingType: "SELLER_DIRECT",
-          retail,
+          retail: data.retail ?? currentPlacement.retail,
           sale: data.sale === undefined ? currentPlacement.sale : data.sale,
         };
       } else {
+        /* The promoted branch's retail price is never null: the contract
+           requires it, and the accepted Offer's economics are checked against
+           it below. */
+        const retail = data.retail ?? currentPlacement.retail;
         /* The accepted binding moves ONLY when a caller names a different exact
            version. Nothing here consults the Offer's current-version pointer to
            decide what this Listing accepted. */
@@ -1103,6 +1221,24 @@ export async function createListingSourceVersion(
         });
       }
 
+      /* Phase 1.34 — COMMERCIAL TERMS ARE REQUIRED BEFORE COMMERCIAL ACTIVATION.
+       *
+       * A private DRAFT Listing may carry no price, because placement is not
+       * pricing. `DRAFT -> ACTIVE` is where that stops being true: it puts the
+       * item in front of buyers, and an item in front of buyers at no stated
+       * price is not a draft with a gap in it.
+       *
+       * Narrow on purpose. This asks only the question the loosening in the
+       * same phase opened — is there a price at all — and nothing about Offer
+       * terms, promoted economics, or the active-Listing allowance. Those are
+       * the governed commercial-readiness gate the activation phase owns, and
+       * anticipating them here would be inventing an Offer flow. Placed beside
+       * the existing standing check rather than in a new validator, because
+       * this is the only path to `ACTIVE` there is. */
+      if (nextLifecycle === "ACTIVE" && nextPlacement.retail === null) {
+        throw new ListingCommercialTermsRequiredError(["placement.retail"]);
+      }
+
       if (nextLifecycle === "ACTIVE" && current.lifecycle !== "ACTIVE") {
         await assertListingMayBecomeOperational(tx, current.controllingParticipantId);
       }
@@ -1133,6 +1269,12 @@ export async function createListingSourceVersion(
           currentSourceRecordVersion: data.sourceRecordVersion,
           lifecycle: nextLifecycle,
           listingType: nextPlacement.listingType,
+          /* The marker moves ATOMICALLY with the lifecycle, in the same
+             statement, because it is a projection of it and not a second fact.
+             Reaching `ENDED` or `WITHDRAWN` releases the Product + Storefront
+             pair here and nowhere else, which is what lets a withdrawn
+             placement be replaced without ever permitting two current ones. */
+          currentPlacementMarker: currentPlacementMarkerFor(nextLifecycle),
         },
       });
 

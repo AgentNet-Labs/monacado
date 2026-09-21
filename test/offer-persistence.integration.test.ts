@@ -20,6 +20,7 @@ import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { createAccount } from "../src/server/account/account-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
 import { grantProductCreatorAuthority } from "./support/product-authority-fixture";
+import { syntheticProductRef } from "./support/product-ref-fixture";
 import {
   createDraftOffer,
   createOfferSourceVersion,
@@ -143,6 +144,7 @@ async function seedProduct(creatorParticipantId?: string): Promise<string> {
   const internalProductId = `${PRODUCT_PREFIX}${pad26(String(seq)).slice(0, 26 - PRODUCT_ID_TAG.length)}`;
   await db.product.create({
     data: {
+      productRef: syntheticProductRef(),
       internalProductId,
       sourceRecordId: `mon:srec:${pad26(`M6PSREC${seq}`)}`,
       currentSourceRecordVersion: "1",

@@ -350,8 +350,14 @@ describe.skipIf(!RUN)("Phase 1.18 — the application authority boundary (dispos
     );
     if (resolution.outcome !== "AUTHENTICATED") throw new Error("unreachable");
 
-    const created = await createProductSourceRecordAs(resolution.actor, productRecord(1), { db });
+    const { record: created, productRef } = await createProductSourceRecordAs(
+      resolution.actor,
+      productRecord(1),
+      { db },
+    );
     expect(created.authority.creatorParticipantId).toBe(seller.participantId);
+    /* Phase 1.34 — every created Product receives one, minted server-side. */
+    expect(productRef).toMatch(/^[0-9A-HJKMNP-TV-Z]{32}$/);
 
     const row = await db.productSourceRecordVersionRow.findFirstOrThrow({
       where: { internalProductId: created.internalProductId },
@@ -388,7 +394,7 @@ describe.skipIf(!RUN)("Phase 1.18 — the application authority boundary (dispos
     /* A caller cannot claim creator authority for someone else by writing it
        onto the record: the participant is resolved from the acting account. */
     const claimed = productRecord(2);
-    const created = await createProductSourceRecordAs(
+    const { record: created } = await createProductSourceRecordAs(
       resolution.actor,
       {
         ...claimed,

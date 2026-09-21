@@ -17,6 +17,7 @@ import "dotenv/config";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { grantProductCreatorAuthority } from "./support/product-authority-fixture";
+import { syntheticProductRef } from "./support/product-ref-fixture";
 import { createAccount } from "../src/server/account/account-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
 import {
@@ -156,6 +157,7 @@ async function seedProduct(creatorParticipantId?: string): Promise<string> {
   const internalProductId = `${PRODUCT_PREFIX}${pad26(String(seq)).slice(0, 26 - TAG.length)}`;
   await db.product.create({
     data: {
+      productRef: syntheticProductRef(),
       internalProductId,
       sourceRecordId: `mon:srec:${pad26(`${TAG}PSREC${seq}`)}`,
       currentSourceRecordVersion: "1",

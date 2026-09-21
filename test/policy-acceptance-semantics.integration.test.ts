@@ -31,6 +31,7 @@ import {
   MONACADO_MARKETPLACE_POLICY_ID,
   MONACADO_MARKETPLACE_POLICY_V1_3_HASH,
 } from "../src/contracts/marketplace/marketplace-policy-content";
+import { syntheticProductRef } from "./support/product-ref-fixture";
 
 const RUN = process.env.RUN_DB_TESTS === "1";
 const db = RUN ? getPrisma() : (undefined as unknown as ReturnType<typeof getPrisma>);
@@ -95,6 +96,7 @@ async function seedGraph(): Promise<void> {
   const sourceRecordId = `mon:srec:${pad26(`${TAG}PSREC${n}`)}`;
   await db.product.create({
     data: {
+      productRef: syntheticProductRef(),
       internalProductId,
       sourceRecordId,
       currentSourceRecordVersion: "1",

@@ -24,6 +24,7 @@ import {
   MonacadoWholesaleAcquisitionPolicy,
   NEVER_ON_LISTING_SOURCE_RECORD,
   SELLER_SALE_ISOLATED_FROM,
+  SellerDirectPlacement,
   calculateMonacadoRetainedAmount,
   calculateMorWholesaleAcquisition,
   calculatePromotedListingEconomics,
@@ -223,19 +224,61 @@ describe("3. the two shapes cannot be mixed", () => {
   });
 });
 
-// — 4/5. Retail price required —
+// — 4/5. Retail price: stated, or explicitly absent —
 
-describe("4/5. a retail price is required on both types", () => {
-  it("4. refuses a SELLER_DIRECT Listing with no retail price", () => {
+describe("4/5. the retail price is stated or explicitly absent, never omitted", () => {
+  it("4. refuses a SELLER_DIRECT Listing whose retail key is missing entirely", () => {
+    /* Phase 1.34 made the price NULLABLE, not OPTIONAL, and the distinction is
+       the point: "this placement carries no price" must be SAID. An omitted key
+       is silence, and silence is indistinguishable from a caller that forgot. */
     const placement = { ...sellerPlacement() } as Record<string, unknown>;
     delete placement.retail;
     expect(ListingPlacement.safeParse(placement).success).toBe(false);
   });
 
-  it("5. refuses a PROMOTED Listing with no retail price", () => {
+  it("4a. accepts a SELLER_DIRECT placement with NO price (Phase 1.34)", () => {
+    /* A private DRAFT Listing is PLACEMENT — which Product appears in which
+       Storefront. An Offer is commercial terms. A seller may put an item in a
+       shop before deciding what to charge for it, and the alternative was a
+       zero or a placeholder price: a fabricated commercial fact. */
+    const parsed = ListingPlacement.safeParse(sellerPlacement({ retail: null }));
+    expect(parsed.success).toBe(true);
+    if (parsed.success && parsed.data.listingType === "SELLER_DIRECT") {
+      expect(parsed.data.retail).toBeNull();
+    }
+  });
+
+  it("4b. refuses a scheduled sale on an unpriced placement", () => {
+    /* A sale is an overlay: strictly lower than an ordinary price, in the same
+       currency as one. With no ordinary price there is nothing for either rule
+       to hold against. */
+    expect(
+      ListingPlacement.safeParse(sellerPlacement({ retail: null, sale: saleSchedule() })).success,
+    ).toBe(false);
+  });
+
+  it("4c. treats price and currency as a PAIR — one without the other has nowhere to go", () => {
+    /* Not a refinement anyone can forget: `RetailPrice` is a strict object
+       requiring both members, so half a price is unrepresentable rather than
+       rejected after the fact. */
+    for (const half of [
+      { retailPriceMinorUnits: 2_000 },
+      { retailPriceCurrency: "USD" },
+      { retailPriceMinorUnits: 2_000, retailPriceCurrency: null },
+      { retailPriceMinorUnits: null, retailPriceCurrency: "USD" },
+    ]) {
+      expect(ListingPlacement.safeParse(sellerPlacement({ retail: half })).success).toBe(false);
+    }
+  });
+
+  it("5. refuses a PROMOTED Listing with no retail price — the loosening is seller-direct only", () => {
     const placement = { ...promotedPlacement() } as Record<string, unknown>;
     delete placement.retail;
     expect(ListingPlacement.safeParse(placement).success).toBe(false);
+    /* And an explicit null is refused too: a promoted placement exists only
+       against an accepted priced Offer, and its viability check — promoter net
+       proceeds must not be negative — has no meaning without a retail price. */
+    expect(ListingPlacement.safeParse(promotedPlacement({ retail: null })).success).toBe(false);
   });
 
   it("refuses a non-integer or negative retail price", () => {
@@ -245,6 +288,19 @@ describe("4/5. a retail price is required on both types", () => {
       });
       expect(ListingPlacement.safeParse(placement).success).toBe(false);
     }
+  });
+
+  it("refuses to answer for an effective price when there is no price", () => {
+    /* Zero would read as free and a fallback currency would be invented, so the
+       function refuses with the calculators' own bounded error instead. */
+    expect(() =>
+      effectiveSellerRetailPrice({
+        placement: SellerDirectPlacement.parse(sellerPlacement({ retail: null })),
+        now: "2027-03-03T12:00:00.000Z",
+      }),
+    ).toThrowError(
+      expect.objectContaining({ name: "ListingEconomicsError", code: "LISTING_NOT_PRICED" }),
+    );
   });
 });
 

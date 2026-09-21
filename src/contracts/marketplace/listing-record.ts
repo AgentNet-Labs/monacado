@@ -81,8 +81,21 @@ export const CreateSellerDirectListingInput = z.strictObject({
   /** The seller that will control this Listing. */
   controllingParticipantId: MarketplaceParticipantId,
 
-  /** The ordinary commercial retail price — merchandise alone. */
-  retail: RetailPrice,
+  /**
+   * The ordinary commercial retail price — merchandise alone.
+   *
+   * **Optional since Phase 1.34, so private DRAFT placement needs no price.** A
+   * Listing is placement and an Offer is commercial terms; establishing that a
+   * Product appears in a Storefront does not require deciding what to charge
+   * for it. Omitted or `null` both mean unpriced — there is one absent state,
+   * not two — and the service normalizes them to `null` before the placement is
+   * assembled.
+   *
+   * Price and currency remain a PAIR by shape: `RetailPrice` is a strict object
+   * requiring both, so one without the other has nowhere to go rather than
+   * being caught by a refinement. Commercial activation still requires both.
+   */
+  retail: RetailPrice.nullable().optional(),
   /** An optional temporary sale. Absent when the seller is not running one. */
   sale: SellerSaleSchedule.nullable().optional(),
 
@@ -206,16 +219,20 @@ export function materialListingChangesBetween(
         if (priorPlacement.listingType !== nextPlacement.listingType) changed.push(field);
         break;
       case "retailPrice":
+        /* Null-safe since Phase 1.34: a seller-direct placement may carry no
+           retail price at all, and pricing an unpriced draft — or clearing a
+           price back to none — is as material a change as changing the number. */
         if (
-          priorPlacement.retail.retailPriceMinorUnits !==
-          nextPlacement.retail.retailPriceMinorUnits
+          (priorPlacement.retail?.retailPriceMinorUnits ?? null) !==
+          (nextPlacement.retail?.retailPriceMinorUnits ?? null)
         ) {
           changed.push(field);
         }
         break;
       case "retailCurrency":
         if (
-          priorPlacement.retail.retailPriceCurrency !== nextPlacement.retail.retailPriceCurrency
+          (priorPlacement.retail?.retailPriceCurrency ?? null) !==
+          (nextPlacement.retail?.retailPriceCurrency ?? null)
         ) {
           changed.push(field);
         }

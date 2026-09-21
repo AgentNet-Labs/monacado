@@ -136,6 +136,25 @@ The commercial retail price is persisted as an authoritative Listing fact in
 integer minor units with the contract's currency rules. It is the **merchandise
 price alone**.
 
+### Both retail columns are NULLABLE, and they are a pair (Phase 1.34)
+
+`retailPriceMinorUnits` and `retailPriceCurrency` are both nullable, and only a
+`SELLER_DIRECT` placement may use that: a private `DRAFT` Listing is placement,
+and placement precedes commercial terms
+([`LISTING_SOURCE_MODEL.md`](LISTING_SOURCE_MODEL.md) §2a). Both NULL is an
+unpriced placement; both present is a priced one; **one without the other is
+corruption**, refused by the mapper on the way out with
+`CorruptListingRecordError` rather than repaired — every possible repair would
+invent a commercial fact.
+
+MySQL cannot express that pairing as a column constraint, so it is held where it
+can be held structurally: the contract keeps price and currency in one nested
+object, so half a price is unrepresentable rather than rejected after the fact,
+and `placementToColumns` writes the two as an explicit pair of NULLs.
+
+A `PROMOTED` row whose price columns are NULL fails at the contract, because that
+branch's `retail` is not nullable. Existing priced Listings are untouched.
+
 The `SELLER_DIRECT` sale schedule persists all four fields — price, currency,
 inclusive start, exclusive end — **all present or all NULL**, mirroring the
 contract's single nested object. `0M.4A`'s cross-field rules hold at the
@@ -258,6 +277,47 @@ never a private value, never an amount.
 
 A Listing is created `DRAFT`; going live is a separate act, checked against
 `0M.4A`'s own transition table.
+
+### Commercial terms are required before commercial activation (Phase 1.34)
+
+`DRAFT → ACTIVE` refuses a placement carrying no retail price, with the bounded
+`LISTING_COMMERCIAL_TERMS_REQUIRED`. It is deliberately **narrow**: it asks only
+the question the same phase's loosening opened — is there a price at all — and
+nothing about Offer terms, promoted economics, or the active-Listing allowance.
+Those are the governed commercial-readiness gate the activation phase owns.
+
+### One current placement per Product + Storefront (Phase 1.34)
+
+`Listing.currentPlacementMarker` holds the canonical string `CURRENT` while an
+aggregate still holds its (Product, Storefront) pair, and NULL once a **terminal**
+lifecycle state — `ENDED` or `WITHDRAWN`, the two the transition table leaves
+with no exit — has released it. The value is derived from the lifecycle by
+`currentPlacementMarkerFor`, driven by `0M.4A`'s own terminal predicate, and
+written in the **same statement** that moves the lifecycle, so the two cannot
+disagree. No release transition was invented for it: both terminal states already
+existed.
+
+The composite unique index `(internalProductId, storefrontId,
+currentPlacementMarker)` then makes
+[`MARKETPLACE_ASSORTMENT_AND_LISTING_RULES.md`](MARKETPLACE_ASSORTMENT_AND_LISTING_RULES.md) §5
+a database guarantee. MySQL's unique indexes do not constrain NULLs, so **any**
+number of released placements may exist for a pair while at most one may be
+current. Immutable historical source versions are unaffected — they are rows on
+the version table, not aggregates.
+
+It is deliberately not a Boolean. `false` would be a second "current" namespace
+the index would police as its own, so two Listings could be current-by-another-
+name for the same pair.
+
+**Two layers, and the split is the point.** The service asks
+`requireNoCurrentPlacement` inside the write transaction so an ordinary caller
+receives the bounded `LISTING_ALREADY_EXISTS`; the index refuses the caller that
+raced past that check before the first committed, and its `P2002` is translated
+back to the **same** error rather than escaping as a generic persistence failure.
+The refusal names no Listing and carries no database message.
+
+**The same rule governs both branches**, because placement uniqueness is a
+property of the shelf rather than of who put the item on it.
 
 **Buyer-active is derived, never stored.** `evaluateListingBuyerEligibility`
 computes it from the Listing, Product availability (supplied), Storefront

@@ -129,6 +129,10 @@ describeDb("1.32 — SELLER-only private draft Product", () => {
 
     expect(result.status).toBe(201);
     expect(result.body).toEqual({
+      /* Phase 1.34 — the stable application reference, returned so the page can
+         act on the Product it just drafted. Asserted by SHAPE, because it is
+         random by construction and a fixed value would prove it was not. */
+      productRef: expect.stringMatching(/^[0-9A-HJKMNP-TV-Z]{32}$/) as unknown as string,
       name: "Hand-thrown mug",
       description: "Stoneware, 350 ml.",
       promotable: true,
@@ -136,6 +140,8 @@ describeDb("1.32 — SELLER-only private draft Product", () => {
       deliveryMode: "PHYSICAL",
       status: "DRAFT",
     });
+    /* It is not an identity, and the un-namespaced body is why: no `mon:` and
+       no `an:` can appear here however the answer grows. */
     expect(JSON.stringify(result.body)).not.toMatch(/mon:|an:/);
 
     const [version, ...more] = await versionsBy(seller.participantId!);
@@ -172,6 +178,10 @@ describeDb("1.32 — SELLER-only private draft Product", () => {
 
     const product = await db.product.findUnique({ where: { internalProductId: version!.internalProductId } });
     expect([product!.currentSourceRecordVersion, product!.recordStatus]).toEqual(["1", "draft"]);
+    /* Phase 1.34 — persisted, and the SAME value the route answered with. */
+    expect(product!.productRef).toBe((result.body as { productRef: string }).productRef);
+    expect(product!.productRef).not.toBe(product!.internalProductId);
+    expect(product!.productRef).not.toBe(product!.sourceRecordId);
     const internalProductId = version!.internalProductId;
 
     /* A draft and nothing more. */
@@ -280,6 +290,7 @@ describeDb("1.32 — SELLER-only private draft Product", () => {
     expect(home!.canCreateProduct).toBe(true);
     expect(home!.products).toEqual([
       {
+        productRef: expect.stringMatching(/^[0-9A-HJKMNP-TV-Z]{32}$/) as unknown as string,
         name: "Hand-thrown mug",
         description: "Stoneware, 350 ml.",
         promotable: true,
@@ -288,6 +299,7 @@ describeDb("1.32 — SELLER-only private draft Product", () => {
         recordStatus: "draft",
       },
       {
+        productRef: expect.stringMatching(/^[0-9A-HJKMNP-TV-Z]{32}$/) as unknown as string,
         name: "E-book",
         description: null,
         promotable: false,

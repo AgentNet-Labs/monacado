@@ -298,6 +298,13 @@ async function computeEconomics(
 ): Promise<{ commercialRetailAmountMinorUnits: number; economics: TransactionEconomics }> {
   const placement = input.sourceVersion.placement;
 
+  /* Phase 1.34 — an unpriced placement has no commercial basis, so there is no
+     snapshot to write. Refused with the calculators' own bounded vocabulary
+     rather than a currency complaint: nothing disagrees about the currency when
+     there is no price to be in one. */
+  if (placement.retail === null) {
+    throw new TransactionEconomicsRefusedError("LISTING_NOT_PRICED");
+  }
   if (placement.retail.retailPriceCurrency !== input.currency) {
     throw new TransactionCurrencyMismatchError("listingRetailCurrency");
   }
