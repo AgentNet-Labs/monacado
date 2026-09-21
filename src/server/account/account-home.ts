@@ -36,8 +36,10 @@ import { INCLUDED_STOREFRONT_ALLOWANCE } from "../../contracts/marketplace/store
 import {
   canCreateDraftProduct,
   canCreateDraftStorefront,
+  canCreateSellerDirectListing,
   isAllowed,
 } from "../../contracts/marketplace/capability";
+import type { ListingLifecycleState } from "../../contracts/marketplace/listing-source";
 import type {
   DeliveryMode,
   GeneralAvailabilityState,
@@ -73,6 +75,40 @@ export interface AccountHomeStorefront {
    * domain again; this only decides what to show.
    */
   canEditPresentation: boolean;
+  /**
+   * Whether the page should offer this Storefront as a placement destination
+   * (Phase 1.34): the participant's status permits drafting and the Storefront
+   * is not CLOSED.
+   *
+   * Ownership is not re-asked because every Storefront in this list is one the
+   * participant owns, and owning it IS placement authority
+   * (`requireStorefrontPlacementAuthority`). The route asks the domain again;
+   * this only decides what to show.
+   *
+   * A CLOSED Storefront is excluded although the domain would still accept a
+   * placement into one from its owner. Offering it would be the page inviting
+   * somebody to stock a shop whose history is closed — see the note in
+   * `MARKETPLACE_ASSORTMENT_AND_LISTING_RULES.md` on lifecycle and placement.
+   */
+  canPlaceProduct: boolean;
+}
+
+/**
+ * One current seller-direct placement the participant controls (Phase 1.34):
+ * which of their Products is in which of their Storefronts.
+ *
+ * User-facing facts only. No Listing identifier, no internal Product or
+ * Storefront id, and **no price** — a private draft placement has none, and a
+ * column for one here would invite the page to imply otherwise.
+ */
+export interface AccountHomePlacement {
+  /** The Product's name, from its CURRENT source version. */
+  productName: string;
+  /** The Storefront's display name, from ITS current source version. */
+  storefrontDisplayName: string;
+  /** The public handle — the Storefront's own client-facing selector. */
+  storefrontHandle: string;
+  lifecycle: ListingLifecycleState;
 }
 
 /**
@@ -137,6 +173,21 @@ export interface AccountHome {
    * `canCreateDraftProduct` decision — SELLER only. The route asks again.
    */
   canCreateProduct: boolean;
+  /**
+   * Current seller-direct placements this participant controls, oldest first
+   * (Phase 1.34). Empty without a participant.
+   */
+  placements: AccountHomePlacement[];
+  /**
+   * Whether the page should offer the placement form: the 0M.1
+   * `canCreateSellerDirectListing` decision — SELLER only — AND at least one
+   * Product to place AND at least one Storefront to place it into.
+   *
+   * All three, because a form with an empty selector is not an offer. What to
+   * say instead when a side is missing is the page's decision, from
+   * `products` and `storefronts`, which it already has.
+   */
+  canPlaceListing: boolean;
 }
 
 /** `undefined` when the account no longer exists — the page treats that as signed out. */
@@ -166,6 +217,16 @@ export async function readAccountHome(
   const mayDraftStorefront = isAllowed(canCreateDraftStorefront(subject));
   const canCreateProduct = isAllowed(canCreateDraftProduct(subject));
   const products = participant === null ? [] : await readAuthoredProducts(db, participant.id);
+  const placements =
+    participant === null ? [] : await readSellerDirectPlacements(db, participant.id);
+  /* Phase 1.34. The capability AND both sides of the act: a placement form with
+     no Product to place, or nowhere to place it, is not an offer — it is a
+     dead control. What to say instead is the page's decision, and it has
+     `products` and `storefronts` to make it. */
+  const canPlaceListing =
+    isAllowed(canCreateSellerDirectListing(subject)) &&
+    products.length > 0 &&
+    storefronts.some((s) => s.canPlaceProduct);
   /* The same allowance `openOwnedDraftStorefront` enforces: the included
      Storefront, plus any upgrade entitlement — of which none exists yet. */
   const withinAllowance = storefronts.length < INCLUDED_STOREFRONT_ALLOWANCE;
@@ -182,6 +243,8 @@ export async function readAccountHome(
     storefronts,
     products,
     canCreateProduct,
+    placements,
+    canPlaceListing,
     canCreateStorefront,
     storefrontUpgradeRequired,
     name: account.name,
@@ -270,7 +333,114 @@ async function readOwnedStorefronts(
         participantMayDraft &&
         s.lifecycle !== "CLOSED" &&
         governed.has(s.internalStorefrontId),
+      /* Phase 1.34. Deliberately NOT gated on the governance assignment:
+         editing a Storefront's presentation requires an ACTIVE governance role
+         (0M.3A §3), while PLACING into it is satisfied by ownership alone, and
+         every Storefront here is owned by this participant. Reusing the
+         presentation condition would refuse an owner who has never appointed
+         themselves SUPER_OWNER — which is every owner, on the day they open
+         their first shop. */
+      canPlaceProduct: participantMayDraft && s.lifecycle !== "CLOSED",
     };
+  });
+}
+
+/**
+ * The participant's current seller-direct placements (Phase 1.34).
+ *
+ * **Current only.** A Listing released by a terminal lifecycle state carries a
+ * NULL placement marker and is history, not a placement — the same distinction
+ * the composite unique index draws. Reading the marker rather than listing
+ * lifecycle states keeps this and that constraint answering from one fact.
+ *
+ * Promoted placements are excluded: promoted self-service does not exist, and a
+ * page that listed one would be showing a capacity nobody can reach.
+ *
+ * Two follow-up reads rather than a join, matching `readAuthoredProducts` and
+ * `readOwnedStorefronts`: the names live on the CURRENT source versions of the
+ * Product and the Storefront, not on their stable rows.
+ */
+async function readSellerDirectPlacements(
+  db: Db,
+  participantId: string,
+): Promise<AccountHomePlacement[]> {
+  const listings = await db.listing.findMany({
+    where: {
+      controllingParticipantId: participantId,
+      listingType: "SELLER_DIRECT",
+      currentPlacementMarker: { not: null },
+    },
+    orderBy: { createdAt: "asc" },
+    select: { internalProductId: true, storefrontId: true, lifecycle: true },
+  });
+  if (listings.length === 0) return [];
+
+  const products = await db.product.findMany({
+    where: { internalProductId: { in: listings.map((l) => l.internalProductId) } },
+    select: { internalProductId: true, sourceRecordId: true, currentSourceRecordVersion: true },
+  });
+  const productVersions = await db.productSourceRecordVersionRow.findMany({
+    where: {
+      OR: products.map((p) => ({
+        sourceRecordId: p.sourceRecordId,
+        sourceRecordVersion: p.currentSourceRecordVersion,
+      })),
+    },
+    select: { sourceRecordId: true, factName: true },
+  });
+  const nameBySourceRecord = new Map(productVersions.map((v) => [v.sourceRecordId, v.factName]));
+  const productName = new Map(
+    products.map((p) => [p.internalProductId, nameBySourceRecord.get(p.sourceRecordId)]),
+  );
+
+  const stores = await db.storefront.findMany({
+    where: { internalStorefrontId: { in: listings.map((l) => l.storefrontId) } },
+    select: {
+      internalStorefrontId: true,
+      publicHandle: true,
+      storefrontSourceRecordId: true,
+      currentSourceRecordVersion: true,
+    },
+  });
+  const storeVersions = await db.storefrontSourceRecordVersionRow.findMany({
+    where: {
+      OR: stores.map((s) => ({
+        storefrontSourceRecordId: s.storefrontSourceRecordId,
+        sourceRecordVersion: s.currentSourceRecordVersion,
+      })),
+    },
+    select: { storefrontSourceRecordId: true, presentationDisplayName: true },
+  });
+  const displayBySourceRecord = new Map(
+    storeVersions.map((v) => [v.storefrontSourceRecordId, v.presentationDisplayName]),
+  );
+  const store = new Map(
+    stores.map((s) => [
+      s.internalStorefrontId,
+      {
+        handle: s.publicHandle,
+        /* The handle is the fallback the Storefront list already uses when a
+           draft has no display name yet. */
+        displayName: displayBySourceRecord.get(s.storefrontSourceRecordId) ?? s.publicHandle,
+      },
+    ]),
+  );
+
+  /* A placement whose Product or Storefront name cannot be resolved is dropped
+     rather than rendered with a placeholder: a page naming somebody's shop
+     "Unknown" is worse than a page not naming it. */
+  return listings.flatMap((l) => {
+    const name = productName.get(l.internalProductId);
+    const shop = store.get(l.storefrontId);
+    if (name === undefined || shop === undefined) return [];
+    return [
+      {
+        productName: name,
+        storefrontDisplayName: shop.displayName,
+        storefrontHandle: shop.handle,
+        lifecycle: l.lifecycle as ListingLifecycleState,
+      },
+    ];
   });
 }
 

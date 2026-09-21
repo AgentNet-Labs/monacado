@@ -52,6 +52,7 @@ import type { Prisma } from "@prisma/client";
 import {
   CreatePromotedListingInput,
   CreateSellerDirectListingInput,
+  PlaceProductInStorefrontInput,
   UpdateListingInput,
   materialListingChangesBetween,
 } from "../../contracts/marketplace/listing-record";
@@ -904,6 +905,102 @@ export async function createSellerDirectListing(
   } catch (error) {
     mapWriteError("createSellerDirectListing", error);
   }
+}
+
+/**
+ * Place one of the acting Seller's own Products into a Storefront they control
+ * (Phase 1.34) — the self-service command behind `POST /api/listings`.
+ *
+ * **A resolver, not a second Listing path.** Everything authoritative happens in
+ * `createSellerDirectListing`: authority, Product authority, Storefront
+ * placement authority, standing, the placement invariant, the version, and the
+ * pointer. This translates the two selectors a browser may legitimately hold —
+ * the opaque `productRef` and the Storefront's public handle — into the internal
+ * identities the domain takes, and supplies the controller from the
+ * authenticated session. It decides nothing, and it is deliberately the same
+ * shape as `editStorefrontPresentation`, which resolves a handle the same way.
+ *
+ * **Order matters, and it is an authorization boundary.** The acting
+ * participant is resolved FIRST. Resolving the selectors before it would let an
+ * account with no marketplace participation at all discover, by nothing more
+ * than a response-time difference, whether a given `productRef` names a real
+ * Product. Nobody who cannot place anything gets to probe what exists.
+ *
+ * **A missing reference and an unauthorized one are the same kind of answer.**
+ * The route maps `PRODUCT_NOT_FOUND`, `STOREFRONT_NOT_FOUND`, and the two
+ * authority refusals onto one response, so "no such Product" and "not your
+ * Product" are indistinguishable from outside. That is why this may resolve a
+ * reference it has not yet proved the caller owns: the distinction never leaves
+ * the process.
+ *
+ * **Retail is explicitly `null`.** Not omitted — stated. A private draft
+ * placement carries no commercial price (`LISTING_SOURCE_MODEL.md` §2a), and
+ * saying so is how this command declines to invent one. There is no Offer, and
+ * the seller-direct branch has no field for one.
+ *
+ * The acting participant is named as the controller and then **re-checked
+ * inside the write transaction** by `requireController`, so the window between
+ * this read and that write cannot be used to place a Listing under somebody
+ * else's control.
+ */
+export async function placeProductInStorefront(
+  input: unknown,
+  deps: ListingServiceDeps = {},
+): Promise<ListingSnapshot> {
+  const parsed = PlaceProductInStorefrontInput.safeParse(input);
+  if (!parsed.success) throw inputError(parsed.error);
+  const data = parsed.data;
+
+  const db = deps.db ?? getPrisma();
+
+  let resolved: { internalProductId: string; storefrontId: string; participantId: string };
+  try {
+    const subject = await resolveActingSubject(db, data.actingAccountId);
+    const participantId = subject.participant?.participantId;
+    /* Not an authorization failure dressed up as one: the account is simply not
+       a marketplace participant, so there is no identity for a Listing
+       controller to name. The capability comes from the decision itself rather
+       than a literal, so a renamed capability cannot leave a stale string here. */
+    if (participantId === undefined) {
+      throw new ListingNotAuthorizedError(canCreateSellerDirectListing(subject).capability, [
+        "PARTICIPANT_REQUIRED",
+      ]);
+    }
+
+    const product = await db.product.findUnique({
+      where: { productRef: data.productRef },
+      select: { internalProductId: true },
+    });
+    if (product === null) throw new ListingProductNotFoundError();
+
+    const storefront = await db.storefront.findUnique({
+      where: { publicHandle: data.storefrontHandle },
+      select: { internalStorefrontId: true },
+    });
+    if (storefront === null) throw new ListingStorefrontNotFoundError();
+
+    resolved = {
+      internalProductId: product.internalProductId,
+      storefrontId: storefront.internalStorefrontId,
+      participantId,
+    };
+  } catch (error) {
+    if (isDomainError(error)) throw error;
+    throw new ListingPersistenceFailureError("placeProductInStorefront", error);
+  }
+
+  return await createSellerDirectListing(
+    {
+      storefrontId: resolved.storefrontId,
+      internalProductId: resolved.internalProductId,
+      controllingParticipantId: resolved.participantId,
+      /* Stated, never omitted — see the note above. */
+      retail: null,
+      actingAccountId: data.actingAccountId,
+      now: data.now,
+    },
+    deps,
+  );
 }
 
 /**

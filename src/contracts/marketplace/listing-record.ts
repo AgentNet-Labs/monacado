@@ -35,8 +35,10 @@
 
 import { z } from "zod";
 import { canonicalJsonString } from "../integrity/canonical-json";
+import { PRODUCT_REF_RE } from "../capsule/identity";
 import { MarketplaceParticipantId } from "./participant";
 import { OfferSourceRecordVersion } from "./offer-source";
+import { PublicHandle } from "./storefront-source";
 import {
   InternalListingId,
   InternalProductRef,
@@ -105,6 +107,55 @@ export const CreateSellerDirectListingInput = z.strictObject({
   now: z.iso.datetime(),
 });
 export type CreateSellerDirectListingInput = z.infer<typeof CreateSellerDirectListingInput>;
+
+/**
+ * The stable application-facing Product reference, as a parsed value.
+ *
+ * The regex is the identity contract's; this is only its zod form, and it lives
+ * here because the placement input below is its only consumer. `capsule/identity`
+ * stays zod-free, as every other module importing it expects.
+ */
+export const ProductRef = z
+  .string()
+  .regex(PRODUCT_REF_RE, "productRef must be a 32-character opaque application reference");
+export type ProductRef = z.infer<typeof ProductRef>;
+
+/**
+ * Place one of the acting Seller's own Products into a Storefront they control
+ * (Phase 1.34) — the self-service command.
+ *
+ * **Two selectors and nothing else**, and the omissions are the design:
+ *
+ *   - `productRef` is the *only* Product selector. An internal `mon:product:`
+ *     id, a `mon:srec:`, a ProductNode id, or a Product name has nowhere to go
+ *     — this is a strict object, so any of them is a refusal rather than a
+ *     field quietly ignored. A name would be worse than refused: it is not
+ *     identity, and two Products may share one.
+ *   - `storefrontHandle` is the *only* Storefront selector, for the same reason
+ *     and because it is already the reference the account page shows.
+ *
+ * There is no member for the controlling participant, the Storefront owner, a
+ * governance assignment, a Listing id, a source version, a lifecycle, a retail
+ * price, a currency, an Offer, a commission, or any activation or publication
+ * field. Every one of them is either resolved from the authenticated session or
+ * decided by the domain, and a caller who cannot state them cannot forge them.
+ *
+ * The placement this creates is `DRAFT`, `SELLER_DIRECT`, and **unpriced**:
+ * §2a of the Listing source model — a Listing is placement, an Offer is
+ * commercial terms.
+ */
+export const PlaceProductInStorefrontInput = z.strictObject({
+  /** The acting Seller's own Product, by its opaque application reference. */
+  productRef: ProductRef,
+  /** A Storefront the acting participant controls, by its public handle. */
+  storefrontHandle: PublicHandle,
+
+  actingAccountId: ActingAccountId,
+
+  /** Explicit instants. Nothing here reads a clock. */
+  now: z.iso.datetime(),
+});
+export type PlaceProductInStorefrontInput = z.infer<typeof PlaceProductInStorefrontInput>;
 
 /**
  * Create one draft PROMOTED Listing bound to an exact accepted Offer version.

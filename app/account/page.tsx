@@ -7,7 +7,9 @@
  * they can take next — starting Seller and/or Promoter setup. Phase 1.30 adds
  * the step after that: opening a private draft Storefront, and seeing it; Phase
  * 1.31 lets its owner edit that draft's name, tagline, and summary; Phase 1.32
- * lets a Seller add private draft Products, which are not listed or for sale.
+ * lets a Seller add private draft Products, which are not listed or for sale;
+ * Phase 1.34 lets a Seller put one of those Products into one of their
+ * Storefronts as a private draft placement — no price, not live, not for sale.
  *
  * It is still deliberately **not** a dashboard or a settings screen. Nothing
  * here edits the account, changes a password, lists sessions, changes a
@@ -60,8 +62,12 @@ import {
   PRODUCT_DRAFT_STATUS,
   PRODUCT_INTRO,
   PROMOTABLE_LABELS,
+  PLACEMENT_DRAFT_STATUS,
+  PLACEMENT_NEEDS_PRODUCT,
+  PLACEMENT_NEEDS_STOREFRONT,
 } from "./account-home-copy";
 import { OnboardingForm } from "./onboarding-form";
+import { PlacementForm } from "./placement-form";
 import { ProductForm } from "./product-form";
 import { StorefrontForm } from "./storefront-form";
 import { StorefrontPresentationForm } from "./storefront-presentation-form";
@@ -212,6 +218,53 @@ export default async function AccountPage() {
                 <ProductForm />
               </details>
             ) : null}
+          </section>
+        ) : null}
+
+        {/* Phase 1.34 — placements. Shown to a Seller who has either side of the
+            act, so a person who has done half of it learns what the other half
+            is rather than seeing nothing. */}
+        {home.canCreateProduct && (home.products.length > 0 || home.storefronts.length > 0) ? (
+          <section className="account-section" aria-labelledby="account-placement-heading">
+            <h2 id="account-placement-heading">Add product to storefront</h2>
+
+            {home.placements.length > 0 ? (
+              <ul className="account-placements">
+                {home.placements.map((placement, i) => (
+                  /* No identifier reaches this page, so position keys the list;
+                     it is re-rendered whole on every change. */
+                  <li key={i}>
+                    <span className="account-storefront-name">{placement.productName}</span>
+                    {` in ${placement.storefrontDisplayName} — ${PLACEMENT_DRAFT_STATUS}`}
+                    <br />
+                    <span className="auth-hint">{`Storefront: ${placement.storefrontHandle}`}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+
+            {/* The form only when both sides exist; otherwise the one sentence
+                that names the missing half. Neither branch offers a shortcut
+                into another flow — the controls for both are already on this
+                page. */}
+            {home.canPlaceListing ? (
+              <PlacementForm
+                products={home.products.map((product) => ({
+                  value: product.productRef,
+                  label: product.name,
+                }))}
+                storefronts={home.storefronts
+                  .filter((storefront) => storefront.canPlaceProduct)
+                  .map((storefront) => ({
+                    value: storefront.publicHandle,
+                    label: storefront.displayName,
+                  }))}
+              />
+            ) : home.products.length === 0 ? (
+              <p className="auth-status">{PLACEMENT_NEEDS_PRODUCT}</p>
+            ) : (
+              <p className="auth-status">{PLACEMENT_NEEDS_STOREFRONT}</p>
+            )}
           </section>
         ) : null}
 

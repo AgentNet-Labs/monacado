@@ -111,3 +111,20 @@ export const PROMOTABLE_LABELS = {
   true: "Promoters may feature it",
   false: "Not open to promoters",
 } as const;
+
+// — Placements (Phase 1.34) —
+
+/** Shown above the placement control. Placement is not pricing, and says so. */
+export const PLACEMENT_INTRO =
+  "Add one of your products to one of your storefronts. The listing stays a private draft — no price is set and nothing goes on sale.";
+
+/** The state every placement this phase can create is in. */
+export const PLACEMENT_DRAFT_STATUS = "Draft · Not live · Not for sale";
+
+/** A Seller with products but nowhere to put them. No redirect, no upsell. */
+export const PLACEMENT_NEEDS_STOREFRONT =
+  "Create a storefront to add your products to.";
+
+/** A Seller with a storefront and nothing to put in it. */
+export const PLACEMENT_NEEDS_PRODUCT =
+  "Add a product before you can add it to a storefront.";

@@ -223,6 +223,7 @@ Updated at Phase 1.34 where that phase changed the answer.
 | Must a DRAFT Listing carry a price? | **No — Phase 1.34.** A private `SELLER_DIRECT` draft may carry none; price and currency are a nullable pair. A `PROMOTED` placement still requires both, and `DRAFT → ACTIVE` refuses an unpriced placement. |
 | Does a Product have an application-facing reference? | **Yes — Phase 1.34.** `Product.productRef`: opaque, immutable, server-minted, unique. Application routing identity only — not a semantic or public AgentNet identity. |
 | Listing lifecycle | `DRAFT`, `ACTIVE`, `SUSPENDED`, `ENDED`, `WITHDRAWN`; created `DRAFT`; `→ ACTIVE` is a separate governed act. |
+| Seller-direct self-service? | **Yes — Phase 1.34.** `POST /api/listings`, two selectors, one unpriced private `DRAFT` placement. |
 | Seller-direct pathway | `createSellerDirectListing` / `openSellerDirectListing`: `canCreateSellerDirectListing` (SELLER role), controller is the acting participant, controller holds Product authority (`participantHoldsProductAuthority`), and Storefront placement authority (owner, or ACTIVE governance assignment). |
 | Promoted pathway | `createPromotedListing` / `openPromotedListing`: `canCreatePromotedListing` (PROMOTER role), controller is the acting participant, Storefront placement authority, and an exact accepted Offer version whose terms are PAID and `PROMOTABLE`. |
 | What decides promoter authority? | **The PROMOTER role label**, plus Storefront authority and the Offer's promotion terms. |
@@ -250,8 +251,12 @@ Updated at Phase 1.34 where that phase changed the answer.
    Phase 1.34 added no count, allowance, or paid entitlement.
 5. **Promotability reconciliation (§7)** — whether a promoted Listing must also
    require the Product fact `promotable`, beside the Offer's `PROMOTABLE` terms.
-6. **Seller-direct Listing self-service** — the placement route and UI for a
-   Seller's own draft Product into their own draft Storefront.
+6. ~~**Seller-direct Listing self-service**~~ — **closed at Phase 1.34.**
+   `POST /api/listings` takes two selectors, `productRef` and
+   `storefrontHandle`, and creates one private `DRAFT` `SELLER_DIRECT` Listing
+   with no price. `/account` offers the control once the Seller holds both a
+   Product and a Storefront. Activation, pricing, Offers, and the active-Listing
+   allowance are all still out of reach from it.
 
 ## Reference
 

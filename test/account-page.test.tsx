@@ -66,6 +66,16 @@ const {
   submitStorefrontPresentation,
 } = await import("../app/account/storefront-presentation-submission");
 const {
+  PLACEMENT_ALREADY_EXISTS,
+  PLACEMENT_ENDPOINT,
+  PLACEMENT_FAILURE,
+  PLACEMENT_INVALID,
+  PLACEMENT_NOT_AVAILABLE,
+  PLACEMENT_NOT_ELIGIBLE,
+  PLACEMENT_SIGNED_OUT,
+  submitPlacement,
+} = await import("../app/account/placement-submission");
+const {
   PRODUCT_ENDPOINT,
   PRODUCT_FAILURE,
   PRODUCT_INVALID,
@@ -92,6 +102,8 @@ function home(overrides: Partial<AccountHome> = {}): AccountHome {
     storefrontUpgradeRequired: false,
     products: [],
     canCreateProduct: false,
+    placements: [],
+    canPlaceListing: false,
     ...overrides,
   };
 }
@@ -210,6 +222,7 @@ describe("/account presentation", () => {
             lifecycle: "DRAFT",
             visibility: "PRIVATE",
             canEditPresentation: true,
+            canPlaceProduct: true,
           },
         ],
       }),
@@ -238,6 +251,7 @@ describe("/account presentation", () => {
             lifecycle: "DRAFT",
             visibility: "PRIVATE",
             canEditPresentation: true,
+            canPlaceProduct: true,
           },
         ],
       }),
@@ -273,6 +287,7 @@ describe("/account presentation", () => {
             lifecycle: "CLOSED",
             visibility: "PRIVATE",
             canEditPresentation: false,
+            canPlaceProduct: false,
           },
         ],
       }),
@@ -640,6 +655,247 @@ describe("draft Product submission", () => {
     for (const [reply, message] of cases) {
       const { fetchImpl } = captureFetch(reply);
       expect(await submitDraftProduct(fields, { fetchImpl })).toEqual({ outcome: "failed", message });
+    }
+  });
+});
+
+// — Phase 1.34: placing a Product in a Storefront —
+
+describe("placement presentation", () => {
+  const PRODUCT_REF = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+  const OTHER_REF = "ZYXWVTSRQPNMKJHGFEDCBA9876543210";
+
+  const product = {
+    productRef: PRODUCT_REF,
+    name: "Hand-thrown mug",
+    description: null,
+    promotable: false,
+    generalAvailabilityState: "available" as const,
+    deliveryMode: "PHYSICAL" as const,
+    recordStatus: "draft" as const,
+  };
+
+  /* No apostrophe: this suite compares rendered text, and an entity-encoded
+     one would make every assertion about HTML escaping instead of content. */
+  const storefront = {
+    displayName: "Ada Workshop",
+    tagline: null,
+    summary: null,
+    publicHandle: "ada-workshop",
+    lifecycle: "DRAFT" as const,
+    visibility: "PRIVATE" as const,
+    canEditPresentation: true,
+    canPlaceProduct: true,
+  };
+
+  it("offers the form with a safe selector per Product and per Storefront", async () => {
+    const html = await renderSignedIn(
+      home({
+        marketplace: DRAFT_SELLER,
+        canCreateProduct: true,
+        canPlaceListing: true,
+        products: [product, { ...product, productRef: OTHER_REF, name: "Stoneware bowl" }],
+        storefronts: [storefront],
+      }),
+    );
+
+    expect(html).toContain("Add product to storefront");
+    expect(html).toContain("Add as draft listing");
+
+    /* The reference is the option's VALUE; the name is what a person reads. */
+    expect(html).toContain(`value="${PRODUCT_REF}"`);
+    expect(html).toContain(`value="${OTHER_REF}"`);
+    expect(html).toContain("Hand-thrown mug");
+    expect(html).toContain("Stoneware bowl");
+    expect(html).toContain('value="ada-workshop"');
+    expect(html).toContain("Ada Workshop");
+
+    /* Placement is not pricing, and the page must not imply otherwise: no
+       commercial control of any kind, and nothing that takes a listing live. */
+    for (const absent of [
+      "mon:",
+      "an:node",
+      "currency",
+      "Currency",
+      "Offer",
+      "commission",
+      "Activate",
+      "Go live",
+      "Publish",
+    ]) {
+      expect(html).not.toContain(absent);
+    }
+    /* "price" appears exactly once, and only in the sentence that says there
+       ISN'T one. Asserted this way rather than by banning the word, so the page
+       stays free to tell the truth about what it is not doing. */
+    expect(html.match(/price/gi) ?? []).toHaveLength(1);
+    expect(html).toContain("no price is set and nothing goes on sale");
+    /* And no field could carry one. Scoped to the placement form itself — the
+       page holds other forms, and a page-wide count would pass or fail for
+       reasons that have nothing to do with this one. */
+    const form = html.slice(
+      html.indexOf("account-placement-form"),
+      html.indexOf("</form>", html.indexOf("account-placement-form")),
+    );
+    expect(form).toContain("Add as draft listing");
+    expect(form.match(/<select/g) ?? []).toHaveLength(2);
+    expect(form.match(/<input/g) ?? []).toHaveLength(0);
+    expect(html).not.toContain('type="number"');
+  });
+
+  it("lists a created placement as a draft that is not for sale", async () => {
+    const html = await renderSignedIn(
+      home({
+        marketplace: DRAFT_SELLER,
+        canCreateProduct: true,
+        canPlaceListing: true,
+        products: [product],
+        storefronts: [storefront],
+        placements: [
+          {
+            productName: "Hand-thrown mug",
+            storefrontDisplayName: "Ada Workshop",
+            storefrontHandle: "ada-workshop",
+            lifecycle: "DRAFT",
+          },
+        ],
+      }),
+    );
+    const text = html.replaceAll("<!-- -->", "").replace(/<[^>]+>/g, "");
+
+    expect(text).toContain("Hand-thrown mug in Ada Workshop — Draft · Not live · Not for sale");
+    expect(text).toContain("Storefront: ada-workshop");
+    expect(html).not.toContain("mon:");
+  });
+
+  it("names the missing half instead of showing a dead control", async () => {
+    /* A Seller with products and nowhere to put them. No form, one sentence,
+       and no redirect into another flow — the Storefront control is already on
+       this page. */
+    const noShop = await renderSignedIn(
+      home({
+        marketplace: DRAFT_SELLER,
+        canCreateProduct: true,
+        canPlaceListing: false,
+        products: [product],
+        storefronts: [],
+      }),
+    );
+    expect(noShop).toContain("Create a storefront to add your products to.");
+    expect(noShop).not.toContain("Add as draft listing");
+
+    /* And a Seller with a shop and nothing to put in it. */
+    const noProduct = await renderSignedIn(
+      home({
+        marketplace: DRAFT_SELLER,
+        canCreateProduct: true,
+        canPlaceListing: false,
+        products: [],
+        storefronts: [storefront],
+      }),
+    );
+    expect(noProduct).toContain("Add a product before you can add it to a storefront.");
+    expect(noProduct).not.toContain("Add as draft listing");
+  });
+
+  it("shows the section to nobody who cannot place at all", async () => {
+    /* Neither half, and no Seller capability: the whole section is absent
+       rather than present and empty. */
+    const newcomer = await renderSignedIn(home({ marketplace: DRAFT_SELLER }));
+    expect(newcomer).not.toContain("Add product to storefront");
+
+    const promoter = await renderSignedIn(
+      home({
+        marketplace: { status: "DRAFT", roles: [{ role: "PROMOTER", status: "DRAFT" }], onboardingOpen: true },
+        canCreateProduct: false,
+        canPlaceListing: false,
+        storefronts: [storefront],
+      }),
+    );
+    expect(promoter).not.toContain("Add product to storefront");
+  });
+});
+
+describe("placement submission", () => {
+  function captureFetch(reply: Response | (() => never)) {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const fetchImpl = (async (url: unknown, init: unknown) => {
+      calls.push({ url: String(url), init: (init ?? {}) as RequestInit });
+      if (typeof reply === "function") reply();
+      return reply;
+    }) as unknown as typeof fetch;
+    return { calls, fetchImpl };
+  }
+  const json = (status: number, body: unknown) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+  const fields = {
+    productRef: "0123456789ABCDEFGHJKMNPQRSTVWXYZ",
+    storefrontHandle: "ada-workshop",
+  };
+
+  it("sends exactly the two selectors, and nothing else", async () => {
+    const { calls, fetchImpl } = captureFetch(json(201, {}));
+    expect(await submitPlacement(fields, { fetchImpl })).toEqual({ outcome: "created" });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe(PLACEMENT_ENDPOINT);
+    expect(calls[0]!.init.method).toBe("POST");
+    expect(calls[0]!.init.credentials).toBe("same-origin");
+    /* The body is the whole request. There is no participant, no internal id,
+       no lifecycle, no price, and no Offer — this module cannot build one. */
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual(fields);
+  });
+
+  it("sends nothing at all when either selector is empty", async () => {
+    for (const partial of [
+      { ...fields, productRef: "" },
+      { ...fields, storefrontHandle: "" },
+    ]) {
+      const { calls, fetchImpl } = captureFetch(json(201, {}));
+      expect(await submitPlacement(partial, { fetchImpl })).toEqual({
+        outcome: "failed",
+        message: PLACEMENT_INVALID,
+      });
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  it("maps every refusal onto bounded copy", async () => {
+    const cases: Array<[Response | (() => never), string]> = [
+      [json(400, { error: "INVALID_LISTING_REQUEST" }), PLACEMENT_INVALID],
+      [json(404, { error: "PLACEMENT_NOT_AVAILABLE" }), PLACEMENT_NOT_AVAILABLE],
+      [json(403, { error: "LISTING_NOT_ELIGIBLE" }), PLACEMENT_NOT_ELIGIBLE],
+      [json(409, { error: "LISTING_ALREADY_EXISTS" }), PLACEMENT_ALREADY_EXISTS],
+      [json(401, { error: "UNAUTHENTICATED" }), PLACEMENT_SIGNED_OUT],
+      [json(403, { error: "CROSS_ORIGIN_REQUEST_REFUSED" }), PLACEMENT_FAILURE],
+      [json(500, { error: "LISTING_UNAVAILABLE" }), PLACEMENT_FAILURE],
+      [new Response("not json", { status: 502 }), PLACEMENT_FAILURE],
+      [
+        () => {
+          throw new TypeError("network");
+        },
+        PLACEMENT_FAILURE,
+      ],
+    ];
+    for (const [reply, message] of cases) {
+      const { fetchImpl } = captureFetch(reply);
+      expect(await submitPlacement(fields, { fetchImpl })).toEqual({ outcome: "failed", message });
+    }
+  });
+
+  it("never names a price, a currency, or an Offer in its copy", async () => {
+    /* The person is told what happened, not invited to think a price exists. */
+    for (const message of [
+      PLACEMENT_INVALID,
+      PLACEMENT_NOT_AVAILABLE,
+      PLACEMENT_NOT_ELIGIBLE,
+      PLACEMENT_ALREADY_EXISTS,
+      PLACEMENT_SIGNED_OUT,
+      PLACEMENT_FAILURE,
+    ]) {
+      expect(message).not.toMatch(/price|currency|offer|commission|\$/i);
+      expect(message).not.toMatch(/mon:|an:/);
     }
   });
 });

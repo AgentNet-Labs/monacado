@@ -409,6 +409,9 @@ describeDb("1.30 — self-service draft Storefront", () => {
         lifecycle: "DRAFT",
         visibility: "PRIVATE",
         canEditPresentation: true,
+        /* Phase 1.34: owning a draft Storefront is placement authority over it,
+           so the page may offer it as a destination straight away. */
+        canPlaceProduct: true,
       },
     ]);
     expect(JSON.stringify(after)).not.toMatch(/mon:/);

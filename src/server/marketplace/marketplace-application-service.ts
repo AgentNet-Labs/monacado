@@ -66,7 +66,11 @@ import { beginParticipantOnboarding } from "./participant-service";
 import type { ParticipantServiceDeps, ParticipantSnapshot } from "./participant-service";
 import { createOfferSourceVersion } from "./offer-service";
 import type { OfferServiceDeps, OfferSnapshot } from "./offer-service";
-import { createSellerDirectListing, createPromotedListing } from "./listing-service";
+import {
+  createSellerDirectListing,
+  createPromotedListing,
+  placeProductInStorefront,
+} from "./listing-service";
 import type { ListingServiceDeps, ListingSnapshot } from "./listing-service";
 import {
   assignStorefrontGovernance,
@@ -286,6 +290,32 @@ export async function openSellerDirectListing(
   deps: ListingServiceDeps = {},
 ): Promise<ListingSnapshot> {
   return await createSellerDirectListing(withActor(input, actor), deps);
+}
+
+/**
+ * Place one of the acting Seller's own Products into a Storefront they control
+ * (Phase 1.34).
+ *
+ * The input is **rebuilt from the two fields the act consists of**, not spread,
+ * for the same reason the onboarding command rebuilds its own: a stray
+ * `controllingParticipantId`, `internalProductId`, `retail`, or `lifecycle` in a
+ * forwarded body has nowhere to land. `withActor` would strip only the account
+ * id; this leaves nothing else to strip.
+ */
+export async function placeOwnProductInStorefront(
+  actor: ActingAccount,
+  input: { productRef: unknown; storefrontHandle: unknown; now: string },
+  deps: ListingServiceDeps = {},
+): Promise<ListingSnapshot> {
+  return await placeProductInStorefront(
+    {
+      productRef: input.productRef,
+      storefrontHandle: input.storefrontHandle,
+      actingAccountId: actor.accountId,
+      now: input.now,
+    },
+    deps,
+  );
 }
 
 /**
