@@ -32,6 +32,7 @@ import {
   MONACADO_MARKETPLACE_POLICY_V1_3_HASH,
 } from "../src/contracts/marketplace/marketplace-policy-content";
 import { syntheticProductRef } from "./support/product-ref-fixture";
+import { syntheticListingRef } from "./support/listing-ref-fixture";
 
 const RUN = process.env.RUN_DB_TESTS === "1";
 const db = RUN ? getPrisma() : (undefined as unknown as ReturnType<typeof getPrisma>);
@@ -128,6 +129,7 @@ async function seedListingVersionFor(participantId: string, recordedAt: string):
   const listingSourceRecordId = `mon:srec:${pad26(`${TAG}LSREC${n}`)}`;
   await db.listing.create({
     data: {
+      listingRef: syntheticListingRef(),
       internalListingId,
       listingSourceRecordId,
       currentSourceRecordVersion: "1",

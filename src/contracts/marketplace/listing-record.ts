@@ -35,7 +35,7 @@
 
 import { z } from "zod";
 import { canonicalJsonString } from "../integrity/canonical-json";
-import { PRODUCT_REF_RE } from "../capsule/identity";
+import { LISTING_REF_RE, PRODUCT_REF_RE } from "../capsule/identity";
 import { MarketplaceParticipantId } from "./participant";
 import { OfferSourceRecordVersion } from "./offer-source";
 import { PublicHandle } from "./storefront-source";
@@ -194,6 +194,51 @@ export const CreatePromotedListingInput = z.strictObject({
   now: z.iso.datetime(),
 });
 export type CreatePromotedListingInput = z.infer<typeof CreatePromotedListingInput>;
+
+/**
+ * The stable application-facing Listing reference, as a parsed value
+ * (Phase 1.35).
+ *
+ * The regex is the identity contract's; this is only its zod form, beside
+ * `ProductRef` and for the same reason — `capsule/identity` stays zod-free.
+ */
+export const ListingRef = z
+  .string()
+  .regex(LISTING_REF_RE, "listingRef must be a 32-character opaque application reference");
+export type ListingRef = z.infer<typeof ListingRef>;
+
+/**
+ * Withdraw one of the acting Seller's own private DRAFT placements
+ * (Phase 1.35) — the self-service command.
+ *
+ * **One selector, and the omissions are the design.** `listingRef` names the
+ * placement; everything else is resolved or decided server-side. There is no
+ * member for a lifecycle, a Product, a Storefront, a controlling participant, a
+ * source-record version, a reason, a price, an Offer, or any activation or
+ * publication field — and this is a strict object, so any of them is a refusal
+ * rather than a field quietly ignored.
+ *
+ * **No lifecycle input in particular.** A caller who could name the target
+ * state could name `ACTIVE`, and taking a placement live is exactly the act
+ * this phase does not expose. The destination is `WITHDRAWN` because that is
+ * the only transition self-service withdrawal performs, not because a caller
+ * asked for it.
+ *
+ * **No version label either.** The next immutable source version is labelled by
+ * the service from the current pointer, matching how a Storefront presentation
+ * edit labels its own. A caller-supplied label would let one placement's
+ * history be written out of order.
+ */
+export const WithdrawDraftPlacementInput = z.strictObject({
+  /** The placement to withdraw, by its opaque application reference. */
+  listingRef: ListingRef,
+
+  actingAccountId: ActingAccountId,
+
+  /** Explicit instants. Nothing here reads a clock. */
+  now: z.iso.datetime(),
+});
+export type WithdrawDraftPlacementInput = z.infer<typeof WithdrawDraftPlacementInput>;
 
 // — Update —
 

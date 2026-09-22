@@ -286,6 +286,64 @@ the question the same phase's loosening opened — is there a price at all — a
 nothing about Offer terms, promoted economics, or the active-Listing allowance.
 Those are the governed commercial-readiness gate the activation phase owns.
 
+### `Listing.listingRef` — the application-facing placement reference (Phase 1.35)
+
+The selector a route, a form action, or a page link names a Listing by. It
+exists because every identifier a Listing had before it is internal:
+`internalListingId` is `mon:listing:<opaque>`, `listingSourceRecordId` is
+`mon:srec:<opaque>`, and the primary key is a primary key. A placement was
+therefore write-only — creatable, and then never referable to again, which is
+why nothing could withdraw one.
+
+- **It names the AGGREGATE, not a version.** A Listing mints a new immutable
+  source version whenever its material state moves, and the reference does not
+  move with it. A link held before a withdrawal still names the same placement
+  after it.
+- **Opaque, un-namespaced, and carrying no business meaning.** Not the Product,
+  the Storefront, the controller, the lifecycle, or the version. Because every
+  internal identity carries a `mon:` or `an:` prefix and this carries none, it
+  cannot be read or used as one.
+- **Server-minted, with no input path.** 32 CSPRNG-drawn Crockford characters
+  (160 bits) from the shared `randomApplicationRef`. A populated-database
+  backfill writes `HEX(RANDOM_BYTES(16))` — 128 bits over a strict subset of the
+  same alphabet — so both paths clear 128 bits and produce the same shape.
+- **Both creation paths mint one**, seller-direct and promoted alike: the
+  reference identifies the placement, not its commercial type. Minting it only
+  for one branch would make the column's meaning depend on how the row was
+  created.
+
+It is **application routing identity, not semantic or public AgentNet
+identity**: not a capsule fact, part of no source version, absent from every
+projection, and never published.
+
+### Withdrawing a private DRAFT placement (Phase 1.35)
+
+`withdrawDraftPlacement` exposes exactly one transition — `SELLER_DIRECT` +
+`DRAFT` → `WITHDRAWN` — through the ordinary versioned path. It resolves the
+reference, labels the next version with `nextListingSourceRecordVersion`, and
+delegates to `createListingSourceVersion`; the transition table, the authority
+decision, the version insert, and the pointer advance are all that function's,
+unchanged.
+
+**The ordering is an authorization boundary.** The acting participant is
+resolved first, then the reference, then **control**, and only then state. A
+reference naming nothing and a real placement belonging to another Seller are
+one answer, so a caller holding a guessed reference cannot learn that it exists,
+who holds it, or what state it is in. `LISTING_NOT_WITHDRAWABLE` is safe to be
+specific because control has already been established when it is raised.
+
+**The release falls out of the lifecycle, not out of this command.** `WITHDRAWN`
+is terminal, so `currentPlacementMarkerFor` clears the marker in the same
+statement that moves the lifecycle — nothing here writes the marker. The pair is
+free again, the replacement placement gets its own new `listingRef`, and the
+withdrawn Listing keeps its whole history.
+
+**Everything else is refused and stays refused**: `ACTIVE` and `SUSPENDED`
+belong to the activation work that put them in front of buyers; `ENDED` and
+`WITHDRAWN` are terminal and must mint nothing; `PROMOTED` is not self-service
+in either direction. The destination is not a parameter — a caller able to name
+a target state would be a caller able to name `ACTIVE`.
+
 ### One current placement per Product + Storefront (Phase 1.34)
 
 `Listing.currentPlacementMarker` holds the canonical string `CURRENT` while an

@@ -63,6 +63,7 @@ import {
 } from "../src/server/risk/seller-risk-errors";
 import type { RiskReviewReason } from "../src/contracts/marketplace/seller-risk-review";
 import { syntheticProductRef } from "./support/product-ref-fixture";
+import { syntheticListingRef } from "./support/listing-ref-fixture";
 
 const RUN = process.env.RUN_DB_TESTS === "1";
 const db = RUN ? getPrisma() : (undefined as unknown as ReturnType<typeof getPrisma>);
@@ -201,6 +202,7 @@ async function seedGraph(): Promise<Graph> {
   const listingSourceRecordId = `mon:srec:${pad26(`${TAG}LSREC${n}`)}`;
   await db.listing.create({
     data: {
+      listingRef: syntheticListingRef(),
       internalListingId,
       listingSourceRecordId,
       currentSourceRecordVersion: "1",

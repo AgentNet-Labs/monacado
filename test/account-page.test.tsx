@@ -66,6 +66,15 @@ const {
   submitStorefrontPresentation,
 } = await import("../app/account/storefront-presentation-submission");
 const {
+  WITHDRAW_FAILURE,
+  WITHDRAW_NOT_AVAILABLE,
+  WITHDRAW_NOT_ELIGIBLE,
+  WITHDRAW_NOT_WITHDRAWABLE,
+  WITHDRAW_SIGNED_OUT,
+  placementWithdrawEndpoint,
+  submitPlacementWithdrawal,
+} = await import("../app/account/placement-withdraw-submission");
+const {
   PLACEMENT_ALREADY_EXISTS,
   PLACEMENT_ENDPOINT,
   PLACEMENT_FAILURE,
@@ -753,6 +762,7 @@ describe("placement presentation", () => {
         storefronts: [storefront],
         placements: [
           {
+            listingRef: "ZYXWVTSRQPNMKJHGFEDCBA9876543210",
             productName: "Hand-thrown mug",
             storefrontDisplayName: "Ada Workshop",
             storefrontHandle: "ada-workshop",
@@ -893,6 +903,201 @@ describe("placement submission", () => {
       PLACEMENT_ALREADY_EXISTS,
       PLACEMENT_SIGNED_OUT,
       PLACEMENT_FAILURE,
+    ]) {
+      expect(message).not.toMatch(/price|currency|offer|commission|\$/i);
+      expect(message).not.toMatch(/mon:|an:/);
+    }
+  });
+});
+
+// — Phase 1.35: withdrawing a draft placement —
+
+describe("placement withdrawal presentation", () => {
+  const LISTING_REF = "ABCDEFGHJKMNPQRSTVWXYZ0123456789";
+
+  const product = {
+    productRef: "0123456789ABCDEFGHJKMNPQRSTVWXYZ",
+    name: "Hand-thrown mug",
+    description: null,
+    promotable: false,
+    generalAvailabilityState: "available" as const,
+    deliveryMode: "PHYSICAL" as const,
+    recordStatus: "draft" as const,
+  };
+
+  const storefront = {
+    displayName: "Ada Workshop",
+    tagline: null,
+    summary: null,
+    publicHandle: "ada-workshop",
+    lifecycle: "DRAFT" as const,
+    visibility: "PRIVATE" as const,
+    canEditPresentation: true,
+    canPlaceProduct: true,
+  };
+
+  const placed = (overrides: Record<string, unknown> = {}) =>
+    home({
+      marketplace: DRAFT_SELLER,
+      canCreateProduct: true,
+      canPlaceListing: true,
+      products: [product],
+      storefronts: [storefront],
+      placements: [
+        {
+          listingRef: LISTING_REF,
+          productName: "Hand-thrown mug",
+          storefrontDisplayName: "Ada Workshop",
+          storefrontHandle: "ada-workshop",
+          lifecycle: "DRAFT" as const,
+        },
+      ],
+      ...overrides,
+    });
+
+  it("offers the action on a DRAFT placement, and says what survives", async () => {
+    const html = await renderSignedIn(placed());
+    const text = html.replaceAll("<!-- -->", "").replace(/<[^>]+>/g, "");
+
+    expect(html).toContain("Remove from storefront");
+    /* The two reassurances are the point: a person removing a draft placement
+       needs to know they are not deleting the thing they made or the shop they
+       made it for. */
+    expect(text).toContain("This removes the draft listing only.");
+    expect(text).toContain("Your product stays in your library");
+    expect(text).toContain("your storefront is unchanged");
+    expect(text).toContain("You can add it again later.");
+  });
+
+  it("never renders the reference as visible copy", async () => {
+    const html = await renderSignedIn(placed());
+    /* Strip <script> BODIES before tags: the reference legitimately appears in
+       React's hydration payload, because the button has to submit it. What it
+       must never be is something a person reads. */
+    const body = html.replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, " ");
+    const text = body.replace(/<[^>]+>/g, "").replaceAll("<!-- -->", "");
+    expect(text).not.toContain(LISTING_REF);
+    expect(html).not.toContain("mon:");
+    expect(html).not.toContain("an:node");
+  });
+
+  it("offers nothing to withdraw when no placement is current", async () => {
+    /* A withdrawn placement stops being current, so the projection simply does
+       not return it — no history view, and none built in this phase. */
+    const html = await renderSignedIn(placed({ placements: [] }));
+    expect(html).not.toContain("Remove from storefront");
+    expect(html).toContain("Add as draft listing");
+  });
+
+  it("offers no withdrawal on a placement that is not DRAFT", async () => {
+    /* ACTIVE and SUSPENDED placements were in front of buyers; taking one down
+       belongs with the activation work that put it there. */
+    for (const lifecycle of ["ACTIVE", "SUSPENDED"] as const) {
+      const html = await renderSignedIn(
+        placed({
+          placements: [
+            {
+              listingRef: LISTING_REF,
+              productName: "Hand-thrown mug",
+              storefrontDisplayName: "Ada Workshop",
+              storefrontHandle: "ada-workshop",
+              lifecycle,
+            },
+          ],
+        }),
+      );
+      expect(html).not.toContain("Remove from storefront");
+    }
+  });
+
+  it("shows no pricing, Offer, or activation control beside the action", async () => {
+    const html = await renderSignedIn(placed());
+    for (const absent of ["currency", "Currency", "Offer", "commission", "Activate", "Publish", "Go live"]) {
+      expect(html).not.toContain(absent);
+    }
+    expect(html).not.toContain('type="number"');
+  });
+});
+
+describe("placement withdrawal submission", () => {
+  function captureFetch(reply: Response | (() => never)) {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const fetchImpl = (async (url: unknown, init: unknown) => {
+      calls.push({ url: String(url), init: (init ?? {}) as RequestInit });
+      if (typeof reply === "function") reply();
+      return reply;
+    }) as unknown as typeof fetch;
+    return { calls, fetchImpl };
+  }
+  const json = (status: number, body: unknown) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+  const LISTING_REF = "ABCDEFGHJKMNPQRSTVWXYZ0123456789";
+
+  it("sends the reference in the path and NO body at all", async () => {
+    const { calls, fetchImpl } = captureFetch(json(200, {}));
+    expect(await submitPlacementWithdrawal(LISTING_REF, { fetchImpl })).toEqual({
+      outcome: "withdrawn",
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe(`/api/listings/${LISTING_REF}/withdraw`);
+    expect(calls[0]!.url).toBe(placementWithdrawEndpoint(LISTING_REF));
+    expect(calls[0]!.init.method).toBe("POST");
+    expect(calls[0]!.init.credentials).toBe("same-origin");
+    /* The narrowest possible surface: a lifecycle, a Product, a Storefront, a
+       controller, a price, or an Offer has nowhere to go because there is
+       nowhere for anything to go. */
+    expect(calls[0]!.init.body).toBeUndefined();
+  });
+
+  it("escapes the reference rather than interpolating it raw", async () => {
+    /* The reference is server-minted and always URL-safe, so this can never
+       matter today — which is exactly when it is cheap to be correct. */
+    expect(placementWithdrawEndpoint("a/b?c")).toBe("/api/listings/a%2Fb%3Fc/withdraw");
+  });
+
+  it("sends nothing when there is no reference to send", async () => {
+    const { calls, fetchImpl } = captureFetch(json(200, {}));
+    expect(await submitPlacementWithdrawal("", { fetchImpl })).toEqual({
+      outcome: "failed",
+      message: WITHDRAW_NOT_AVAILABLE,
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("maps every refusal onto bounded copy", async () => {
+    const cases: Array<[Response | (() => never), string]> = [
+      [json(404, { error: "LISTING_NOT_AVAILABLE" }), WITHDRAW_NOT_AVAILABLE],
+      [json(409, { error: "LISTING_NOT_WITHDRAWABLE" }), WITHDRAW_NOT_WITHDRAWABLE],
+      [json(403, { error: "LISTING_NOT_ELIGIBLE" }), WITHDRAW_NOT_ELIGIBLE],
+      [json(401, { error: "UNAUTHENTICATED" }), WITHDRAW_SIGNED_OUT],
+      [json(403, { error: "CROSS_ORIGIN_REQUEST_REFUSED" }), WITHDRAW_FAILURE],
+      [json(500, { error: "LISTING_UNAVAILABLE" }), WITHDRAW_FAILURE],
+      [new Response("not json", { status: 502 }), WITHDRAW_FAILURE],
+      [
+        () => {
+          throw new TypeError("network");
+        },
+        WITHDRAW_FAILURE,
+      ],
+    ];
+    for (const [reply, message] of cases) {
+      const { fetchImpl } = captureFetch(reply);
+      expect(await submitPlacementWithdrawal(LISTING_REF, { fetchImpl })).toEqual({
+        outcome: "failed",
+        message,
+      });
+    }
+  });
+
+  it("never names a price, a currency, an Offer, or an identifier in its copy", async () => {
+    for (const message of [
+      WITHDRAW_NOT_AVAILABLE,
+      WITHDRAW_NOT_WITHDRAWABLE,
+      WITHDRAW_NOT_ELIGIBLE,
+      WITHDRAW_SIGNED_OUT,
+      WITHDRAW_FAILURE,
     ]) {
       expect(message).not.toMatch(/price|currency|offer|commission|\$/i);
       expect(message).not.toMatch(/mon:|an:/);

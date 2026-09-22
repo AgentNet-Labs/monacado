@@ -116,7 +116,10 @@ Storefronts, and other eligible Storefronts.
 **(implemented structurally — Phase 1.34.)**
 
 At most **one current Listing aggregate** exists for a given **Product +
-Storefront** pair. Historical immutable Listing versions are expected and are not
+Storefront** pair, and a released pair is genuinely reusable: Phase 1.35's
+withdrawal reaches `WITHDRAWN`, the marker clears, and the same Product may be
+placed in the same Storefront again under a new `listingRef` while the withdrawn
+placement keeps its history. Historical immutable Listing versions are expected and are not
 duplicates: a Listing with fifty source versions is one placement, not fifty.
 
 `Listing.currentPlacementMarker` holds the canonical string `CURRENT` while an
@@ -222,6 +225,8 @@ Updated at Phase 1.34 where that phase changed the answer.
 | Two CURRENT Listings for the same Product + Storefront? | **Refused — Phase 1.34.** Composite unique index over `(internalProductId, storefrontId, currentPlacementMarker)`, plus a bounded `LISTING_ALREADY_EXISTS` in the write path. Released (terminal) placements are unconstrained. |
 | Must a DRAFT Listing carry a price? | **No — Phase 1.34.** A private `SELLER_DIRECT` draft may carry none; price and currency are a nullable pair. A `PROMOTED` placement still requires both, and `DRAFT → ACTIVE` refuses an unpriced placement. |
 | Does a Product have an application-facing reference? | **Yes — Phase 1.34.** `Product.productRef`: opaque, immutable, server-minted, unique. Application routing identity only — not a semantic or public AgentNet identity. |
+| Does a Listing have one? | **Yes — Phase 1.35.** `Listing.listingRef`, same shape and same rules. It names the placement **aggregate**, so it does not move when a new source version is minted. |
+| Can a Seller remove a placement? | **A private DRAFT one, yes — Phase 1.35.** `POST /api/listings/{listingRef}/withdraw` performs `DRAFT → WITHDRAWN`, which releases the Product + Storefront pair. `ACTIVE`, `SUSPENDED`, terminal, and promoted placements are all refused. |
 | Listing lifecycle | `DRAFT`, `ACTIVE`, `SUSPENDED`, `ENDED`, `WITHDRAWN`; created `DRAFT`; `→ ACTIVE` is a separate governed act. |
 | Seller-direct self-service? | **Yes — Phase 1.34.** `POST /api/listings`, two selectors, one unpriced private `DRAFT` placement. |
 | Seller-direct pathway | `createSellerDirectListing` / `openSellerDirectListing`: `canCreateSellerDirectListing` (SELLER role), controller is the acting participant, controller holds Product authority (`participantHoldsProductAuthority`), and Storefront placement authority (owner, or ACTIVE governance assignment). |

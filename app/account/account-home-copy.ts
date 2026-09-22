@@ -128,3 +128,16 @@ export const PLACEMENT_NEEDS_STOREFRONT =
 /** A Seller with a storefront and nothing to put in it. */
 export const PLACEMENT_NEEDS_PRODUCT =
   "Add a product before you can add it to a storefront.";
+
+// — Withdrawing a placement (Phase 1.35) —
+
+/** The action label. Says what it removes, in the words a person would use. */
+export const PLACEMENT_WITHDRAW_LABEL = "Remove from storefront";
+
+/**
+ * Shown beside the action. The two reassurances are the point: a person
+ * removing a draft placement needs to know they are not deleting the thing they
+ * made or the shop they made it for.
+ */
+export const PLACEMENT_WITHDRAW_NOTE =
+  "This removes the draft listing only. Your product stays in your library and your storefront is unchanged. You can add it again later.";

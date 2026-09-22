@@ -181,7 +181,7 @@ export async function handleCreateListingPlacementRequest(
   if (parsed === null) return refuse(400, codes.invalidRequest);
 
   try {
-    const { currentVersion } = await placeOwnProductInStorefront(
+    const { currentVersion, listingRef } = await placeOwnProductInStorefront(
       resolution.actor,
       { productRef: parsed.productRef, storefrontHandle: parsed.storefrontHandle, now },
       { ...(deps.db !== undefined ? { db: deps.db } : {}) },
@@ -189,10 +189,12 @@ export async function handleCreateListingPlacementRequest(
     return {
       status: 201,
       body: {
-        /* The caller's own two selectors, echoed, plus the state. No Listing
-           identifier — there is no application-facing Listing reference yet, and
-           inventing one here would be a second identity scheme decided by a
-           route. No price, no currency, no Offer: the placement has none. */
+        /* Phase 1.35 — the placement's own stable reference, so the caller can
+           act on what it just made. Opaque, un-namespaced, and naming the
+           aggregate rather than a version, so it stays valid across every later
+           lifecycle move. No internal identifier, no price, no currency, no
+           Offer: the placement has none. */
+        listingRef,
         productRef: parsed.productRef,
         storefrontHandle: parsed.storefrontHandle,
         lifecycle: currentVersion.lifecycle,

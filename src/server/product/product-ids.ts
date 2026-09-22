@@ -11,35 +11,25 @@
 import "../server-only";
 import { randomBytes } from "node:crypto";
 import { CROCKFORD_ALPHABET } from "../../contracts/capsule/identity";
+import { randomApplicationRef } from "../application-reference";
 
 const OPAQUE_BODY_LENGTH = 26;
 
 /**
- * Length of an application-facing reference body (Phase 1.34).
- *
- * 32 rather than 26, so a value drawn here (160 bits) and a value a MySQL
- * backfill writes as `HEX(RANDOM_BYTES(16))` (128 bits over a subset of this
- * same alphabet) are the same shape and both clear 128 bits. See
- * `APPLICATION_REF_BODY` in the identity contract.
- */
-const APPLICATION_REF_LENGTH = 32;
-
-/**
- * `length` characters drawn from the Crockford alphabet, one CSPRNG byte each.
+ * `OPAQUE_BODY_LENGTH` characters drawn from the Crockford alphabet, one CSPRNG
+ * byte each.
  *
  * `byte % 32` is bias-free because 256 is an exact multiple of the 32-character
  * alphabet — the same construction every other identifier generator here uses.
  */
-function randomBody(length: number): string {
-  const bytes = randomBytes(length);
+function randomOpaqueBody(): string {
+  const bytes = randomBytes(OPAQUE_BODY_LENGTH);
   let out = "";
-  for (let i = 0; i < length; i += 1) {
+  for (let i = 0; i < OPAQUE_BODY_LENGTH; i += 1) {
     out += CROCKFORD_ALPHABET[bytes[i]! % CROCKFORD_ALPHABET.length];
   }
   return out;
 }
-
-const randomOpaqueBody = (): string => randomBody(OPAQUE_BODY_LENGTH);
 
 export interface ProductIdProvider {
   nextInternalProductId(): string;
@@ -72,5 +62,5 @@ export const cryptoProductRefProvider: ProductRefProvider = {
   /* No namespace prefix, and that is the guarantee: a bare 32-character body
      cannot be mistaken for — or used as — a `mon:product:`, a `mon:srec:`, or an
      `an:node:` identity, because those all carry one. */
-  nextProductRef: () => randomBody(APPLICATION_REF_LENGTH),
+  nextProductRef: randomApplicationRef,
 };

@@ -33,6 +33,7 @@ export type ListingErrorCode =
   | "LISTING_NOT_AUTHORIZED"
   | "LISTING_ALREADY_EXISTS"
   | "LISTING_COMMERCIAL_TERMS_REQUIRED"
+  | "LISTING_NOT_WITHDRAWABLE"
   | "NO_MATERIAL_CHANGE"
   | "LISTING_ECONOMICS_REFUSED"
   | "CORRUPT_LISTING_RECORD"
@@ -179,6 +180,38 @@ export class ListingAlreadyExistsError extends ListingError {
       cause,
     );
     this.name = "ListingAlreadyExistsError";
+  }
+}
+
+/**
+ * This placement is not in a state self-service withdrawal governs
+ * (Phase 1.35).
+ *
+ * Phase 1.35 exposes exactly one transition: a `SELLER_DIRECT` placement in
+ * `DRAFT` becomes `WITHDRAWN`. Everything else is refused here and stays
+ * refused:
+ *
+ *   - **`ACTIVE` and `SUSPENDED`** were in front of buyers. Taking a live
+ *     placement down is a commercial act with consequences this phase has not
+ *     modelled, and it belongs with the activation work that put it there.
+ *   - **`ENDED` and `WITHDRAWN`** are terminal. 0M.4A's transition table gives
+ *     them no exit, so a second withdrawal is not a no-op to absorb quietly —
+ *     it is a caller believing something about state that is not true, and it
+ *     must mint no version.
+ *   - **`PROMOTED`** placements are not self-service at all, in either
+ *     direction, until anti-self-promotion and governed economic-principal
+ *     resolution exist.
+ *
+ * `state` is the bounded reason, never free text and never the lifecycle of a
+ * placement the caller does not control — the route establishes control before
+ * this can be raised.
+ */
+export class ListingNotWithdrawableError extends ListingError {
+  readonly state: string;
+  constructor(state: string) {
+    super("LISTING_NOT_WITHDRAWABLE", "That placement cannot be withdrawn");
+    this.name = "ListingNotWithdrawableError";
+    this.state = state;
   }
 }
 

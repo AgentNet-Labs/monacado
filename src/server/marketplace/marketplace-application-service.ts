@@ -70,6 +70,7 @@ import {
   createSellerDirectListing,
   createPromotedListing,
   placeProductInStorefront,
+  withdrawDraftPlacement,
 } from "./listing-service";
 import type { ListingServiceDeps, ListingSnapshot } from "./listing-service";
 import {
@@ -311,6 +312,31 @@ export async function placeOwnProductInStorefront(
     {
       productRef: input.productRef,
       storefrontHandle: input.storefrontHandle,
+      actingAccountId: actor.accountId,
+      now: input.now,
+    },
+    deps,
+  );
+}
+
+/**
+ * Withdraw one of the acting Seller's own private DRAFT placements
+ * (Phase 1.35).
+ *
+ * One selector in, rebuilt rather than spread on the same reasoning as its
+ * sibling: a stray `lifecycle`, `internalListingId`, `sourceRecordVersion`, or
+ * `controllingParticipantId` in a forwarded body has nowhere to land. A caller
+ * able to name the target state would be a caller able to name `ACTIVE`, and
+ * taking a placement live is precisely what this phase does not expose.
+ */
+export async function withdrawOwnDraftPlacementAs(
+  actor: ActingAccount,
+  input: { listingRef: unknown; now: string },
+  deps: ListingServiceDeps = {},
+): Promise<ListingSnapshot> {
+  return await withdrawDraftPlacement(
+    {
+      listingRef: input.listingRef,
       actingAccountId: actor.accountId,
       now: input.now,
     },

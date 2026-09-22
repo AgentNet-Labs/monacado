@@ -102,6 +102,16 @@ export interface AccountHomeStorefront {
  * column for one here would invite the page to imply otherwise.
  */
 export interface AccountHomePlacement {
+  /**
+   * The placement's stable application reference (Phase 1.35) — how a page
+   * action names this placement.
+   *
+   * Safe to carry here, and the only Listing identifier that is: opaque,
+   * un-namespaced, immutable, and naming the aggregate rather than a version.
+   * `mon:listing:` and `mon:srec:` stay internal. It is an action VALUE, never
+   * user-visible copy.
+   */
+  listingRef: string;
   /** The Product's name, from its CURRENT source version. */
   productName: string;
   /** The Storefront's display name, from ITS current source version. */
@@ -371,7 +381,12 @@ async function readSellerDirectPlacements(
       currentPlacementMarker: { not: null },
     },
     orderBy: { createdAt: "asc" },
-    select: { internalProductId: true, storefrontId: true, lifecycle: true },
+    select: {
+      listingRef: true,
+      internalProductId: true,
+      storefrontId: true,
+      lifecycle: true,
+    },
   });
   if (listings.length === 0) return [];
 
@@ -435,6 +450,7 @@ async function readSellerDirectPlacements(
     if (name === undefined || shop === undefined) return [];
     return [
       {
+        listingRef: l.listingRef,
         productName: name,
         storefrontDisplayName: shop.displayName,
         storefrontHandle: shop.handle,

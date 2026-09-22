@@ -52,6 +52,7 @@ import {
 import { LISTING_LIFECYCLE_STATES } from "../src/contracts/marketplace/listing-source";
 import { grantProductCreatorAuthority } from "./support/product-authority-fixture";
 import { syntheticProductRef } from "./support/product-ref-fixture";
+import { syntheticListingRef } from "./support/listing-ref-fixture";
 
 const RUN = process.env.RUN_DB_TESTS === "1";
 const db = RUN ? getPrisma() : (undefined as unknown as ReturnType<typeof getPrisma>);
@@ -666,6 +667,7 @@ describe.skipIf(!RUN)("Phase 1.34 Ruling C — one current Listing per Product +
     await expect(
       db.listing.create({
         data: {
+          listingRef: syntheticListingRef(),
           internalListingId: `mon:listing:${pad26(`P134DUPE${seq}`)}`,
           listingSourceRecordId: `mon:srec:${pad26(`P134DUPESREC${seq}`)}`,
           currentSourceRecordVersion: "1",
@@ -684,6 +686,7 @@ describe.skipIf(!RUN)("Phase 1.34 Ruling C — one current Listing per Product +
     seq += 1;
     const released = await db.listing.create({
       data: {
+        listingRef: syntheticListingRef(),
         internalListingId: `mon:listing:${pad26(`P134REL${seq}`)}`,
         listingSourceRecordId: `mon:srec:${pad26(`P134RELSREC${seq}`)}`,
         currentSourceRecordVersion: "1",

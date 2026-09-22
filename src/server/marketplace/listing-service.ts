@@ -54,6 +54,7 @@ import {
   CreateSellerDirectListingInput,
   PlaceProductInStorefrontInput,
   UpdateListingInput,
+  WithdrawDraftPlacementInput,
   materialListingChangesBetween,
 } from "../../contracts/marketplace/listing-record";
 import {
@@ -64,6 +65,7 @@ import {
   effectiveSellerRetailPrice,
   evaluateListingBuyerEligibility,
   evaluateUpstreamOfferReview,
+  isTerminalListingLifecycleState,
   isValidListingLifecycleTransition,
   type EffectiveSellerPrice,
   type ListingBuyerEligibility,
@@ -90,7 +92,12 @@ import {
 } from "./participant-standing-service";
 import { ParticipantActionNotPermittedError } from "./participant-standing-errors";
 import { versionRowToSourceVersion as offerVersionRowToSourceVersion } from "./offer-mapper";
-import { cryptoListingIdProvider, type ListingIdProvider } from "./listing-ids";
+import {
+  cryptoListingIdProvider,
+  cryptoListingRefProvider,
+  type ListingIdProvider,
+  type ListingRefProvider,
+} from "./listing-ids";
 import {
   AcceptedOfferVersionNotFoundError,
   ControllerParticipantNotFoundError,
@@ -99,6 +106,7 @@ import {
   InvalidListingInputError,
   ListingAlreadyExistsError,
   ListingCommercialTermsRequiredError,
+  ListingNotWithdrawableError,
   ListingEconomicsRefusedError,
   ListingNotAuthorizedError,
   ListingNotFoundError,
@@ -125,6 +133,11 @@ type Tx = Db | Prisma.TransactionClient;
 export interface ListingServiceDeps {
   db?: Db;
   ids?: ListingIdProvider;
+  /**
+   * The application-facing reference source (Phase 1.35). Injectable only so a
+   * test can pin the minted value; there is no caller-supplied path to it.
+   */
+  refs?: ListingRefProvider;
 }
 
 const prismaCode = (error: unknown): string | undefined => {
@@ -181,6 +194,7 @@ function isDomainError(error: unknown): boolean {
     error instanceof ListingNotAuthorizedError ||
     error instanceof ListingAlreadyExistsError ||
     error instanceof ListingCommercialTermsRequiredError ||
+    error instanceof ListingNotWithdrawableError ||
     error instanceof NoMaterialListingChangeError ||
     error instanceof CorruptListingRecordError ||
     error instanceof ListingProductNotFoundError ||
@@ -196,6 +210,16 @@ function isDomainError(error: unknown): boolean {
 export interface ListingSnapshot {
   record: ListingSourceRecord;
   currentVersion: ListingSourceVersion;
+  /**
+   * The stable application-facing reference for this PLACEMENT (Phase 1.35).
+   *
+   * Carried beside the record rather than inside it, exactly as `productRef` is
+   * carried beside a `ProductSourceRecord`: it asserts no business fact, takes
+   * part in no version, and appears in no capsule projection. Putting it on the
+   * source record would make a routing selector look like something a version
+   * claims.
+   */
+  listingRef: string;
 }
 
 // — Authorization facts —
@@ -480,6 +504,7 @@ async function readSnapshotInTx(tx: Tx, internalListingId: string): Promise<List
   return {
     record: listingRowToSourceRecord(row, currentVersion),
     currentVersion: versionRowToSourceVersion(currentVersion),
+    listingRef: row.listingRef,
   };
 }
 
@@ -769,6 +794,7 @@ async function insertFirstVersion(
   args: {
     internalListingId: string;
     listingSourceRecordId: string;
+    listingRef: string;
     storefrontId: string;
     internalProductId: string;
     controllingParticipantId: string;
@@ -782,6 +808,11 @@ async function insertFirstVersion(
     data: {
       internalListingId: args.internalListingId,
       listingSourceRecordId: args.listingSourceRecordId,
+      /* Phase 1.35 — minted once, for the life of the placement. Immutable in
+         behaviour because nothing else ever writes the column: the revision
+         path advances the version pointer, the lifecycle, the type, and the
+         placement marker, and touches nothing else on this row. */
+      listingRef: args.listingRef,
       currentSourceRecordVersion: "1",
       listingType: args.placement.listingType,
       internalProductId: args.internalProductId,
@@ -857,6 +888,11 @@ export async function createSellerDirectListing(
   const ids = deps.ids ?? cryptoListingIdProvider;
   const internalListingId = ids.nextInternalListingId();
   const listingSourceRecordId = ids.nextListingSourceRecordId();
+  /* Both creation paths mint one, because the reference identifies the placement
+     AGGREGATE and not its commercial type. A promoted Listing is no less a
+     placement for being promoted; withholding the reference from that branch
+     would make the column's meaning depend on how the row was created. */
+  const listingRef = (deps.refs ?? cryptoListingRefProvider).nextListingRef();
   const at = new Date(data.now);
 
   try {
@@ -891,6 +927,7 @@ export async function createSellerDirectListing(
       await insertFirstVersion(tx, {
         internalListingId,
         listingSourceRecordId,
+        listingRef,
         storefrontId: data.storefrontId,
         internalProductId: data.internalProductId,
         controllingParticipantId: data.controllingParticipantId,
@@ -1033,6 +1070,11 @@ export async function createPromotedListing(
   const ids = deps.ids ?? cryptoListingIdProvider;
   const internalListingId = ids.nextInternalListingId();
   const listingSourceRecordId = ids.nextListingSourceRecordId();
+  /* Both creation paths mint one, because the reference identifies the placement
+     AGGREGATE and not its commercial type. A promoted Listing is no less a
+     placement for being promoted; withholding the reference from that branch
+     would make the column's meaning depend on how the row was created. */
+  const listingRef = (deps.refs ?? cryptoListingRefProvider).nextListingRef();
   const at = new Date(data.now);
 
   try {
@@ -1090,6 +1132,7 @@ export async function createPromotedListing(
       await insertFirstVersion(tx, {
         internalListingId,
         listingSourceRecordId,
+        listingRef,
         storefrontId: data.storefrontId,
         internalProductId: data.internalProductId,
         controllingParticipantId: data.controllingParticipantId,
@@ -1104,6 +1147,138 @@ export async function createPromotedListing(
   } catch (error) {
     mapWriteError("createPromotedListing", error);
   }
+}
+
+/**
+ * The label the next immutable source version takes (Phase 1.35).
+ *
+ * Decimal successor of the current pointer, matching
+ * `nextStorefrontSourceRecordVersion` exactly — the Storefront presentation
+ * path labels its own versions the same way and for the same reason: a label a
+ * caller supplied could write one placement's history out of order.
+ *
+ * `undefined` for a pointer that is not a plain positive integer, which is a
+ * corrupt row rather than a caller error.
+ */
+export function nextListingSourceRecordVersion(current: string): string | undefined {
+  if (!/^[1-9][0-9]{0,15}$/.test(current)) return undefined;
+  return String(Number(current) + 1);
+}
+
+/**
+ * Withdraw one of the acting Seller's own private DRAFT placements
+ * (Phase 1.35) — the self-service command behind
+ * `POST /api/listings/{listingRef}/withdraw`.
+ *
+ * **A resolver and a gate, not a second lifecycle path.** The transition itself
+ * is `createListingSourceVersion`'s: it re-decides authority, checks the move
+ * against 0M.4A's own transition table, mints the next immutable version, and
+ * moves the pointer and the placement marker in one transaction. This resolves
+ * the client-safe reference, labels the version, and refuses the states
+ * self-service does not govern.
+ *
+ * **The order is an authorization boundary, and it is the whole design.**
+ *
+ *   1. the acting participant is resolved FIRST, so an account with no
+ *      marketplace participation cannot probe a reference at all;
+ *   2. the reference is resolved;
+ *   3. **control is established before any state is revealed** — a placement
+ *      the caller does not control is reported exactly as one that does not
+ *      exist. Learning "that exists but is not yours", or worse "that exists
+ *      and is ACTIVE", would turn this route into a census of a competitor's
+ *      private shelf;
+ *   4. only then is the state judged, and only for a placement the caller
+ *      provably controls.
+ *
+ * The control check here is **not** a second authority model. It exists for
+ * ordering: `requireController` inside the write transaction remains the
+ * authoritative one, and it is what actually guards the write.
+ *
+ * **Exactly one transition is exposed**: `SELLER_DIRECT` + `DRAFT` →
+ * `WITHDRAWN`. `ACTIVE` and `SUSPENDED` placements were in front of buyers and
+ * belong to the activation work that put them there; `ENDED` and `WITHDRAWN`
+ * are terminal and must mint nothing; promoted placements are not self-service
+ * in either direction. The destination is not a parameter — a caller able to
+ * name a target state would be a caller able to name `ACTIVE`.
+ *
+ * Withdrawal releases the Product + Storefront pair, because `WITHDRAWN` is
+ * terminal and `currentPlacementMarkerFor` clears the marker for terminal
+ * states. Nothing here writes the marker; it falls out of the lifecycle move.
+ */
+export async function withdrawDraftPlacement(
+  input: unknown,
+  deps: ListingServiceDeps = {},
+): Promise<ListingSnapshot> {
+  const parsed = WithdrawDraftPlacementInput.safeParse(input);
+  if (!parsed.success) throw inputError(parsed.error);
+  const data = parsed.data;
+
+  const db = deps.db ?? getPrisma();
+
+  let resolved: { internalListingId: string; sourceRecordVersion: string };
+  try {
+    const subject = await resolveActingSubject(db, data.actingAccountId);
+    const participantId = subject.participant?.participantId;
+    if (participantId === undefined) {
+      throw new ListingNotAuthorizedError(canCreateSellerDirectListing(subject).capability, [
+        "PARTICIPANT_REQUIRED",
+      ]);
+    }
+
+    const listing = await db.listing.findUnique({
+      where: { listingRef: data.listingRef },
+      select: {
+        internalListingId: true,
+        controllingParticipantId: true,
+        listingType: true,
+        lifecycle: true,
+        currentSourceRecordVersion: true,
+      },
+    });
+    /* A reference that names nothing, and one that names somebody else's
+       placement, are the SAME answer. See the ordering note above. */
+    if (listing === null || listing.controllingParticipantId !== participantId) {
+      throw new ListingNotFoundError();
+    }
+
+    /* Only now, and only about a placement this caller provably controls. */
+    if (listing.listingType !== "SELLER_DIRECT") {
+      throw new ListingNotWithdrawableError("LISTING_TYPE_NOT_SELF_SERVICE");
+    }
+    if (listing.lifecycle !== "DRAFT") {
+      throw new ListingNotWithdrawableError(
+        isTerminalListingLifecycleState(listing.lifecycle as never)
+          ? "ALREADY_RELEASED"
+          : "LIFECYCLE_NOT_DRAFT",
+      );
+    }
+
+    const sourceRecordVersion = nextListingSourceRecordVersion(
+      listing.currentSourceRecordVersion,
+    );
+    if (sourceRecordVersion === undefined) {
+      throw new ListingPersistenceFailureError("withdrawDraftPlacement:version-label");
+    }
+    resolved = { internalListingId: listing.internalListingId, sourceRecordVersion };
+  } catch (error) {
+    if (isDomainError(error)) throw error;
+    throw new ListingPersistenceFailureError("withdrawDraftPlacement", error);
+  }
+
+  return await createListingSourceVersion(
+    {
+      internalListingId: resolved.internalListingId,
+      sourceRecordVersion: resolved.sourceRecordVersion,
+      /* The ONLY field this command supplies beyond identity. No retail, no
+         sale, no Offer version, no acquisition policy: a withdrawal asserts
+         nothing about commercial terms, so the next version carries the
+         current ones forward untouched. */
+      lifecycle: "WITHDRAWN",
+      actingAccountId: data.actingAccountId,
+      now: data.now,
+    },
+    deps,
+  );
 }
 
 /**

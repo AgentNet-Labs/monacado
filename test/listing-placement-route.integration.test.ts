@@ -237,6 +237,10 @@ describe.skipIf(!RUN)("Phase 1.34 — seller-direct DRAFT Listing self-service",
 
     expect(result.status).toBe(201);
     expect(result.body).toEqual({
+      /* Phase 1.35 — the placement's own stable reference. Asserted by SHAPE,
+         because it is random by construction and a fixed value would prove it
+         was not. */
+      listingRef: expect.stringMatching(/^[0-9A-HJKMNP-TV-Z]{32}$/) as unknown as string,
       productRef,
       storefrontHandle,
       lifecycle: "DRAFT",
@@ -662,6 +666,7 @@ describe.skipIf(!RUN)("Phase 1.34 — seller-direct DRAFT Listing self-service",
     const home = await readAccountHome(seller.accountId, { db });
     expect(home!.placements).toEqual([
       {
+        listingRef: expect.stringMatching(/^[0-9A-HJKMNP-TV-Z]{32}$/) as unknown as string,
         productName: expect.stringMatching(/^Hand-thrown mug /) as unknown as string,
         storefrontDisplayName: "Ada's Workshop",
         storefrontHandle,

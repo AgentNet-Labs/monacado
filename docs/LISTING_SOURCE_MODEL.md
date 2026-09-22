@@ -112,6 +112,44 @@ required Offer terms, promoted economics, and the active-Listing allowance
 ([`MARKETPLACE_ASSORTMENT_AND_LISTING_RULES.md`](MARKETPLACE_ASSORTMENT_AND_LISTING_RULES.md) §2)
 — belongs to the activation phase and is **not** anticipated here.
 
+## 2b. Withdrawing a private DRAFT placement
+
+**(added at Phase 1.35.)**
+
+`DRAFT → WITHDRAWN` was always in the transition table (§1); Phase 1.35 makes it
+reachable for the one case self-service governs: a `SELLER_DIRECT` placement its
+controller has not taken live.
+
+Withdrawal is an **ordinary material change**. It mints the next immutable
+source version, moves the pointer, and leaves every earlier version untouched —
+there is no delete, and the placement's history is exactly as long afterwards as
+it was before, plus one.
+
+**It withdraws a placement and nothing else.** The Product stays in its
+creator's library with its facts, its version pointer, and its `promotable`
+statement unchanged; the Storefront keeps its lifecycle, visibility, and
+governance. A placement asserts nothing about either, so removing one cannot
+either.
+
+**It releases the Product + Storefront pair.** `WITHDRAWN` is terminal, so the
+current-placement marker clears with the lifecycle move, and the same Product
+may be placed in the same Storefront again — as a new placement, with its own
+new reference, beside the withdrawn one's surviving history. This is what makes
+the "at most one current placement" rule a statement about *now* rather than a
+permanent claim on the pair.
+
+**What stays out of reach**, and why each is somebody else's phase:
+
+| State | Why not here |
+| --- | --- |
+| `ACTIVE`, `SUSPENDED` | These were in front of buyers. Taking a live placement down is a commercial act, and it belongs with the activation work that put it there. |
+| `ENDED`, `WITHDRAWN` | Terminal. A repeat is a caller believing something untrue, not a no-op — it must mint no version. |
+| `PROMOTED` | Not self-service in either direction until anti-self-promotion and governed economic-principal resolution exist. |
+
+The destination is **not a parameter**. A caller able to name a target state
+would be a caller able to name `ACTIVE`, and taking a placement live is exactly
+what this does not expose.
+
 ## 3. Seller-only scheduled sales
 
 An optional `sale` object on a seller-direct placement, with all three fields in

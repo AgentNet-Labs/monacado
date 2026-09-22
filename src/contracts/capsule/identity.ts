@@ -85,6 +85,16 @@ export const INTERNAL_PRODUCT_ID_RE = new RegExp(`^mon:product:${OPAQUE_BODY}$`)
 export const APPLICATION_REF_BODY = "[0-9A-HJKMNP-TV-Z]{32}";
 
 /**
+ * The shape every application-facing reference takes: a bare 32-character
+ * Crockford body, with no namespace prefix.
+ *
+ * One pattern, reused under the names below. Each reference is minted from its
+ * own CSPRNG draw and is unique within its own table; what they share is the
+ * shape, not a namespace.
+ */
+export const APPLICATION_REF_RE = new RegExp(`^${APPLICATION_REF_BODY}$`);
+
+/**
  * Stable application-facing Product reference (Phase 1.34).
  *
  * The selector a route, a form action, or a page link names a Product by —
@@ -98,7 +108,22 @@ export const APPLICATION_REF_BODY = "[0-9A-HJKMNP-TV-Z]{32}";
  * about the Product, its version, or its position in any sequence is recoverable
  * from it, and no caller may supply one.
  */
-export const PRODUCT_REF_RE = new RegExp(`^${APPLICATION_REF_BODY}$`);
+export const PRODUCT_REF_RE = APPLICATION_REF_RE;
+
+/**
+ * Stable application-facing Listing reference (Phase 1.35).
+ *
+ * The same shape as `PRODUCT_REF_RE`, and deliberately the SAME constant rather
+ * than a second copy of the pattern: there is one notion of "application
+ * reference" in this codebase, and two regexes that had to be kept equal by hand
+ * would eventually stop being.
+ *
+ * Named separately because the two name different things. A Listing reference
+ * identifies **the placement aggregate**, not the Product placed, not the
+ * Storefront it sits in, and not any version of it: `mon:listing:` and
+ * `mon:srec:` stay internal, and neither is ever handed to a client.
+ */
+export const LISTING_REF_RE = APPLICATION_REF_RE;
 
 /** Internal creator authority identifier (`mon:creator:<opaque>`). Internal only. */
 export const INTERNAL_CREATOR_ID_RE = new RegExp(`^mon:creator:${OPAQUE_BODY}$`);
