@@ -10,7 +10,9 @@
  * lets a Seller add private draft Products, which are not listed or for sale;
  * Phase 1.34 lets a Seller put one of those Products into one of their
  * Storefronts as a private draft placement — no price, not live, not for sale;
- * Phase 1.35 lets them take that draft placement back out again.
+ * Phase 1.35 lets them take that draft placement back out again; Phase 1.36
+ * lets them say what it would cost — a price on a draft, which is still not
+ * live and still not for sale.
  *
  * It is still deliberately **not** a dashboard or a settings screen. Nothing
  * here edits the account, changes a password, lists sessions, changes a
@@ -67,15 +69,22 @@ import {
   PLACEMENT_NEEDS_PRODUCT,
   PLACEMENT_NEEDS_STOREFRONT,
   PLACEMENT_WITHDRAW_NOTE,
+  PLACEMENT_PRICE_NONE,
+  formatRetailPrice,
 } from "./account-home-copy";
 import { OnboardingForm } from "./onboarding-form";
 import { PlacementForm } from "./placement-form";
+import { PlacementPriceForm } from "./placement-price-form";
 import { PlacementWithdrawButton } from "./placement-withdraw-button";
 import { ProductForm } from "./product-form";
 import { StorefrontForm } from "./storefront-form";
 import { StorefrontPresentationForm } from "./storefront-presentation-form";
 import { SignOutButton } from "./sign-out-button";
 import { SIGN_OUT_DESTINATION } from "./sign-out-submission";
+/* Server-side only: the exact minor-unit <-> decimal conversion, used here to
+   pre-fill the editor with the price already stored. The page is a server
+   component, so the zod contracts it reaches for never ship to the browser. */
+import { formatRetailAmount } from "../../src/contracts/marketplace/retail-amount";
 
 /* This page reads a cookie. A cached render would be somebody else's session. */
 export const dynamic = "force-dynamic";
@@ -241,12 +250,39 @@ export default async function AccountPage() {
                     {` in ${placement.storefrontDisplayName} — ${PLACEMENT_DRAFT_STATUS}`}
                     <br />
                     <span className="auth-hint">{`Storefront: ${placement.storefrontHandle}`}</span>
-                    {/* Phase 1.35: withdrawal, offered only for the one state
-                        self-service governs. A DRAFT placement is private and
-                        unpriced, so removing it destroys nothing — which is why
-                        the note beside it says what survives. */}
+                    <br />
+                    {/* Phase 1.36: the placement's own price, or the plain fact
+                        that it has none. Stated beside the draft status rather
+                        than instead of it — a priced draft is still a draft, and
+                        the status line is what says so. */}
+                    <span className="auth-hint account-placement-price-current">
+                      {placement.retail === null
+                        ? PLACEMENT_PRICE_NONE
+                        : formatRetailPrice(
+                            placement.retail.amountMinorUnits,
+                            placement.retail.currency,
+                          )}
+                    </span>
+                    {/* Phase 1.35: withdrawal, and Phase 1.36: pricing. Both are
+                        offered only for the one state self-service governs. A
+                        DRAFT placement is private, so neither act reaches a
+                        buyer — which is why the note beside the withdrawal says
+                        what survives, and the one inside the price editor says
+                        what pricing does not do. */}
                     {placement.lifecycle === "DRAFT" ? (
                       <>
+                        <PlacementPriceForm
+                          listingRef={placement.listingRef}
+                          fieldId={`placement-price-${i}`}
+                          currentAmount={
+                            placement.retail === null
+                              ? ""
+                              : formatRetailAmount({
+                                  retailPriceMinorUnits: placement.retail.amountMinorUnits,
+                                  retailPriceCurrency: placement.retail.currency,
+                                })
+                          }
+                        />
                         <p className="auth-hint account-placement-note">
                           {PLACEMENT_WITHDRAW_NOTE}
                         </p>

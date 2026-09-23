@@ -240,6 +240,49 @@ export const WithdrawDraftPlacementInput = z.strictObject({
 });
 export type WithdrawDraftPlacementInput = z.infer<typeof WithdrawDraftPlacementInput>;
 
+/**
+ * Set or change the retail price of one of the acting Seller's own private
+ * DRAFT placements (Phase 1.36) — the self-service command.
+ *
+ * **One selector and one commercial fact.** `listingRef` names the placement;
+ * `retail` is what the Seller is stating. Everything else is resolved or
+ * decided server-side, and the omissions are the same design the withdrawal
+ * input follows: there is no member for a lifecycle, a Product, a Storefront, a
+ * controlling participant, a source-record version, an Offer, a commission, a
+ * sale schedule, a tax or shipping amount, or any activation or publication
+ * field. This is a strict object, so any of them is a refusal rather than a
+ * field quietly ignored.
+ *
+ * **`retail` is the authoritative shape, not a user-facing one.** It carries
+ * integer minor units and a currency, exactly as every other money value in
+ * this repository does. Turning a person's `"19.99"` into one happens at the
+ * HTTP boundary through `retail-amount.ts`, so the domain has one money model
+ * rather than two — and so a decimal string can never reach a stored amount.
+ *
+ * **Not nullable, deliberately.** Pricing an unpriced draft and repricing a
+ * priced one are the two acts this phase exposes; *clearing* a price back to
+ * unpriced is a third, and `UpdateListingInput.retail` cannot express it
+ * either. A `null` here would be a caller asking for an act the versioned path
+ * below it cannot perform.
+ *
+ * **No version label.** The next immutable source version is labelled by the
+ * service from the current pointer, as withdrawal's is. A caller-supplied label
+ * would let one placement's history be written out of order.
+ */
+export const SetDraftPlacementPriceInput = z.strictObject({
+  /** The placement to price, by its opaque application reference. */
+  listingRef: ListingRef,
+
+  /** The ordinary commercial retail price — merchandise alone. */
+  retail: RetailPrice,
+
+  actingAccountId: ActingAccountId,
+
+  /** Explicit instants. Nothing here reads a clock. */
+  now: z.iso.datetime(),
+});
+export type SetDraftPlacementPriceInput = z.infer<typeof SetDraftPlacementPriceInput>;
+
 // — Update —
 
 /**

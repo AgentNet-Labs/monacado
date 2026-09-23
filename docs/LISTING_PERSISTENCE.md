@@ -344,6 +344,55 @@ belong to the activation work that put them in front of buyers; `ENDED` and
 in either direction. The destination is not a parameter — a caller able to name
 a target state would be a caller able to name `ACTIVE`.
 
+### Pricing a private DRAFT placement (Phase 1.36)
+
+`setDraftPlacementPrice` exposes one commercial act — a `SELLER_DIRECT`
+placement in `DRAFT` receives or changes its own retail price — through the
+ordinary versioned path. It resolves the reference, labels the next version with
+`nextListingSourceRecordVersion`, and delegates to
+`createListingSourceVersion`; the material comparator, the authority decision,
+the version insert, and the pointer advance are all that function's, unchanged.
+
+**The ordering is the same authorization boundary withdrawal uses**, and it
+matters more here: participant, then reference, then **control**, then state.
+A reference naming nothing and a real placement belonging to another Seller are
+one answer, so this route cannot become a price list for a competitor's private
+shelf. `LISTING_NOT_REPRICEABLE` and `LISTING_PRICE_UNCHANGED` are safe to be
+specific because control has already been established when either is raised.
+
+**The price is written where the price lives — the version row, never the stable
+one.** `Listing` has no price column and gains none; §7's nullable pair moves
+from both-NULL to both-present on the new version, and the superseded version
+keeps the value it recorded. There is no update to a historical row, and the
+`Listing` pointer, `lifecycle`, `listingType`, and `currentPlacementMarker` move
+exactly as they do for any other material change — which here means the
+lifecycle does not move at all.
+
+**No migration was required, and none was made.** Phase 1.34 made
+`retailPriceMinorUnits` and `retailPriceCurrency` nullable and the mapper already
+writes them as a pair; Phase 1.36 writes values into columns that were waiting
+for them.
+
+**A repeat of the current price mints nothing.** It is answered before the write
+opens, from the current version's two price columns, and the write path's own
+comparator catches the racing second caller — both answer
+`LISTING_PRICE_UNCHANGED`, on the same reasoning that makes a second withdrawal a
+refusal rather than a no-op.
+
+**Money crosses the boundary as a decimal exactly once.** The authoritative shape
+is integer minor units throughout; `parseRetailAmount` converts a user-facing
+`"19.99"` into `1999` by string surgery over a fixed exponent, with no
+floating-point arithmetic and with over-precision refused rather than rounded.
+`USD` is the only accepted currency, because the repository holds no currency
+registry from which an unknown currency's minor-unit exponent could be read.
+
+**Everything else is refused and stays refused**: `ACTIVE` and `SUSPENDED`
+belong to the activation work that put them in front of buyers; `ENDED` and
+`WITHDRAWN` are terminal; `PROMOTED` retail is governed by its accepted Offer
+version and its non-negative-proceeds check. Clearing a price back to NULL is
+**deferred** — `UpdateListingInput.retail` is optional rather than nullable, so
+the authoritative update path cannot express it yet.
+
 ### One current placement per Product + Storefront (Phase 1.34)
 
 `Listing.currentPlacementMarker` holds the canonical string `CURRENT` while an

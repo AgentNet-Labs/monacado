@@ -95,11 +95,17 @@ export interface AccountHomeStorefront {
 
 /**
  * One current seller-direct placement the participant controls (Phase 1.34):
- * which of their Products is in which of their Storefronts.
+ * which of their Products is in which of their Storefronts, and — since
+ * Phase 1.36 — what it is priced at, if anything.
  *
- * User-facing facts only. No Listing identifier, no internal Product or
- * Storefront id, and **no price** — a private draft placement has none, and a
- * column for one here would invite the page to imply otherwise.
+ * User-facing facts only. No Listing identifier beyond the application
+ * reference, and no internal Product or Storefront id.
+ *
+ * **The price is nullable and that is the whole point of carrying it.** A
+ * private draft placement may or may not have one, the two are genuinely
+ * different commercial states, and a page cannot offer "set a price" versus
+ * "change the price" without being told which. `null` is *unpriced* — never a
+ * zero, never a missing key, and never a fabricated currency.
  */
 export interface AccountHomePlacement {
   /**
@@ -119,6 +125,18 @@ export interface AccountHomePlacement {
   /** The public handle — the Storefront's own client-facing selector. */
   storefrontHandle: string;
   lifecycle: ListingLifecycleState;
+  /**
+   * The placement's ordinary retail price, or `null` while it carries none
+   * (Phase 1.36).
+   *
+   * Minor units, because that is the authoritative money model and the page
+   * must not be handed a second one to disagree with — the amount a person
+   * reads is produced by the presentation layer's formatter from exactly this
+   * number. No effective price, no sale overlay, no economics: every one of
+   * those is derived, and a projection that carried a derived value would be a
+   * second answer able to go stale.
+   */
+  retail: { amountMinorUnits: number; currency: string } | null;
 }
 
 /**
@@ -386,9 +404,45 @@ async function readSellerDirectPlacements(
       internalProductId: true,
       storefrontId: true,
       lifecycle: true,
+      listingSourceRecordId: true,
+      currentSourceRecordVersion: true,
     },
   });
   if (listings.length === 0) return [];
+
+  /* The price lives on the CURRENT immutable source version, never on the
+     stable row — there is no price column there to read, and that is deliberate
+     (`LISTING_PERSISTENCE.md` §7). A third follow-up read rather than a join,
+     matching the two below it. */
+  const listingVersions = await db.listingSourceRecordVersionRow.findMany({
+    where: {
+      OR: listings.map((l) => ({
+        listingSourceRecordId: l.listingSourceRecordId,
+        sourceRecordVersion: l.currentSourceRecordVersion,
+      })),
+    },
+    select: {
+      listingSourceRecordId: true,
+      retailPriceMinorUnits: true,
+      retailPriceCurrency: true,
+    },
+  });
+  const retailBySourceRecord = new Map(
+    listingVersions.map((v) => [
+      v.listingSourceRecordId,
+      /* Both columns or neither. A half-populated pair is corruption the mapper
+         refuses on the authoritative path; here — a read-only page projection —
+         it is treated as unpriced rather than rendered as half a price, on the
+         same reasoning that drops a placement whose Product name will not
+         resolve. */
+      v.retailPriceMinorUnits === null || v.retailPriceCurrency === null
+        ? null
+        : {
+            amountMinorUnits: Number(v.retailPriceMinorUnits),
+            currency: v.retailPriceCurrency,
+          },
+    ]),
+  );
 
   const products = await db.product.findMany({
     where: { internalProductId: { in: listings.map((l) => l.internalProductId) } },
@@ -455,6 +509,7 @@ async function readSellerDirectPlacements(
         storefrontDisplayName: shop.displayName,
         storefrontHandle: shop.handle,
         lifecycle: l.lifecycle as ListingLifecycleState,
+        retail: retailBySourceRecord.get(l.listingSourceRecordId) ?? null,
       },
     ];
   });

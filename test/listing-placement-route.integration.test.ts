@@ -671,6 +671,10 @@ describe.skipIf(!RUN)("Phase 1.34 — seller-direct DRAFT Listing self-service",
         storefrontDisplayName: "Ada's Workshop",
         storefrontHandle,
         lifecycle: "DRAFT",
+        /* Amended at Phase 1.36: the projection carries the placement's price,
+           and `null` is the STATED unpriced state this phase creates — not an
+           omitted key, and not a zero. */
+        retail: null,
       },
     ]);
     /* The form is offered, and its two selectors are the safe ones. */
@@ -679,7 +683,10 @@ describe.skipIf(!RUN)("Phase 1.34 — seller-direct DRAFT Listing self-service",
     expect(home!.storefronts.map((s) => s.publicHandle)).toContain(storefrontHandle);
     expect(home!.storefronts.every((s) => s.canPlaceProduct)).toBe(true);
 
-    /* No internal identity, and no price, reaches the page. */
+    /* No internal identity reaches the page, and no price either — because this
+       placement has none. Phase 1.36 gives a priced placement a price here; an
+       unpriced one carries no amount and no currency, which is the whole point
+       of `retail: null` being nullable rather than defaulted. */
     const serialized = JSON.stringify(home);
     expect(serialized).not.toMatch(/mon:|an:node/);
     expect(serialized).not.toMatch(/retailPrice|currency/i);

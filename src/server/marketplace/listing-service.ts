@@ -53,6 +53,7 @@ import {
   CreatePromotedListingInput,
   CreateSellerDirectListingInput,
   PlaceProductInStorefrontInput,
+  SetDraftPlacementPriceInput,
   UpdateListingInput,
   WithdrawDraftPlacementInput,
   materialListingChangesBetween,
@@ -107,6 +108,8 @@ import {
   ListingAlreadyExistsError,
   ListingCommercialTermsRequiredError,
   ListingNotWithdrawableError,
+  ListingNotRepriceableError,
+  ListingPriceUnchangedError,
   ListingEconomicsRefusedError,
   ListingNotAuthorizedError,
   ListingNotFoundError,
@@ -195,6 +198,8 @@ function isDomainError(error: unknown): boolean {
     error instanceof ListingAlreadyExistsError ||
     error instanceof ListingCommercialTermsRequiredError ||
     error instanceof ListingNotWithdrawableError ||
+    error instanceof ListingNotRepriceableError ||
+    error instanceof ListingPriceUnchangedError ||
     error instanceof NoMaterialListingChangeError ||
     error instanceof CorruptListingRecordError ||
     error instanceof ListingProductNotFoundError ||
@@ -1274,6 +1279,159 @@ export async function withdrawDraftPlacement(
          nothing about commercial terms, so the next version carries the
          current ones forward untouched. */
       lifecycle: "WITHDRAWN",
+      actingAccountId: data.actingAccountId,
+      now: data.now,
+    },
+    deps,
+  );
+}
+
+/**
+ * Set or change the retail price of one of the acting Seller's own private
+ * DRAFT placements (Phase 1.36) — the self-service command behind
+ * `POST /api/listings/{listingRef}/price`.
+ *
+ * **A resolver and a gate, exactly as `withdrawDraftPlacement` is**, and
+ * deliberately built on the same bones. The write itself is
+ * `createListingSourceVersion`'s: it re-decides authority inside its own
+ * transaction, asks `materialListingChangesBetween` whether anything material
+ * moved, mints the next immutable version, and advances the pointer. This
+ * function resolves the client-safe reference, refuses the states self-service
+ * pricing does not govern, and answers a repeat of the current price.
+ *
+ * **The ordering is the same authorization boundary**, for the same reason:
+ *
+ *   1. the acting participant is resolved FIRST, so an account with no
+ *      marketplace participation cannot probe a reference at all;
+ *   2. the reference is resolved;
+ *   3. **control is established before any state is revealed** — a placement
+ *      the caller does not control is reported exactly as one that does not
+ *      exist. Learning "that exists but is not yours", or worse "that exists
+ *      and is priced at X", would make this route a price list for a
+ *      competitor's private shelf;
+ *   4. only then are the type, the lifecycle, and the current price judged, and
+ *      only for a placement the caller provably controls.
+ *
+ * As there, the control check is **not** a second authority model: it exists
+ * for ordering, and `requireController` inside the write transaction remains
+ * the one that actually guards the write.
+ *
+ * **What this states, and what it must not.** The Seller is saying "this
+ * Product is offered in this Storefront at this retail price" — a commercial
+ * fact of the **placement**. It is not a Product fact, not a Storefront fact,
+ * not an Offer, not a promoter commission, not a wholesale acquisition amount,
+ * and not a marketplace fee: none of those has a field this command can reach,
+ * because the only thing beyond identity it supplies to the versioned path is
+ * `retail`.
+ *
+ * **It does not take anything live.** The lifecycle is not a parameter and is
+ * not passed on, so the placement stays `DRAFT` and the marker stays `CURRENT`.
+ * A priced draft consumes no active-Listing capacity, because it is not active.
+ * What changes is that `LISTING_COMMERCIAL_TERMS_REQUIRED` would no longer be
+ * the reason activation fails — every other activation gate is untouched and
+ * still decides on its own terms.
+ */
+export async function setDraftPlacementPrice(
+  input: unknown,
+  deps: ListingServiceDeps = {},
+): Promise<ListingSnapshot> {
+  const parsed = SetDraftPlacementPriceInput.safeParse(input);
+  if (!parsed.success) throw inputError(parsed.error);
+  const data = parsed.data;
+
+  const db = deps.db ?? getPrisma();
+
+  let resolved: { internalListingId: string; sourceRecordVersion: string };
+  try {
+    const subject = await resolveActingSubject(db, data.actingAccountId);
+    const participantId = subject.participant?.participantId;
+    if (participantId === undefined) {
+      throw new ListingNotAuthorizedError(canCreateSellerDirectListing(subject).capability, [
+        "PARTICIPANT_REQUIRED",
+      ]);
+    }
+
+    const listing = await db.listing.findUnique({
+      where: { listingRef: data.listingRef },
+      select: {
+        internalListingId: true,
+        listingSourceRecordId: true,
+        controllingParticipantId: true,
+        listingType: true,
+        lifecycle: true,
+        currentSourceRecordVersion: true,
+      },
+    });
+    /* A reference that names nothing, and one that names somebody else's
+       placement, are the SAME answer. See the ordering note above. */
+    if (listing === null || listing.controllingParticipantId !== participantId) {
+      throw new ListingNotFoundError();
+    }
+
+    /* Only now, and only about a placement this caller provably controls. */
+    if (listing.listingType !== "SELLER_DIRECT") {
+      throw new ListingNotRepriceableError("LISTING_TYPE_NOT_SELF_SERVICE");
+    }
+    if (listing.lifecycle !== "DRAFT") {
+      throw new ListingNotRepriceableError(
+        isTerminalListingLifecycleState(listing.lifecycle as never)
+          ? "ALREADY_RELEASED"
+          : "LIFECYCLE_NOT_DRAFT",
+      );
+    }
+
+    /* The no-op, answered here rather than left to the write path.
+     *
+     * `createListingSourceVersion` would refuse it anyway — an update that
+     * changes nothing material mints nothing — but it would do so as
+     * `NO_MATERIAL_CHANGE`, which says "something did not move" when what a
+     * caller needs to hear is that this price already stands. The read is the
+     * one the comparison needs and nothing more.
+     *
+     * This is NOT the authoritative check: a racing second call that passes
+     * here still meets the comparator inside the write transaction, and the
+     * route maps that refusal to the same bounded answer. */
+    const currentRow = await db.listingSourceRecordVersionRow.findUnique({
+      where: {
+        listingSourceRecordId_sourceRecordVersion: {
+          listingSourceRecordId: listing.listingSourceRecordId,
+          sourceRecordVersion: listing.currentSourceRecordVersion,
+        },
+      },
+      select: { retailPriceMinorUnits: true, retailPriceCurrency: true },
+    });
+    if (currentRow === null) {
+      throw new CorruptListingRecordError(["currentSourceRecordVersion"]);
+    }
+    if (
+      currentRow.retailPriceMinorUnits !== null &&
+      currentRow.retailPriceCurrency === data.retail.retailPriceCurrency &&
+      currentRow.retailPriceMinorUnits === BigInt(data.retail.retailPriceMinorUnits)
+    ) {
+      throw new ListingPriceUnchangedError();
+    }
+
+    const sourceRecordVersion = nextListingSourceRecordVersion(
+      listing.currentSourceRecordVersion,
+    );
+    if (sourceRecordVersion === undefined) {
+      throw new ListingPersistenceFailureError("setDraftPlacementPrice:version-label");
+    }
+    resolved = { internalListingId: listing.internalListingId, sourceRecordVersion };
+  } catch (error) {
+    if (isDomainError(error)) throw error;
+    throw new ListingPersistenceFailureError("setDraftPlacementPrice", error);
+  }
+
+  return await createListingSourceVersion(
+    {
+      internalListingId: resolved.internalListingId,
+      sourceRecordVersion: resolved.sourceRecordVersion,
+      /* The ONLY field this command supplies beyond identity. No lifecycle, no
+         sale, no Offer version, no acquisition policy: stating a price asserts
+         nothing about any of them, so the next version carries the current ones
+         forward untouched — and the placement stays exactly as draft as it was. */
+      retail: data.retail,
       actingAccountId: data.actingAccountId,
       now: data.now,
     },

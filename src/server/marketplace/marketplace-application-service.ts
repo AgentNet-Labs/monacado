@@ -70,6 +70,7 @@ import {
   createSellerDirectListing,
   createPromotedListing,
   placeProductInStorefront,
+  setDraftPlacementPrice,
   withdrawDraftPlacement,
 } from "./listing-service";
 import type { ListingServiceDeps, ListingSnapshot } from "./listing-service";
@@ -337,6 +338,37 @@ export async function withdrawOwnDraftPlacementAs(
   return await withdrawDraftPlacement(
     {
       listingRef: input.listingRef,
+      actingAccountId: actor.accountId,
+      now: input.now,
+    },
+    deps,
+  );
+}
+
+/**
+ * Set or change the retail price of one of the acting Seller's own private
+ * DRAFT placements (Phase 1.36).
+ *
+ * Rebuilt rather than spread, on the same reasoning as its two siblings: a
+ * stray `internalListingId`, `sourceRecordVersion`, `lifecycle`,
+ * `controllingParticipantId`, `sale`, or `acceptedOfferSourceRecordVersion` in
+ * a forwarded body has nowhere to land. Two things travel — the placement's
+ * reference and the price being stated — and the domain decides everything
+ * else.
+ *
+ * `retail` is already the authoritative minor-unit shape. The decimal a person
+ * typed was converted at the HTTP boundary, so no user-facing amount reaches
+ * this layer and none can reach a stored one.
+ */
+export async function setOwnDraftPlacementPriceAs(
+  actor: ActingAccount,
+  input: { listingRef: unknown; retail: unknown; now: string },
+  deps: ListingServiceDeps = {},
+): Promise<ListingSnapshot> {
+  return await setDraftPlacementPrice(
+    {
+      listingRef: input.listingRef,
+      retail: input.retail,
       actingAccountId: actor.accountId,
       now: input.now,
     },

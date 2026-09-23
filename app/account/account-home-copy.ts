@@ -141,3 +141,59 @@ export const PLACEMENT_WITHDRAW_LABEL = "Remove from storefront";
  */
 export const PLACEMENT_WITHDRAW_NOTE =
   "This removes the draft listing only. Your product stays in your library and your storefront is unchanged. You can add it again later.";
+
+// — Pricing a placement (Phase 1.36) —
+
+/** The action label when the placement carries no price yet. */
+export const PLACEMENT_PRICE_SET_LABEL = "Set price";
+
+/** The action label when it already carries one. */
+export const PLACEMENT_PRICE_CHANGE_LABEL = "Change price";
+
+/**
+ * Shown inside the pricing control.
+ *
+ * Two jobs, and the second is the important one: say what a price does, and say
+ * what it does NOT do. A person who has just typed an amount is exactly the
+ * person most likely to assume the item is now for sale.
+ */
+export const PLACEMENT_PRICE_NOTE =
+  "Set what buyers would pay for this product in this storefront. The listing stays a private draft — pricing it does not make it live or put it on sale.";
+
+/** The label above the amount field. The currency is fixed and shown beside it. */
+export const PLACEMENT_PRICE_FIELD_LABEL = "Retail price";
+
+/** The only currency this phase prices in. Shown, never chosen. */
+export const PLACEMENT_PRICE_CURRENCY = "USD";
+
+export const PLACEMENT_PRICE_HINT = "Amount in US dollars, for example 19.99.";
+
+/** Shown in place of a price while the placement carries none. */
+export const PLACEMENT_PRICE_NONE = "No price set";
+
+/**
+ * A stored minor-unit amount as the text a person reads.
+ *
+ * **Presentation only, and never an input to anything.** The authoritative
+ * amount is the integer this is given; nothing derived from this string is ever
+ * stored, compared, or sent back to the server, so the division below cannot
+ * reach a commercial record. The exact decimal-to-minor-unit conversion — the
+ * one that does touch authoritative money — is `parseRetailAmount`, which uses
+ * no floating-point arithmetic at all.
+ *
+ * `Intl.NumberFormat` rather than a hand-built symbol and separator, matching
+ * the three existing money formatters in this repository (the checkout result
+ * page, the listing page, and the transactional notices). It rounds to the
+ * currency's own fraction digits, so the binary approximation of `1999 / 100`
+ * formats as `$19.99` exactly.
+ *
+ * Minor units are assumed to be hundredths, which holds for every currency this
+ * phase accepts — `SUPPORTED_RETAIL_CURRENCIES` is `USD` alone. That contract
+ * is not imported here: this module is loaded by client components and must
+ * stay free of runtime imports from the zod contracts.
+ */
+export function formatRetailPrice(amountMinorUnits: number, currency: string): string {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(
+    amountMinorUnits / 100,
+  );
+}

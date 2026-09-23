@@ -104,6 +104,9 @@ the authoritative record holds absence rather than a placeholder.
 
 Existing priced Listings are unaffected and remain valid exactly as recorded.
 
+**Pricing an unpriced draft is Phase 1.36's own act** (§2c) — it fills the
+absence this section made representable, and it is still not activation.
+
 **Going live is where placement stops being enough.** `DRAFT → ACTIVE` puts an
 item in front of buyers, and an item in front of buyers at no stated price is not
 a draft with a gap in it. The narrow guard enforced today refuses `ACTIVE` when a
@@ -111,6 +114,87 @@ placement carries no retail price. The **governed commercial-readiness gate** �
 required Offer terms, promoted economics, and the active-Listing allowance
 ([`MARKETPLACE_ASSORTMENT_AND_LISTING_RULES.md`](MARKETPLACE_ASSORTMENT_AND_LISTING_RULES.md) §2)
 — belongs to the activation phase and is **not** anticipated here.
+
+## 2c. Pricing a private DRAFT placement
+
+**(added at Phase 1.36.)**
+
+§2a made `retail` nullable so placement could precede pricing. Phase 1.36 closes
+the loop it opened: a `SELLER_DIRECT` placement in `DRAFT`, controlled by the
+acting Seller, may **acquire** a retail price and may **change** it.
+
+The statement is exactly one sentence long:
+
+> This Product is offered in this Storefront at this retail price.
+
+**It is a commercial fact of the placement**, and the three-layer separation
+(§2a) says what that means in the negative. The price is not Product semantic
+truth and not a Product price; not a Storefront price; not an Offer, and does not
+create one; not a promoter commission; not a wholesale acquisition amount; and
+not a marketplace fee. None of those is reachable, because pricing supplies
+`retail` to the versioned path and nothing else.
+
+**It is an ordinary material change.** `retailPrice` and `retailCurrency` are
+already members of `MATERIAL_LISTING_FIELDS` (§15) and the comparator is
+null-safe, so pricing an unpriced draft and repricing a priced one both mint the
+next immutable source version, move the pointer, and leave every earlier version
+untouched. Version 1 stays unpriced for as long as the placement exists.
+
+**It takes nothing live.** The destination lifecycle is not a parameter and is
+not supplied, so the placement stays `DRAFT` and the current-placement marker
+stays `CURRENT`. A priced draft is still private, still not for sale, and still
+consumes no active-Listing allowance — pricing and activation are different acts,
+and only one of them is exposed here.
+
+What it does change is *which* gate refuses activation. The narrow guard in §2a
+refuses `ACTIVE` when a placement carries no price; once a price exists that
+guard is satisfied, and **every other activation requirement still decides on its
+own terms**:
+
+| Gate | Still decides |
+| --- | --- |
+| The transition table | `DRAFT → ACTIVE` must be a legal move |
+| The branch capability, plus control | a SELLER in a drafting-permitted status, and the controller |
+| Product authority | creator authority over the Product, re-asked at go-live |
+| Storefront placement authority | ownership, or an ACTIVE governance assignment, re-asked at go-live |
+| Participant standing | no suspension, and no active restriction scope |
+| The active-Listing allowance | **still unbuilt** ([`MARKETPLACE_ASSORTMENT_AND_LISTING_RULES.md`](MARKETPLACE_ASSORTMENT_AND_LISTING_RULES.md) §2) |
+
+None of them is weakened, and Phase 1.36 assumes none of them is satisfied.
+
+### What stays out of reach, and why each is somebody else's phase
+
+| Case | Why not here |
+| --- | --- |
+| `ACTIVE`, `SUSPENDED` | These were in front of buyers. A price a buyer may have seen is not a draft field, and repricing one belongs with the activation work that took it live. |
+| `ENDED`, `WITHDRAWN` | Terminal. A price on a released placement asserts a commercial term for a shelf position that no longer exists. |
+| `PROMOTED` | Its retail is governed by the accepted Offer version and the non-negative-proceeds check that runs against it (§5, §6). An independently editable promoted retail would be a second place promoted economics could move, outside that check — and promoted self-service does not exist in either direction until anti-self-promotion and governed economic-principal resolution do. |
+| **Clearing a price** | `retail` back to `null`. `UpdateListingInput.retail` is optional, not nullable, so the versioned path cannot express it and the self-service command therefore cannot either. **Deferred, not refused on principle** — the state is legal and §2a describes it; reaching it needs a nullable update contract, which is its own change to the authoritative path. |
+
+### A repeat of the current price mints nothing
+
+Refused with a bounded answer, not absorbed as a success. A version asserting a
+change that did not happen is a false statement in an immutable record — the same
+reasoning `MATERIAL_LISTING_FIELDS` already encodes, and the same reason a second
+withdrawal mints nothing (§2b).
+
+### The amount is exact, and the currency is stated
+
+The authoritative amount is **integer minor units**, as every money value in the
+model is. A person types a decimal, so the conversion from `"19.99"` to `1999`
+happens once, at the application boundary, by string surgery over a fixed
+minor-unit exponent — **never by floating-point multiplication**, which gets
+`19.99 × 100` wrong. Over-precision is refused rather than rounded: `"19.999"` in
+USD is a price the currency cannot hold, and recording `1999` would record a
+number nobody typed.
+
+The currency is **required and explicit**, never defaulted — a currency is a
+commercial claim, and a server supplying a missing one makes that claim on the
+seller's behalf. Only currencies Monacado prices in are accepted; `USD` alone
+today, because a decimal cannot be converted without that currency's exponent and
+the repository holds no currency registry to look one up in (§`CurrencyCode`,
+[`AUTHORITATIVE_OFFER_SOURCE_MODEL.md`](AUTHORITATIVE_OFFER_SOURCE_MODEL.md)).
+No FX, no conversion, and no locale-specific settlement is introduced.
 
 ## 2b. Withdrawing a private DRAFT placement
 

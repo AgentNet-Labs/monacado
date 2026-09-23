@@ -34,6 +34,8 @@ export type ListingErrorCode =
   | "LISTING_ALREADY_EXISTS"
   | "LISTING_COMMERCIAL_TERMS_REQUIRED"
   | "LISTING_NOT_WITHDRAWABLE"
+  | "LISTING_NOT_REPRICEABLE"
+  | "LISTING_PRICE_UNCHANGED"
   | "NO_MATERIAL_CHANGE"
   | "LISTING_ECONOMICS_REFUSED"
   | "CORRUPT_LISTING_RECORD"
@@ -212,6 +214,62 @@ export class ListingNotWithdrawableError extends ListingError {
     super("LISTING_NOT_WITHDRAWABLE", "That placement cannot be withdrawn");
     this.name = "ListingNotWithdrawableError";
     this.state = state;
+  }
+}
+
+/**
+ * This placement is not in a state self-service pricing governs (Phase 1.36).
+ *
+ * Phase 1.36 exposes exactly one commercial act: a `SELLER_DIRECT` placement in
+ * `DRAFT` receives, or changes, its own retail price. Everything else is
+ * refused here, and each refusal has its own settled reason:
+ *
+ *   - **`ACTIVE` and `SUSPENDED`** are placements that were put in front of
+ *     buyers. Repricing one is a commercial act with consequences this phase
+ *     has not modelled — a live price a buyer may have seen is not a draft
+ *     field — and it belongs with the activation work that took it live.
+ *   - **`ENDED` and `WITHDRAWN`** are terminal. A price on a released placement
+ *     asserts a commercial term for a shelf position that no longer exists, and
+ *     it must mint nothing.
+ *   - **`PROMOTED`** placements have their retail governed by the accepted
+ *     Offer version and the non-negative-proceeds check that runs against it
+ *     (`LISTING_SOURCE_MODEL.md` §5, §6). An independently editable promoted
+ *     retail price would be a second place promoted economics could move,
+ *     outside the check that keeps promoter proceeds non-negative — and
+ *     promoted self-service does not exist at all until anti-self-promotion and
+ *     governed economic-principal resolution do.
+ *
+ * `state` is the bounded reason, never free text and never the lifecycle of a
+ * placement the caller does not control — the service establishes control
+ * before this can be raised.
+ */
+export class ListingNotRepriceableError extends ListingError {
+  readonly state: string;
+  constructor(state: string) {
+    super("LISTING_NOT_REPRICEABLE", "That placement cannot be priced here");
+    this.name = "ListingNotRepriceableError";
+    this.state = state;
+  }
+}
+
+/**
+ * The requested retail price is the one this placement already carries
+ * (Phase 1.36).
+ *
+ * A bounded semantic answer rather than a success that did nothing. Minting a
+ * version here would write an immutable record asserting a change that did not
+ * happen — the same reasoning behind `NoMaterialListingChangeError`, which is
+ * what the versioned path underneath would raise anyway. This one is raised
+ * first, and it says which fact was unchanged, so a caller is told the price
+ * stands rather than that "something" did not move.
+ *
+ * Carries no amount. The caller sent the price; repeating it back adds nothing,
+ * and an error object is not where a commercial value belongs.
+ */
+export class ListingPriceUnchangedError extends ListingError {
+  constructor() {
+    super("LISTING_PRICE_UNCHANGED", "That placement already carries this retail price");
+    this.name = "ListingPriceUnchangedError";
   }
 }
 

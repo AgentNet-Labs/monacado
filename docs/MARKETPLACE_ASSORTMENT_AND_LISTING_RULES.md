@@ -1,4 +1,4 @@
-# Marketplace Assortment and Listing Rules (Phase 1.33, amended at Phase 1.34)
+# Marketplace Assortment and Listing Rules (Phase 1.33, amended at Phases 1.34 and 1.36)
 
 The governing commercial rules for **what a Seller may hold, where it may be
 placed, and what that placement costs a Storefront**. Archived here so later
@@ -227,6 +227,7 @@ Updated at Phase 1.34 where that phase changed the answer.
 | Does a Product have an application-facing reference? | **Yes — Phase 1.34.** `Product.productRef`: opaque, immutable, server-minted, unique. Application routing identity only — not a semantic or public AgentNet identity. |
 | Does a Listing have one? | **Yes — Phase 1.35.** `Listing.listingRef`, same shape and same rules. It names the placement **aggregate**, so it does not move when a new source version is minted. |
 | Can a Seller remove a placement? | **A private DRAFT one, yes — Phase 1.35.** `POST /api/listings/{listingRef}/withdraw` performs `DRAFT → WITHDRAWN`, which releases the Product + Storefront pair. `ACTIVE`, `SUSPENDED`, terminal, and promoted placements are all refused. |
+| Can a Seller price a placement? | **A private DRAFT one, yes — Phase 1.36.** `POST /api/listings/{listingRef}/price` sets or changes the retail price of a `SELLER_DIRECT` `DRAFT` placement the caller controls, minting a new immutable source version. `USD` only; a repeat of the current price mints nothing; clearing a price back to unpriced is deferred. It creates no Offer, no commission, and no economics, and it does **not** activate the placement or consume active-Listing capacity. `ACTIVE`, `SUSPENDED`, terminal, and promoted placements are all refused. |
 | Listing lifecycle | `DRAFT`, `ACTIVE`, `SUSPENDED`, `ENDED`, `WITHDRAWN`; created `DRAFT`; `→ ACTIVE` is a separate governed act. |
 | Seller-direct self-service? | **Yes — Phase 1.34.** `POST /api/listings`, two selectors, one unpriced private `DRAFT` placement. |
 | Seller-direct pathway | `createSellerDirectListing` / `openSellerDirectListing`: `canCreateSellerDirectListing` (SELLER role), controller is the acting participant, controller holds Product authority (`participantHoldsProductAuthority`), and Storefront placement authority (owner, or ACTIVE governance assignment). |
@@ -253,15 +254,28 @@ Updated at Phase 1.34 where that phase changed the answer.
    index, exactly as anticipated here.
 4. **Active-Listing allowance at activation (§2)** — 5 per Storefront, lock-and-
    count inside the `→ ACTIVE` write. **Still open**, and separate from §5:
-   Phase 1.34 added no count, allowance, or paid entitlement.
+   Phase 1.34 added no count, allowance, or paid entitlement, and Phase 1.36
+   added none either — a priced `DRAFT` placement consumes no active capacity
+   because it is not active.
 5. **Promotability reconciliation (§7)** — whether a promoted Listing must also
    require the Product fact `promotable`, beside the Offer's `PROMOTABLE` terms.
-6. ~~**Seller-direct Listing self-service**~~ — **closed at Phase 1.34.**
-   `POST /api/listings` takes two selectors, `productRef` and
+6. ~~**Seller-direct Listing self-service**~~ — **closed at Phase 1.34, and
+   extended since.** `POST /api/listings` takes two selectors, `productRef` and
    `storefrontHandle`, and creates one private `DRAFT` `SELLER_DIRECT` Listing
-   with no price. `/account` offers the control once the Seller holds both a
-   Product and a Storefront. Activation, pricing, Offers, and the active-Listing
-   allowance are all still out of reach from it.
+   with no price. Phase 1.35 added withdrawal, and **Phase 1.36 added pricing**
+   — so the self-service surface is now create, price, and remove, all of it on
+   a private draft. `/account` offers each control once the Seller holds what it
+   needs. **Activation, Offers, and the active-Listing allowance are all still
+   out of reach from it**, and pricing did not bring any of them closer: a
+   priced draft is not live, not for sale, and not counted.
+
+7. **Clearing a retail price back to unpriced.** `LISTING_SOURCE_MODEL.md` §2a
+   makes `retail: null` a legal, meaningful commercial state, and Phase 1.36
+   cannot reach it: `UpdateListingInput.retail` is optional rather than
+   nullable, so the authoritative versioned path has no way to express "remove
+   the price". Whichever phase wants it must make that contract nullable
+   deliberately — a `null` that means "unchanged" on one branch and "clear" on
+   the other would be the ambiguity worth avoiding.
 
 ## Reference
 

@@ -66,6 +66,18 @@ const {
   submitStorefrontPresentation,
 } = await import("../app/account/storefront-presentation-submission");
 const {
+  PRICE_EMPTY,
+  PRICE_FAILURE,
+  PRICE_INVALID_AMOUNT,
+  PRICE_NOT_AVAILABLE,
+  PRICE_NOT_ELIGIBLE,
+  PRICE_NOT_REPRICEABLE,
+  PRICE_SIGNED_OUT,
+  PRICE_UNCHANGED,
+  placementPriceEndpoint,
+  submitPlacementPrice,
+} = await import("../app/account/placement-price-submission");
+const {
   WITHDRAW_FAILURE,
   WITHDRAW_NOT_AVAILABLE,
   WITHDRAW_NOT_ELIGIBLE,
@@ -767,6 +779,7 @@ describe("placement presentation", () => {
             storefrontDisplayName: "Ada Workshop",
             storefrontHandle: "ada-workshop",
             lifecycle: "DRAFT",
+            retail: null,
           },
         ],
       }),
@@ -950,6 +963,7 @@ describe("placement withdrawal presentation", () => {
           storefrontDisplayName: "Ada Workshop",
           storefrontHandle: "ada-workshop",
           lifecycle: "DRAFT" as const,
+          retail: null,
         },
       ],
       ...overrides,
@@ -1002,6 +1016,7 @@ describe("placement withdrawal presentation", () => {
               storefrontDisplayName: "Ada Workshop",
               storefrontHandle: "ada-workshop",
               lifecycle,
+              retail: null,
             },
           ],
         }),
@@ -1010,12 +1025,27 @@ describe("placement withdrawal presentation", () => {
     }
   });
 
-  it("shows no pricing, Offer, or activation control beside the action", async () => {
+  it("shows no Offer, commission, or activation control beside the action", async () => {
+    /* Amended at Phase 1.36: a pricing control now legitimately sits here, and
+       the list of things that must NOT is unchanged apart from losing the price.
+       A currency SELECTOR is still absent — USD is the only one this phase
+       prices in, and a one-option select is a decision nobody is being asked to
+       make. */
     const html = await renderSignedIn(placed());
-    for (const absent of ["currency", "Currency", "Offer", "commission", "Activate", "Publish", "Go live"]) {
+    for (const absent of ["Offer", "commission", "Activate", "Publish", "Go live"]) {
       expect(html).not.toContain(absent);
     }
+    /* No number input: a browser-normalized numeric value is how a price
+       becomes a float before it ever leaves the page. */
     expect(html).not.toContain('type="number"');
+    /* And no currency selector inside the price editor. Scoped to that form —
+       the page holds the placement form's own two selects. */
+    const priceForm = html.slice(
+      html.indexOf("account-placement-price-form"),
+      html.indexOf("</form>", html.indexOf("account-placement-price-form")),
+    );
+    expect(priceForm).not.toContain("<select");
+    expect(priceForm.match(/<input/g) ?? []).toHaveLength(1);
   });
 });
 
@@ -1101,6 +1131,253 @@ describe("placement withdrawal submission", () => {
     ]) {
       expect(message).not.toMatch(/price|currency|offer|commission|\$/i);
       expect(message).not.toMatch(/mon:|an:/);
+    }
+  });
+});
+
+// — Phase 1.36: pricing a draft placement —
+
+describe("placement pricing presentation", () => {
+  const LISTING_REF = "ABCDEFGHJKMNPQRSTVWXYZ0123456789";
+
+  const product = {
+    productRef: "0123456789ABCDEFGHJKMNPQRSTVWXYZ",
+    name: "Hand-thrown mug",
+    description: null,
+    promotable: false,
+    generalAvailabilityState: "available" as const,
+    deliveryMode: "PHYSICAL" as const,
+    recordStatus: "draft" as const,
+  };
+
+  const storefront = {
+    displayName: "Ada Workshop",
+    tagline: null,
+    summary: null,
+    publicHandle: "ada-workshop",
+    lifecycle: "DRAFT" as const,
+    visibility: "PRIVATE" as const,
+    canEditPresentation: true,
+    canPlaceProduct: true,
+  };
+
+  const placed = (
+    retail: { amountMinorUnits: number; currency: string } | null,
+    lifecycle: "DRAFT" | "ACTIVE" = "DRAFT",
+  ) =>
+    home({
+      marketplace: DRAFT_SELLER,
+      canCreateProduct: true,
+      canPlaceListing: true,
+      products: [product],
+      storefronts: [storefront],
+      placements: [
+        {
+          listingRef: LISTING_REF,
+          productName: "Hand-thrown mug",
+          storefrontDisplayName: "Ada Workshop",
+          storefrontHandle: "ada-workshop",
+          lifecycle,
+          retail,
+        },
+      ],
+    });
+
+  const visibleText = (html: string): string =>
+    html
+      .replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, " ")
+      .replace(/<[^>]+>/g, "")
+      .replaceAll("<!-- -->", "");
+
+  it("offers Set price on an unpriced draft, and says it is still not for sale", async () => {
+    const html = await renderSignedIn(placed(null));
+    const text = visibleText(html);
+
+    expect(text).toContain("Set price");
+    expect(text).not.toContain("Change price");
+    expect(text).toContain("No price set");
+    /* The status line still says what this is, and the note inside the editor
+       says what pricing does NOT do. Both, because a person who has just typed
+       an amount is the person most likely to assume the item is now on sale. */
+    expect(text).toContain("Draft · Not live · Not for sale");
+    expect(text).toContain("pricing it does not make it live or put it on sale");
+  });
+
+  it("shows the current price and offers Change price on a priced draft", async () => {
+    const html = await renderSignedIn(placed({ amountMinorUnits: 1999, currency: "USD" }));
+    const text = visibleText(html);
+
+    /* The formatted amount, never the stored integer. */
+    expect(text).toContain("$19.99");
+    expect(text).not.toContain("1999");
+    expect(text).toContain("Change price");
+    expect(text).not.toContain("Set price");
+    expect(text).not.toContain("No price set");
+    /* Priced is still not live. */
+    expect(text).toContain("Draft · Not live · Not for sale");
+  });
+
+  it("pre-fills the editor with the stored price as a plain decimal", async () => {
+    const html = await renderSignedIn(placed({ amountMinorUnits: 2450, currency: "USD" }));
+    expect(html).toContain('value="24.50"');
+    expect(visibleText(html)).toContain("$24.50");
+  });
+
+  /** The one span that states this placement's price, as a person reads it. */
+  const priceShown = (html: string): string => {
+    const match = /account-placement-price-current[^>]*>([^<]*)</.exec(html);
+    return match?.[1] ?? "";
+  };
+
+  it("formats whole and sub-dollar amounts, and shows the minor-unit integer nowhere", async () => {
+    for (const [minorUnits, display, prefill] of [
+      [1900, "$19.00", "19.00"],
+      [99, "$0.99", "0.99"],
+      [123456, "$1,234.56", "1234.56"],
+    ] as const) {
+      const html = await renderSignedIn(placed({ amountMinorUnits: minorUnits, currency: "USD" }));
+      /* Asserted on the price span itself rather than page-wide: "99" occurs in
+         the example amount inside the field hint, and a page-wide ban would
+         fail for a reason that has nothing to do with what is displayed. */
+      expect(priceShown(html)).toBe(display);
+      expect(priceShown(html)).not.toBe(String(minorUnits));
+      expect(html).toContain(`value="${prefill}"`);
+    }
+  });
+
+  it("offers no pricing control on a placement that is not DRAFT", async () => {
+    /* ACTIVE and SUSPENDED placements were in front of buyers; repricing one is
+       a commercial act, and it belongs with the activation work that took it
+       live. */
+    const html = await renderSignedIn(placed({ amountMinorUnits: 1999, currency: "USD" }, "ACTIVE"));
+    const text = visibleText(html);
+    expect(text).not.toContain("Set price");
+    expect(text).not.toContain("Change price");
+    /* The price itself is still stated — it is a fact of the placement, and
+       hiding it would be the page lying about what it knows. */
+    expect(text).toContain("$19.99");
+  });
+
+  it("never renders the reference as visible copy, and holds no internal identifier", async () => {
+    const html = await renderSignedIn(placed({ amountMinorUnits: 1999, currency: "USD" }));
+    expect(visibleText(html)).not.toContain(LISTING_REF);
+    expect(html).not.toContain("mon:");
+    expect(html).not.toContain("an:node");
+  });
+});
+
+describe("placement pricing submission", () => {
+  function captureFetch(reply: Response | (() => never)) {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const fetchImpl = (async (url: unknown, init: unknown) => {
+      calls.push({ url: String(url), init: (init ?? {}) as RequestInit });
+      if (typeof reply === "function") reply();
+      return reply;
+    }) as unknown as typeof fetch;
+    return { calls, fetchImpl };
+  }
+  const json = (status: number, body: unknown) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+  const LISTING_REF = "ABCDEFGHJKMNPQRSTVWXYZ0123456789";
+  const fields = { listingRef: LISTING_REF, amount: "19.99", currency: "USD" };
+
+  it("sends the reference in the path and exactly the amount and currency", async () => {
+    const { calls, fetchImpl } = captureFetch(json(200, {}));
+    expect(await submitPlacementPrice(fields, { fetchImpl })).toEqual({ outcome: "priced" });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe(`/api/listings/${LISTING_REF}/price`);
+    expect(calls[0]!.url).toBe(placementPriceEndpoint(LISTING_REF));
+    expect(calls[0]!.init.method).toBe("POST");
+    expect(calls[0]!.init.credentials).toBe("same-origin");
+    /* Two members and nothing else: no lifecycle, no Product, no Storefront, no
+       controller, no Offer, no commission, no tax, no shipping. */
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({
+      amount: "19.99",
+      currency: "USD",
+    });
+  });
+
+  it("sends the amount as the STRING typed, never a number", async () => {
+    const { calls, fetchImpl } = captureFetch(json(200, {}));
+    await submitPlacementPrice({ ...fields, amount: "  19.90  " }, { fetchImpl });
+    const body = JSON.parse(String(calls[0]!.init.body)) as { amount: unknown };
+    /* Trimmed, and otherwise untouched. Parsing here would mean sending the
+       browser's arithmetic to the server as an authoritative price. */
+    expect(body.amount).toBe("19.90");
+    expect(typeof body.amount).toBe("string");
+  });
+
+  it("escapes the reference rather than interpolating it raw", async () => {
+    expect(placementPriceEndpoint("a/b?c")).toBe("/api/listings/a%2Fb%3Fc/price");
+  });
+
+  it("sends nothing for a blank amount, and never reads one as clear-price", async () => {
+    for (const amount of ["", "   "]) {
+      const { calls, fetchImpl } = captureFetch(json(200, {}));
+      expect(await submitPlacementPrice({ ...fields, amount }, { fetchImpl })).toEqual({
+        outcome: "failed",
+        message: PRICE_EMPTY,
+      });
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  it("sends nothing when there is no reference to send", async () => {
+    const { calls, fetchImpl } = captureFetch(json(200, {}));
+    expect(await submitPlacementPrice({ ...fields, listingRef: "" }, { fetchImpl })).toEqual({
+      outcome: "failed",
+      message: PRICE_NOT_AVAILABLE,
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("maps every refusal onto bounded copy", async () => {
+    const cases: Array<[Response | (() => never), string]> = [
+      [json(400, { error: "INVALID_RETAIL_AMOUNT" }), PRICE_INVALID_AMOUNT],
+      [json(400, { error: "INVALID_LISTING_REQUEST" }), PRICE_INVALID_AMOUNT],
+      [json(404, { error: "LISTING_NOT_AVAILABLE" }), PRICE_NOT_AVAILABLE],
+      [json(409, { error: "LISTING_NOT_REPRICEABLE" }), PRICE_NOT_REPRICEABLE],
+      [json(409, { error: "LISTING_PRICE_UNCHANGED" }), PRICE_UNCHANGED],
+      [json(403, { error: "LISTING_NOT_ELIGIBLE" }), PRICE_NOT_ELIGIBLE],
+      [json(401, { error: "UNAUTHENTICATED" }), PRICE_SIGNED_OUT],
+      [json(403, { error: "CROSS_ORIGIN_REQUEST_REFUSED" }), PRICE_FAILURE],
+      [json(500, { error: "LISTING_UNAVAILABLE" }), PRICE_FAILURE],
+      [new Response("not json", { status: 502 }), PRICE_FAILURE],
+      [
+        () => {
+          throw new TypeError("network");
+        },
+        PRICE_FAILURE,
+      ],
+    ];
+    for (const [reply, message] of cases) {
+      const { fetchImpl } = captureFetch(reply);
+      expect(await submitPlacementPrice(fields, { fetchImpl })).toEqual({
+        outcome: "failed",
+        message,
+      });
+    }
+  });
+
+  it("never names an Offer, a commission, or an identifier in its copy", async () => {
+    for (const message of [
+      PRICE_EMPTY,
+      PRICE_INVALID_AMOUNT,
+      PRICE_NOT_AVAILABLE,
+      PRICE_NOT_REPRICEABLE,
+      PRICE_UNCHANGED,
+      PRICE_NOT_ELIGIBLE,
+      PRICE_SIGNED_OUT,
+      PRICE_FAILURE,
+    ]) {
+      expect(message).not.toMatch(/offer|commission|promoter|tax|shipping|activate/i);
+      expect(message).not.toMatch(/mon:|an:/);
+    }
+    /* And none of them promises the listing is live. */
+    for (const message of [PRICE_UNCHANGED, PRICE_NOT_REPRICEABLE]) {
+      expect(message).not.toMatch(/live|on sale|for sale/i);
     }
   });
 });

@@ -537,3 +537,41 @@ main p {
   outline: 3px solid var(--color-focus);
   outline-offset: 2px;
 }
+
+/* Phase 1.36 — pricing a draft placement. The current price reads as one more
+   quiet fact in the row, and the editor is the same disclosure the Storefront
+   presentation editor uses: a price on a private draft is an edit, not a
+   publish, and a prominent commerce-looking panel would say otherwise. */
+.account-placement-price-current {
+  display: inline-block;
+  margin-top: 0.125rem;
+}
+
+.account-placement-price {
+  margin-top: 0.75rem;
+}
+
+.account-placement-price > summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--color-primary);
+}
+
+.account-placement-price > summary:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.account-placement-price-form .auth-field input {
+  padding: 0.5rem 0.625rem;
+  font: inherit;
+  color: var(--color-text-strong);
+  background: var(--color-surface);
+  border: 1px solid var(--color-primary);
+  border-radius: 0.25rem;
+}
+
+.account-placement-price-form .auth-field input:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+}
