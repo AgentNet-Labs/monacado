@@ -1,5 +1,16 @@
 # Pre-Live Commerce Controls — Phase `1.2`
 
+> **Authority status (Documentation Governance 2B).** Remains **governing
+> detail** for live-commerce gates, the transaction risk gate, the payout hold,
+> and digital-delivery policy ([`DOCUMENT_AUTHORITY.md`](DOCUMENT_AUTHORITY.md)
+> §3). Where it conflicts with
+> [`MONACADO_PROJECT_CONTRACT.md`](MONACADO_PROJECT_CONTRACT.md), **the Contract
+> controls.** Known stale topic: its statement that **chargeback ingestion does
+> not exist** (a `CHARGEBACK` reversal recorded only by hand) describes Phase
+> 1.2; dispute and chargeback machinery was built at Phases 1.11–1.12 (Stripe
+> TEST), and dispute, reversal, and Chargeback Fee rules are governed by
+> Contract §23–§27. The body below is not yet reconciled.
+
 **Status:** implemented. The controls that must exist **before** live money can
 ever be enabled — not the enabling of it.
 

@@ -1,5 +1,15 @@
 # Phase 0E.7 — Publication Worker Operations Track: Status and Closure
 
+> **Implementation status (Documentation Governance 2B).** The 0E.7 track is
+> closed as an **operations** track; that does not make AgentNet publication
+> live. This document describes Product publication **machinery**, not a live
+> AgentNet publication capability: no entity is published, complete AgentNet
+> publication readiness is an open gap (Contract §34), and public Product
+> publication requires governed public marketplace identity and a governed
+> public Creator identity (Contract §30). See
+> [`MONACADO_PROJECT_CONTRACT.md`](MONACADO_PROJECT_CONTRACT.md) and
+> [`DOCUMENT_AUTHORITY.md`](DOCUMENT_AUTHORITY.md).
+
 The 0E.7 track took publication from "a bounded cycle exists" to "an authorized
 operator can ask how the worker is doing, over HTTP, and get a safe answer."
 

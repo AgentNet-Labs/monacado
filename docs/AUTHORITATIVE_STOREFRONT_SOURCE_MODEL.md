@@ -1,5 +1,15 @@
 # Authoritative Storefront Source Model (Phase 0M.3A)
 
+> **Authority status (Documentation Governance 2B).** Remains **governing
+> detail** for Storefront authority, governance, and lifecycle
+> ([`DOCUMENT_AUTHORITY.md`](DOCUMENT_AUTHORITY.md) §3). Where it conflicts with
+> [`MONACADO_PROJECT_CONTRACT.md`](MONACADO_PROJECT_CONTRACT.md), **the Contract
+> controls.** Known conflicts: the **"Promoter economics"** formula predates the
+> MoR model (Contract §17–§18 control, as for the Offer model); and Storefront
+> entitlement is governed by Contract §11 — one included private Storefront,
+> with more than one requiring public marketplace identity, payment readiness,
+> and a paid entitlement. The body below is not yet reconciled.
+
 Status: **binding** for the Storefront track. Subordinate to
 [`TRANSACTIONAL_TRUTH_AND_CAPSULE_PROJECTION_ADR.md`](TRANSACTIONAL_TRUTH_AND_CAPSULE_PROJECTION_ADR.md)
 (ADR §12) and

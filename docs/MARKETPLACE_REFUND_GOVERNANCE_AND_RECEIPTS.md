@@ -1,5 +1,14 @@
 # Marketplace Refund Policy Governance and the Receipt Contract (Phase 1.10)
 
+> **Authority status (Documentation Governance 2B).** Remains **governing
+> detail** for refund governance and the receipt contract
+> ([`DOCUMENT_AUTHORITY.md`](DOCUMENT_AUTHORITY.md) §3). Where it conflicts with
+> [`MONACADO_PROJECT_CONTRACT.md`](MONACADO_PROJECT_CONTRACT.md), **the Contract
+> controls.** Known conflict: Marketplace Policy **1.1.0's "activation
+> pending"** status — under Contract §28, 1.1.0 is an intermediate draft that is
+> not activated merely for sequence; the next intended active version is a
+> reconciled 1.3.0 or later. The body below is not yet reconciled.
+
 `1.9` built the machinery that returns a buyer's money and settled every rule
 governing it — who declares the terms, which version governs a purchase, what
 happens to shipping, what happens to a promoter's commission. It then

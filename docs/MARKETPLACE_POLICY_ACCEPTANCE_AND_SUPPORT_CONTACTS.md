@@ -1,5 +1,15 @@
 # Marketplace Policy, Acceptance, Support Contacts, and Email Verification — Phase `1.3`
 
+> **Authority status (Documentation Governance 2B).** Remains **governing
+> detail** for Marketplace Policy versioning and acceptance, and Seller support
+> contacts ([`DOCUMENT_AUTHORITY.md`](DOCUMENT_AUTHORITY.md) §3). Where it
+> conflicts with [`MONACADO_PROJECT_CONTRACT.md`](MONACADO_PROJECT_CONTRACT.md),
+> **the Contract controls.** Known conflict: **policy version activation** is
+> governed by Contract §28 — 1.1.0 and 1.2.0 are intermediate drafts, and the
+> next intended active version is a reconciled 1.3.0 or later. Account email
+> verification and support-contact verification remain distinct facts (Contract
+> §7). The body below is not yet reconciled.
+
 **Status:** implemented. The marketplace can now state what it is, what each party
 owes, and who a buyer reaches when something goes wrong.
 

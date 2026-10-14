@@ -1,5 +1,15 @@
 # Authoritative Listing Source Model (Phase 0M.4A)
 
+> **Authority status (Documentation Governance 2B).** Remains **governing
+> detail** for Listing authority and retail price authority
+> ([`DOCUMENT_AUTHORITY.md`](DOCUMENT_AUTHORITY.md) §3). Where it conflicts with
+> [`MONACADO_PROJECT_CONTRACT.md`](MONACADO_PROJECT_CONTRACT.md), **the Contract
+> controls.** Known topic: **promoted Listing eligibility** is governed by
+> Contract §14 — a promotable Product **and** an eligible Offer, distinct
+> economic principals, explicit acceptance of material Offer terms, and
+> applicable activation gates; the Offer's `PROMOTABLE` terms alone are not
+> sufficient. The body below is not yet reconciled.
+
 The authoritative transactional record for the buyer-facing placement of a
 Product in a Storefront, plus the immutable source versions a later Capsule
 Projection Shape will be generated from.

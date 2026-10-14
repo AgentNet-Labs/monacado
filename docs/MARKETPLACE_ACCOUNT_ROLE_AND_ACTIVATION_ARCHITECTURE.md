@@ -1,5 +1,16 @@
 # Marketplace Account, Role, Activation, and Review Authority Architecture (Phase 0M.1)
 
+> **Authority status (Documentation Governance 2B).** Remains **governing
+> detail** for accounts, participants, roles, activation, and review authority
+> ([`DOCUMENT_AUTHORITY.md`](DOCUMENT_AUTHORITY.md) §3). Where it conflicts with
+> [`MONACADO_PROJECT_CONTRACT.md`](MONACADO_PROJECT_CONTRACT.md), **the Contract
+> controls.** Known conflicts: its citations of the **Thesis** are historical,
+> not commercial authority; it predates the **private / public marketplace
+> identity** definitions (Contract §4–§5); and email verification is governed by
+> Contract §7 — Account email verification is the authoritative marker, and
+> `ParticipantProfile.emailVerifiedAt` is a legacy / deprecation candidate. The
+> body below is not yet reconciled.
+
 Status: **binding** for the 0M marketplace track, subordinate to
 [`CDD_ARCHITECTURE_DECISIONS.md`](CDD_ARCHITECTURE_DECISIONS.md).
 

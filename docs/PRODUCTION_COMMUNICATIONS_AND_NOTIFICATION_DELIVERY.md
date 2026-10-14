@@ -1,5 +1,14 @@
 # Production Communications and Notification Delivery — Phase `1.5`
 
+> **Implementation status (Documentation Governance 2B).** **Postmark is
+> historical.** Since Phase 1.27, Production sends through **Google Workspace
+> SMTP** behind the same `MailPort` (see the Phase 1.27 note below). Bounce and
+> complaint webhook ingestion as described here exists only for Postmark, so
+> suppression is not fed by the SMTP transport; **SMTP-native bounce/complaint
+> ingestion is an open gap** and is required before live commerce (Contract §29,
+> §34). See [`MONACADO_PROJECT_CONTRACT.md`](MONACADO_PROJECT_CONTRACT.md) and
+> [`DOCUMENT_AUTHORITY.md`](DOCUMENT_AUTHORITY.md).
+
 **Status:** implemented. The `0M.N2` delivery gap is closed: Monacado can now send
 transactional email through a production provider, retry it when the provider
 fails, stop writing to addresses that bounce, and answer what happened to any

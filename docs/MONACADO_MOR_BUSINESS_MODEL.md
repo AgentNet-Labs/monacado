@@ -1,5 +1,14 @@
 # Monacado Merchant-of-Record Business Model
 
+> **Authority status (Documentation Governance 2B).** Remains **governing
+> detail** for the Merchant-of-Record commercial model and transaction economics
+> ([`DOCUMENT_AUTHORITY.md`](DOCUMENT_AUTHORITY.md) §3). Where it conflicts with
+> [`MONACADO_PROJECT_CONTRACT.md`](MONACADO_PROJECT_CONTRACT.md), **the Contract
+> controls.** Known superseded topic: **§I (returns, refunds, and chargebacks —
+> "not designed here")** is now governed by Contract §22–§27. The §B retention
+> figure is current **versioned** commercial policy (Contract §17). The body
+> below is not yet reconciled.
+
 **Status:** authoritative commercial and operational architecture reference.
 
 This document is not developer documentation. It is the governing description of

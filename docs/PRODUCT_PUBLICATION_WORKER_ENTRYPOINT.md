@@ -1,5 +1,13 @@
 # Executable Publication Worker Entry Point (Phase 0E.7.2)
 
+> **Implementation status (Documentation Governance 2B).** This document
+> describes Product publication **machinery**, not a live AgentNet publication
+> capability: no entity is published, complete AgentNet publication readiness is
+> an open gap (Contract §34), and public Product publication requires governed
+> public marketplace identity and a governed public Creator identity (Contract
+> §30). See [`MONACADO_PROJECT_CONTRACT.md`](MONACADO_PROJECT_CONTRACT.md) and
+> [`DOCUMENT_AUTHORITY.md`](DOCUMENT_AUTHORITY.md).
+
 One command. One bounded cycle. Then the process ends.
 
 ```

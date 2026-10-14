@@ -1,8 +1,18 @@
 # Post-0E.7 Marketplace Roadmap (Track 0M)
 
-Phase 0E.7 closed with an authenticated internal status route. Development now
-leaves worker operations and resumes the marketplace sequence the thesis
-describes.
+Phase 0E.7 closed with an authenticated internal status route. Development then
+left worker operations and resumed the marketplace sequence.
+
+> **Authority (Documentation Governance 2B).** This roadmap records
+> **sequencing and status only** and creates no business authority
+> ([`MONACADO_PROJECT_CONTRACT.md`](MONACADO_PROJECT_CONTRACT.md) §33). It never
+> overrides the Contract or any document
+> [`DOCUMENT_AUTHORITY.md`](DOCUMENT_AUTHORITY.md) ranks above it; where a
+> statement here conflicts with the Contract, **the Contract governs**. Phase
+> narratives below record what was true when each phase completed and are
+> historical, not current policy. A **phase number identifies a work unit, not a
+> commit**: multi-commit phases are valid, and corrective commits may remain
+> unnumbered.
 
 This roadmap names the phases, in order, with the boundary each one must not
 cross. It is a plan, not an authorization: **each phase begins only when
@@ -107,13 +117,74 @@ labels sort in.
 | 20 | **1.2** | **Pre-Live Commerce Controls** — tax boundary, reversal accounting, risk gate, payout hold, live-readiness gate | **complete** |
 | 21 | **1.3** | **Marketplace Policy, Acceptance, Seller Support Contacts, and Email Verification** | **complete** — `c0b74e8` |
 | 22 | **1.4** | **Policy Bootstrap and Verification Email Delivery** — operational only; makes `1.3`'s two prerequisites satisfiable | **complete** |
-| 23 | **1.5** | **Production Communications and Notification Delivery** — durable retrying email, Postmark, bounce/complaint ingestion, suppression | **complete** |
+| 23 | **1.5** | **Production Communications and Notification Delivery** — durable retrying email, Postmark, bounce/complaint ingestion, suppression | **complete** — Postmark later replaced as the deployment transport by Google Workspace SMTP at `1.27`; Postmark references are historical (Contract §29) |
 | 24 | **1.6** | **Production Tax Integration** — Stripe Tax behind the unchanged tax port, Product tax classification, strengthened evidence, registration/filing posture, operator readiness | **complete** — `1bf79b7` |
 | 25 | **1.7** | **Stripe Tax Transaction Recording and Private Tax Capsule Foundation** — post-payment provider reporting, durable audit-efficient tax record, retry/recovery, reconciliation, first private capsule | **complete** — `71d28f2` |
 | 26 | **1.8** | **Tax Recording Operations and Recovery** — dispatcher endpoint, scheduler, best-effort immediate attempt, backlog/status tooling, governed requeue, operational readiness | **complete** — `c16bdfd` |
 | 27 | **1.9** | **Refunds and Tax Reversals** — line-unit refund execution, versioned Seller refund policy bound at purchase, Stripe TEST refund adapter, Stripe Tax reversal adapter, independently durable payment/tax halves, promoter-commission recovery seam, reconciliation, private refund capsules | **complete** |
 | 28 | **1.10** | **Marketplace Refund Policy Governance and Receipt Contract** — Marketplace Policy 1.1.0 stating the settled refund rules, Seller/Promoter/Buyer refund renderings, the authoritative receipt read contract and its rendering, checkout refund disclosure with binding confirmation | **complete** — policy version `DRAFT`, activation pending |
-| 29 | **1.11** | **Disputes and Chargebacks** — provider dispute intake behind the existing signed webhook (Stripe TEST), a dispute event ledger with replay and out-of-order tolerance, dispute-held seller/promoter proceeds, recovery evidence for already-paid economics, `CHARGEBACK` reversal accounting on a lost dispute, refund/dispute double-reversal refusal, a fail-closed tax consequence, local reconciliation, `dispute:status`, and a private dispute capsule | **implemented — not committed** |
+| 29 | **1.11** | **Disputes and Chargebacks** — provider dispute intake behind the existing signed webhook (Stripe TEST), a dispute event ledger with replay and out-of-order tolerance, dispute-held seller/promoter proceeds, recovery evidence for already-paid economics, `CHARGEBACK` reversal accounting on a lost dispute, refund/dispute double-reversal refusal, a fail-closed tax consequence, local reconciliation, `dispute:status`, and a private dispute capsule | **complete** — `6b17507` |
+| 30 | **1.12** | **Dispute Evidence Response and Seller Chargeback Fee Policy** — governed evidence assembly and operator-approved submission (Stripe TEST); the seller chargeback fee moved from a compiled amount to a versioned policy | **complete** — `f570938`, `2e39a09` |
+| 31 | **1.13** | **Seller Fraud and Risk Intelligence** — deterministic rates, windows, attribution, velocity, and staff review over existing rows; no scoring thresholds or automatic suspension | **complete** — `59e2008` |
+| 32 | **1.14** | **Governed Participant Risk Mitigation** — participant-level mitigation authority; Marketplace Policy 1.3.0 text written (not active — Contract §28) | **complete** — `3fe969d` |
+| 33 | **1.15** | **Participant Restriction Enforcement** | **complete** — `630518d` |
+| 34 | **1.16** | **Participant Status and Mitigation Reconciliation** | **complete** — `e6634b1` |
+| 35 | **1.17** | **Participant Lifecycle Closure** — owner-initiated `CLOSED` | **complete** — `cade383` |
+| 36 | **1.18** | **Marketplace Production Authority Boundary** — authority decided from the authenticated actor, never caller-supplied facts | **complete** — `b006ca8` |
+| 37 | **1.19** | **Latent Marketplace Authority Paths** | **complete** — `394cb00`; follow-up `9f9aed5` (comments and tests only, no runtime change) |
+| 38 | **1.20** | **Policy and Internal System Authority** — governed grants for commercial, chargeback-fee, and risk policy | **complete** — `04b64da` |
+| 39 | **1.21** | **Authenticated Storefront Governance Routes** | **complete** — `2a56ae8` |
+| 40 | **1.22** | **Authenticated Account Sign-in** | **complete** — `bfda25f` |
+| 41 | **1.23** | **Sign-in Credential-Abuse Protection** | **complete** — `a5832d6` |
+| 42 | **1.24** | **Account Sign-out** | **complete** — `5186fc0` |
+| 43 | **1.25** | **Minimal Account Authentication UI** | **complete** — `abafe54` |
+| 44 | **1.26** | **Tracked Environment Example** — associated with this commit per Contract §33 | **complete** — `b9c40e1` |
+| 45 | **1.27** | **Verified Self-Service Account Registration** — Account email verification; deployment mail transport moved to Google Workspace SMTP | **complete** — `e23d18a`; correction `e6b4883` (onboarding permitted before email verification) |
+| 46 | **1.28** | **Self-Service Password Recovery** | **complete** — `4f2f21a` |
+| — | *unnumbered* | **Account-identity correction** — internal account id hidden on `/account` | `8433355` |
+| 47 | **1.29** | **Seller and Promoter Onboarding Entry** | **complete** — `e49a823` |
+| 48 | **1.30** | **Self-Service Draft Storefront Creation** — one included Storefront allowance | **complete** — `760cc24` |
+| 49 | **1.31** | **Draft Storefront Presentation Editing** | **complete** — `489fc55` |
+| — | *unlabelled* | **Unbound creator identity for draft Products** — carries no phase label | `308e5c4` |
+| 50 | **1.32** | **Self-Service Draft Product Creation** — including a five-Product free-plan limit, removed at `1.33` | **complete** — `061fc7e`, `e7fa6db` |
+| 51 | **1.33** | **Assortment Rules Archive and Product Quota Removal** — its unlimited-Product rule is since **superseded** by Contract §10 Product library tiers | **complete** — `80c4219` |
+| 52 | **1.34** | **Product References, Placement Guards, and Seller-Direct Draft Listing Self-Service** | **complete** — `2f8da70`, `eaef4e8` |
+| 53 | **1.35** | **Listing References and Draft Withdrawal** | **complete** — `b461c93` |
+| 54 | **1.36** | **Draft Listing Retail Pricing** | **complete** — `e717985`; accepted in Production |
+
+### Status through `1.36` (Documentation Governance 2B)
+
+Reconciled against commit history at `daa6bbc`. Phase/commit associations above
+come from each phase's own source tags and commit messages.
+
+- **`1.11`–`1.12` — disputes.** Dispute intake and ledger, held proceeds,
+  governed evidence response, and the seller chargeback fee as a versioned
+  policy, all in Stripe TEST. The governing rules are now Contract §23–§27.
+- **`1.13`–`1.17` — participant risk and standing.** Risk intelligence,
+  mitigation, restriction enforcement, status reconciliation, and owner-initiated
+  closure (Contract §8).
+- **`1.18`–`1.20` — authority hardening.** Authority derived from the
+  authenticated actor; governed internal grants.
+- **`1.21`–`1.28` — accounts.** Governance routes, sign-in, abuse protection,
+  sign-out, minimal UI, verified registration, password recovery (Contract §4,
+  §7).
+- **`1.29`–`1.36` — private self-service drafting.** Onboarding entry, one draft
+  Storefront, presentation editing, draft Products, assortment rules, and
+  seller-direct draft Listings with references, withdrawal, and pricing. Every
+  surface is **private and draft**: nothing is activated, published, or
+  offered for sale.
+
+**Maturity** (Contract §32), kept distinct:
+
+| Level | State |
+| --- | --- |
+| **Production deployment** | **Yes** — `1.36` is accepted on Production infrastructure. This does **not** imply real-money commerce. |
+| **Credible MVP** | **Not yet.** The Seller-direct journey stops at a priced private draft Listing: activation, public presentation/discovery, and fulfillment/delivery are not reachable. |
+| **Live commerce** | **Not enabled.** Stripe is TEST-only by construction, and the live-commerce gates are not satisfied. |
+
+**What remains** is the recognized-gap list in Contract §34. It is not restated
+here as numbered phases: **no future phase number is assigned by this roadmap**,
+and each phase begins only when explicitly instructed.
 
 ### Forward sequence
 
@@ -155,8 +226,9 @@ policy bootstrap command, and verification-link delivery through `1.1`'s mail
 seam with a consumption endpoint. Operational only — no `1.3` semantic moved.
 
 **`1.5` made transactional email production-capable**: a durable retrying delivery
-record, a bounded dispatcher, Postmark behind the unchanged `MailPort`, bounce and
-complaint ingestion, and digest-keyed suppression that degrades a seller's contact
+record, a bounded dispatcher, Postmark behind the unchanged `MailPort` (since
+replaced by Google Workspace SMTP at `1.27`; historical), bounce and complaint
+ingestion, and digest-keyed suppression that degrades a seller's contact
 and lets `1.3`'s resolver fall back. It closed `0M.N2`'s **delivery** half; the
 canonical admin-panel channel remains.
 
@@ -243,7 +315,7 @@ Detail: [`TAX_RECORDING_OPERATIONS.md`](TAX_RECORDING_OPERATIONS.md).
 | Next | Why it is next |
 | --- | --- |
 | **`0M.T2` — tax operations** | **`1.6` closed the calculation half, `1.7` the recording half, and `1.9` the reversal half**: Stripe Tax behind the port, Product tax classification, ship-to sourcing, pinned evidence, provider Tax Transactions with retry and reconciliation, and now provider reversals driven from the exact recorded transaction — never a fresh calculation. What remains is genuinely operational and mostly external: nexus determination, registrations, and **filing and remittance**. Buyer exemption certificates are **not** on that list and never were — ordinary retail checkout does not adjudicate a buyer's tax status, which is settled policy rather than a gap; provider-determined non-taxability is supported and evidenced. |
-| **`0M.R2` — risk operations** | `1.2` supplied a ceiling, restriction and approval checks, and a payout hold. Velocity limits, reserves, per-transaction policy selection, and a review function remain — and a scoring model without somebody to review its output would produce refusals nobody can explain. |
+| **`0M.R2` — risk operations** | `1.2` supplied a ceiling, restriction and approval checks, and a payout hold. Velocity limits, reserves, per-transaction policy selection, and a review function remain — and a scoring model without somebody to review its output would produce refusals nobody can explain. *Since: velocity analytics and staff review at `1.13`, participant mitigation and enforcement at `1.14`–`1.17`; reserves and caps remain.* |
 | **`0M.N2` — the canonical channel** | **`1.5` closed the delivery half**: bounded durable retry, a production provider, bounce and complaint ingestion, and suppression — and `1.2`'s buyer snapshot had already retired the guest-address gate. What remains is the **canonical channel itself**: the admin-panel view, the `SUPER_OWNER`/`ADMIN` visibility rule, and notification preferences. |
 | **Live-mode Stripe support** | Does not exist. `STRIPE_MODES` has one member, so `LIVE_PROVIDER_NOT_ENABLED` is reported by construction and no configuration clears it. Building it is a deliberate, reviewed phase. |
 
@@ -252,12 +324,12 @@ Detail: [`TAX_RECORDING_OPERATIONS.md`](TAX_RECORDING_OPERATIONS.md).
 | **Digital delivery** — entitlements, artifacts, grants, tokens, the download endpoint, seller re-download authorization | `1.2` declared the **policy** (durable entitlement vs transient token, five self-service successful downloads, seller-owned exceptions, no permanent secret URLs) and built none of the machinery. No persistence was needed: `PurchaseEvidence` and the Product's `deliveryMode` already anchor a future entitlement without rewriting Order or Product semantics |
 | **Payout execution** — proceeds to sellers and promoters through Connect | `1.0` reads Connect readiness through `0M.8`'s port and creates no transfer. Payouts need `0M.R2`'s holds, reserves, and caps first; paying out without them is paying out irreversibly |
 | **Seller/promoter Connect onboarding UI** | The test-mode adapter and the account-link call exist; nothing renders them. It needs the participant-facing surface `0M.8` deferred |
-| **Refunds, chargebacks, and reversal accounting** | `0M.T2`'s subject. A live processor produces all three within days |
+| **Refunds, chargebacks, and reversal accounting** | `0M.T2`'s subject. A live processor produces all three within days. *Since built in Stripe TEST: refunds at `1.9`, disputes and chargebacks at `1.11`–`1.12`; governed by Contract §22–§27.* |
 
 | Cross-cutting phase | Title | State |
 | --- | --- | --- |
-| **0M.N** | **Notification Records** — durable admin-panel notices, deduplication, recipients, notice states | **`0M.N1` complete**; `0M.N2`'s **delivery half complete in `1.5`** (durable retrying email, Postmark, bounce/complaint ingestion, suppression); the canonical admin-panel view remains |
-| **0M.R** | **Risk Management and Commercial Controls** — required before the **production** payment and commerce capabilities it governs are enabled; **not** a prerequisite to `0M.8` | **`0M.R1` complete**; `0M.R2` not started |
+| **0M.N** | **Notification Records** — durable admin-panel notices, deduplication, recipients, notice states | **`0M.N1` complete**; `0M.N2`'s **delivery half complete in `1.5`** (durable retrying email, Postmark — historical since `1.27`'s move to Google Workspace SMTP, whose bounce/complaint ingestion remains open (Contract §29) — bounce/complaint ingestion, suppression); the canonical admin-panel view remains |
+| **0M.R** | **Risk Management and Commercial Controls** — required before the **production** payment and commerce capabilities it governs are enabled; **not** a prerequisite to `0M.8` | **`0M.R1` complete**; `0M.R2` not started *(historical — `1.13`–`1.17` have since built risk intelligence, a staff review, participant mitigation, restriction enforcement, and closure; reserves, caps, and payout-risk governance remain open — Contract §31, §34)* |
 | **0M.T** | **Tax, MoR and Transaction Accounting** — required before checkout/payment architecture is production-capable; its `0M.T1` foundation is a prerequisite to `0M.9`, **not** to `0M.8` | **`0M.T1` complete**; `0M.T2`'s **calculation half complete in `1.6`**, **recording half in `1.7`**, and **reversal half in `1.9`**; nexus, registrations, filing, and remittance remain — buyer exemption certificates are settled policy (not supported, not planned), distinct from provider-determined non-taxability, which is |
 
 ### Dependency order
@@ -337,7 +409,8 @@ stage that was missing from the original plan is closed everywhere, and `0M.8`
 has given the payment-provider axis real storage and written the first governed
 activation decisions. Notification records, risk management, tax and transaction
 accounting, checkout, and settlement remain **not started** — no contract, no
-persistence, no route, no orchestration.
+persistence, no route, no orchestration. *(Historical, as of `0M.8`. All but
+payout execution have since been started; see Completed phases.)*
 
 **0M.5 ran ahead of 0M.3B**, out of label order, because every completed 0M
 contract terminates at a `mon:mpart:` identity that had no table: Offer
@@ -1478,6 +1551,11 @@ Detail: [`POLICY_BOOTSTRAP_AND_VERIFICATION_EMAIL_DELIVERY.md`](POLICY_BOOTSTRAP
 
 ## 1.5 — Production Communications and Notification Delivery
 
+> **Historical provider.** Postmark, as described in this section, is no longer
+> the deployment transport: Google Workspace SMTP replaced it at `1.27`. Policy
+> stays provider-neutral, and SMTP-native bounce/complaint ingestion remains an
+> open gap (Contract §29, §34).
+
 **Complete.** The `0M.N2` **delivery** gap, closed. `1.1` built the first concrete
 channel and recorded its own limitation as a pre-live gate — at-most-once, no
 retry, a guest address unrecoverable from a digest. `1.2` retired the second half
@@ -2061,6 +2139,10 @@ a title read now would be today's. Like `1.9`'s line-level tax evidence, that on
 **must be recorded at sale time** and is required of whichever phase implements
 `OrderLine` / basket checkout.
 
+> **Superseded status (Contract §28).** 1.1.0 and 1.2.0 are intermediate
+> drafts and are not activated merely to preserve sequence. The next intended
+> active version is a reconciled 1.3.0 or later.
+
 **Activation is pending and deliberate.** 1.1.0 stands `DRAFT`; activating it
 retires 1.0.0, starts governing live sales, and obliges every activated seller and
 promoter to accept again. **No production activation occurred, no migration was
@@ -2093,6 +2175,8 @@ Detail:
 
 ## Reference
 
+- [`MONACADO_PROJECT_CONTRACT.md`](MONACADO_PROJECT_CONTRACT.md) — canonical Project Contract
+- [`DOCUMENT_AUTHORITY.md`](DOCUMENT_AUTHORITY.md) — authority hierarchy and document classification
 - [`MARKETPLACE_ACCOUNT_ROLE_AND_ACTIVATION_ARCHITECTURE.md`](MARKETPLACE_ACCOUNT_ROLE_AND_ACTIVATION_ARCHITECTURE.md)
 - [`TRANSACTIONAL_TRUTH_AND_CAPSULE_PROJECTION_ADR.md`](TRANSACTIONAL_TRUTH_AND_CAPSULE_PROJECTION_ADR.md)
 - [`SOURCE_VERSION_RETENTION_AND_ARCHIVAL_POLICY.md`](SOURCE_VERSION_RETENTION_AND_ARCHIVAL_POLICY.md)

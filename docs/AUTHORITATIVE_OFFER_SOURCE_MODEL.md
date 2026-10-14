@@ -1,5 +1,17 @@
 # Authoritative Offer Source Model (Phase 0M.2A, corrected by 0M.2C)
 
+> **Authority status (Documentation Governance 2B).** Remains **governing
+> detail** for Offer authority and terms
+> ([`DOCUMENT_AUTHORITY.md`](DOCUMENT_AUTHORITY.md) §3). Where it conflicts with
+> [`MONACADO_PROJECT_CONTRACT.md`](MONACADO_PROJECT_CONTRACT.md), **the Contract
+> controls.** Known conflict: the **"Promoter economics (future Listing)"**
+> formula predates the MoR model — it omits Monacado's retained amount and
+> contemplates pricing below wholesale. Contract §17–§18 control: the retained
+> amount is removed before the promoter spread, and promoter benefit =
+> acquisition amount − wholesale + commission, never negative. Promotional
+> availability also requires public marketplace identity (Contract §12). The
+> body below is not yet reconciled.
+
 Status: **binding** for the Offer track. Subordinate to
 [`TRANSACTIONAL_TRUTH_AND_CAPSULE_PROJECTION_ADR.md`](TRANSACTIONAL_TRUTH_AND_CAPSULE_PROJECTION_ADR.md)
 (ADR §12) and [`CDD_ARCHITECTURE_DECISIONS.md`](CDD_ARCHITECTURE_DECISIONS.md).

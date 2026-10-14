@@ -1,5 +1,15 @@
 # Marketplace Assortment and Listing Rules (Phase 1.33, amended at Phases 1.34 and 1.36)
 
+> **Authority status (Documentation Governance 2B).** Remains **governing
+> detail** for placement, Listing capacity, and promotion classification
+> ([`DOCUMENT_AUTHORITY.md`](DOCUMENT_AUTHORITY.md) §3). Where it conflicts with
+> [`MONACADO_PROJECT_CONTRACT.md`](MONACADO_PROJECT_CONTRACT.md), **the Contract
+> controls.** Known conflict: **§1's "any number of Products" / "no free-plan
+> limit" rule is superseded** by Contract §10 Product library tiers (FREE 100 ·
+> POWER SELLER 250 · ENTERPRISE 251+). §9 gap 5 (promotability reconciliation)
+> is answered by Contract §14: a promoted Listing requires **both** a promotable
+> Product and an eligible Offer. The body below is not yet reconciled.
+
 The governing commercial rules for **what a Seller may hold, where it may be
 placed, and what that placement costs a Storefront**. Archived here so later
 Listing phases implement them rather than rediscover them.
