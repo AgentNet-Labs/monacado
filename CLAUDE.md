@@ -9,22 +9,36 @@ every phase so they need not be repeated in each prompt.
 
 ## Governing documents
 
+- [`docs/MONACADO_PROJECT_CONTRACT.md`](docs/MONACADO_PROJECT_CONTRACT.md) —
+  **the canonical Project Contract; highest authority** for business, economic,
+  authority, lifecycle, and compliance rules.
+- [`docs/DOCUMENT_AUTHORITY.md`](docs/DOCUMENT_AUTHORITY.md) — the authority
+  hierarchy and the classification of every other document.
 - [`docs/CDD_ARCHITECTURE_DECISIONS.md`](docs/CDD_ARCHITECTURE_DECISIONS.md) —
   **binding architecture decisions. Follow them for all implementation.** Do not
   reinterpret or replace these decisions.
-- `docs/Capsule_Driven_Development_Intro_Cover.docx` — the authoritative
-  conceptual definition of CDD.
-- `docs/Monacado_New_Thesis_and_Initial_Site_Map.docx` — the current product and
-  marketplace architecture guide.
+- `docs/Capsule_Driven_Development_Intro_Cover.docx` — conceptual history of
+  CDD; authoritative only where the ADRs and Contract have not scoped or
+  superseded it.
+- `docs/Monacado_New_Thesis_and_Initial_Site_Map.docx` — product-origin
+  history. **Not the current governing commercial model**; the Contract governs.
 - `docs/monacado-color-palette.png` — the approved visual palette reference.
 
-Read a source document only when the active phase touches its subject, or when
-the ADR leaves a genuine ambiguity. The ADR is the day-to-day reference; the
-`.docx` sources are consulted for meaning, not re-read by default.
+**Read `MONACADO_PROJECT_CONTRACT.md` and `DOCUMENT_AUTHORITY.md` before any
+consequential marketplace work** — anything touching business, economic,
+authority, lifecycle, or compliance rules.
+
+Read other source documents only when the active phase touches their subject, or
+when the Contract and ADR leave a genuine ambiguity. The `.docx` sources are
+consulted for history and meaning, not re-read by default.
 
 **Do not silently resolve conflicts** among governing documents, or between an
 instruction and a governing document. Surface the conflict for review and
-proceed only under an explicit ruling.
+proceed only under an explicit ruling. **An unresolved authority conflict is a
+STOP.**
+
+**Do not change code merely to match a lower-authority document that is stale
+against the Contract.** Surface the stale document for reconciliation instead.
 
 ## Core architecture principles
 
