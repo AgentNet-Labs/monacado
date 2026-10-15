@@ -51,9 +51,10 @@ injected `fetch`; the Postmark adapter is never constructed against the real
 endpoint, and no credential is in the repository.
 
 > **Updated in Phase 1.27.** Postmark is no longer the deployment transport.
-> Staging and production send through **Google Workspace over authenticated
-> SMTP**, via Nodemailer, in `smtp-mail-adapter.ts` (`MONACADO_MAIL_TRANSPORT=SMTP`),
-> behind the same `MailPort`; the outbox, retry policy and dispatcher described
+> Production sends through **Google Workspace over authenticated SMTP** (as the
+> former staging environment did while it was active), via Nodemailer, in
+> `smtp-mail-adapter.ts` (`MONACADO_MAIL_TRANSPORT=SMTP`), behind the same
+> `MailPort`; the outbox, retry policy and dispatcher described
 > here are unchanged. The Postmark adapter and webhook remain in the repository as
 > an unselected historical adapter, and no `MONACADO_POSTMARK_*` variable is
 > required. The `MONACADO_SMTP_*` / `MONACADO_MAIL_*` contract is documented in
@@ -246,9 +247,9 @@ one line.
 > every five minutes — a sibling of this operator endpoint, with its own
 > `CRON_SECRET` bearer gate, that calls the same dispatch cycle.
 > **Production:** Vercel runs it automatically once deployed with `CRON_SECRET`
-> set. **Staging:** it is not assumed to run automatically; invoke the endpoint
-> manually with staging's `CRON_SECRET` when a retry proof is needed. The `POST`
-> operator endpoint above is unchanged.
+> set. *(Historical: the former staging environment did not run it
+> automatically and invoked the endpoint manually; staging is no longer an
+> active environment.)* The `POST` operator endpoint above is unchanged.
 
 The endpoint is gated by a bearer shared secret compared in constant time, whose
 **variable name** is configuration and whose value is resolved per request. It
@@ -546,7 +547,8 @@ Nothing below is code. Each is a deployment act, and none has been performed.
 > `MONACADO_MAIL_FROM_ADDRESS` (see `.env.example`); SPF, DKIM and DMARC still
 > apply. Bounce and complaint webhook ingestion exists only for Postmark and has
 > no SMTP equivalent yet. Scheduling is `vercel.json`'s Production cron with
-> `CRON_SECRET` (§4); staging invokes the scheduled endpoint manually.
+> `CRON_SECRET` (§4). (The former staging environment invoked the scheduled
+> endpoint manually; it is no longer active.)
 
 | Step | Where |
 | --- | --- |

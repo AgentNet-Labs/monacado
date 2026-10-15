@@ -81,6 +81,23 @@ against the Contract.** Surface the stale document for reconciliation instead.
 - **Do not perform destructive operations, production changes, or secret
   management without approval.**
 
+## Deployment workflow
+
+The active release path is:
+
+```
+local development → local validation → commit / push main
+  → Production deployment → Production validation where appropriate
+```
+
+- **`main` is the development branch; Production is the deployment target.**
+- **There is no staging environment or branch.** The retired `staging` branch
+  was deleted locally and from origin; it was already fully contained in `main`.
+  Do not recreate it, and do not mention staging in routine prompts or reports,
+  unless a task explicitly revives it.
+- Migrations reach Production through the normal Production deployment /
+  migration path; no staging deployment precedes them.
+
 ## Validation commands
 
 ```
