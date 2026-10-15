@@ -114,6 +114,18 @@ export type AccountStatus = z.infer<typeof AccountStatus>;
 export const AccountName = z.string().trim().min(1).max(191);
 
 /**
+ * A declared first or last name (Phase 1.37; Contract §4).
+ *
+ * **What the account holder says their name is — nothing more.** It is not KYC,
+ * not a legal-name check, and not proof of identity, and no rule here pretends
+ * otherwise: surrounding whitespace is trimmed, a value that is empty after
+ * trimming is refused, and the length is bounded by the column. No character
+ * set, casing, or format rule is imposed, because none is governed and any such
+ * rule would refuse real names.
+ */
+export const AccountDeclaredName = z.string().trim().min(1).max(191);
+
+/**
  * How an account's address stands at the moment it is created (Phase 1.27).
  *
  * Explicit on the creation contract rather than implied by the caller, because
@@ -157,20 +169,34 @@ export const ACCOUNT_EMAIL_VERIFICATION_SOURCES = [
 export const AccountEmailVerificationSource = z.enum(ACCOUNT_EMAIL_VERIFICATION_SOURCES);
 export type AccountEmailVerificationSource = z.infer<typeof AccountEmailVerificationSource>;
 
-export const CreateAccountInput = z.strictObject({
-  name: AccountName,
-  email: AccountEmail,
-  password: AccountPassword,
-  createdAt: z.iso.datetime(),
-  /** Defaults to ACTIVE; present so a disabled account can be seeded in a test. */
-  status: AccountStatus.optional(),
-  /**
-   * Defaults to `UNVERIFIED` — the fail-closed direction. A caller that needs an
-   * immediately-usable account says so, and the one caller that must never say so
-   * is public sign-up.
-   */
-  emailVerification: AccountEmailVerificationDisposition.optional(),
-});
+export const CreateAccountInput = z
+  .strictObject({
+    name: AccountName,
+    /**
+     * Phase 1.37. Optional HERE because administrative creation — an operator, a
+     * fixture, `scripts/db-check.ts` — may have nobody to declare a name, and an
+     * absent declaration must stay absent rather than be invented. Public sign-up
+     * always supplies both: `SignUpRequest` requires them. Declared together or
+     * not at all (refined below), so a half-declared identity cannot be stored.
+     */
+    firstName: AccountDeclaredName.optional(),
+    lastName: AccountDeclaredName.optional(),
+    email: AccountEmail,
+    password: AccountPassword,
+    createdAt: z.iso.datetime(),
+    /** Defaults to ACTIVE; present so a disabled account can be seeded in a test. */
+    status: AccountStatus.optional(),
+    /**
+     * Defaults to `UNVERIFIED` — the fail-closed direction. A caller that needs an
+     * immediately-usable account says so, and the one caller that must never say so
+     * is public sign-up.
+     */
+    emailVerification: AccountEmailVerificationDisposition.optional(),
+  })
+  .refine((input) => (input.firstName === undefined) === (input.lastName === undefined), {
+    message: "firstName and lastName are declared together or not at all",
+    path: ["lastName"],
+  });
 export type CreateAccountInput = z.infer<typeof CreateAccountInput>;
 
 export const AuthenticateAccountInput = z.strictObject({
@@ -188,6 +214,12 @@ export type AuthenticateAccountInput = z.infer<typeof AuthenticateAccountInput>;
 export const AccountRecord = z.strictObject({
   accountId: AccountId,
   name: z.string(),
+  /**
+   * The declared first / last name (Phase 1.37), or `null` when none was
+   * declared. A declaration, never a verification — see `AccountDeclaredName`.
+   */
+  firstName: z.string().nullable(),
+  lastName: z.string().nullable(),
   email: z.string(),
   normalizedEmail: z.string(),
   status: AccountStatus,

@@ -152,7 +152,15 @@ function refuseWith(
 /**
  * What a caller may state.
  *
- * Three members, all plain strings, and `strictObject` makes a fourth a refusal.
+ * Four members, all plain strings, and `strictObject` makes a fifth a refusal.
+ *
+ * Phase 1.37 replaced the single `name` with a declared `firstName` and
+ * `lastName` (Contract §4). Both are REQUIRED here even though
+ * `CreateAccountInput` accepts their absence for administrative creation: public
+ * registration is where a person declares their name, so it never creates an
+ * account without one. They are declarations, never verifications — nothing in
+ * this route or below it checks them against anything.
+ *
  * `status` in particular is not here: `CreateAccountInput` accepts one so a test
  * can seed a `DISABLED` account, and a registration route that forwarded it would
  * let a caller choose their own account state. `createdAt` is not here either —
@@ -164,7 +172,8 @@ function refuseWith(
  * enforces one.
  */
 export const SignUpRequest = z.strictObject({
-  name: z.string(),
+  firstName: z.string(),
+  lastName: z.string(),
   email: z.string(),
   password: z.string(),
 });
@@ -269,7 +278,14 @@ export async function handleSignUpRequest(
   try {
     const account = await createAccount(
       {
-        name: parsed.data.name,
+        /* `Account.name` stays what it always was — a non-authoritative display
+           name — and registration no longer asks for one separately, so it is
+           composed from the declared names for display only. Authorization and
+           identity never read it (Phase 1.37). An empty declared name still fails
+           `CreateAccountInput` below, which is the authoritative check. */
+        name: `${parsed.data.firstName.trim()} ${parsed.data.lastName.trim()}`,
+        firstName: parsed.data.firstName,
+        lastName: parsed.data.lastName,
         email: parsed.data.email,
         password: parsed.data.password,
         createdAt: now,
@@ -361,8 +377,8 @@ export async function handleSignUpRequest(
       return { status: 200, body: { ...SIGN_UP_ACCEPTED_BODY }, headers: { ...SIGN_UP_HEADERS } };
     }
 
-    /* A name that is empty, an address that is not plausible, a password under
-       the contract's minimum. These describe the *submission* and are safe to
+    /* A declared first or last name that is empty after trimming, an address
+       that is not plausible, a password under the contract's minimum. These describe the *submission* and are safe to
        report as a shape failure — none of them depends on whether the address
        already names an account. The field paths `InvalidAccountInputError`
        carries are deliberately NOT forwarded: they would name `password` on a

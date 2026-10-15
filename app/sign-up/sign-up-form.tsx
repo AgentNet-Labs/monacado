@@ -6,7 +6,7 @@
  * Thin, exactly as `SignInForm` is thin. Every rule about what may be sent, what
  * a refusal means, and what a person is told lives in `sign-up-submission.ts`,
  * which the node test environment exercises without a DOM. What is left here is
- * the part that genuinely needs a browser: three inputs, a pending flag, and the
+ * the part that genuinely needs a browser: four inputs, a pending flag, and the
  * two states a submission can land in.
  *
  * ## Why it is a client component
@@ -62,7 +62,8 @@ export function SignUpForm() {
     /* Read before the first `await`: React clears `currentTarget` once the
        synthetic event has been handed back. */
     const form = new FormData(event.currentTarget);
-    const name = String(form.get("name") ?? "");
+    const firstName = String(form.get("firstName") ?? "");
+    const lastName = String(form.get("lastName") ?? "");
     const email = String(form.get("email") ?? "");
     const password = String(form.get("password") ?? "");
 
@@ -71,7 +72,7 @@ export function SignUpForm() {
        message cannot sit above a request that is still in flight. */
     setError(undefined);
 
-    const result = await submitSignUp({ name, email, password });
+    const result = await submitSignUp({ firstName, lastName, email, password });
 
     if (result.outcome === "registered") {
       /* Left pending on purpose: the form is about to be replaced, and
@@ -113,13 +114,27 @@ export function SignUpForm() {
         </p>
       ) : null}
 
+      {/* Phase 1.37 — the declared first and last name. A declaration, not a
+          verification: nothing checks these against an identity document. */}
       <div className="auth-field">
-        <label htmlFor="sign-up-name">Name</label>
+        <label htmlFor="sign-up-first-name">First name</label>
         <input
-          id="sign-up-name"
-          name="name"
+          id="sign-up-first-name"
+          name="firstName"
           type="text"
-          autoComplete="name"
+          autoComplete="given-name"
+          required
+          disabled={pending}
+        />
+      </div>
+
+      <div className="auth-field">
+        <label htmlFor="sign-up-last-name">Last name</label>
+        <input
+          id="sign-up-last-name"
+          name="lastName"
+          type="text"
+          autoComplete="family-name"
           required
           disabled={pending}
         />

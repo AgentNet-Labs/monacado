@@ -721,6 +721,23 @@ model Account {
   /// Display name. Never authoritative for identity or authorization.
   name String @db.VarChar(191)
 
+  /// The first and last name **declared by the authenticated account holder**
+  /// (Phase 1.37; Contract §4). Part of private marketplace identity.
+  ///
+  /// A DECLARATION, NOT A VERIFICATION. Nothing checks these against a document,
+  /// a government record, Stripe, or anything else: they are not KYC, not a
+  /// legal-name check, and not proof of identity. The only verification on this
+  /// row is `emailVerifiedAt`, and it proves control of the address only.
+  ///
+  /// NULLABLE ON PURPOSE. NULL means "not declared" — the honest state of every
+  /// account created before this phase, and of administrative accounts that were
+  /// never asked. The migration backfills nothing, because any value it wrote
+  /// would be a name nobody declared. Public sign-up always sets both.
+  ///
+  /// Not `name`, and never derived into authorization from it.
+  firstName String? @db.VarChar(191)
+  lastName  String? @db.VarChar(191)
+
   /// The address as the person typed it, kept for display and correspondence.
   email String @db.VarChar(320)
 

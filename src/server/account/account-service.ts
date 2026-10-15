@@ -70,6 +70,8 @@ export function accountRowToRecord(row: AccountRow): SafeAccount {
   return AccountRecord.parse({
     accountId: row.id,
     name: row.name,
+    firstName: row.firstName,
+    lastName: row.lastName,
     email: row.email,
     normalizedEmail: row.normalizedEmail,
     status: row.status,
@@ -123,6 +125,10 @@ export async function createAccount(
       data: {
         id: ids.nextAccountId(),
         name: req.name,
+        /* Phase 1.37. Stored exactly as declared (trimmed by the contract), or
+           NULL when nobody declared one. Never inferred from `name`. */
+        firstName: req.firstName ?? null,
+        lastName: req.lastName ?? null,
         email: req.email.trim(),
         normalizedEmail: normalizeEmail(req.email),
         passwordHash,

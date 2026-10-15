@@ -940,7 +940,7 @@ names still binds.
 | Promoter self-service | §14 |
 | Economic-principal resolution | §14 |
 | Promoted-commerce eligibility enforcement (replaces "Product / Offer promotability enforcement") | §14, §16.3 |
-| **Declared first / last-name identity primitive** — no field exists today; required for private and therefore public marketplace identity, and therefore a prerequisite of implementing Promotion Authorization requests | §4, §5, §16.1 |
+| **Declared first / last-name identity primitive — primitive exists, enforcement open.** `Account.firstName` and `Account.lastName` now exist as declared-name primitives (Phase 1.37), and public registration requires both. They are declarations only; no KYC or name verification is implied. Pre-1.37 accounts may still have NULL declared names. **Still open:** downstream private / public marketplace identity readiness checks must require the declared names where governed; a future account / profile flow is needed if pre-existing accounts must declare or update their names; and Promotion Authorization request implementation still depends on private marketplace identity enforcement | §4, §5, §16.1 |
 | Product lifecycle implementation (`INCOMPLETE` / `COMPLETE` / `ACTIVE` / `SUSPENDED`), including **deterministic completeness** derived from governed, versioned requirements, the fact-driven transitions, and suspension reinstatement — which requires preserving **enough suspension context to determine the Product's lifecycle state immediately before suspension**; today Products carry only an internal authoring `recordStatus` | §9.1 |
 | Product activation as an **explicit Seller act**, including explicit reactivation after lost readiness is restored | §9.2 |
 | **Legacy Product `promotable` fact** — retired as a governing requirement and superseded by `resaleAvailability`; implementation use to be migrated / removed | §9.3 |
@@ -966,7 +966,8 @@ names still binds.
 implemented until these gaps are closed, because each is a precondition of the
 commerce it enables:
 
-1. the declared first / last-name identity primitive (§4–§5);
+1. declared first / last-name enforcement in the applicable private / public
+   marketplace identity readiness checks (§4–§5);
 2. Product lifecycle (§9.1);
 3. Product activation (§9.2).
 

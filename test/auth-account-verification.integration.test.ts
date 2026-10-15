@@ -74,13 +74,14 @@ const nextEmail = () => {
 async function signUp(
   email: string,
   port = createCapturingMailAdapter(),
-  name = "Verify Person",
+  firstName = "Verify",
+  lastName = "Person",
 ) {
   const result = await handleSignUpRequest(
     {
       contentType: "application/json",
       originHeader: ORIGIN,
-      rawBody: JSON.stringify({ name, email, password: PASSWORD }),
+      rawBody: JSON.stringify({ firstName, lastName, email, password: PASSWORD }),
     },
     {
       db,

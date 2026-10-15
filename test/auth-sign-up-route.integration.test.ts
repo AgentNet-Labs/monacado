@@ -121,7 +121,12 @@ describeDb("1.27 — account sign-up", () => {
        only way to reach that state was a test fixture or `scripts/db-check.ts`. */
     const email = nextEmail();
 
-    const registered = await signUp({ name: "New Person", email, password: PASSWORD });
+    const registered = await signUp({
+      firstName: "New",
+      lastName: "Person",
+      email,
+      password: PASSWORD,
+    });
     expect(registered.status).toBe(200);
     expect(registered.body).toEqual({ registered: true });
 
@@ -171,13 +176,19 @@ describeDb("1.27 — account sign-up", () => {
        exactly as much to an attacker as one on sign-in — and `authenticateAccount`
        already goes to the trouble of a timing decoy to avoid being that. */
     const email = nextEmail();
-    const first = await signUp({ name: "First Person", email, password: PASSWORD });
+    const first = await signUp({
+      firstName: "First",
+      lastName: "Person",
+      email,
+      password: PASSWORD,
+    });
     expect(first.status).toBe(200);
 
     /* A second registration for the same address, with a DIFFERENT name and a
        DIFFERENT password. */
     const second = await signUp({
-      name: "Impostor",
+      firstName: "Impostor",
+      lastName: "Person",
       email,
       password: "a-completely-different-password",
     });
@@ -218,7 +229,8 @@ describeDb("1.27 — account sign-up", () => {
     /* Normalised uniqueness holds through the route, so a differently-cased
        address is the same account and gets the same uniform answer. */
     const cased = await signUp({
-      name: "Case Variant",
+      firstName: "Case",
+      lastName: "Variant",
       email: email.toUpperCase(),
       password: PASSWORD,
     });
@@ -248,7 +260,13 @@ describeDb("1.27 — account sign-up", () => {
     };
 
     const email = nextEmail();
-    expect((await signUp({ name: "Solo Account", email, password: PASSWORD })).status).toBe(200);
+    const solo = await signUp({
+      firstName: "Solo",
+      lastName: "Account",
+      email,
+      password: PASSWORD,
+    });
+    expect(solo.status).toBe(200);
 
     expect({
       participants: await db.marketplaceParticipant.count(),
@@ -294,7 +312,7 @@ describeDb("1.27 — account sign-up", () => {
        limit, this endpoint is a free mailer aimed at anybody whose address
        somebody knows. Five per address per hour caps that inbox. */
     const email = nextEmail();
-    const body = { name: "Repeat Caller", email, password: PASSWORD };
+    const body = { firstName: "Repeat", lastName: "Caller", email, password: PASSWORD };
 
     for (let i = 1; i <= 5; i += 1) {
       expect(`attempt ${i} -> ${(await signUp(body)).status}`).toBe(`attempt ${i} -> 200`);
@@ -308,9 +326,13 @@ describeDb("1.27 — account sign-up", () => {
     expect(refused.headers["retry-after"]).toBeDefined();
 
     /* A DIFFERENT address is unaffected — the budget is per identifier. */
-    expect((await signUp({ name: "Other", email: nextEmail(), password: PASSWORD })).status).toBe(
-      200,
-    );
+    const otherAddress = await signUp({
+      firstName: "Other",
+      lastName: "Person",
+      email: nextEmail(),
+      password: PASSWORD,
+    });
+    expect(otherAddress.status).toBe(200);
 
     /* And the sign-in budget for the SAME address is untouched: separate key
        namespace, separate HMAC domain, separate policy. If the two limiters
@@ -333,7 +355,12 @@ describeDb("1.27 — account sign-up", () => {
     const before = await db.account.count();
     signUpThrottle.breakBackend();
 
-    const out = await signUp({ name: "Blocked", email: nextEmail(), password: PASSWORD });
+    const out = await signUp({
+      firstName: "Blocked",
+      lastName: "Person",
+      email: nextEmail(),
+      password: PASSWORD,
+    });
     expect(out.status).toBe(503);
     expect(out.body).toEqual({ error: "SIGN_UP_UNAVAILABLE" });
 
@@ -349,7 +376,7 @@ describeDb("1.27 — account sign-up", () => {
        would be a refusal in name only. */
     const before = await db.account.count();
     const email = nextEmail();
-    const valid = { name: "Someone", email, password: PASSWORD };
+    const valid = { firstName: "Someone", lastName: "Person", email, password: PASSWORD };
 
     /* A present origin must match. Phase 1.26 proved this live against
        staging.monacado.com for sign-in and sign-out; this is the same rule on the
@@ -370,16 +397,31 @@ describeDb("1.27 — account sign-up", () => {
     /* A short password is a bounded 400 that names no field — the contract's
        `InvalidAccountInputError` carries field paths and they are deliberately
        not forwarded. */
-    const short = await signUp({ name: "S", email: nextEmail(), password: "short" });
+    const short = await signUp({
+      firstName: "S",
+      lastName: "Person",
+      email: nextEmail(),
+      password: "short",
+    });
     expect(short.status).toBe(400);
     expect(short.body).toEqual({ error: "INVALID_SIGN_UP_REQUEST" });
     expect(JSON.stringify(short.body)).not.toContain("password");
 
-    /* An empty name and an implausible address, same bounded answer. */
-    expect((await signUp({ name: "", email: nextEmail(), password: PASSWORD })).status).toBe(400);
-    expect((await signUp({ name: "X", email: "not-an-address", password: PASSWORD })).status).toBe(
-      400,
-    );
+    /* An empty first name and an implausible address, same bounded answer. */
+    const emptyFirstName = await signUp({
+      firstName: "",
+      lastName: "Person",
+      email: nextEmail(),
+      password: PASSWORD,
+    });
+    expect(emptyFirstName.status).toBe(400);
+    const badAddress = await signUp({
+      firstName: "X",
+      lastName: "Person",
+      email: "not-an-address",
+      password: PASSWORD,
+    });
+    expect(badAddress.status).toBe(400);
 
     /* Authority-shaped keys. `strictObject` refuses the request outright rather
        than dropping the key, so a caller cannot choose their own account status,
@@ -400,5 +442,95 @@ describeDb("1.27 — account sign-up", () => {
     /* One row was created across all of the above: the deliberate no-origin
        success. Every refusal wrote nothing. */
     expect(await db.account.count()).toBe(before + 1);
+  });
+
+  /* — Phase 1.37: declared first / last name (Contract §4) — */
+
+  it("1.37 — persists the declared names, trimmed, and leaves email verification exactly as before", async () => {
+    const email = nextEmail();
+    const registered = await signUp({
+      firstName: "  Grace ",
+      lastName: " Hopper  ",
+      email,
+      password: PASSWORD,
+    });
+    expect(registered.status).toBe(200);
+    /* The uniform answer is unchanged: no name, no id, nothing echoed back. */
+    expect(registered.body).toEqual({ registered: true });
+
+    const row = await db.account.findUniqueOrThrow({
+      where: { normalizedEmail: email.toLowerCase() },
+    });
+    expect(row.firstName).toBe("Grace");
+    expect(row.lastName).toBe("Hopper");
+    /* `name` keeps its display meaning, composed for display only. */
+    expect(row.name).toBe("Grace Hopper");
+
+    /* Phase 1.27's behaviour is untouched: public registration still starts
+       unproved, and still sends exactly one verification mail. */
+    expect(row.emailVerifiedAt).toBeNull();
+    expect(row.emailVerifiedVia).toBeNull();
+    expect(mailPort.sent).toHaveLength(1);
+  });
+
+  it("1.37 — requires both names, and refuses one that is empty or whitespace-only — writing nothing", async () => {
+    const before = await db.account.count();
+    const base = { email: nextEmail(), password: PASSWORD };
+
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ["missing firstName", { ...base, lastName: "Hopper" }],
+      ["missing lastName", { ...base, firstName: "Grace" }],
+      ["empty firstName", { ...base, firstName: "", lastName: "Hopper" }],
+      ["empty lastName", { ...base, firstName: "Grace", lastName: "" }],
+      ["whitespace firstName", { ...base, firstName: "   ", lastName: "Hopper" }],
+      ["whitespace lastName", { ...base, firstName: "Grace", lastName: " \t " }],
+      /* The pre-1.37 shape is refused, not silently accepted without names. */
+      ["legacy name only", { ...base, name: "Grace Hopper" }],
+    ];
+    for (const [label, body] of cases) {
+      const out = await signUp(body);
+      expect(`${label} -> ${out.status} ${JSON.stringify(out.body)}`).toBe(
+        `${label} -> 400 {"error":"INVALID_SIGN_UP_REQUEST"}`,
+      );
+    }
+
+    expect(await db.account.count()).toBe(before);
+    expect(mailPort.sent).toHaveLength(0);
+  });
+
+  it("1.37 — infers no identity verification from the declared names", async () => {
+    /* A caller cannot declare their way to a verified identity: the request is
+       strict, so any verification-shaped key is a refusal. */
+    for (const extra of [
+      { identityVerified: true },
+      { kycVerified: true },
+      { nameVerified: true },
+      { emailVerifiedAt: NOW },
+    ]) {
+      const smuggled = await signUp({
+        firstName: "Grace",
+        lastName: "Hopper",
+        email: nextEmail(),
+        password: PASSWORD,
+        ...extra,
+      });
+      expect(`${JSON.stringify(extra)} -> ${smuggled.status}`).toBe(
+        `${JSON.stringify(extra)} -> 400`,
+      );
+    }
+
+    /* And a registered account carries no verification fact beyond the email
+       marker — which stays NULL until a challenge is consumed, names or not. */
+    const email = nextEmail();
+    expect(
+      (await signUp({ firstName: "Grace", lastName: "Hopper", email, password: PASSWORD }))
+        .status,
+    ).toBe(200);
+    const row = await db.account.findUniqueOrThrow({
+      where: { normalizedEmail: email.toLowerCase() },
+    });
+    const verificationShaped = Object.keys(row).filter((key) => /verif|kyc/i.test(key));
+    expect(verificationShaped.sort()).toEqual(["emailVerifiedAt", "emailVerifiedVia"]);
+    expect(row.emailVerifiedAt).toBeNull();
   });
 });

@@ -122,7 +122,12 @@ describeDb("1.27 correction — verification mail through the SMTP adapter", () 
       {
         contentType: "application/json",
         originHeader: ORIGIN,
-        rawBody: JSON.stringify({ name: "Smtp Person", email, password: PASSWORD }),
+        rawBody: JSON.stringify({
+          firstName: "Smtp",
+          lastName: "Person",
+          email,
+          password: PASSWORD,
+        }),
       },
       {
         db,

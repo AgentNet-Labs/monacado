@@ -12,7 +12,7 @@
  * is repeated here.
  *
  * What is proved here is the part a browser contributes and nothing else can: that
- * the page sends exactly the three fields the strict schema accepts, that it
+ * the page sends exactly the four fields the strict schema accepts, that it
  * carries no credential and no account id onward, and — the one that matters —
  * that its refusal vocabulary is structurally incapable of telling a caller
  * whether an address already has an account.
@@ -64,14 +64,15 @@ const jsonResponse = (status: number, body: unknown) =>
   });
 
 const DETAILS = {
-  name: "Ada Lovelace",
+  firstName: "Ada",
+  lastName: "Lovelace",
   email: "ada@example.com",
   password: "a-correct-horse-battery",
 };
 
 describe("1.27 — sign-up submission", () => {
-  it("sends exactly the three fields the endpoint accepts, and carries nothing back", async () => {
-    /* `SignUpRequest` is a `strictObject`, so a fourth key is a 400 rather than
+  it("sends exactly the four fields the endpoint accepts, and carries nothing back", async () => {
+    /* `SignUpRequest` is a `strictObject`, so a fifth key is a 400 rather than
        something quietly dropped. A form that grew a hidden `status`, a `role`, or
        a client-chosen `createdAt` would stop working rather than smuggle it — and
        this is where that is supposed to be noticed, rather than in production.
@@ -89,7 +90,8 @@ describe("1.27 — sign-up submission", () => {
     expect(call.url).toBe(SIGN_UP_ENDPOINT);
     expect(call.init.method).toBe("POST");
     expect(JSON.parse(String(call.init.body))).toEqual({
-      name: "Ada Lovelace",
+      firstName: "Ada",
+      lastName: "Lovelace",
       email: "ada@example.com",
       password: "a-correct-horse-battery",
     });

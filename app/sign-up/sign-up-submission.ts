@@ -73,8 +73,8 @@ export const GENERIC_SIGN_UP_FAILURE = "Unable to create your account. Please tr
 /**
  * What a person is told when their submission was the problem.
  *
- * The server refuses an empty name, an implausible address, and a short password
- * with one code, so this sentence covers all three. It names the password
+ * The server refuses an empty first or last name, an implausible address, and a
+ * short password with one code, so this sentence covers all of them. It names the password
  * minimum because that is the rule a person is most likely to trip and least
  * likely to guess — and because the form states the same number beside the field,
  * from the same constant.
@@ -87,7 +87,9 @@ export type SignUpOutcome =
   | { outcome: "refused"; message: string };
 
 export interface SignUpDetails {
-  name: string;
+  /** Phase 1.37 — the declared first and last name. Declared, never verified. */
+  firstName: string;
+  lastName: string;
   email: string;
   password: string;
 }
@@ -152,10 +154,11 @@ export async function submitSignUp(
     response = await doFetch(SIGN_UP_ENDPOINT, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      /* Exactly the three fields the strict schema accepts. A fourth — a role, a
+      /* Exactly the four fields the strict schema accepts. A fifth — a role, a
          status, a createdAt — would be refused rather than quietly dropped. */
       body: JSON.stringify({
-        name: details.name,
+        firstName: details.firstName,
+        lastName: details.lastName,
         email: details.email,
         password: details.password,
       }),

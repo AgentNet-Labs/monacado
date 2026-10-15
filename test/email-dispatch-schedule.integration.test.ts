@@ -104,7 +104,12 @@ async function registerWithFailingMail(email: string, port: MailPort) {
     {
       contentType: "application/json",
       originHeader: ORIGIN,
-      rawBody: JSON.stringify({ name: "Scheduled Person", email, password: PASSWORD }),
+      rawBody: JSON.stringify({
+        firstName: "Scheduled",
+        lastName: "Person",
+        email,
+        password: PASSWORD,
+      }),
     },
     {
       db,
