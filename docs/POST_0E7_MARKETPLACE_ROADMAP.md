@@ -151,7 +151,7 @@ labels sort in.
 | 52 | **1.34** | **Product References, Placement Guards, and Seller-Direct Draft Listing Self-Service** | **complete** — `2f8da70`, `eaef4e8` |
 | 53 | **1.35** | **Listing References and Draft Withdrawal** | **complete** — `b461c93` |
 | 54 | **1.36** | **Draft Listing Retail Pricing** | **complete** — `e717985`; accepted in Production |
-| 55 | **1.37** | **Declared First / Last Name Identity Primitive** — nullable `Account.firstName` / `lastName` (a declaration, never a verification; Contract §4), required on public sign-up; `Account.name` stays a display value; no readiness enforcement yet | **implemented — not committed** |
+| 55 | **1.37** | **Declared First / Last Name Identity Primitive** — nullable `Account.firstName` / `lastName` (a declaration, never a verification; Contract §4), required on public sign-up; `Account.name` stays a display value; no readiness enforcement yet | **complete** — `a702131` |
 
 ### Status through `1.36` (Documentation Governance 2B)
 
