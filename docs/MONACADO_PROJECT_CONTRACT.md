@@ -90,7 +90,9 @@ Rules of authority:
   provenance.** A capsule never supplies, repairs, or overrides a transactional
   record.
 - **Product, Storefront, Listing, and Offer are separate concepts** with separate
-  records and separate authorities. None may be collapsed into another.
+  records and separate authorities. None may be collapsed into another. Product
+  lifecycle (§9.1), Seller-controlled resale availability (§9.3), and Promotion
+  Authorization (§16.1) are likewise separate from each other and from these.
 - **Internal IDs, application refs, and AgentNet IDs are separate identities.**
   An internal ID is never an application ref; neither is ever an AgentNet
   identity.
@@ -206,6 +208,134 @@ under its creator's authority.
 - Storefront placement (§13);
 - transaction economics (§17–§19).
 
+**Seller KYC and underwriting are gates on activation, not Product content.**
+
+#### §9.1 Product lifecycle
+
+| State | Meaning |
+| --- | --- |
+| `INCOMPLETE` | The Product is under construction: one or more required Product elements are missing. It **cannot participate in commerce.** |
+| `COMPLETE` | The required Product definition is complete, but the Product is **not yet commercially eligible** because one or more external readiness gates remain unsatisfied — for example Seller underwriting / approval or another applicable commerce-readiness gate. |
+| `ACTIVE` | The Product is complete and **commercially eligible to participate in commerce.** |
+| `SUSPENDED` | A **Monacado-controlled administrative commerce block.** |
+
+`ACTIVE` does **not** mean:
+
+- that the Product is currently merchandised in a Storefront;
+- that a promotional Offer currently exists;
+- that the Product is currently being sold or promoted.
+
+Because `INCOMPLETE` and `COMPLETE` Products cannot participate in commerce,
+**any commerce in a Product — seller-direct or promoted — requires Product
+lifecycle `ACTIVE`.**
+
+`SUSPENDED`:
+
+- is imposed by Monacado for governed reasons, including fraud, excessive refunds
+  or chargebacks, regulatory or compliance review, safety concerns, or other
+  governed enforcement;
+- **blocks commerce in the Product**;
+- **does not rewrite historical Product state or historical transactions**;
+- is **reversible through governed administrative action.**
+
+**Product completeness is derived, never declared.** Whether a Product is
+`INCOMPLETE` or content-complete is determined from its **authoritative Product
+facts** against the applicable **governed, versioned Product-completeness
+requirements**. It is not a Seller-set boolean or a manual declaration, and a
+Product **cannot become `COMPLETE` merely because a user requests it** while
+required Product facts are missing. The exact required elements may be defined in
+governing Product detail and may evolve through governed, versioned rules.
+
+**Lifecycle transitions driven by changed facts:**
+
+| Change | Transition | Effect |
+| --- | --- | --- |
+| Required Product content becomes incomplete | `ACTIVE` or `COMPLETE` → `INCOMPLETE` | **Commerce must stop.** |
+| Product content stays complete, but Seller / public-marketplace readiness is lost | `ACTIVE` → `COMPLETE` | **Commerce must stop.** |
+| Readiness is later restored on a `COMPLETE` Product | **none** — stays `COMPLETE` | Activation becomes **permissible**; the Seller must **explicitly activate** again (§9.2). |
+| Monacado lifts a suspension — itself a **governed administrative action** | `SUSPENDED` → **re-evaluated** against current facts, never blindly restored | see **Suspension reinstatement** below |
+
+**Historical Product source versions remain unchanged** by every transition.
+
+**Suspension reinstatement.** Lifting a Monacado Product suspension **must not
+create `ACTIVE` authority that did not exist before the suspension.**
+
+| Facts at reinstatement | Result |
+| --- | --- |
+| Current Product content is incomplete | `INCOMPLETE` |
+| Content complete, but the Product was **not `ACTIVE` immediately before suspension** | `COMPLETE` |
+| Content complete, but **current readiness is not satisfied** | `COMPLETE` |
+| The Product was **`ACTIVE` immediately before suspension**, current content is complete, **and** all current activation / readiness requirements are satisfied | `ACTIVE` |
+
+- A Product that was `COMPLETE` before suspension **remains `COMPLETE`** after
+  the suspension is lifted, even if readiness is now satisfied. It still requires
+  the explicit Seller activation act (§9.2) before becoming `ACTIVE`.
+- **Seller activation may create `ACTIVE` commercial authority. Monacado
+  suspension reinstatement may restore previously existing `ACTIVE` authority,
+  but may never create it for the first time.**
+
+#### §9.2 Product activation
+
+Product activation is the **upstream commercial-readiness transition** to
+`ACTIVE`. A Product may become `ACTIVE` only when:
+
+1. its **Product completeness requirements** are satisfied;
+2. the Seller has the applicable **public marketplace identity and readiness**
+   (§5);
+3. any **Product-specific readiness gates** are satisfied.
+
+**Activation is an explicit act.** Meeting these requirements makes activation
+**permissible**; it never silently activates the Product.
+
+- **Initial `COMPLETE` → `ACTIVE` requires an explicit, governed Seller
+  activation act.**
+- An `ACTIVE` Product that fell to `COMPLETE` because Seller / public-marketplace
+  readiness was lost **does not return to `ACTIVE` when readiness is restored.**
+  The Seller must explicitly activate it again.
+- Lifting a Monacado suspension follows §9.1's governed reinstatement rule
+  instead, which may restore `ACTIVE` only where it existed immediately before
+  the suspension.
+
+**Storefront ownership and Storefront state are not prerequisites** for Product
+activation (§11).
+
+#### §9.3 Seller-controlled resale availability
+
+A Product carries a **Seller-controlled resale-availability state** for the
+third-party promotion / resale channel, separate from its lifecycle:
+
+| State | Meaning |
+| --- | --- |
+| `NOT_OFFERED` | The Seller has not made the Product available for third-party resale. |
+| `AVAILABLE` | The Seller currently permits the Product to participate in the third-party promotion / resale channel, **subject to Offer and Promotion Authorization rules** (§16). |
+| `PAUSED` | The Seller has **temporarily** stopped third-party resale availability. Existing Promotion Authorizations may remain recorded; **no new promoted commerce may occur while paused.** Resuming may make still-valid approvals effective again without reapplication, unless another governing rule requires it. |
+| `WITHDRAWN` | The Seller has **intentionally ended** resale availability indefinitely or permanently. Historical Offers, approvals, Listings, and Orders remain preserved. Re-opening a withdrawn Product requires governed future handling and is not defined here. |
+
+- **`resaleAvailability = AVAILABLE` is the authoritative Seller-controlled fact
+  that the Product is open to third-party resale.** It **supersedes the Product
+  `promotable` fact**, which is **retired** as a governing requirement; existing
+  implementation use of `promotable` is a legacy gap (§34).
+- **A Seller may set `resaleAvailability = AVAILABLE` only when Product lifecycle
+  = `ACTIVE`** (§9.1). Offers may be drafted before Product activation; third-party
+  resale availability may not become `AVAILABLE` until the Product itself is
+  `ACTIVE`.
+- **Product lifecycle and resale availability are independent state axes.** A
+  lifecycle change — to `COMPLETE`, `INCOMPLETE`, or `SUSPENDED`, or back to
+  `ACTIVE` — **never automatically rewrites `resaleAvailability`.** The Seller's
+  recorded choice (`NOT_OFFERED`, `AVAILABLE`, `PAUSED`, or `WITHDRAWN`) is
+  preserved unless the Seller changes it or a separate governed rule does.
+  - While the Product is not `ACTIVE`, commerce stops because of the lifecycle
+    gate (§9.1), whatever `resaleAvailability` says.
+  - When the Product becomes `ACTIVE` again, the preserved resale-availability
+    state becomes effective again, subject to every other commerce gate.
+  - The `ACTIVE`-only rule above governs the Seller **setting** `AVAILABLE`; it
+    does not reset a preserved `AVAILABLE` when the lifecycle later moves.
+- **Product-level resale availability does not authorize any particular
+  Promoter** (§16.1).
+- Seller-controlled `PAUSED` and `WITHDRAWN` are **distinct from**
+  Monacado-controlled Product `SUSPENDED` (§9.1). Neither is used as, or recorded
+  as, the other.
+
 ### §10 Product library capacity
 
 Seller Product libraries are **capacity-controlled.** This **replaces** the
@@ -243,6 +373,13 @@ Rules:
 - A Storefront is **optional for a Seller.** Product authority and Offer
   authority do **not** depend on Storefront ownership. A Seller may operate
   wholesale-only with no Storefront (§12).
+- **Storefront independence.** None of the following requires a Storefront:
+  - Product activation (§9.2);
+  - Seller-controlled resale availability (§9.3);
+  - Offer activation (§16);
+  - Promotion Authorization (§16.1).
+
+  **Storefront merchandising is downstream and optional.**
 - **One private Storefront is included** for an eligible participant under private
   marketplace identity. The first Storefront is an **entitlement, not an
   automatically created object.**
@@ -305,16 +442,11 @@ owner's economic principal, and promoted otherwise.
 - **Economic-principal resolution across accounts is required before promoter
   self-service is launch-ready.**
 
-A **promoted Listing** requires all of:
+A **promoted Listing** may transact only when **promoted-commerce eligibility
+(§16.3)** holds in full.
 
-1. the **Product is promotable**;
-2. a **valid, eligible promotional Offer**;
-3. Seller and Promoter are **distinct economic principals**;
-4. the Promoter **accepts the material Offer terms**;
-5. the applicable **activation and readiness gates** are satisfied.
-
-**Product promotability and Offer eligibility are separate requirements.**
-Neither implies the other.
+**Product lifecycle, Seller resale availability, Offer eligibility, and
+Promotion Authorization are separate requirements.** None implies another.
 
 ### §15 Price authority
 
@@ -332,6 +464,110 @@ Neither implies the other.
   Offer.**
 - A promoted Listing **binds an accepted Offer version** — one exact immutable
   version, not "the current Offer".
+- The Offer answers: **"What commercial terms govern permitted third-party resale
+  of this Product?"** It may contain the wholesale amount, commission,
+  lifecycle / availability terms, and other governed promotional economics.
+- **An Offer does not by itself authorize any particular Promoter.** Offer
+  availability does not authorize every Promoter.
+- **Product resale availability and Offer lifecycle / availability are separate.**
+  Product `resaleAvailability` (§9.3) is the Seller's **Product-wide
+  third-party-resale switch**; Offer lifecycle / availability governs **whether a
+  particular set of resale commercial terms is currently usable.** Promoted
+  commerce requires **both** — `resaleAvailability = AVAILABLE` **and** an eligible
+  `ACTIVE` promotional Offer (§16.3). **Neither substitutes for the other.**
+
+#### §16.1 Promotion Authorization
+
+**Promotion Authorization** is a first-class governed relationship among one
+**Seller**, one **Product**, and one **Promoter**. It records whether that
+Seller permits that Promoter to promote / resell that Product.
+
+| State | Meaning |
+| --- | --- |
+| `REQUESTED` | The Promoter has requested permission to promote / resell the Product. |
+| `APPROVED` | The Seller has **explicitly approved** that Promoter for the Product. |
+| `DENIED` | The Seller rejected the request. |
+| `REVOKED` | The Seller previously approved the Promoter and later withdrew approval. |
+| `CANCELLED` | The Promoter withdrew its own request or participation. |
+
+- **Only `APPROVED` authorizes promoted commerce.**
+- Authorization is **Promoter-specific**. Product `SUSPENDED` (§9.1) is **never**
+  a substitute for revoking one Promoter, and Product-wide `PAUSED` / `WITHDRAWN`
+  (§9.3) is never a substitute for it either.
+- Promotion Authorization does **not** require a Storefront (§11).
+
+**Who may act:**
+
+| Act | Requires |
+| --- | --- |
+| **Request** (→ `REQUESTED`) | an authenticated Promoter with **private marketplace identity** (§4) and the **PROMOTER role** |
+| **Approve, deny, revoke** (→ `APPROVED` / `DENIED` / `REVOKED`) | **Seller authority over the Product** |
+
+- **Promotion Authorization may precede commerce readiness.** It is preparatory
+  Seller permission, not permission to transact. A Seller with authority over the
+  Product may `APPROVE` or `DENY` a valid request — and any party may `REQUEST`,
+  `CANCEL`, or `REVOKE` within its own authority — **while the Product is not
+  `ACTIVE` or not `AVAILABLE`**, unless another existing authority rule
+  independently requires otherwise. For example, Promoters may request and
+  receive approval for a `COMPLETE` Product before launch, and approvals may
+  remain, or new governed approvals be established, while the Product is `PAUSED`.
+- A Promoter does **not** need full public-marketplace readiness merely to request
+  or receive Seller approval. **Actual promoted commerce still requires** the
+  Promoter to satisfy the public / commercial eligibility gates of §16.3.
+
+**Re-requesting.** After `DENIED`, `CANCELLED`, or `REVOKED`, a **later new
+`REQUESTED` authorization is permitted.**
+
+- **History is preserved**; the earlier authorization record is not rewritten.
+- The old authorization is **never silently restored.**
+- The Seller must **explicitly `APPROVE` the new request.**
+- Future policy may rate-limit or otherwise constrain repeated requests.
+
+#### §16.2 Seller control
+
+The Seller must be able to:
+
+- see **pending Promoter requests** for a Product;
+- **approve** a Promoter;
+- **deny** a Promoter;
+- know **which Promoters are currently approved** for the Product;
+- **revoke one Promoter** without affecting unrelated Promoters;
+- **pause or withdraw** Product-wide resale availability (§9.3) independently of
+  Promoter-specific approvals.
+
+#### §16.3 Promoted-commerce eligibility
+
+A promoted transaction requires, **at minimum, all of**:
+
+1. Product lifecycle = **`ACTIVE`** (§9.1);
+2. Seller-controlled resale availability = **`AVAILABLE`** (§9.3);
+3. an **eligible `ACTIVE` promotional Offer** (§16);
+4. Promotion Authorization = **`APPROVED`** for the **specific Promoter** (§16.1);
+5. the **Promoter itself commercially eligible**;
+6. Seller and Promoter are **distinct governed economic principals** (§14);
+7. the Promoter has **accepted the material Offer terms** (§19);
+8. **all other applicable readiness gates.**
+
+**Product-level resale availability does not automatically authorize every
+Promoter, and neither does Offer availability.**
+
+#### §16.4 Revocation and pause effects
+
+**Revoking one Promoter** (`APPROVED → REVOKED`):
+
+- historical Orders remain unchanged;
+- historical Listing and source versions remain preserved;
+- that Promoter may **not create new sellable configurations** for the Product;
+- any **currently sellable promoted commerce that depends on that authorization
+  must stop transacting**;
+- **other approved Promoters are unaffected.**
+
+**Pausing resale availability** (`AVAILABLE → PAUSED`):
+
+- **promoted commerce for that Product must stop transacting**;
+- Promotion Authorization records **may remain `APPROVED`**;
+- historical Orders and versions remain unchanged;
+- resuming availability may make still-valid approvals effective again.
 
 ---
 
@@ -703,7 +939,17 @@ names still binds.
 | Wholesale catalog entitlement implementation | §12 |
 | Promoter self-service | §14 |
 | Economic-principal resolution | §14 |
-| Product / Offer promotability enforcement | §14 |
+| Promoted-commerce eligibility enforcement (replaces "Product / Offer promotability enforcement") | §14, §16.3 |
+| **Declared first / last-name identity primitive** — no field exists today; required for private and therefore public marketplace identity, and therefore a prerequisite of implementing Promotion Authorization requests | §4, §5, §16.1 |
+| Product lifecycle implementation (`INCOMPLETE` / `COMPLETE` / `ACTIVE` / `SUSPENDED`), including **deterministic completeness** derived from governed, versioned requirements, the fact-driven transitions, and suspension reinstatement — which requires preserving **enough suspension context to determine the Product's lifecycle state immediately before suspension**; today Products carry only an internal authoring `recordStatus` | §9.1 |
+| Product activation as an **explicit Seller act**, including explicit reactivation after lost readiness is restored | §9.2 |
+| **Legacy Product `promotable` fact** — retired as a governing requirement and superseded by `resaleAvailability`; implementation use to be migrated / removed | §9.3 |
+| Product lifecycle gate on all commerce, seller-direct included | §9.1 |
+| Seller-controlled resale availability, including the `ACTIVE`-only gate on setting `AVAILABLE` and **preservation of the recorded state across lifecycle changes** | §9.3 |
+| Promotion Authorization request / approve / deny / revoke / cancel / re-request flow and Seller controls, **usable before the Product is `ACTIVE` or `AVAILABLE`** | §16.1, §16.2 |
+| Enforcement of Promotion Authorization on promoted commerce | §16.3 |
+| Pause, withdrawal, and revocation propagation to promoted commerce | §16.4 |
+| **Unresolved architecture:** the broader Listing-versus-Storefront-placement model is not yet reconciled with §9–§16 Storefront independence. Listing / Storefront coupling: the current promoted path is authorized by the PROMOTER role, Storefront placement authority, and the Offer's `PROMOTABLE` terms, with no Promotion Authorization, Product lifecycle, or resale-availability gate | §11, §16.3 |
 | Offer-change propagation to promoted Listings | §19 |
 | Public Storefront / browse / search | §11, §32 |
 | Payout execution | §31 |
@@ -715,6 +961,16 @@ names still binds.
 | SMTP bounce / complaint ingestion | §29 |
 | Complete AgentNet publication readiness | §30 |
 | Admin / operator UI | §8, §23 |
+
+**Sequencing constraint.** Retail Listing activation (§13, §15) may not be
+implemented until these gaps are closed, because each is a precondition of the
+commerce it enables:
+
+1. the declared first / last-name identity primitive (§4–§5);
+2. Product lifecycle (§9.1);
+3. Product activation (§9.2).
+
+This constrains order only; it assigns no phase numbers (§33).
 
 ---
 
@@ -759,3 +1015,35 @@ Documentation Governance 2A rulings and where each is encoded.
 | AG | Roadmap / phase conventions | §33 |
 | AH | Recognized implementation gaps | §34 |
 | AI | Contract amendment | §2 |
+
+Documentation Governance 2C rulings:
+
+| Ruling | Subject | Section |
+| --- | --- | --- |
+| 1 | Product lifecycle | §9.1 |
+| 2 | Product activation | §9.2 |
+| 3 | Seller-controlled resale availability | §9.3 |
+| 4 | Offer | §16 |
+| 5 | Promotion Authorization | §16.1 |
+| 6 | Seller control | §16.2 |
+| 7 | Promoted-commerce eligibility | §16.3, §14 |
+| 8 | Revocation effect | §16.4 |
+| 9 | Pause effect | §16.4 |
+| 10 | Storefront independence | §11 |
+| 11 | Document authority | `DOCUMENT_AUTHORITY.md` §3 |
+| 12 | Recognized gaps | §34 |
+| 2C-R1 | Retire Product `promotable` | §9.3, §34 |
+| 2C-R2 | Product vs Offer availability | §16 |
+| 2C-R3 | Product lifecycle transitions | §9.1 |
+| 2C-R4 | `AVAILABLE` requires Product `ACTIVE` | §9.3 |
+| 2C-R5 | Promotion Authorization edges | §16.1 |
+| 2C-R6 | Listing / Storefront model left unresolved | §11, §34 |
+| 2C-R7 | Implementation sequence | §34 |
+| 2C-F1 | Resale availability preserved across lifecycle changes | §9.3 |
+| 2C-F2 | Product completeness is derived | §9.1 |
+| 2C-F3 | Explicit activation and reactivation | §9.1, §9.2 |
+| 2C-F4 | Promotion Authorization may precede commerce readiness | §16.1 |
+| 2C-F5 | Declared-name prerequisite | §34 |
+| 2C-F6 | Storefront-activation question retired; placement architecture unresolved | §11, §34 |
+| 2C-F7 | Gaps | §34 |
+| 2C-S1 | Suspension reinstatement never creates `ACTIVE` authority | §9.1, §9.2, §34 |
