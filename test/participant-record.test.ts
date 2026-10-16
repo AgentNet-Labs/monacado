@@ -489,11 +489,13 @@ describe("vocabularies", () => {
     ]);
   });
 
-  it("still exposes exactly thirteen marketplace capabilities", () => {
+  it("still exposes exactly fourteen marketplace capabilities", () => {
     /* Twelve until Phase 0M.7 added `listing:seller_direct:create`, which 0M.1's
        vocabulary lacked because it predates 0M.4A splitting Listings into
-       SELLER_DIRECT and PROMOTED. The count is pinned rather than loosened. */
-    expect(MARKETPLACE_CAPABILITIES).toHaveLength(13);
+       SELLER_DIRECT and PROMOTED; fourteen since Phase 1.39 added
+       `product:activate`. The count is pinned rather than loosened. */
+    expect(MARKETPLACE_CAPABILITIES).toHaveLength(14);
+    expect(MARKETPLACE_CAPABILITIES).toContain("product:activate");
     expect(MARKETPLACE_CAPABILITIES).toContain("listing:seller_direct:create");
   });
 

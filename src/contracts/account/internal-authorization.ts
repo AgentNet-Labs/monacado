@@ -469,6 +469,39 @@ export function canGovernMarketplacePolicy(
   return evaluateInternalCapability(MARKETPLACE_POLICY_GOVERN_CAPABILITY, subject);
 }
 
+/** The capability that authorizes suspending and reinstating a Product (Phase 1.39). */
+export const PRODUCT_SUSPEND_CAPABILITY = "product:suspend" as const satisfies AccountCapability;
+
+/**
+ * May this internal account suspend a Product, or lift a Product suspension?
+ *
+ * Requires an explicit active `product:suspend` entitlement. Holding
+ * `participant:suspend` is not enough — the two are independent grants — and no
+ * marketplace role, Product authority, or ownership relation can confer it.
+ */
+export function canSuspendProduct(
+  subject: InternalAuthorizationSubject | null,
+): InternalAuthorizationDecision {
+  return evaluateInternalCapability(PRODUCT_SUSPEND_CAPABILITY, subject);
+}
+
+/** The capability that authorizes assigning or changing a Product tax classification (Phase 1.39). */
+export const PRODUCT_TAX_CLASSIFY_CAPABILITY =
+  "product:tax-classify" as const satisfies AccountCapability;
+
+/**
+ * May this internal account assign or change a Product's tax classification?
+ *
+ * Requires an explicit active `product:tax-classify` entitlement. Owning or
+ * authoring the Product confers nothing — the classification is Monacado's
+ * fiscal fact, not the Seller's.
+ */
+export function canClassifyProductTax(
+  subject: InternalAuthorizationSubject | null,
+): InternalAuthorizationDecision {
+  return evaluateInternalCapability(PRODUCT_TAX_CLASSIFY_CAPABILITY, subject);
+}
+
 /** May this internal account read publication-worker operational health? */
 export function canReadPublicationWorkerStatus(
   subject: InternalAuthorizationSubject | null,

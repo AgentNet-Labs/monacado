@@ -358,6 +358,8 @@ describe("/account presentation", () => {
             deliveryMode: "PHYSICAL",
             recordStatus: "draft",
             revisionToken: "0123456789abcdef0123456789abcdef",
+            lifecycle: "INCOMPLETE" as const,
+            activationBlockers: ["PRODUCT_INCOMPLETE" as const],
             shippingPolicy: null,
             completeness: { complete: false, missing: ["SHIPPING_POLICY_MISSING"] },
           },
@@ -366,7 +368,7 @@ describe("/account presentation", () => {
     );
     const text = html.replaceAll("<!-- -->", "").replace(/<[^>]+>/g, "");
 
-    expect(text).toContain("Hand-thrown mug — Draft · Not listed for sale");
+    expect(text).toContain("Hand-thrown mug — Incomplete · Not listed for sale");
     expect(text).toContain(
       "Physical (shipped) · No shipping charge chosen · Available · Promoters may feature it",
     );
@@ -374,7 +376,7 @@ describe("/account presentation", () => {
     expect(html).not.toContain("mon:");
   });
 
-  it("shows Product completeness, the shipping decision, and an edit control — never a lifecycle state (Phase 1.38)", async () => {
+  it("shows Product completeness, the shipping decision, and an edit control (Phase 1.38)", async () => {
     const base = {
       productRef: "0123456789ABCDEFGHJKMNPQRSTVWXYZ",
       description: "Stoneware, 350 ml.",
@@ -394,12 +396,16 @@ describe("/account presentation", () => {
             name: "Free mug",
             shippingPolicy: { method: "FREE" },
             completeness: { complete: true, missing: [] },
+            lifecycle: "COMPLETE",
+            activationBlockers: ["PARTICIPANT_NOT_ACTIVE"],
           },
           {
             ...base,
             name: "Fixed mug",
             shippingPolicy: { method: "FIXED", amountMinorUnits: 450, currency: "USD" },
             completeness: { complete: true, missing: [] },
+            lifecycle: "COMPLETE",
+            activationBlockers: ["PARTICIPANT_NOT_ACTIVE"],
           },
           {
             ...base,
@@ -410,6 +416,8 @@ describe("/account presentation", () => {
               complete: false,
               missing: ["DESCRIPTION_MISSING", "SHIPPING_POLICY_MISSING"],
             },
+            lifecycle: "INCOMPLETE",
+            activationBlockers: ["PRODUCT_INCOMPLETE"],
           },
         ],
       }),
@@ -424,8 +432,54 @@ describe("/account presentation", () => {
     expect(text.match(/Edit product/g)).toHaveLength(3);
     /* The fixed charge is pre-filled as typed decimal, never as minor units. */
     expect(html).toContain('value="4.50"');
-    /* Completeness is not lifecycle: nothing claims the Product is live. */
-    expect(text).not.toMatch(/\bActive\b|\bACTIVE\b|Activate/);
+    /* Completeness is not activation: a complete Product whose Seller is not
+       ready is COMPLETE, says why, and offers no Activate control (Phase 1.39). */
+    expect(text.match(/Complete · Not listed for sale/g)).toHaveLength(2);
+    expect(text).toContain("Bare mug — Incomplete · Not listed for sale");
+    expect(text).not.toMatch(/\bActive\b|Activate product/);
+    expect(html).not.toContain("0123456789ABCDEFGHJKMNPQRSTVWXYZ");
+    expect(html).not.toContain("mon:");
+  });
+
+  it("shows the derived lifecycle badge, an Activate control only where permissible, and the blocker otherwise (Phase 1.39)", async () => {
+    const base = {
+      productRef: "0123456789ABCDEFGHJKMNPQRSTVWXYZ",
+      description: "Stoneware, 350 ml.",
+      promotable: false,
+      generalAvailabilityState: "available" as const,
+      deliveryMode: "DIGITAL" as const,
+      recordStatus: "draft" as const,
+      revisionToken: "0123456789abcdef0123456789abcdef",
+      shippingPolicy: null,
+      completeness: { complete: true, missing: [] },
+    };
+    const html = await renderSignedIn(
+      home({
+        marketplace: DRAFT_SELLER,
+        canCreateProduct: true,
+        products: [
+          { ...base, name: "Ready mug", lifecycle: "COMPLETE", activationBlockers: [] },
+          { ...base, name: "Unpaid mug", lifecycle: "COMPLETE", activationBlockers: ["PAYMENT_NOT_READY", "TAX_CLASSIFICATION_NOT_READY"] },
+          { ...base, name: "Live mug", lifecycle: "ACTIVE", activationBlockers: [] },
+          { ...base, name: "Held mug", lifecycle: "SUSPENDED", activationBlockers: ["PRODUCT_SUSPENDED"] },
+        ],
+      }),
+    );
+    const text = html.replaceAll("<!-- -->", "").replace(/<[^>]+>/g, "").replaceAll("&#x27;", "'");
+
+    expect(text).toContain("Ready mug — Complete · Not listed for sale");
+    expect(text).toContain("Unpaid mug — Complete · Not listed for sale");
+    expect(text).toContain("Live mug — Active · Not listed for sale");
+    expect(text).toContain("Held mug — Suspended · Not listed for sale");
+    /* Exactly one Activate control: the permissible one. */
+    expect(text.match(/Activate product/g)).toHaveLength(1);
+    expect(text).toContain("It does not list it in a storefront.");
+    /* The first blocker only, in words; suspension says so. */
+    expect(text).toContain("Can't activate yet: Finish payment setup first.");
+    expect(text).not.toContain("classified this product for tax");
+    expect(text).toContain("Can't activate yet: This product is suspended by Monacado.");
+    /* No Listing, Offer, or resale control arrives with activation. */
+    expect(text).not.toMatch(/resale|Promotion Authorization|Publish offer/i);
     expect(html).not.toContain("0123456789ABCDEFGHJKMNPQRSTVWXYZ");
     expect(html).not.toContain("mon:");
   });
@@ -439,6 +493,8 @@ describe("/account presentation", () => {
       deliveryMode: "DIGITAL" as const,
       recordStatus: "draft" as const,
       revisionToken: "0123456789abcdef0123456789abcdef",
+      lifecycle: "INCOMPLETE" as const,
+      activationBlockers: ["PRODUCT_INCOMPLETE" as const],
       shippingPolicy: null,
       completeness: { complete: false, missing: ["DESCRIPTION_MISSING" as const] },
     };
@@ -451,7 +507,7 @@ describe("/account presentation", () => {
     );
     const text = html.replaceAll("<!-- -->", "").replace(/<[^>]+>/g, "");
 
-    expect(text).toContain("Library product 6 — Draft · Not listed for sale");
+    expect(text).toContain("Library product 6 — Incomplete · Not listed for sale");
     expect(html).toContain("Add draft product");
     expect(html).toContain('name="deliveryMode"');
     expect(text).not.toMatch(/require[s]? an upgrade/i);
@@ -759,6 +815,8 @@ describe("placement presentation", () => {
     deliveryMode: "PHYSICAL" as const,
     recordStatus: "draft" as const,
     revisionToken: "0123456789abcdef0123456789abcdef",
+    lifecycle: "INCOMPLETE" as const,
+    activationBlockers: ["PRODUCT_INCOMPLETE" as const],
     shippingPolicy: null,
     completeness: { complete: false, missing: ["DESCRIPTION_MISSING" as const] },
   };
@@ -1004,6 +1062,8 @@ describe("placement withdrawal presentation", () => {
     deliveryMode: "PHYSICAL" as const,
     recordStatus: "draft" as const,
     revisionToken: "0123456789abcdef0123456789abcdef",
+    lifecycle: "INCOMPLETE" as const,
+    activationBlockers: ["PRODUCT_INCOMPLETE" as const],
     shippingPolicy: null,
     completeness: { complete: false, missing: ["DESCRIPTION_MISSING" as const] },
   };
@@ -1219,6 +1279,8 @@ describe("placement pricing presentation", () => {
     deliveryMode: "PHYSICAL" as const,
     recordStatus: "draft" as const,
     revisionToken: "0123456789abcdef0123456789abcdef",
+    lifecycle: "INCOMPLETE" as const,
+    activationBlockers: ["PRODUCT_INCOMPLETE" as const],
     shippingPolicy: null,
     completeness: { complete: false, missing: ["DESCRIPTION_MISSING" as const] },
   };

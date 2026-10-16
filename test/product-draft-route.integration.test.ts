@@ -288,6 +288,17 @@ describeDb("1.32 — SELLER-only private draft Product", () => {
 
     const home = await readAccountHome(seller.accountId, { db });
     expect(home!.canCreateProduct).toBe(true);
+    const UNREADY_DRAFT_SELLER_BLOCKERS = [
+      "PRODUCT_INCOMPLETE",
+      "EMAIL_UNVERIFIED",
+      "FIRST_NAME_MISSING",
+      "LAST_NAME_MISSING",
+      "PARTICIPANT_NOT_ACTIVE",
+      "SELLER_ROLE_NOT_ACTIVE",
+      "PAYMENT_NOT_READY",
+      "COMMERCE_APPROVAL_MISSING",
+      "TAX_CLASSIFICATION_NOT_READY",
+    ];
     expect(home!.products).toEqual([
       {
         productRef: expect.stringMatching(/^[0-9A-HJKMNP-TV-Z]{32}$/) as unknown as string,
@@ -302,6 +313,10 @@ describeDb("1.32 — SELLER-only private draft Product", () => {
         shippingPolicy: null,
         completeness: { complete: false, missing: ["SHIPPING_POLICY_MISSING"] },
         revisionToken: expect.stringMatching(/^[0-9a-f]{32}$/) as unknown as string,
+        /* Phase 1.39 — a derived lifecycle, never ACTIVE without an explicit
+           activation, and every gate this unready draft Seller has yet to meet. */
+        lifecycle: "INCOMPLETE",
+        activationBlockers: UNREADY_DRAFT_SELLER_BLOCKERS,
       },
       {
         productRef: expect.stringMatching(/^[0-9A-HJKMNP-TV-Z]{32}$/) as unknown as string,
@@ -314,6 +329,8 @@ describeDb("1.32 — SELLER-only private draft Product", () => {
         shippingPolicy: null,
         completeness: { complete: false, missing: ["DESCRIPTION_MISSING"] },
         revisionToken: expect.stringMatching(/^[0-9a-f]{32}$/) as unknown as string,
+        lifecycle: "INCOMPLETE",
+        activationBlockers: UNREADY_DRAFT_SELLER_BLOCKERS,
       },
     ]);
     expect(JSON.stringify(home)).not.toMatch(/mon:|an:node/);

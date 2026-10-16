@@ -21,6 +21,7 @@ import {
 } from "../../contracts/product/product-source-record";
 import type { ProductCapsuleCandidate } from "../../contracts/product/product.capsule";
 import type { ProductShippingPolicy } from "../../contracts/product/product-shipping-policy";
+import type { ProductTaxClassification } from "../../contracts/product/product-tax-classification";
 import { getPrisma } from "../db/client";
 import { cryptoProductRefProvider, type ProductRefProvider } from "./product-ids";
 import { domainToVersionCreateInput, versionRowToDomain } from "./persistence-mapper";
@@ -96,6 +97,12 @@ export interface ReviseInput {
    * the prior one forward, `null` writes a version with none.
    */
   shippingPolicy?: ProductShippingPolicy | null;
+  /**
+   * A Monacado tax classification for the new version (Phase 1.39 operator
+   * path). Omitted, the prior one carries forward; it cannot be cleared
+   * (`reviseProductSourceRecord`).
+   */
+  taxClassification?: ProductTaxClassification;
   /** Hostile inputs — rejected if they differ from the stored identity. */
   sourceRecordId?: string;
   internalProductIdOverride?: string;
@@ -107,6 +114,12 @@ export interface ReviseInput {
    * rethrown unchanged. Omitted, revision behaves exactly as before.
    */
   authorize?: (tx: Prisma.TransactionClient) => Promise<void>;
+  /**
+   * Evidence written INSIDE the revision transaction after the new version is
+   * inserted and the pointer advanced (Phase 1.39), so the version and its audit
+   * row commit or roll back together. Whatever it throws is rethrown unchanged.
+   */
+  recordEvidence?: (tx: Prisma.TransactionClient, next: ProductSourceRecord) => Promise<void>;
 }
 
 /**
@@ -261,6 +274,9 @@ export class ProductRepository {
             ...(input.mappingVersion !== undefined ? { mappingVersion: input.mappingVersion } : {}),
             ...(input.recordStatus !== undefined ? { recordStatus: input.recordStatus } : {}),
             ...(input.shippingPolicy !== undefined ? { shippingPolicy: input.shippingPolicy } : {}),
+            ...(input.taxClassification !== undefined
+              ? { taxClassification: input.taxClassification }
+              : {}),
             ...(input.sourceRecordId !== undefined ? { sourceRecordId: input.sourceRecordId } : {}),
             ...(input.internalProductIdOverride !== undefined
               ? { internalProductId: input.internalProductIdOverride }
@@ -293,6 +309,8 @@ export class ProductRepository {
         if (advanced.count !== 1) {
           throw new ConcurrencyConflictError("Current source-record version changed during revision");
         }
+
+        if (input.recordEvidence !== undefined) await input.recordEvidence(tx, next);
 
         return next;
       });

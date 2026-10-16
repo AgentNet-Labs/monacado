@@ -24,6 +24,10 @@ import type {
   GeneralAvailabilityState,
 } from "../../src/contracts/product/product.capsule";
 import type { ProductCompletenessGap } from "../../src/contracts/product/product-completeness";
+import type {
+  ProductActivationBlocker,
+  ProductLifecycleState,
+} from "../../src/contracts/product/product-lifecycle";
 
 export const EMAIL_VERIFIED_LABEL = "Verified";
 export const EMAIL_UNVERIFIED_LABEL = "Email not verified";
@@ -94,8 +98,6 @@ export const STOREFRONT_HANDLE_FIXED_NOTE = "The handle can't be changed yet.";
 export const PRODUCT_INTRO =
   "Add a product as a private draft. Drafts are not listed and not for sale.";
 
-export const PRODUCT_DRAFT_STATUS = "Draft · Not listed for sale";
-
 export const DELIVERY_MODE_LABELS: Readonly<Record<DeliveryMode, string>> = {
   DIGITAL: "Digital",
   PHYSICAL: "Physical (shipped)",
@@ -151,6 +153,51 @@ export const SHIPPING_CHARGE_HINT = "In US dollars, for example 4.50. For no cha
 /** One line, e.g. "Missing: description, shipping charge". */
 export function formatCompletenessGaps(missing: readonly ProductCompletenessGap[]): string {
   return `Missing: ${missing.map((gap) => PRODUCT_COMPLETENESS_GAP_LABELS[gap]).join(", ")}`;
+}
+
+// — Product lifecycle and activation (Phase 1.39) —
+
+/** The lifecycle badge. Derived on the server; never stored, never chosen here. */
+export const PRODUCT_LIFECYCLE_LABELS: Readonly<Record<ProductLifecycleState, string>> = {
+  INCOMPLETE: "Incomplete",
+  COMPLETE: "Complete",
+  ACTIVE: "Active",
+  SUSPENDED: "Suspended",
+};
+
+/**
+ * Follows the badge on every Product. ACTIVE means eligible to sell, not
+ * listed: no Listing or Storefront is activated in this phase (Contract §9.1).
+ */
+export const PRODUCT_NOT_LISTED = "Not listed for sale";
+
+export const PRODUCT_ACTIVATE_LABEL = "Activate product";
+
+/** Beside the button: what activation does, and what it does not. */
+export const PRODUCT_ACTIVATE_HINT =
+  "Activating makes this product eligible to sell. It does not list it in a storefront.";
+
+/** Why activation is not available yet — one concise reason per blocker. */
+export const PRODUCT_ACTIVATION_BLOCKER_LABELS: Readonly<Record<ProductActivationBlocker, string>> = {
+  PRODUCT_SUSPENDED: "This product is suspended by Monacado.",
+  PRODUCT_INCOMPLETE: "Complete the product details first.",
+  EMAIL_UNVERIFIED: "Verify your email address first.",
+  FIRST_NAME_MISSING: "Your account has no first name on record.",
+  LAST_NAME_MISSING: "Your account has no last name on record.",
+  PARTICIPANT_MISSING: "Set up your seller account first.",
+  PARTICIPANT_SUSPENDED: "Your account is suspended.",
+  PRODUCT_ACTIVATION_RESTRICTED: "Product activation is restricted on your account.",
+  PARTICIPANT_NOT_ACTIVE: "Your account has not been approved to sell yet.",
+  SELLER_ROLE_NOT_ACTIVE: "Your seller role is not active yet.",
+  PAYMENT_NOT_READY: "Finish payment setup first.",
+  COMMERCE_APPROVAL_MISSING: "Monacado has not approved your account for selling yet.",
+  TAX_CLASSIFICATION_NOT_READY: "Monacado has not classified this product for tax yet.",
+};
+
+/** One line naming the first thing in the way, e.g. "Can't activate yet: Finish payment setup first." */
+export function formatActivationBlocker(blockers: readonly ProductActivationBlocker[]): string | null {
+  const first = blockers[0];
+  return first === undefined ? null : `Can't activate yet: ${PRODUCT_ACTIVATION_BLOCKER_LABELS[first]}`;
 }
 
 // — Placements (Phase 1.34) —

@@ -66,6 +66,14 @@ export const MARKETPLACE_CAPABILITIES = [
   "listing:promoted:create",
   "activation:submit",
   "storefront:activate",
+  /**
+   * Phase 1.39. Explicitly activating one of the Seller's own Products — the
+   * act that creates `ACTIVE` Product commercial authority (Contract §9.2).
+   * A commerce capability, not a drafting one, and restrictable. Its gates are
+   * stated once, by `evaluateProductActivationReadiness`
+   * (`contracts/product/product-lifecycle.ts`).
+   */
+  "product:activate",
   "offer:publish",
   "payout:receive",
   "commission:accrue",

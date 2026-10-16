@@ -23,6 +23,7 @@
  */
 
 import "../server-only";
+import type { Prisma } from "@prisma/client";
 import {
   InternalAuthorizationSubject,
   type InternalAuthorizationSubject as Subject,
@@ -33,7 +34,8 @@ import { listAccountCapabilities } from "./account-entitlement-service";
 type Db = ReturnType<typeof getPrisma>;
 
 export interface InternalAuthorizationDeps {
-  db?: Db;
+  /** A transaction client is accepted so a decision can see the rows its write will (Phase 1.39). */
+  db?: Db | Prisma.TransactionClient;
 }
 
 /**

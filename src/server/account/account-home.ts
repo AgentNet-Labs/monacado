@@ -53,6 +53,11 @@ import {
   PRODUCT_COMPLETENESS_COLUMNS,
   evaluateCompletenessOfVersionRow,
 } from "../product/product-completeness-service";
+import type {
+  ProductActivationBlocker,
+  ProductLifecycleState,
+} from "../../contracts/product/product-lifecycle";
+import { readProductLifecycleIn } from "../product/product-lifecycle-service";
 import { readActingAccountRows } from "../marketplace/acting-subject-service";
 import { toMarketplaceSubject } from "../marketplace/participant-mapper";
 import { getPrisma } from "../db/client";
@@ -191,6 +196,18 @@ export interface AccountHomeProduct {
    * `product-revision-token.ts`.
    */
   revisionToken: string;
+  /**
+   * The Product's effective lifecycle (Phase 1.39), derived from current
+   * authoritative facts — never stored. `ACTIVE` only while an explicit Seller
+   * activation is in effect.
+   */
+  lifecycle: ProductLifecycleState;
+  /**
+   * Why the Product cannot be activated now, in the evaluator's fixed order —
+   * closed classifications about this account and this Product. Empty when
+   * activation is permissible (or the Product is already `ACTIVE`).
+   */
+  activationBlockers: ProductActivationBlocker[];
 }
 
 export interface AccountHome {
@@ -560,7 +577,12 @@ async function readAuthoredProducts(
   const products = await db.product.findMany({
     where: { versions: { some: { authorityCreatorParticipantId: participantId } } },
     orderBy: { productRowCreatedAt: "asc" },
-    select: { sourceRecordId: true, currentSourceRecordVersion: true, productRef: true },
+    select: {
+      internalProductId: true,
+      sourceRecordId: true,
+      currentSourceRecordVersion: true,
+      productRef: true,
+    },
   });
   if (products.length === 0) return [];
 
@@ -584,9 +606,19 @@ async function readAuthoredProducts(
   });
   const current = new Map(versions.map((v) => [v.sourceRecordId, v]));
 
+  /* Phase 1.39 — the one lifecycle derivation, per Product. The participant's
+     own facts are read once and shared; the internal id never leaves here. */
+  const participantFacts = new Map();
+  const lifecycles = new Map<string, Awaited<ReturnType<typeof readProductLifecycleIn>>>();
+  for (const p of products) {
+    lifecycles.set(p.internalProductId, await readProductLifecycleIn(db, p.internalProductId, participantFacts));
+  }
+
   return products.flatMap((p) => {
     const v = current.get(p.sourceRecordId);
     if (v === undefined || v.authorityCreatorParticipantId !== participantId) return [];
+    const lifecycle = lifecycles.get(p.internalProductId)?.lifecycle;
+    if (lifecycle === undefined) return [];
     return [
       {
         productRef: p.productRef,
@@ -602,6 +634,9 @@ async function readAuthoredProducts(
           evaluateCompletenessOfVersionRow(v),
         ),
         revisionToken: productRevisionToken(p.sourceRecordId, p.currentSourceRecordVersion),
+        lifecycle: lifecycle.lifecycle,
+        activationBlockers:
+          lifecycle.lifecycle === "ACTIVE" ? [] : [...lifecycle.readiness.blockers],
       },
     ];
   });

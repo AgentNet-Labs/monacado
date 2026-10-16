@@ -105,12 +105,13 @@ describe("a scope is IMPLEMENTED only if a production service reads it", () => {
     }
   });
 
-  it("names the three scopes 1.15 wired, and the three it refuses", () => {
+  it("names the scopes wired (1.15's three, and 1.39's product:activate), and the three it refuses", () => {
     /* Written out rather than derived: if a later phase changes the partition,
        this should be a deliberate diff rather than a silently passing test. */
     expect([...IMPLEMENTED_RESTRICTION_SCOPES].sort()).toEqual([
       "offer:publish",
       "payout:receive",
+      "product:activate",
       "storefront:activate",
     ]);
     expect([...UNSUPPORTED_RESTRICTION_SCOPES].sort()).toEqual([

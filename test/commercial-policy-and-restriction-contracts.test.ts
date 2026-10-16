@@ -388,6 +388,7 @@ describe("0M.R1 · restriction scope reuses the committed capability vocabulary"
   it("covers exactly the commerce capabilities", () => {
     expect([...RESTRICTABLE_CAPABILITIES]).toEqual([
       "storefront:activate",
+      "product:activate",
       "offer:publish",
       "payout:receive",
       "commission:accrue",

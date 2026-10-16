@@ -89,11 +89,14 @@ const ParticipantId = z
  *     standing of a participant. Withholding it here would put two unrelated
  *     gates on one decision.
  *
- * What remains is exactly the commerce set: taking a storefront live, publishing
- * an Offer, receiving a payout, accruing commission, and submitting reviews.
+ * What remains is exactly the commerce set: taking a storefront live, activating
+ * a Product (Phase 1.39), publishing an Offer, receiving a payout, accruing
+ * commission, and submitting reviews.
  */
 export const RESTRICTABLE_CAPABILITIES = [
   "storefront:activate",
+  /** Phase 1.39 — explicitly activating a Product (Contract §9.2). */
+  "product:activate",
   "offer:publish",
   "payout:receive",
   "commission:accrue",

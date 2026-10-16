@@ -103,6 +103,7 @@ import { DraftProductInput } from "../../contracts/product/product-source-record
 import { buildDraftProductSourceRecord } from "../product/draft-product-builder";
 import { cryptoProductIdProvider, type ProductIdProvider } from "../product/product-ids";
 import { reviseProductAs, type RevisedProduct } from "./product-revision-service";
+import { activateProductAs, type ActivatedProduct } from "./product-activation-service";
 
 /**
  * What a caller may state.
@@ -499,6 +500,23 @@ export async function reviseOwnProductAs(
   deps: { db?: ReturnType<typeof getPrisma> } = {},
 ): Promise<RevisedProduct> {
   return await reviseProductAs({ accountId: actor.accountId }, request, deps);
+}
+
+/**
+ * Explicitly activate one of the acting account's own Products (Phase 1.39).
+ *
+ * Same division of labour as `reviseOwnProductAs`: the account is the
+ * session's, the Product is named by its stable reference only, and every
+ * authority and readiness decision is made in `product-activation-service`,
+ * inside the activation transaction. This command supplies identity and
+ * decides nothing.
+ */
+export async function activateOwnProductAs(
+  actor: ActingAccount,
+  request: { productRef: string; expectedRevision: string; now: string },
+  deps: { db?: ReturnType<typeof getPrisma> } = {},
+): Promise<ActivatedProduct> {
+  return await activateProductAs({ accountId: actor.accountId }, request, deps);
 }
 
 // — Refund initiation (Phase 1.19) —

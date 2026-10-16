@@ -91,7 +91,149 @@ model Product {
   orders                Order[]
   purchaseEvidences     PurchaseEvidence[]
 
+  // — Lifecycle authority (Phase 1.39). RESTRICT on the far side: an
+  // activation is the Seller's explicit act and a suspension is Monacado's
+  // governed decision, and neither history may be erased by deleting the Product.
+  activations           ProductActivation[]
+  suspensions           ProductSuspension[]
+  /// Monacado tax-classification acts (Phase 1.39) — audit evidence, RESTRICT.
+  taxClassificationActs ProductTaxClassificationAct[]
+
   @@index([sourceRecordId])
+}
+
+/// One explicit Seller activation of a Product (Phase 1.39) — the ONLY way
+/// `ACTIVE` commercial authority is created (Contract §9.2).
+///
+/// The Product's lifecycle is never stored. `INCOMPLETE`, `COMPLETE`, `ACTIVE`,
+/// and `SUSPENDED` are derived on read from the current source version, current
+/// readiness, this authority, and `ProductSuspension` (see
+/// `src/contracts/product/product-lifecycle.ts`). What IS stored is the act and
+/// the readiness basis it was granted against, so a lapse can be recognised
+/// without any background job: an activation stays effective only while every
+/// readiness fact has held CONTINUOUSLY since it was granted. Any lapse — even one
+/// later restored — leaves it permanently ineffective, and only a new explicit
+/// activation (a new row) creates `ACTIVE` again (Contract §9.1 / §9.2).
+///
+/// The basis compares counts and exact values, never clock order, so a lapse is
+/// recognised whatever two servers' clocks say.
+model ProductActivation {
+  /// Opaque identity (mon:pdact:<opaque>). Never exposed to a caller.
+  id String @id @db.VarChar(191)
+
+  internalProductId String @db.VarChar(191)
+
+  /// The SELLER participant whose authority activated it, and the account that
+  /// acted. Authority is re-read on every evaluation; these record who it was.
+  participantId        String @db.VarChar(191)
+  activatedByAccountId String @db.VarChar(191)
+
+  activatedAt DateTime @db.DateTime(3)
+
+  /// The current source version at the instant of activation — its label and its
+  /// row's ordering key. Every LATER version must stay complete, tax-ready, and
+  /// under the same authority, or the activation has lapsed.
+  activatedSourceRecordVersion String @db.VarChar(64)
+  activatedVersionSeq          BigInt
+
+  // — Readiness basis: the value of each lapse-revealing fact at activation. —
+  basisEmailVerifiedAt            DateTime @db.DateTime(3)
+  basisSellerRoleActivatedAt      DateTime @db.DateTime(3)
+  basisPaymentEnabledSince        DateTime @db.DateTime(3)
+  /// Append-only histories, counted: any NEW row is a lapse (restrictions and
+  /// suspensions of the participant, non-approval commerce decisions).
+  basisRestrictionCount           Int
+  basisParticipantSuspensionCount Int
+  basisNonApprovalDecisionCount   Int
+  /// Product suspensions existing at activation. A later one breaks continuity
+  /// unless it recorded THIS activation as in effect when it was imposed.
+  basisProductSuspensionCount     Int
+
+  /// Set when a later explicit activation replaces this one.
+  supersededAt DateTime? @db.DateTime(3)
+
+  /// Unique while current — at most one current activation per Product, as a
+  /// database guarantee. Released (NULL) on supersession.
+  currentForProductId String? @unique @db.VarChar(191)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+
+  product     Product             @relation(fields: [internalProductId], references: [internalProductId], onDelete: Restrict)
+  suspensions ProductSuspension[]
+
+  @@index([internalProductId, activatedAt])
+}
+
+/// A Monacado-controlled administrative Product block (Phase 1.39, Contract
+/// §9.1). Distinct from `ParticipantSuspension`, and never Seller-controlled.
+///
+/// History is never destroyed: lifting is a state change with its own instant,
+/// actor, and reason. `lifecycleBeforeSuspension` and `activationIdBeforeSuspension`
+/// preserve exactly what reinstatement needs — whether `ACTIVE` authority existed
+/// immediately before — so reinstatement can restore it and never create it.
+model ProductSuspension {
+  /// Opaque identity (mon:pdsus:<opaque>).
+  id String @id @db.VarChar(191)
+
+  internalProductId String @db.VarChar(191)
+
+  reasonCode String @db.VarChar(48)
+
+  /// ACTIVE | LIFTED.
+  status String @db.VarChar(16)
+
+  /// The effective lifecycle immediately before: INCOMPLETE | COMPLETE | ACTIVE.
+  lifecycleBeforeSuspension String @db.VarChar(16)
+
+  /// The activation in effect immediately before, when it was ACTIVE; else NULL.
+  activationIdBeforeSuspension String? @db.VarChar(191)
+
+  imposedAt          DateTime @db.DateTime(3)
+  imposedByAccountId String   @db.VarChar(191)
+
+  liftedAt          DateTime? @db.DateTime(3)
+  liftedByAccountId String?   @db.VarChar(191)
+  liftedReasonCode  String?   @db.VarChar(48)
+
+  /// Unique while ACTIVE — at most one standing suspension per Product.
+  activeForProductId String? @unique @db.VarChar(191)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  product                    Product            @relation(fields: [internalProductId], references: [internalProductId], onDelete: Restrict)
+  activationBeforeSuspension ProductActivation? @relation(fields: [activationIdBeforeSuspension], references: [id], onDelete: Restrict)
+
+  @@index([internalProductId, imposedAt])
+  @@index([activationIdBeforeSuspension])
+}
+
+/// Phase 1.39 — the audit evidence of one Monacado Product tax-classification
+/// act. The classification itself lives on the immutable Product source version
+/// the act wrote (`ProductSourceRecordVersionRow.taxClassification`); this row
+/// records WHO assigned it, WHEN, and what it replaced. Append-only.
+model ProductTaxClassificationAct {
+  /// Opaque identity (mon:pdtax:<opaque>).
+  id String @id @db.VarChar(191)
+
+  internalProductId String @db.VarChar(191)
+
+  /// The source version this act wrote — exactly one act per version.
+  sourceRecordVersion String @db.VarChar(64)
+
+  /// The classification the prior version carried; NULL when unclassified.
+  previousTaxClassification String? @db.VarChar(24)
+  taxClassification         String  @db.VarChar(24)
+
+  classifiedAt          DateTime @db.DateTime(3)
+  classifiedByAccountId String   @db.VarChar(191)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+
+  product Product @relation(fields: [internalProductId], references: [internalProductId], onDelete: Restrict)
+
+  @@unique([internalProductId, sourceRecordVersion])
+  @@index([internalProductId, classifiedAt])
 }
 
 /// Durable AgentNet Node associated with a Monacado Product (Phase 0E.1).
@@ -1359,6 +1501,13 @@ model ParticipantPaymentAccount {
   /// When that answer was observed. NULL until the first observation — a linked
   /// account has been created, not yet asked.
   readinessObservedAt DateTime? @db.DateTime(3)
+
+  /// When readiness most recently ENTERED `ENABLED` (Phase 1.39); NULL whenever
+  /// it is not `ENABLED`. Written only on a transition into or out of `ENABLED`,
+  /// never on a re-observation of the same state, so it changes exactly when
+  /// payment readiness lapsed and was restored — the fact a Product activation
+  /// basis needs to recognise that lapse without a background job.
+  readinessEnabledSince DateTime? @db.DateTime(3)
 
   createdAt DateTime @default(now()) @db.DateTime(3)
   updatedAt DateTime @updatedAt @db.DateTime(3)

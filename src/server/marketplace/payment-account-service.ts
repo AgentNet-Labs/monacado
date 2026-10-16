@@ -248,9 +248,20 @@ export async function recordObservedProviderState(
         throw new InvalidPaymentReadinessTransitionError(from, readiness);
       }
 
+      /* Phase 1.39 — `readinessEnabledSince` moves only on a transition INTO or
+         OUT OF `ENABLED`. A re-observation of the same state leaves it alone, so
+         it changes exactly when readiness lapsed and was restored: the fact a
+         Product activation basis compares to recognise that lapse. */
+      const enteringEnabled = readiness === "ENABLED" && from !== "ENABLED";
+      const leavingEnabled = readiness !== "ENABLED" && from === "ENABLED";
       await tx.participantPaymentAccount.update({
         where: { id: row.id },
-        data: { readiness, readinessObservedAt: at },
+        data: {
+          readiness,
+          readinessObservedAt: at,
+          ...(enteringEnabled ? { readinessEnabledSince: at } : {}),
+          ...(leavingEnabled ? { readinessEnabledSince: null } : {}),
+        },
       });
 
       // Replace the outstanding set. Deleting first keeps this a statement of
@@ -347,6 +358,24 @@ export async function readReadinessIn(
   if (rows.length === 0) return INITIAL_PAYMENT_READINESS;
   if (rows.length > 1) throw new AmbiguousPaymentReadinessError();
   return rows[0]!.readiness as PaymentReadinessStatus;
+}
+
+/**
+ * When payment readiness most recently entered `ENABLED` (Phase 1.39), or
+ * `null` when it is not `ENABLED` now. Same single-account rule as
+ * `readReadinessIn`: two accounts refuse rather than choose.
+ */
+export async function readPaymentEnabledSinceIn(
+  tx: Db | Prisma.TransactionClient,
+  participantId: string,
+): Promise<Date | null> {
+  const rows = await tx.participantPaymentAccount.findMany({
+    where: { participantId },
+    select: { readiness: true, readinessEnabledSince: true },
+  });
+  if (rows.length === 0) return null;
+  if (rows.length > 1) throw new AmbiguousPaymentReadinessError();
+  return rows[0]!.readiness === "ENABLED" ? rows[0]!.readinessEnabledSince : null;
 }
 
 /** Shared account read used inside and outside a transaction. */

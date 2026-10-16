@@ -130,6 +130,28 @@ export async function assertStorefrontMayBecomeOperational(
 }
 
 /**
+ * Does governed standing withhold Product activation? (Phase 1.39)
+ *
+ * The seam named by `product:activate`. Reports rather than throws: the one
+ * Product activation-readiness evaluator
+ * (`evaluateProductActivationReadiness`) takes both facts and reports every
+ * blocker, so the Seller is told what stands in the way. Read for a NEW
+ * activation and on every lifecycle read alike, so the restriction both refuses
+ * activation and ends the effect of an existing one; suspension is reported on
+ * its own and dominates, as everywhere in this module.
+ */
+export async function readProductActivationStanding(
+  tx: Tx,
+  participantId: string,
+): Promise<{ suspended: boolean; productActivationRestricted: boolean }> {
+  const standing = await readParticipantStanding(tx, participantId);
+  return {
+    suspended: standing.suspended,
+    productActivationRestricted: standing.activeScopes.includes("product:activate"),
+  };
+}
+
+/**
  * May this Offer become — or stay — commercially live?
  *
  * The seam named by `offer:publish`. Gates activation and resumption; never

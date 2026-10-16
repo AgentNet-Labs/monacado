@@ -515,6 +515,34 @@ export const ACCOUNT_CAPABILITIES = [
    * governs nobody. Only activation requires this.
    */
   "marketplace-policy:govern",
+  /**
+   * Phase 1.39. A NARROW GRANT whose subject is one PRODUCT, not a participant.
+   *
+   * It authorises imposing and lifting a Monacado Product suspension — the
+   * administrative commerce block of Contract §9.1 — on the precedent
+   * `participant:suspend` sets by authorising both the act and its undo.
+   *
+   * Minted rather than folded into `participant:suspend`: withdrawing a
+   * participant's admission and blocking one Product are different acts with
+   * different reach, and reusing the participant grant would silently hand every
+   * participant suspender a Product-level authority nobody scoped (and the
+   * reverse). Lifting may restore `ACTIVE` only where it existed immediately
+   * before the suspension; it never creates it.
+   */
+  "product:suspend",
+  /**
+   * Phase 1.39. A NARROW GRANT authorising Monacado to assign or change one
+   * Product's tax classification — a Monacado fiscal control fact (Phase 1.6),
+   * never a Seller statement.
+   *
+   * Its own grant rather than a reuse of `product:suspend`,
+   * `participant:commerce-approve`, or any role capability: classifying what is
+   * sold for tax is neither a commerce block nor an approval of a participant,
+   * and no marketplace role, Product authority, or ownership confers it.
+   * Classification makes a Product eligible to pass the activation tax gate; it
+   * never activates one.
+   */
+  "product:tax-classify",
 ] as const;
 export const AccountCapability = z.enum(ACCOUNT_CAPABILITIES);
 export type AccountCapability = z.infer<typeof AccountCapability>;

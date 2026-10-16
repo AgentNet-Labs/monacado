@@ -107,6 +107,24 @@ export async function participantHoldsProductAuthority(
   });
   if (version === null) return false;
 
+  return versionGrantsProductAuthority(version, participantId);
+}
+
+/**
+ * Does this one source version grant `participantId` creator authority?
+ *
+ * The version-level half of `participantHoldsProductAuthority`, exported for
+ * Phase 1.39, which must ask it of every version written since an activation —
+ * not only the current one — and must ask it the same way.
+ */
+export function versionGrantsProductAuthority(
+  version: {
+    authorityCreatorParticipantId: string | null;
+    authorityAuthorizationState: string;
+    authorityScope: string;
+  },
+  participantId: string,
+): boolean {
   // Fails closed on a historical NULL: see the module note.
   if (version.authorityCreatorParticipantId === null) return false;
 

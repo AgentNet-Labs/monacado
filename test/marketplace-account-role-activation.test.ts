@@ -997,8 +997,9 @@ describe("21. unknown enum values and unknown keys fail", () => {
     expect(PaymentReadinessStatus.safeParse("STRIPE_PENDING").success).toBe(false);
     expect(MarketplaceCapability.safeParse("storefront:delete").success).toBe(false);
     /* The closed vocabulary, pinned exactly. Phase 0M.7 added the thirteenth,
-       `listing:seller_direct:create`. Unknown strings stay refused. */
-    expect(MARKETPLACE_CAPABILITIES).toHaveLength(13);
+       `listing:seller_direct:create`; Phase 1.39 the fourteenth,
+       `product:activate`. Unknown strings stay refused. */
+    expect(MARKETPLACE_CAPABILITIES).toHaveLength(14);
     expect([...MARKETPLACE_CAPABILITIES]).toEqual([
       "storefront:draft:create",
       "product:draft:create",
@@ -1006,6 +1007,7 @@ describe("21. unknown enum values and unknown keys fail", () => {
       "listing:promoted:create",
       "activation:submit",
       "storefront:activate",
+      "product:activate",
       "offer:publish",
       "payout:receive",
       "commission:accrue",

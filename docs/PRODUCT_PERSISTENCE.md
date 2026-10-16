@@ -262,6 +262,79 @@ Contract §9.
   it to the version the current pointer names. No completeness or lifecycle
   state is stored.
 
+## Product lifecycle and explicit activation (Phase 1.39)
+
+Implementation record; the governing rules are Contract §9.1–§9.2.
+
+- **Derived, never stored.** `deriveProductLifecycle`
+  (`contracts/product/product-lifecycle.ts`) computes `INCOMPLETE` /
+  `COMPLETE` / `ACTIVE` / `SUSPENDED` on read from current rows:
+  `SUSPENDED` when a Product suspension is in effect; otherwise `INCOMPLETE`
+  when `PRODUCT_COMPLETENESS_V1` fails on the current version; `ACTIVE` only
+  when readiness holds now **and** the current activation's continuity holds;
+  else `COMPLETE`. `readProductLifecycleIn`
+  (`server/product/product-lifecycle-service.ts`) gathers the facts. There is
+  no completeness boolean and no lifecycle column; `recordStatus` is unchanged.
+- **One readiness evaluator.** `evaluateProductActivationReadiness` returns the
+  ordered blockers: Product suspended or incomplete; email unverified; declared
+  first / last name blank (never `Account.name`); participant missing,
+  suspended, under a `product:activate` restriction, or not `ACTIVE`; SELLER
+  role not `ACTIVE`; payment not `ENABLED`; commerce approval not `APPROVED`;
+  tax classification not ready (missing, or `PHYSICAL_GOOD` on a `DIGITAL`
+  Product — the checkout rule). No Storefront, Listing, or Offer is required.
+- **`ProductActivation`** — one row per explicit Seller activation, never
+  updated except to be superseded (`supersededAt`; the unique
+  `currentForProductId` marks the one current row). It records the activated
+  version and a **readiness basis**: the instants `emailVerifiedAt`, SELLER
+  role `activatedAt`, and payment `readinessEnabledSince`, plus counts of the
+  append-only participant restriction, participant suspension, non-approval
+  commerce decision, and Product suspension rows. A later mismatch in any of
+  them, or a later version that is incomplete, not tax-ready, or authored by
+  someone else, means the activation **lapsed** — permanently; restoring the
+  fact derives `COMPLETE`, and only a new explicit activation restores `ACTIVE`.
+  No background job writes anything.
+- **`ParticipantPaymentAccount.readinessEnabledSince`** (new, nullable) — set
+  by `recordObservedProviderState` on a transition **into** `ENABLED`, cleared
+  on a transition out; a repeated identical observation leaves it alone. The
+  migration backfills existing `ENABLED` rows from `readinessObservedAt`
+  (else `updatedAt`).
+- **Activation route.** `POST /api/products/{productRef}/activate`, body
+  `{ "expectedRevision" }` only (`product-activation-route-handler.ts` →
+  `activateProductAs`). Inside one transaction with the Product row locked
+  (`SELECT … FOR UPDATE`): the revision token must be current, authority is
+  re-checked, and `SUSPENDED` / already `ACTIVE` / not ready are refused.
+  Activation writes no source version and does not change the revision token.
+- **`ProductSuspension`** — governed Monacado suspension of one Product
+  (`server/marketplace/product-suspension-service.ts`; no route). Requires an
+  active `product:suspend` entitlement and refuses self-action. Records reason,
+  actor, instant, `lifecycleBeforeSuspension`, and the activation in effect
+  immediately before (only if one was). Lifting is a conditional state change
+  with its own actor, instant, and reason; the lifecycle is then re-derived, so
+  `ACTIVE` returns only where it stood before and every fact held throughout.
+- **`product:activate`** is a restrictable marketplace capability, enforced by
+  `readProductActivationStanding`.
+- **Tax classification is Monacado's, not the Seller's.** The Seller cannot set
+  or edit `taxClassification`: no Seller route accepts it, and the Seller UI
+  shows no control for it. A Monacado operator assigns or changes it through
+  `POST /api/internal/products/{productRef}/tax-classification`, body
+  `{ "taxClassification" }` only (`product-tax-classification-route-handler.ts`
+  → `classifyProductTaxAs`), authenticated by session and authorised by an
+  explicit active **`product:tax-classify`** grant — asked before any Product
+  is read and again inside the write transaction. An operator whose own
+  participant authors the Product is refused (self-action). The value must be a
+  governed `ProductTaxClassification` member; `PHYSICAL_GOOD` on a `DIGITAL`
+  Product is refused; nothing is inferred or defaulted, and there is no
+  clearing. Each act writes a **new immutable source version** through
+  `createProductSourceRecordRevision` (Seller facts, shipping policy, and
+  creator authority carried forward; `productRef` unchanged) plus a
+  **`ProductTaxClassificationAct`** audit row — actor, instant, version
+  written, previous value — in the same transaction (`recordEvidence` hook).
+  Classification is **operational readiness, not completeness**: it clears the
+  `TAX_CLASSIFICATION_NOT_READY` blocker and never activates the Product. After
+  activation, a valid reclassification keeps `ACTIVE`; a version that was not
+  tax-ready in between lapses the activation as any readiness loss does. A new
+  version also supersedes the Seller's page revision token.
+
 ## Related: Product Node
 
 The durable AgentNet **Product Node** (opaque Registrar-issued identity + ANS

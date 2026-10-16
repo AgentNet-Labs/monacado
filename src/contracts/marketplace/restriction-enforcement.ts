@@ -111,6 +111,16 @@ export const RESTRICTION_SCOPE_ENFORCEMENT: {
     rationale:
       "Both roles operate storefronts. The seam gates the branch of createStorefrontSourceVersion that makes a Storefront operationally reachable — going ACTIVE, or widening visibility — and never the branch that stands one down. A restricted owner may still close or hide their shop; requiring an intact commerce gate to STOP trading would trap the participant who most needs to stop.",
   },
+  "product:activate": {
+    scope: "product:activate",
+    disposition: "IMPLEMENTED",
+    meaning:
+      "The participant may not explicitly activate a Product, and any Product they had activated stops being ACTIVE.",
+    seams: ["readProductActivationStanding"],
+    appliesToRoles: ["SELLER"],
+    rationale:
+      "Phase 1.39. A seller's capability: only a Seller activates a Product (Contract §9.2). The seam is read by the one Product activation-readiness evaluator, so the restriction refuses a new activation AND — because readiness is re-evaluated on every read and an activation is effective only while readiness holds continuously — ends the effect of an existing one. Lifting the restriction never silently restores it; the Seller must activate again.",
+  },
   "offer:publish": {
     scope: "offer:publish",
     disposition: "IMPLEMENTED",

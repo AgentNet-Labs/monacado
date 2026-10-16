@@ -21,6 +21,7 @@
  */
 
 import "../server-only";
+import type { Prisma } from "@prisma/client";
 import {
   AccountCapability,
   AccountEntitlementRecord,
@@ -183,7 +184,7 @@ export async function accountHasCapability(
 /** Every capability this account currently holds, allow-listed and deduplicated. */
 export async function listAccountCapabilities(
   accountId: string,
-  deps: EntitlementServiceDeps = {},
+  deps: { db?: Db | Prisma.TransactionClient } = {},
 ): Promise<Capability[]> {
   const db = deps.db ?? getPrisma();
   const rows = await db.accountEntitlement.findMany({

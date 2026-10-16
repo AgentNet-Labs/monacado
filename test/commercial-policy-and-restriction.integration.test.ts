@@ -680,6 +680,12 @@ describeDb("Phase 0M.R1 — versioned commercial policy and activation risk reco
         "sellerchargebackfee",
         "sellerchargebackfeepolicy",
         "sellerchargebackfeepolicyversionrow",
+        /* Phase 1.39 owns `ProductTaxClassificationAct`, exempted from
+           `taxclass` by exact name: it is AUDIT EVIDENCE of who assigned a
+           classification, and stores no classification of record — that stays
+           on the immutable Product source version, as Phase 1.6 decided. A
+           second table holding classifications would still fail. */
+        "producttaxclassificationact",
       ]);
       const guarded = names.filter((n) => !legitimatelyOwned.has(n));
 

@@ -452,3 +452,29 @@ export const PARTICIPANT_RECONSIDERATION_ID_RE = new RegExp(`^mon:prrcn:${OPAQUE
  * out.
  */
 export const PARTICIPANT_CLOSURE_ID_RE = new RegExp(`^mon:pcls:${OPAQUE_BODY}$`);
+
+/**
+ * Product activation identity (`mon:pdact:<opaque>`) — Phase 1.39.
+ *
+ * Names one explicit Seller act creating `ACTIVE` commercial authority over a
+ * Product (Contract §9.2). Not `mon:mact:`, which names a PARTICIPANT's
+ * admission review: admitting a participant and activating one Product are
+ * different acts by different parties.
+ */
+export const PRODUCT_ACTIVATION_ID_RE = new RegExp(`^mon:pdact:${OPAQUE_BODY}$`);
+
+/**
+ * Product suspension identity (`mon:pdsus:<opaque>`) — Phase 1.39.
+ *
+ * Deliberately **not** `mon:psus:`. That names Monacado withdrawing a
+ * participant's admission; this names Monacado blocking commerce in one Product
+ * (Contract §9.1). Neither implies the other, and a shared space would let one
+ * be read as the other.
+ */
+export const PRODUCT_SUSPENSION_ID_RE = new RegExp(`^mon:pdsus:${OPAQUE_BODY}$`);
+
+/**
+ * Phase 1.39 — one Monacado Product tax-classification act: the audit evidence
+ * of who assigned which classification to which Product version, and when.
+ */
+export const PRODUCT_TAX_CLASSIFICATION_ID_RE = new RegExp(`^mon:pdtax:${OPAQUE_BODY}$`);

@@ -62,7 +62,9 @@ import {
   STOREFRONT_VISIBILITY_LABELS,
   AVAILABILITY_LABELS,
   DELIVERY_MODE_LABELS,
-  PRODUCT_DRAFT_STATUS,
+  PRODUCT_LIFECYCLE_LABELS,
+  PRODUCT_NOT_LISTED,
+  formatActivationBlocker,
   PRODUCT_INTRO,
   PROMOTABLE_LABELS,
   PLACEMENT_DRAFT_STATUS,
@@ -82,6 +84,7 @@ import { PlacementPriceForm } from "./placement-price-form";
 import { PlacementWithdrawButton } from "./placement-withdraw-button";
 import { ProductForm } from "./product-form";
 import { ProductRevisionForm } from "./product-revision-form";
+import { ProductActivateButton } from "./product-activate-button";
 import { StorefrontForm } from "./storefront-form";
 import { StorefrontPresentationForm } from "./storefront-presentation-form";
 import { SignOutButton } from "./sign-out-button";
@@ -211,7 +214,9 @@ export default async function AccountPage() {
                      it is re-rendered whole on every change. */
                   <li key={i}>
                     <span className="account-storefront-name">{product.name}</span>
-                    {` — ${PRODUCT_DRAFT_STATUS}`}
+                    {/* Phase 1.39 — the derived lifecycle. ACTIVE is eligibility to
+                        sell, never a listing: nothing here is for sale yet. */}
+                    {` — ${PRODUCT_LIFECYCLE_LABELS[product.lifecycle]} · ${PRODUCT_NOT_LISTED}`}
                     <br />
                     <span className="auth-hint">
                       {[
@@ -238,8 +243,7 @@ export default async function AccountPage() {
                       <p className="account-storefront-summary">{product.description}</p>
                     ) : null}
                     {/* Phase 1.38 — content completeness (PRODUCT_COMPLETENESS_V1).
-                        Not a lifecycle state: the Product stays a draft, not
-                        for sale, whatever this says. */}
+                        Not the lifecycle, which the badge above shows. */}
                     <p className="auth-hint">
                       {product.completeness.complete
                         ? PRODUCT_COMPLETENESS_LABELS.complete
@@ -247,6 +251,18 @@ export default async function AccountPage() {
                             product.completeness.missing,
                           )}`}
                     </p>
+                    {/* Phase 1.39 — explicit activation, offered only where the
+                        server found it permissible; otherwise the first thing in
+                        the way. INCOMPLETE is already explained by the line above. */}
+                    {home.canCreateProduct && product.lifecycle === "COMPLETE" && product.activationBlockers.length === 0 ? (
+                      <ProductActivateButton
+                        productRef={product.productRef}
+                        revisionToken={product.revisionToken}
+                      />
+                    ) : (product.lifecycle === "COMPLETE" || product.lifecycle === "SUSPENDED") &&
+                      product.activationBlockers.length > 0 ? (
+                      <p className="auth-hint">{formatActivationBlocker(product.activationBlockers)}</p>
+                    ) : null}
                     {home.canCreateProduct ? (
                       <ProductRevisionForm
                         productRef={product.productRef}

@@ -1458,6 +1458,9 @@ describeDb("Phase 0M.8 — payment-provider onboarding and governed activation",
         "sellerchargebackfee",
         "sellerchargebackfeepolicy",
         "sellerchargebackfeepolicyversionrow",
+        /* Phase 1.39 — audit evidence of a Monacado tax-classification act; the
+           classification of record stays on the Product source version. */
+        "producttaxclassificationact",
       ]);
       const guarded = names.filter((n) => !legitimatelyOwned.has(n));
 
