@@ -221,6 +221,47 @@ in order. Rollback for this additive migration is dropping the two tables; no
 production data exists to preserve. **Production migrations are not applied in
 this phase.**
 
+## Seller revision, shipping policy, and completeness (Phase 1.38)
+
+Implementation record; the governing rules are
+[`PRODUCT_COMPLETENESS_PROFILE.md`](PRODUCT_COMPLETENESS_PROFILE.md) and
+Contract §9.
+
+- **Seller revision.** `POST /api/products/{productRef}/revise`
+  (`product-revision-route-handler.ts` → `reviseProductAs`) restates `name`,
+  `description`, `deliveryMode`, and the Seller shipping policy. It writes
+  through `createProductSourceRecordRevision`: one new
+  `ProductSourceRecordVersionRow` (`"1"` → `"2"` → …), the current pointer
+  advanced once under the existing optimistic-concurrency guard, earlier rows
+  untouched, `productRef` unchanged. Creator authority
+  (`participantHoldsProductAuthority`) and authoring eligibility
+  (`assertAccountMayAuthorProductIn`) are re-checked inside the transaction via
+  the new `ReviseInput.authorize` hook. Every other fact, `taxClassification`,
+  `recordStatus`, and the mapping controls carry forward. A restatement that
+  changes nothing is refused (`PRODUCT_REVISION_UNCHANGED`) and writes nothing.
+- **Conditional revision.** Each request carries `expectedRevision`, an opaque
+  token (`product-revision-token.ts`: a truncated SHA-256 digest of the
+  source-record id and current version label — neither is exposed). It is
+  checked before any work and again inside the write transaction; a token that
+  is not the current one is `409 PRODUCT_REVISION_CONFLICT` and writes nothing.
+  The account page receives the current token with each Product, and a success
+  returns the new one as `revision`.
+- **Shipping policy columns** on `ProductSourceRecordVersionRow`:
+  `shippingPolicyMethod` (`FREE` | `FIXED` | NULL), and for `FIXED` only
+  `shippingFixedChargeMinorUnits` (BIGINT, > 0) and
+  `shippingFixedChargeCurrency` (`USD`). NULL means **no shipping decision**,
+  never free shipping. In the domain record it is `shippingPolicy`, beside
+  `taxClassification` and **outside `facts`**, so it is versioned with the
+  record but **not projected** into the capsule — whether it is ever published
+  is undecided. A policy is permitted only when `facts.deliveryMode` is
+  `PHYSICAL`; revising to `DIGITAL` writes a version with none (the old version
+  keeps its own). A zero charge is stated as `FREE`; `FIXED 0` is refused.
+- **Completeness.** `evaluateProductCompletenessV1`
+  (`product-completeness.ts`) is the one evaluator;
+  `readCurrentProductCompleteness` (`product-completeness-service.ts`) applies
+  it to the version the current pointer names. No completeness or lifecycle
+  state is stored.
+
 ## Related: Product Node
 
 The durable AgentNet **Product Node** (opaque Registrar-issued identity + ANS

@@ -20,6 +20,7 @@ import {
   type ProductSourceRecord,
 } from "../../contracts/product/product-source-record";
 import type { ProductCapsuleCandidate } from "../../contracts/product/product.capsule";
+import type { ProductShippingPolicy } from "../../contracts/product/product-shipping-policy";
 import { getPrisma } from "../db/client";
 import { cryptoProductRefProvider, type ProductRefProvider } from "./product-ids";
 import { domainToVersionCreateInput, versionRowToDomain } from "./persistence-mapper";
@@ -90,9 +91,22 @@ export interface ReviseInput {
   capsuleSemver?: string;
   mappingVersion?: string;
   recordStatus?: ProductSourceRecord["recordStatus"];
+  /**
+   * The Seller shipping policy for the new version (Phase 1.38): omitted carries
+   * the prior one forward, `null` writes a version with none.
+   */
+  shippingPolicy?: ProductShippingPolicy | null;
   /** Hostile inputs — rejected if they differ from the stored identity. */
   sourceRecordId?: string;
   internalProductIdOverride?: string;
+  /**
+   * An authority check run INSIDE the revision transaction, after the
+   * optimistic-concurrency check and before anything is written (Phase 1.38) —
+   * the revision counterpart of `CreateInitialInput.authorize`, for the same
+   * reason: the decision and the write see the same rows. Whatever it throws is
+   * rethrown unchanged. Omitted, revision behaves exactly as before.
+   */
+  authorize?: (tx: Prisma.TransactionClient) => Promise<void>;
 }
 
 /**
@@ -232,6 +246,8 @@ export class ProductRepository {
         if (!currentRow) throw new NotFoundError("Current source-record version not found");
         const prior = versionRowToDomain(currentRow);
 
+        if (input.authorize !== undefined) await input.authorize(tx);
+
         // Phase 0C revision rules (immutable identity, required capsuleGeneratedAt, ...).
         let next: ProductSourceRecord;
         try {
@@ -244,6 +260,7 @@ export class ProductRepository {
             ...(input.capsuleSemver !== undefined ? { capsuleSemver: input.capsuleSemver } : {}),
             ...(input.mappingVersion !== undefined ? { mappingVersion: input.mappingVersion } : {}),
             ...(input.recordStatus !== undefined ? { recordStatus: input.recordStatus } : {}),
+            ...(input.shippingPolicy !== undefined ? { shippingPolicy: input.shippingPolicy } : {}),
             ...(input.sourceRecordId !== undefined ? { sourceRecordId: input.sourceRecordId } : {}),
             ...(input.internalProductIdOverride !== undefined
               ? { internalProductId: input.internalProductIdOverride }

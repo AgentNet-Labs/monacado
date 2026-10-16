@@ -23,6 +23,8 @@ export type ProductRepositoryErrorCode =
   | "PERSISTED_CONTRACT_VIOLATION"
   | "CREATOR_PARTICIPANT_REQUIRED"
   | "CREATOR_NOT_ELIGIBLE"
+  | "PRODUCT_NOT_AVAILABLE"
+  | "REVISION_UNCHANGED"
   | "DATABASE_ERROR";
 
 export class ProductRepositoryError extends Error {
@@ -137,5 +139,35 @@ export class ProductCreatorParticipantRequiredError extends ProductRepositoryErr
       "The acting account holds no marketplace participant",
     );
     this.name = "ProductCreatorParticipantRequiredError";
+  }
+}
+
+/**
+ * No Product the acting participant may revise answers to this reference
+ * (Phase 1.38).
+ *
+ * Deliberately ONE error for "no such Product" and "a real Product someone else
+ * authors": anything finer would let a caller holding a guessed reference learn
+ * that it exists. Carries no reference, no identifier, and no reason.
+ */
+export class ProductNotAvailableError extends ProductRepositoryError {
+  constructor() {
+    super("PRODUCT_NOT_AVAILABLE", "No Product the acting participant may revise");
+    this.name = "ProductNotAvailableError";
+  }
+}
+
+/**
+ * A revision restated exactly what the current version already says
+ * (Phase 1.38).
+ *
+ * Refused rather than written: a version that changes nothing is history that
+ * records no event. Raised only after authority is established, so it reveals
+ * nothing about a Product the caller does not author.
+ */
+export class ProductRevisionUnchangedError extends ProductRepositoryError {
+  constructor() {
+    super("REVISION_UNCHANGED", "The revision changes nothing in the current version");
+    this.name = "ProductRevisionUnchangedError";
   }
 }

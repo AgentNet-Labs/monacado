@@ -357,6 +357,9 @@ describe("/account presentation", () => {
             generalAvailabilityState: "available",
             deliveryMode: "PHYSICAL",
             recordStatus: "draft",
+            revisionToken: "0123456789abcdef0123456789abcdef",
+            shippingPolicy: null,
+            completeness: { complete: false, missing: ["SHIPPING_POLICY_MISSING"] },
           },
         ],
       }),
@@ -364,8 +367,66 @@ describe("/account presentation", () => {
     const text = html.replaceAll("<!-- -->", "").replace(/<[^>]+>/g, "");
 
     expect(text).toContain("Hand-thrown mug — Draft · Not listed for sale");
-    expect(text).toContain("Physical (shipped) · Available · Promoters may feature it");
+    expect(text).toContain(
+      "Physical (shipped) · No shipping charge chosen · Available · Promoters may feature it",
+    );
     expect(text).toContain("Stoneware, 350 ml.");
+    expect(html).not.toContain("mon:");
+  });
+
+  it("shows Product completeness, the shipping decision, and an edit control — never a lifecycle state (Phase 1.38)", async () => {
+    const base = {
+      productRef: "0123456789ABCDEFGHJKMNPQRSTVWXYZ",
+      description: "Stoneware, 350 ml.",
+      promotable: false,
+      generalAvailabilityState: "available" as const,
+      deliveryMode: "PHYSICAL" as const,
+      recordStatus: "draft" as const,
+      revisionToken: "0123456789abcdef0123456789abcdef",
+    };
+    const html = await renderSignedIn(
+      home({
+        marketplace: DRAFT_SELLER,
+        canCreateProduct: true,
+        products: [
+          {
+            ...base,
+            name: "Free mug",
+            shippingPolicy: { method: "FREE" },
+            completeness: { complete: true, missing: [] },
+          },
+          {
+            ...base,
+            name: "Fixed mug",
+            shippingPolicy: { method: "FIXED", amountMinorUnits: 450, currency: "USD" },
+            completeness: { complete: true, missing: [] },
+          },
+          {
+            ...base,
+            name: "Bare mug",
+            description: null,
+            shippingPolicy: null,
+            completeness: {
+              complete: false,
+              missing: ["DESCRIPTION_MISSING", "SHIPPING_POLICY_MISSING"],
+            },
+          },
+        ],
+      }),
+    );
+    const text = html.replaceAll("<!-- -->", "").replace(/<[^>]+>/g, "");
+
+    expect(text).toContain("Physical (shipped) · Free shipping · Available");
+    expect(text).toContain("Physical (shipped) · Shipping $4.50 · Available");
+    expect(text).toContain("Physical (shipped) · No shipping charge chosen · Available");
+    expect(text.match(/Details complete/g)).toHaveLength(2);
+    expect(text).toContain("Details incomplete · Missing: description, shipping charge");
+    expect(text.match(/Edit product/g)).toHaveLength(3);
+    /* The fixed charge is pre-filled as typed decimal, never as minor units. */
+    expect(html).toContain('value="4.50"');
+    /* Completeness is not lifecycle: nothing claims the Product is live. */
+    expect(text).not.toMatch(/\bActive\b|\bACTIVE\b|Activate/);
+    expect(html).not.toContain("0123456789ABCDEFGHJKMNPQRSTVWXYZ");
     expect(html).not.toContain("mon:");
   });
 
@@ -377,6 +438,9 @@ describe("/account presentation", () => {
       generalAvailabilityState: "available" as const,
       deliveryMode: "DIGITAL" as const,
       recordStatus: "draft" as const,
+      revisionToken: "0123456789abcdef0123456789abcdef",
+      shippingPolicy: null,
+      completeness: { complete: false, missing: ["DESCRIPTION_MISSING" as const] },
     };
     const html = await renderSignedIn(
       home({
@@ -694,6 +758,9 @@ describe("placement presentation", () => {
     generalAvailabilityState: "available" as const,
     deliveryMode: "PHYSICAL" as const,
     recordStatus: "draft" as const,
+    revisionToken: "0123456789abcdef0123456789abcdef",
+    shippingPolicy: null,
+    completeness: { complete: false, missing: ["DESCRIPTION_MISSING" as const] },
   };
 
   /* No apostrophe: this suite compares rendered text, and an entity-encoded
@@ -936,6 +1003,9 @@ describe("placement withdrawal presentation", () => {
     generalAvailabilityState: "available" as const,
     deliveryMode: "PHYSICAL" as const,
     recordStatus: "draft" as const,
+    revisionToken: "0123456789abcdef0123456789abcdef",
+    shippingPolicy: null,
+    completeness: { complete: false, missing: ["DESCRIPTION_MISSING" as const] },
   };
 
   const storefront = {
@@ -1148,6 +1218,9 @@ describe("placement pricing presentation", () => {
     generalAvailabilityState: "available" as const,
     deliveryMode: "PHYSICAL" as const,
     recordStatus: "draft" as const,
+    revisionToken: "0123456789abcdef0123456789abcdef",
+    shippingPolicy: null,
+    completeness: { complete: false, missing: ["DESCRIPTION_MISSING" as const] },
   };
 
   const storefront = {

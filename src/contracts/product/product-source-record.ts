@@ -33,6 +33,7 @@ import {
 } from "./product.capsule";
 import { generateProductCandidate } from "./product.factory";
 import { ProductTaxClassification } from "./product-tax-classification";
+import { ProductShippingPolicy, deliveryModeIsSellerShipped } from "./product-shipping-policy";
 import { MARKETPLACE_PARTICIPANT_ID_RE } from "../capsule/identity";
 import { GENERATOR_VERSION } from "./product.authority";
 
@@ -144,6 +145,44 @@ export const DraftProductInput = z.strictObject({
 });
 export type DraftProductInput = z.infer<typeof DraftProductInput>;
 
+/**
+ * What a SELLER supplies to revise one of their Products (Phase 1.38) — after
+ * the route has converted any user-facing shipping amount into minor units.
+ *
+ * A **full restatement** of the facts self-service revision governs: `name`,
+ * `description`, `deliveryMode`, and the Seller shipping policy. Every other
+ * fact (`promotable`, `generalAvailabilityState`, `productVersion`, image,
+ * specifications, capabilities, relationships) and every non-fact field
+ * (`taxClassification`, `recordStatus`, mapping controls) carries forward from
+ * the prior version unchanged — a Seller cannot reach them through this input.
+ *
+ * Text bounds and trimming are `DraftProductInput`'s. `description` and
+ * `shippingPolicy` may be `null`: a revision may leave a Product incomplete
+ * (completeness is evaluated, not demanded), and `null` states "none" rather
+ * than "unchanged" because the input restates everything it governs.
+ *
+ * A shipping policy is accepted only for a Seller-shipped delivery mode. A
+ * policy stated beside a non-shipped mode is refused, never silently dropped:
+ * the caller said something the Product cannot mean.
+ */
+export const ProductRevisionInput = z
+  .strictObject({
+    name: z.string().trim().min(1).max(200),
+    description: z.string().trim().min(1).max(5_000).nullable(),
+    deliveryMode: DeliveryMode,
+    shippingPolicy: ProductShippingPolicy.nullable(),
+  })
+  .superRefine((input, ctx) => {
+    if (input.shippingPolicy !== null && !deliveryModeIsSellerShipped(input.deliveryMode)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["shippingPolicy"],
+        message: "a shipping policy applies only to a Seller-shipped (PHYSICAL) Product",
+      });
+    }
+  });
+export type ProductRevisionInput = z.infer<typeof ProductRevisionInput>;
+
 // — Internal record status (NOT ANS lifecycle) —
 
 /**
@@ -210,6 +249,22 @@ export const ProductSourceRecordBase = z.strictObject({
    * category is a tax rate nobody chose.
    */
   taxClassification: ProductTaxClassification.optional(),
+  /**
+   * The Seller shipping policy (Phase 1.38) — how shipping is charged on this
+   * Product when the Seller ships it. See `product-shipping-policy.ts`.
+   *
+   * A **Seller-authoritative** fact versioned with the record, and it sits here
+   * beside `taxClassification` rather than inside `facts` for one reason: `facts`
+   * is exactly what the capsule candidate projects, and whether or how the
+   * shipping policy is ever published is not decided
+   * (`PRODUCT_COMPLETENESS_PROFILE.md` §5.1). Outside `facts` it is part of
+   * the authoritative source version and of nothing published.
+   *
+   * **Optional, and absence is not `FREE`.** No version before this phase has
+   * one, and a version without one states no shipping decision. Present only
+   * when `facts.deliveryMode` is Seller-shipped (enforced below).
+   */
+  shippingPolicy: ProductShippingPolicy.optional(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
   acquiredAt: z.iso.datetime(),
@@ -237,6 +292,19 @@ export const ProductSourceRecordSchema = ProductSourceRecordBase
         path: ["authority"],
         message:
           "authority must name a creatorParticipantId or an existing creatorId; a Product source record needs a creator authority",
+      });
+    }
+    /* Phase 1.38 — a shipping policy belongs to a Seller-shipped Product only.
+       A non-shipped Product carrying one would assert a shipping rule for
+       something nobody ships. */
+    if (
+      record.shippingPolicy !== undefined &&
+      !deliveryModeIsSellerShipped(record.facts.deliveryMode)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["shippingPolicy"],
+        message: "shippingPolicy may be present only when facts.deliveryMode is Seller-shipped (PHYSICAL)",
       });
     }
     for (const finding of findForbiddenFields(record)) {
@@ -490,6 +558,16 @@ export interface ReviseSourceRecordInput {
    * remove a sale's tax basis.
    */
   taxClassification?: ProductTaxClassification;
+  /**
+   * The Seller shipping policy for the new version (Phase 1.38).
+   *
+   * Omitted (`undefined`), the prior version's policy carries forward. `null`
+   * states that the new version has **no** policy — how a Product that stops
+   * being Seller-shipped sheds one, in the new version, without touching the
+   * old. Unlike `taxClassification` this is clearable, because it is the
+   * Seller's own statement and stops applying when the Product is not shipped.
+   */
+  shippingPolicy?: ProductShippingPolicy | null;
   /** Hostile inputs — if provided and changed, revision is rejected. */
   sourceRecordId?: string;
   internalProductId?: string;
@@ -539,6 +617,10 @@ export function reviseProductSourceRecord(input: ReviseSourceRecordInput): Produ
     ...(input.taxClassification !== undefined
       ? { taxClassification: input.taxClassification }
       : {}),
+    ...(input.shippingPolicy !== undefined && input.shippingPolicy !== null
+      ? { shippingPolicy: input.shippingPolicy }
+      : {}),
   };
+  if (input.shippingPolicy === null) delete (next as { shippingPolicy?: unknown }).shippingPolicy;
   return ProductSourceRecordSchema.parse(next);
 }

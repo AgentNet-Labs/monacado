@@ -236,6 +236,23 @@ model ProductSourceRecordVersionRow {
   /// guessed category is a tax rate nobody chose.
   taxClassification String? @db.VarChar(32)
 
+  /// Seller shipping policy (Phase 1.38): FREE | FIXED — how shipping is
+  /// charged on this Product when the Seller ships it. A SELLER-authoritative
+  /// fulfillment fact, versioned here with the record. NOT a `fact*` column:
+  /// `fact*` columns are what the capsule projects, and whether the shipping
+  /// policy is ever published is undecided (PRODUCT_COMPLETENESS_PROFILE.md
+  /// §5.1). NOT the shipping amount charged on an Order — that is transaction
+  /// economics, frozen on the Order snapshot.
+  ///
+  /// NULL means NO shipping decision, never free shipping; FREE is an explicit
+  /// value. Present only for a Seller-shipped (PHYSICAL) Product.
+  shippingPolicyMethod          String? @db.VarChar(16)
+  /// FIXED only: the charge in integer minor units, strictly positive (a zero
+  /// charge is FREE). NULL for FREE and for no policy.
+  shippingFixedChargeMinorUnits BigInt?
+  /// FIXED only: a currency Monacado prices in (USD). NULL otherwise.
+  shippingFixedChargeCurrency   String? @db.VarChar(3)
+
   // — Mapping controls (NOT Product facts, NOT publication metadata) —
   capsuleSemver      String   @db.VarChar(64)
   mappingVersion     String   @db.VarChar(64)

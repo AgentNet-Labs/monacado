@@ -70,6 +70,10 @@ import {
   PLACEMENT_NEEDS_STOREFRONT,
   PLACEMENT_WITHDRAW_NOTE,
   PLACEMENT_PRICE_NONE,
+  PRODUCT_COMPLETENESS_LABELS,
+  SHIPPING_POLICY_LABELS,
+  SHIPPING_POLICY_NONE,
+  formatCompletenessGaps,
   formatRetailPrice,
 } from "./account-home-copy";
 import { OnboardingForm } from "./onboarding-form";
@@ -77,6 +81,7 @@ import { PlacementForm } from "./placement-form";
 import { PlacementPriceForm } from "./placement-price-form";
 import { PlacementWithdrawButton } from "./placement-withdraw-button";
 import { ProductForm } from "./product-form";
+import { ProductRevisionForm } from "./product-revision-form";
 import { StorefrontForm } from "./storefront-form";
 import { StorefrontPresentationForm } from "./storefront-presentation-form";
 import { SignOutButton } from "./sign-out-button";
@@ -211,6 +216,18 @@ export default async function AccountPage() {
                     <span className="auth-hint">
                       {[
                         product.deliveryMode !== null ? DELIVERY_MODE_LABELS[product.deliveryMode] : null,
+                        /* Phase 1.38 — the shipping decision, for a shipped
+                           Product only. None is shown as none, never as free. */
+                        product.deliveryMode === "PHYSICAL"
+                          ? product.shippingPolicy === null
+                            ? SHIPPING_POLICY_NONE
+                            : product.shippingPolicy.method === "FREE"
+                              ? SHIPPING_POLICY_LABELS.FREE
+                              : `Shipping ${formatRetailPrice(
+                                  product.shippingPolicy.amountMinorUnits,
+                                  product.shippingPolicy.currency,
+                                )}`
+                          : null,
                         AVAILABILITY_LABELS[product.generalAvailabilityState],
                         PROMOTABLE_LABELS[product.promotable ? "true" : "false"],
                       ]
@@ -219,6 +236,27 @@ export default async function AccountPage() {
                     </span>
                     {product.description !== null ? (
                       <p className="account-storefront-summary">{product.description}</p>
+                    ) : null}
+                    {/* Phase 1.38 — content completeness (PRODUCT_COMPLETENESS_V1).
+                        Not a lifecycle state: the Product stays a draft, not
+                        for sale, whatever this says. */}
+                    <p className="auth-hint">
+                      {product.completeness.complete
+                        ? PRODUCT_COMPLETENESS_LABELS.complete
+                        : `${PRODUCT_COMPLETENESS_LABELS.incomplete} · ${formatCompletenessGaps(
+                            product.completeness.missing,
+                          )}`}
+                    </p>
+                    {home.canCreateProduct ? (
+                      <ProductRevisionForm
+                        productRef={product.productRef}
+                        revisionToken={product.revisionToken}
+                        fieldIdPrefix={`product-${i}`}
+                        name={product.name}
+                        description={product.description}
+                        deliveryMode={product.deliveryMode}
+                        shippingPolicy={product.shippingPolicy}
+                      />
                     ) : null}
                   </li>
                 ))}

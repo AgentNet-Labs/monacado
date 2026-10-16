@@ -45,6 +45,14 @@ import type {
   GeneralAvailabilityState,
 } from "../../contracts/product/product.capsule";
 import type { RecordStatus } from "../../contracts/product/product-source-record";
+import type { ProductCompletenessGap } from "../../contracts/product/product-completeness";
+import { ProductShippingPolicy } from "../../contracts/product/product-shipping-policy";
+import { shippingPolicyFromColumns } from "../product/persistence-mapper";
+import { productRevisionToken } from "../product/product-revision-token";
+import {
+  PRODUCT_COMPLETENESS_COLUMNS,
+  evaluateCompletenessOfVersionRow,
+} from "../product/product-completeness-service";
 import { readActingAccountRows } from "../marketplace/acting-subject-service";
 import { toMarketplaceSubject } from "../marketplace/participant-mapper";
 import { getPrisma } from "../db/client";
@@ -161,6 +169,28 @@ export interface AccountHomeProduct {
   generalAvailabilityState: GeneralAvailabilityState;
   deliveryMode: DeliveryMode | null;
   recordStatus: RecordStatus;
+  /**
+   * The Seller shipping policy on the current version (Phase 1.38), or `null`
+   * for none — which is "no shipping decision", never free shipping. A FIXED
+   * charge is in integer minor units.
+   */
+  shippingPolicy:
+    | { method: "FREE" }
+    | { method: "FIXED"; amountMinorUnits: number; currency: string }
+    | null;
+  /**
+   * `PRODUCT_COMPLETENESS_V1` over the current version (Phase 1.38) — content
+   * completeness only. Not a lifecycle state: nothing here says the Product is
+   * active, eligible, or for sale.
+   */
+  completeness: { complete: boolean; missing: ProductCompletenessGap[] };
+  /**
+   * The opaque revision token of the current version (Phase 1.38) — what an
+   * edit of THIS state must send, so a stale edit is refused rather than
+   * overwriting a newer one. A digest, not an identifier; see
+   * `product-revision-token.ts`.
+   */
+  revisionToken: string;
 }
 
 export interface AccountHome {
@@ -544,12 +574,12 @@ async function readAuthoredProducts(
     select: {
       sourceRecordId: true,
       authorityCreatorParticipantId: true,
-      factName: true,
-      factDescription: true,
       factPromotable: true,
       factGeneralAvailabilityState: true,
-      factDeliveryMode: true,
       recordStatus: true,
+      /* name, description, delivery mode, and the shipping policy — exactly the
+         columns completeness reads (Phase 1.38). */
+      ...PRODUCT_COMPLETENESS_COLUMNS,
     },
   });
   const current = new Map(versions.map((v) => [v.sourceRecordId, v]));
@@ -566,7 +596,29 @@ async function readAuthoredProducts(
         generalAvailabilityState: v.factGeneralAvailabilityState as GeneralAvailabilityState,
         deliveryMode: v.factDeliveryMode as DeliveryMode | null,
         recordStatus: v.recordStatus as RecordStatus,
+        shippingPolicy: shippingPolicyForPage(v),
+        /* The one evaluator, over the current version's own columns. */
+        completeness: (({ complete, missing }) => ({ complete, missing }))(
+          evaluateCompletenessOfVersionRow(v),
+        ),
+        revisionToken: productRevisionToken(p.sourceRecordId, p.currentSourceRecordVersion),
       },
     ];
   });
+}
+
+/** The current version's shipping policy, shaped for the page; `null` for none or malformed. */
+function shippingPolicyForPage(row: {
+  shippingPolicyMethod: string | null;
+  shippingFixedChargeMinorUnits: bigint | null;
+  shippingFixedChargeCurrency: string | null;
+}): AccountHomeProduct["shippingPolicy"] {
+  const parsed = ProductShippingPolicy.safeParse(shippingPolicyFromColumns(row));
+  if (!parsed.success) return null;
+  if (parsed.data.method === "FREE") return { method: "FREE" };
+  return {
+    method: "FIXED",
+    amountMinorUnits: parsed.data.fixedChargeMinorUnits,
+    currency: parsed.data.fixedChargeCurrency,
+  };
 }

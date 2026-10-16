@@ -297,6 +297,11 @@ describeDb("1.32 — SELLER-only private draft Product", () => {
         generalAvailabilityState: "available",
         deliveryMode: "PHYSICAL",
         recordStatus: "draft",
+        /* Phase 1.38 — no shipping decision yet, so incomplete; an opaque
+           revision token, never an identifier. */
+        shippingPolicy: null,
+        completeness: { complete: false, missing: ["SHIPPING_POLICY_MISSING"] },
+        revisionToken: expect.stringMatching(/^[0-9a-f]{32}$/) as unknown as string,
       },
       {
         productRef: expect.stringMatching(/^[0-9A-HJKMNP-TV-Z]{32}$/) as unknown as string,
@@ -306,6 +311,9 @@ describeDb("1.32 — SELLER-only private draft Product", () => {
         generalAvailabilityState: "pre-release",
         deliveryMode: "DIGITAL",
         recordStatus: "draft",
+        shippingPolicy: null,
+        completeness: { complete: false, missing: ["DESCRIPTION_MISSING"] },
+        revisionToken: expect.stringMatching(/^[0-9a-f]{32}$/) as unknown as string,
       },
     ]);
     expect(JSON.stringify(home)).not.toMatch(/mon:|an:node/);

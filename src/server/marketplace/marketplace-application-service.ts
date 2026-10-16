@@ -102,6 +102,7 @@ import { assertAccountMayAuthorProductIn } from "./product-authoring-service";
 import { DraftProductInput } from "../../contracts/product/product-source-record";
 import { buildDraftProductSourceRecord } from "../product/draft-product-builder";
 import { cryptoProductIdProvider, type ProductIdProvider } from "../product/product-ids";
+import { reviseProductAs, type RevisedProduct } from "./product-revision-service";
 
 /**
  * What a caller may state.
@@ -482,6 +483,22 @@ export async function createProductSourceRecordAs(
     record: attributed,
     authorize: (tx) => assertAccountMayAuthorProductIn(tx, actor.accountId, participantId),
   });
+}
+
+/**
+ * Revise one of the acting account's own Products (Phase 1.38).
+ *
+ * The account is the session's; the Product is named by its stable reference
+ * only; whether the account's participant may revise it is decided in
+ * `product-revision-service`, inside the revision transaction. This command
+ * supplies identity and decides nothing.
+ */
+export async function reviseOwnProductAs(
+  actor: ActingAccount,
+  request: { productRef: string; expectedRevision: string; input: unknown; now: string },
+  deps: { db?: ReturnType<typeof getPrisma> } = {},
+): Promise<RevisedProduct> {
+  return await reviseProductAs({ accountId: actor.accountId }, request, deps);
 }
 
 // — Refund initiation (Phase 1.19) —

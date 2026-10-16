@@ -17,6 +17,45 @@ import {
 } from "../../contracts/product/product-source-record";
 import { PersistedContractViolationError } from "./errors";
 
+/**
+ * The Seller shipping policy (Phase 1.38) as its three version-row columns hold
+ * it, reassembled into the contract's shape — or `undefined` when the row
+ * states no policy.
+ *
+ * Reassembled, not validated: the caller decides what a malformed combination
+ * means. `versionRowToDomain` refuses it as a contract violation; the
+ * completeness evaluator reports it as no valid policy. A FIXED charge is
+ * converted from BigInt only when it is a safe integer, so an out-of-range value
+ * stays visibly wrong instead of being rounded into a plausible one.
+ */
+export function shippingPolicyFromColumns(row: {
+  shippingPolicyMethod: string | null;
+  shippingFixedChargeMinorUnits: bigint | null;
+  shippingFixedChargeCurrency: string | null;
+}): Record<string, unknown> | undefined {
+  if (row.shippingPolicyMethod === null) return undefined;
+  if (row.shippingPolicyMethod !== "FIXED") {
+    return {
+      method: row.shippingPolicyMethod,
+      ...(row.shippingFixedChargeMinorUnits !== null
+        ? { fixedChargeMinorUnits: row.shippingFixedChargeMinorUnits }
+        : {}),
+      ...(row.shippingFixedChargeCurrency !== null
+        ? { fixedChargeCurrency: row.shippingFixedChargeCurrency }
+        : {}),
+    };
+  }
+  const minor = row.shippingFixedChargeMinorUnits;
+  return {
+    method: "FIXED",
+    fixedChargeMinorUnits:
+      minor !== null && minor <= BigInt(Number.MAX_SAFE_INTEGER) && minor >= 0n
+        ? Number(minor)
+        : minor,
+    fixedChargeCurrency: row.shippingFixedChargeCurrency,
+  };
+}
+
 /** ISO-8601 (ms, UTC) string for a persisted DateTime — exact round-trip for ms-precision UTC values. */
 function iso(d: Date): string {
   return d.toISOString();
@@ -79,6 +118,13 @@ export function versionRowToDomain(row: ProductSourceRecordVersionRow): ProductS
        absent: the contract makes it optional, and an explicit null would not
        parse. */
     ...(row.taxClassification !== null ? { taxClassification: row.taxClassification } : {}),
+    /* Phase 1.38 — beside taxClassification for the same reason: versioned with
+       the record, never projected. Omitted when the row states no policy; NULL
+       is "no decision", never FREE. */
+    ...(() => {
+      const shippingPolicy = shippingPolicyFromColumns(row);
+      return shippingPolicy !== undefined ? { shippingPolicy } : {};
+    })(),
     createdAt: iso(row.sourceCreatedAt),
     updatedAt: iso(row.sourceUpdatedAt),
     acquiredAt: iso(row.acquiredAt),
@@ -139,5 +185,12 @@ export function domainToVersionCreateInput(
     sourceUpdatedAt: new Date(record.updatedAt),
     recordStatus: record.recordStatus,
     taxClassification: record.taxClassification ?? null,
+    shippingPolicyMethod: record.shippingPolicy?.method ?? null,
+    shippingFixedChargeMinorUnits:
+      record.shippingPolicy?.method === "FIXED"
+        ? BigInt(record.shippingPolicy.fixedChargeMinorUnits)
+        : null,
+    shippingFixedChargeCurrency:
+      record.shippingPolicy?.method === "FIXED" ? record.shippingPolicy.fixedChargeCurrency : null,
   };
 }

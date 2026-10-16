@@ -23,6 +23,7 @@ import type {
   DeliveryMode,
   GeneralAvailabilityState,
 } from "../../src/contracts/product/product.capsule";
+import type { ProductCompletenessGap } from "../../src/contracts/product/product-completeness";
 
 export const EMAIL_VERIFIED_LABEL = "Verified";
 export const EMAIL_UNVERIFIED_LABEL = "Email not verified";
@@ -111,6 +112,46 @@ export const PROMOTABLE_LABELS = {
   true: "Promoters may feature it",
   false: "Not open to promoters",
 } as const;
+
+// — Product revision and completeness (Phase 1.38) —
+
+/**
+ * Content completeness, in the Seller's words. Deliberately not "Active",
+ * "Ready", or anything that sounds like the Product may be sold: completeness
+ * is about the Product's own description only.
+ */
+export const PRODUCT_COMPLETENESS_LABELS = {
+  complete: "Details complete",
+  incomplete: "Details incomplete",
+} as const;
+
+/** Each missing requirement, as a short phrase listed after "Missing:". */
+export const PRODUCT_COMPLETENESS_GAP_LABELS: Readonly<Record<ProductCompletenessGap, string>> = {
+  NAME_MISSING: "name",
+  DESCRIPTION_MISSING: "description",
+  DELIVERY_MODE_MISSING: "delivery type",
+  SHIPPING_POLICY_MISSING: "shipping charge",
+};
+
+export const PRODUCT_EDIT_LABEL = "Edit product";
+
+export const SHIPPING_POLICY_LABELS = {
+  FREE: "Free shipping",
+  FIXED: "Fixed shipping charge",
+} as const;
+
+/** Shown when a shipped Product has no shipping decision yet. Never "free". */
+export const SHIPPING_POLICY_NONE = "No shipping charge chosen";
+
+/** USD is the only currency this phase charges shipping in. */
+export const SHIPPING_CHARGE_CURRENCY = "USD";
+
+export const SHIPPING_CHARGE_HINT = "In US dollars, for example 4.50. For no charge, choose free shipping.";
+
+/** One line, e.g. "Missing: description, shipping charge". */
+export function formatCompletenessGaps(missing: readonly ProductCompletenessGap[]): string {
+  return `Missing: ${missing.map((gap) => PRODUCT_COMPLETENESS_GAP_LABELS[gap]).join(", ")}`;
+}
 
 // — Placements (Phase 1.34) —
 
