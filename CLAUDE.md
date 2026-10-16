@@ -86,17 +86,43 @@ against the Contract.** Surface the stale document for reconciliation instead.
 The active release path is:
 
 ```
-local development → local validation → commit / push main
-  → Production deployment → Production validation where appropriate
+local development → local validation → commit
+  → push main (= Production application deployment)
+  → Production validation where appropriate
 ```
 
 - **`main` is the development branch; Production is the deployment target.**
+- **Push to `main` = Production application deployment.** The Vercel Git
+  integration automatically deploys every push to `main` to Production. There
+  is no later, independent deployment step after the push: once a commit is on
+  `origin/main`, its code is serving Production.
 - **There is no staging environment or branch.** The retired `staging` branch
   was deleted locally and from origin; it was already fully contained in `main`.
-  Do not recreate it, and do not mention staging in routine prompts or reports,
-  unless a task explicitly revives it.
-- Migrations reach Production through the normal Production deployment /
-  migration path; no staging deployment precedes them.
+  Do not recreate it — including as a way to solve migration ordering — and do
+  not mention staging in routine prompts or reports, unless a task explicitly
+  revives it.
+
+### Migration-bearing releases
+
+Any commit whose application code requires a new Production database migration
+must **not** be pushed to `main` until that migration has been deliberately
+coordinated. The order is:
+
+1. Verify the migration is additive/safe and validated locally.
+2. Apply it to Production through the approved Production migration
+   credential/path — **before** Production is exposed to code that requires it.
+3. Verify the Production schema.
+4. Only then push (or promote) the corresponding application commit to `main`.
+5. Verify Production after the deployment.
+
+Pushing first deploys code against a schema that does not yet exist. If the
+deployment tooling later supports an explicit deployment hold or manual
+Production promotion, this rule may be revised.
+
+### Non-migration changes
+
+Commits with no Production schema dependency may be pushed to `main` normally
+under the current auto-deploy model.
 
 ## Validation commands
 

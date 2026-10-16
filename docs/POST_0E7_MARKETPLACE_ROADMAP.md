@@ -151,9 +151,9 @@ labels sort in.
 | 52 | **1.34** | **Product References, Placement Guards, and Seller-Direct Draft Listing Self-Service** | **complete** — `2f8da70`, `eaef4e8` |
 | 53 | **1.35** | **Listing References and Draft Withdrawal** | **complete** — `b461c93` |
 | 54 | **1.36** | **Draft Listing Retail Pricing** | **complete** — `e717985`; accepted in Production |
-| 55 | **1.37** | **Declared First / Last Name Identity Primitive** — nullable `Account.firstName` / `lastName` (a declaration, never a verification; Contract §4), required on public sign-up; `Account.name` stays a display value; no readiness enforcement yet | **complete** — `a702131` |
+| 55 | **1.37** | **Declared First / Last Name Identity Primitive** — nullable `Account.firstName` / `lastName` (a declaration, never a verification; Contract §4), required on public sign-up; `Account.name` stays a display value; no readiness enforcement yet | **complete** — `a702131`; accepted in Production |
 | — | *governance* | **Documentation Governance 2D — Product Completeness Profile** — [`PRODUCT_COMPLETENESS_PROFILE.md`](PRODUCT_COMPLETENESS_PROFILE.md) (`PRODUCT_COMPLETENESS_V1`); closes the completeness governance blocker for `1.38` | documentation only |
-| 56 | **1.38** | **Product Revision and Completeness Enablement** — Seller Product revision and the Seller shipping-policy primitive, so Sellers can satisfy `PRODUCT_COMPLETENESS_V1` | **complete** — `af2c70c` |
+| 56 | **1.38** | **Product Revision and Completeness Enablement** — Seller Product revision and the Seller shipping-policy primitive, so Sellers can satisfy `PRODUCT_COMPLETENESS_V1` | **complete** — `af2c70c`; accepted in Production at `80b5d63`, with migrations through `20261016000000_add_product_shipping_policy` applied |
 | — | *to follow* | **Explicit Product Lifecycle and Activation** (Contract §9.1–§9.2) — after Sellers can satisfy `PRODUCT_COMPLETENESS_V1`; no phase number assigned | **not started** |
 
 ### Status through `1.36` (Documentation Governance 2B)
