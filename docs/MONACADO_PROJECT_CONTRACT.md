@@ -208,6 +208,13 @@ under its creator's authority.
 - Storefront placement (§13);
 - transaction economics (§17–§19).
 
+For a Seller-shipped Product, Product semantic truth **may own the Seller's
+shipping policy** — a Seller-authored fulfillment fact such as free or fixed
+shipping. It does **not** own the **transaction-specific shipping amount**, which
+is transaction economics derived at checkout and frozen on the Order /
+transaction snapshot. Detail:
+[`PRODUCT_COMPLETENESS_PROFILE.md`](PRODUCT_COMPLETENESS_PROFILE.md) §5.1.
+
 **Seller KYC and underwriting are gates on activation, not Product content.**
 
 #### §9.1 Product lifecycle
@@ -244,7 +251,10 @@ facts** against the applicable **governed, versioned Product-completeness
 requirements**. It is not a Seller-set boolean or a manual declaration, and a
 Product **cannot become `COMPLETE` merely because a user requests it** while
 required Product facts are missing. The exact required elements may be defined in
-governing Product detail and may evolve through governed, versioned rules.
+governing Product detail and may evolve through governed, versioned rules. They
+are defined in [`PRODUCT_COMPLETENESS_PROFILE.md`](PRODUCT_COMPLETENESS_PROFILE.md),
+incorporated here as governing detail for Product completeness (initial profile
+`PRODUCT_COMPLETENESS_V1`).
 
 **Lifecycle transitions driven by changed facts:**
 

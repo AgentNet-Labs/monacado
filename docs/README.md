@@ -26,7 +26,8 @@ rules.
    [policy, acceptance, and support contacts](MARKETPLACE_POLICY_ACCEPTANCE_AND_SUPPORT_CONTACTS.md) ·
    [pre-live commerce controls](PRE_LIVE_COMMERCE_CONTROLS.md) ·
    [tax integration](PRODUCTION_TAX_INTEGRATION.md) ·
-   [refund governance and receipts](MARKETPLACE_REFUND_GOVERNANCE_AND_RECEIPTS.md)
+   [refund governance and receipts](MARKETPLACE_REFUND_GOVERNANCE_AND_RECEIPTS.md) ·
+   [Product completeness profile](PRODUCT_COMPLETENESS_PROFILE.md)
 5. **Implementation specs** — phase specs for capsules, persistence, publication,
    checkout, notifications, tax, and refunds. Listed in
    [`DOCUMENT_AUTHORITY.md` §4](DOCUMENT_AUTHORITY.md#4-implementation-spec).

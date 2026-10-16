@@ -58,6 +58,7 @@ Contract are listed; the Contract prevails on each.
 | [`PRE_LIVE_COMMERCE_CONTROLS.md`](PRE_LIVE_COMMERCE_CONTROLS.md) | Live-commerce gates, transaction risk gate, payout hold, digital-delivery policy | — |
 | [`PRODUCTION_TAX_INTEGRATION.md`](PRODUCTION_TAX_INTEGRATION.md) | Tax classification, ship-to sourcing, exemption refusal, tax readiness posture | — |
 | [`MARKETPLACE_REFUND_GOVERNANCE_AND_RECEIPTS.md`](MARKETPLACE_REFUND_GOVERNANCE_AND_RECEIPTS.md) | Refund governance rules and the receipt contract | Marketplace Policy 1.1.0 described here is an intermediate draft (Contract §28) |
+| [`PRODUCT_COMPLETENESS_PROFILE.md`](PRODUCT_COMPLETENESS_PROFILE.md) | Product completeness — the versioned profiles of required Seller-authoritative facts (initial `PRODUCT_COMPLETENESS_V1`) from which Contract §9.1 completeness is derived | — (installed by Documentation Governance 2D). Implementation notes: no Seller shipping-policy primitive and no Seller Product-revision path exist yet; `recordStatus = authoring-complete` ([`PRODUCT_SOURCE_RECORD_MAPPING.md`](PRODUCT_SOURCE_RECORD_MAPPING.md)) is **not** a completeness predicate; `generalAvailabilityState` is not a completeness requirement and its use as a Listing blocking reason ([`LISTING_SOURCE_MODEL.md`](LISTING_SOURCE_MODEL.md) §13) awaits reconciliation with the Product lifecycle model |
 
 ## 4. IMPLEMENTATION SPEC
 
