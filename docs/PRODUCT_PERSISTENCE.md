@@ -311,6 +311,11 @@ Implementation record; the governing rules are Contract §9.1–§9.2.
   immediately before (only if one was). Lifting is a conditional state change
   with its own actor, instant, and reason; the lifecycle is then re-derived, so
   `ACTIVE` returns only where it stood before and every fact held throughout.
+  *Operational (deferred):* with no deployed operator path, running the
+  service remotely can exceed Prisma's default 5-second interactive-transaction
+  timeout over Production latency (`P2028`, rolled back cleanly). Sanctioned
+  tooling must set an appropriate timeout until a deployed internal path exists
+  (roadmap: Product suspension operator path).
 - **`product:activate`** is a restrictable marketplace capability, enforced by
   `readProductActivationStanding`.
 - **Tax classification is Monacado's, not the Seller's.** The Seller cannot set
