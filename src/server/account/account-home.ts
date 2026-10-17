@@ -58,6 +58,13 @@ import type {
   ProductLifecycleState,
 } from "../../contracts/product/product-lifecycle";
 import { readProductLifecycleIn } from "../product/product-lifecycle-service";
+import {
+  productResaleEffectiveness,
+  resaleAvailabilityOptions,
+  type ProductResaleAvailability,
+  type ResaleAvailabilityRefusal,
+} from "../../contracts/product/product-resale-availability";
+import { readProductResaleAvailabilitiesIn } from "../product/product-resale-availability-service";
 import { readActingAccountRows } from "../marketplace/acting-subject-service";
 import { toMarketplaceSubject } from "../marketplace/participant-mapper";
 import { getPrisma } from "../db/client";
@@ -170,7 +177,9 @@ export interface AccountHomeProduct {
   productRef: string;
   name: string;
   description: string | null;
-  promotable: boolean;
+  /* The legacy Product `promotable` fact is deliberately absent (Phase 1.40):
+     it is retired as a governing requirement (Contract §9.3) and the page must
+     not present it as resale permission. `resaleAvailability` below governs. */
   generalAvailabilityState: GeneralAvailabilityState;
   deliveryMode: DeliveryMode | null;
   recordStatus: RecordStatus;
@@ -208,6 +217,21 @@ export interface AccountHomeProduct {
    * activation is permissible (or the Product is already `ACTIVE`).
    */
   activationBlockers: ProductActivationBlocker[];
+  /**
+   * The Seller's recorded resale availability (Phase 1.40, Contract §9.3) — a
+   * separate axis from `lifecycle`, preserved across lifecycle changes.
+   */
+  resaleAvailability: ProductResaleAvailability;
+  /**
+   * Lifecycle `ACTIVE` AND resale `AVAILABLE`. Necessary for promoted commerce,
+   * never sufficient — nothing here says the Product is for sale.
+   */
+  resaleEffective: boolean;
+  /**
+   * The governed resale-availability changes from the current state, each with
+   * the reason the lifecycle holds it back now, if any. The route decides again.
+   */
+  resaleOptions: Array<{ target: ProductResaleAvailability; refusal: ResaleAvailabilityRefusal | null }>;
 }
 
 export interface AccountHome {
@@ -596,7 +620,6 @@ async function readAuthoredProducts(
     select: {
       sourceRecordId: true,
       authorityCreatorParticipantId: true,
-      factPromotable: true,
       factGeneralAvailabilityState: true,
       recordStatus: true,
       /* name, description, delivery mode, and the shipping policy — exactly the
@@ -613,18 +636,23 @@ async function readAuthoredProducts(
   for (const p of products) {
     lifecycles.set(p.internalProductId, await readProductLifecycleIn(db, p.internalProductId, participantFacts));
   }
+  /* Phase 1.40 — the Seller's resale choice, its own axis, read in one query. */
+  const resale = await readProductResaleAvailabilitiesIn(
+    db,
+    products.map((p) => p.internalProductId),
+  );
 
   return products.flatMap((p) => {
     const v = current.get(p.sourceRecordId);
     if (v === undefined || v.authorityCreatorParticipantId !== participantId) return [];
     const lifecycle = lifecycles.get(p.internalProductId)?.lifecycle;
     if (lifecycle === undefined) return [];
+    const resaleAvailability = resale.get(p.internalProductId) ?? "NOT_OFFERED";
     return [
       {
         productRef: p.productRef,
         name: v.factName,
         description: v.factDescription,
-        promotable: v.factPromotable,
         generalAvailabilityState: v.factGeneralAvailabilityState as GeneralAvailabilityState,
         deliveryMode: v.factDeliveryMode as DeliveryMode | null,
         recordStatus: v.recordStatus as RecordStatus,
@@ -637,6 +665,12 @@ async function readAuthoredProducts(
         lifecycle: lifecycle.lifecycle,
         activationBlockers:
           lifecycle.lifecycle === "ACTIVE" ? [] : [...lifecycle.readiness.blockers],
+        resaleAvailability,
+        resaleEffective: productResaleEffectiveness({
+          lifecycle: lifecycle.lifecycle,
+          resaleAvailability,
+        }).effective,
+        resaleOptions: resaleAvailabilityOptions(resaleAvailability, lifecycle.lifecycle),
       },
     ];
   });

@@ -39,3 +39,15 @@ export const cryptoProductLifecycleIdProvider: ProductLifecycleIdProvider = {
   nextProductSuspensionId: () => `mon:pdsus:${randomOpaqueBody()}`,
   nextProductTaxClassificationId: () => `mon:pdtax:${randomOpaqueBody()}`,
 };
+
+/**
+ * Seller resale-availability acts (Phase 1.40). A separate provider, so the
+ * lifecycle provider's implementers are not asked for a method they never use.
+ */
+export interface ProductResaleAvailabilityIdProvider {
+  nextProductResaleAvailabilityActId(): string;
+}
+
+export const cryptoProductResaleAvailabilityIdProvider: ProductResaleAvailabilityIdProvider = {
+  nextProductResaleAvailabilityActId: () => `mon:pdrsa:${randomOpaqueBody()}`,
+};

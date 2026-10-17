@@ -38,6 +38,8 @@ export type ProductRepositoryErrorCode =
   | "TAX_CLASSIFICATION_SELF_ACTION"
   | "TAX_CLASSIFICATION_CONTRADICTS_DELIVERY"
   | "TAX_CLASSIFICATION_UNCHANGED"
+  | "RESALE_AVAILABILITY_REQUIRES_ACTIVE_PRODUCT"
+  | "RESALE_AVAILABILITY_TRANSITION_NOT_GOVERNED"
   | "DATABASE_ERROR";
 
 export class ProductRepositoryError extends Error {
@@ -292,5 +294,34 @@ export class ProductTaxClassificationUnchangedError extends ProductRepositoryErr
   constructor() {
     super("TAX_CLASSIFICATION_UNCHANGED", "The Product already has this tax classification");
     this.name = "ProductTaxClassificationUnchangedError";
+  }
+}
+
+/**
+ * `AVAILABLE` was requested while the Product's effective lifecycle is not
+ * `ACTIVE` (Phase 1.40, Contract §9.3). Nothing is written; a preserved
+ * `AVAILABLE` is never affected by this refusal.
+ */
+export class ProductResaleAvailabilityRequiresActiveError extends ProductRepositoryError {
+  constructor() {
+    super(
+      "RESALE_AVAILABILITY_REQUIRES_ACTIVE_PRODUCT",
+      "Resale availability can be set to AVAILABLE only while the Product is active",
+    );
+    this.name = "ProductResaleAvailabilityRequiresActiveError";
+  }
+}
+
+/**
+ * The requested resale-availability transition is not one governing policy
+ * defines (Phase 1.40) — e.g. anything out of `WITHDRAWN`. Nothing is written.
+ */
+export class ProductResaleAvailabilityTransitionNotGovernedError extends ProductRepositoryError {
+  constructor() {
+    super(
+      "RESALE_AVAILABILITY_TRANSITION_NOT_GOVERNED",
+      "This resale-availability change is not a governed transition",
+    );
+    this.name = "ProductResaleAvailabilityTransitionNotGovernedError";
   }
 }

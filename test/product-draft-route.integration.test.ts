@@ -304,7 +304,8 @@ describeDb("1.32 — SELLER-only private draft Product", () => {
         productRef: expect.stringMatching(/^[0-9A-HJKMNP-TV-Z]{32}$/) as unknown as string,
         name: "Hand-thrown mug",
         description: "Stoneware, 350 ml.",
-        promotable: true,
+        /* Phase 1.40 — the legacy `promotable` fact (drafted true) is not on the
+           page, and grants nothing: resale availability is its own default. */
         generalAvailabilityState: "available",
         deliveryMode: "PHYSICAL",
         recordStatus: "draft",
@@ -317,12 +318,14 @@ describeDb("1.32 — SELLER-only private draft Product", () => {
            activation, and every gate this unready draft Seller has yet to meet. */
         lifecycle: "INCOMPLETE",
         activationBlockers: UNREADY_DRAFT_SELLER_BLOCKERS,
+        resaleAvailability: "NOT_OFFERED",
+        resaleEffective: false,
+        resaleOptions: [{ target: "AVAILABLE", refusal: "PRODUCT_NOT_ACTIVE" }],
       },
       {
         productRef: expect.stringMatching(/^[0-9A-HJKMNP-TV-Z]{32}$/) as unknown as string,
         name: "E-book",
         description: null,
-        promotable: false,
         generalAvailabilityState: "pre-release",
         deliveryMode: "DIGITAL",
         recordStatus: "draft",
@@ -331,6 +334,9 @@ describeDb("1.32 — SELLER-only private draft Product", () => {
         revisionToken: expect.stringMatching(/^[0-9a-f]{32}$/) as unknown as string,
         lifecycle: "INCOMPLETE",
         activationBlockers: UNREADY_DRAFT_SELLER_BLOCKERS,
+        resaleAvailability: "NOT_OFFERED",
+        resaleEffective: false,
+        resaleOptions: [{ target: "AVAILABLE", refusal: "PRODUCT_NOT_ACTIVE" }],
       },
     ]);
     expect(JSON.stringify(home)).not.toMatch(/mon:|an:node/);

@@ -340,6 +340,61 @@ Implementation record; the governing rules are Contract §9.1–§9.2.
   tax-ready in between lapses the activation as any readiness loss does. A new
   version also supersedes the Seller's page revision token.
 
+## Seller-controlled resale availability (Phase 1.40)
+
+Implementation record; the governing rules are Contract §9.3 (and §16.2 /
+§16.4 for pause and withdrawal).
+
+- **A separate axis from the lifecycle.** `resaleAvailability` is the Seller's
+  Product-wide switch for third-party resale: `NOT_OFFERED` (default),
+  `AVAILABLE`, `PAUSED`, `WITHDRAWN`
+  (`contracts/product/product-resale-availability.ts`). It is not derived from
+  the lifecycle, the lifecycle is not derived from it, and no lifecycle change
+  — to `COMPLETE`, `INCOMPLETE`, `SUSPENDED`, or back to `ACTIVE` — writes or
+  rewrites it. Seller `PAUSED` / `WITHDRAWN` are never recorded as, or used as,
+  Monacado's `SUSPENDED`.
+- **Seller-owned.** Only the participant holding creator authority over the
+  Product's current version may change it
+  (`server/marketplace/product-resale-availability-service.ts`). No internal
+  grant substitutes; a foreign or unknown Product is the same 404.
+- **`AVAILABLE` requires `ACTIVE` when selected.** Setting `AVAILABLE` (from
+  `NOT_OFFERED`, or resuming from `PAUSED`) is refused unless the effective
+  lifecycle, derived inside the write transaction, is `ACTIVE`. A preserved
+  `AVAILABLE` is never reset when the lifecycle later moves; it is simply
+  **ineffective** until the Product is `ACTIVE` again, and it **never overrides
+  the lifecycle**. `PAUSED` and `WITHDRAWN` may be chosen in any lifecycle.
+- **Governed transitions only:** `NOT_OFFERED → AVAILABLE`;
+  `AVAILABLE → PAUSED | WITHDRAWN`; `PAUSED → AVAILABLE | WITHDRAWN`. Refused as
+  not governed: anything out of `WITHDRAWN` (re-opening is undefined by §9.3),
+  `NOT_OFFERED → PAUSED | WITHDRAWN`, and anything back to `NOT_OFFERED`.
+  Requesting the current state is a no-op that writes nothing.
+- **`ProductResaleAvailabilityAct`** — not on the immutable Product source
+  version and never published. One row per change, recording the new and
+  previous state, the act it supersedes (`supersedesActId`, unique — one linear
+  history), the participant and account, the instant, and the lifecycle at the
+  act. The unique `currentForProductId` marks the current row; no row means
+  `NOT_OFFERED`, so the migration needs no backfill. History rows are never
+  rewritten; only the current marker moves.
+- **Route.** `POST /api/products/{productRef}/resale-availability`, body
+  `{ "resaleAvailability" }` only (`product-resale-availability-route-handler.ts`).
+  No revision token: the state belongs to no source version, and the decision is
+  made against the current state inside one transaction with the Product row
+  locked (`SELECT … FOR UPDATE`, the lock activation, suspension, and revision
+  also take), so duplicates are no-ops and conflicting requests serialise.
+- **Resale-effectiveness, derived.** `productResaleEffectiveness` /
+  `readProductResaleEffectivenessIn` answer *lifecycle `ACTIVE` and resale
+  `AVAILABLE`* — necessary for promoted commerce (§16.3 items 1–2), never
+  sufficient; Offer, Promotion Authorization, and Promoter readiness are later
+  gates. No commerce boolean is stored. Nothing consumes it yet: the current
+  promoted Listing path is still ungated (Contract §34).
+- **Legacy `promotable` is not governing authority.** No resale logic reads
+  `factPromotable` or `generalAvailabilityState`. The Seller page no longer
+  shows or asks for `promotable` (the draft form sends `false`); the column,
+  the draft-route field, and the published capsule field remain as
+  compatibility storage (Contract §34).
+- Writes no source version, lifecycle, Storefront, Listing, Offer, Order,
+  payment, payout, Node, publication, or outbox state.
+
 ## Related: Product Node
 
 The durable AgentNet **Product Node** (opaque Registrar-issued identity + ANS

@@ -66,7 +66,8 @@ import {
   PRODUCT_NOT_LISTED,
   formatActivationBlocker,
   PRODUCT_INTRO,
-  PROMOTABLE_LABELS,
+  RESALE_AVAILABILITY_HINT,
+  formatResaleAvailability,
   PLACEMENT_DRAFT_STATUS,
   PLACEMENT_NEEDS_PRODUCT,
   PLACEMENT_NEEDS_STOREFRONT,
@@ -85,6 +86,7 @@ import { PlacementWithdrawButton } from "./placement-withdraw-button";
 import { ProductForm } from "./product-form";
 import { ProductRevisionForm } from "./product-revision-form";
 import { ProductActivateButton } from "./product-activate-button";
+import { ProductResaleAvailabilityControls } from "./product-resale-availability-controls";
 import { StorefrontForm } from "./storefront-form";
 import { StorefrontPresentationForm } from "./storefront-presentation-form";
 import { SignOutButton } from "./sign-out-button";
@@ -234,7 +236,6 @@ export default async function AccountPage() {
                                 )}`
                           : null,
                         AVAILABILITY_LABELS[product.generalAvailabilityState],
-                        PROMOTABLE_LABELS[product.promotable ? "true" : "false"],
                       ]
                         .filter((part) => part !== null)
                         .join(" · ")}
@@ -262,6 +263,22 @@ export default async function AccountPage() {
                     ) : (product.lifecycle === "COMPLETE" || product.lifecycle === "SUSPENDED") &&
                       product.activationBlockers.length > 0 ? (
                       <p className="auth-hint">{formatActivationBlocker(product.activationBlockers)}</p>
+                    ) : null}
+                    {/* Phase 1.40 — the Seller's resale choice: its own line, never
+                        merged into the lifecycle badge, and never shown as resale
+                        when the Product is not active. */}
+                    <p className="auth-hint">
+                      {formatResaleAvailability(product.resaleAvailability, product.resaleEffective)}
+                    </p>
+                    {home.canCreateProduct ? (
+                      <>
+                        <p className="auth-hint">{RESALE_AVAILABILITY_HINT}</p>
+                        <ProductResaleAvailabilityControls
+                          productRef={product.productRef}
+                          current={product.resaleAvailability}
+                          options={product.resaleOptions}
+                        />
+                      </>
                     ) : null}
                     {home.canCreateProduct ? (
                       <ProductRevisionForm

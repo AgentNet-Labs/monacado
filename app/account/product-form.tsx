@@ -3,8 +3,10 @@
 /**
  * Draft Product control (Phase 1.32).
  *
- * The creator's facts and nothing commercial: name, description, delivery,
- * availability, and whether promoters may feature it. Delivery has no default —
+ * The creator's facts and nothing commercial: name, description, delivery, and
+ * availability. Since Phase 1.40 there is no "promoters may feature it" box: the
+ * legacy `promotable` fact is retired, and resale is the Seller's separate
+ * resale-availability control on an active Product. Delivery has no default —
  * whether a buyer is asked for an address must be the creator's statement, never
  * a guess. On success the page is refreshed so the server renders the new draft.
  */
@@ -27,7 +29,6 @@ export function ProductForm() {
   const [description, setDescription] = useState("");
   const [deliveryMode, setDeliveryMode] = useState<DeliveryMode | null>(null);
   const [availability, setAvailability] = useState<GeneralAvailabilityState>("available");
-  const [promotable, setPromotable] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
 
@@ -40,7 +41,6 @@ export function ProductForm() {
     const result = await submitDraftProduct({
       name,
       description,
-      promotable,
       generalAvailabilityState: availability,
       deliveryMode,
     });
@@ -50,7 +50,6 @@ export function ProductForm() {
       setDescription("");
       setDeliveryMode(null);
       setAvailability("available");
-      setPromotable(false);
     } else {
       setError(result.message);
     }
@@ -119,16 +118,6 @@ export function ProductForm() {
           ))}
         </select>
       </div>
-      <label className="account-checkbox account-product-promotable">
-        <input
-          type="checkbox"
-          name="promotable"
-          checked={promotable}
-          onChange={(e) => setPromotable(e.currentTarget.checked)}
-          disabled={pending}
-        />
-        Promoters may feature this product
-      </label>
       <button className="auth-button" type="submit" disabled={pending}>
         {pending ? "Adding…" : "Add draft product"}
       </button>

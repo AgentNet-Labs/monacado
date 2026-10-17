@@ -94,10 +94,12 @@ model Product {
   // — Lifecycle authority (Phase 1.39). RESTRICT on the far side: an
   // activation is the Seller's explicit act and a suspension is Monacado's
   // governed decision, and neither history may be erased by deleting the Product.
-  activations           ProductActivation[]
-  suspensions           ProductSuspension[]
+  activations            ProductActivation[]
+  suspensions            ProductSuspension[]
   /// Monacado tax-classification acts (Phase 1.39) — audit evidence, RESTRICT.
-  taxClassificationActs ProductTaxClassificationAct[]
+  taxClassificationActs  ProductTaxClassificationAct[]
+  /// Seller resale-availability acts (Phase 1.40) — the Seller's own history, RESTRICT.
+  resaleAvailabilityActs ProductResaleAvailabilityAct[]
 
   @@index([sourceRecordId])
 }
@@ -234,6 +236,56 @@ model ProductTaxClassificationAct {
 
   @@unique([internalProductId, sourceRecordVersion])
   @@index([internalProductId, classifiedAt])
+}
+
+/// One Seller resale-availability act on a Product (Phase 1.40, Contract §9.3).
+///
+/// Resale availability is a Seller-controlled, Product-wide axis SEPARATE from
+/// the lifecycle: nothing here is derived from, or rewrites, `ProductActivation`
+/// or `ProductSuspension`, and no lifecycle change ever writes a row here. It is
+/// not on the immutable Product source version either — it is not a descriptive
+/// fact and is never published.
+///
+/// The current state is the row holding `currentForProductId`; a Product with no
+/// row is `NOT_OFFERED`, the default, so no row is written for it. Every change
+/// is a NEW row naming the act it supersedes, so the history is the chain and is
+/// never rewritten — only the current marker moves. No commerce boolean is
+/// stored: resale-effectiveness is derived on read with the lifecycle.
+model ProductResaleAvailabilityAct {
+  /// Opaque identity (mon:pdrsa:<opaque>). Never exposed to a caller.
+  id String @id @db.VarChar(191)
+
+  internalProductId String @db.VarChar(191)
+
+  /// The state this act set: AVAILABLE | PAUSED | WITHDRAWN.
+  resaleAvailability String @db.VarChar(16)
+
+  /// The state it replaced — NOT_OFFERED for a Product's first act.
+  previousResaleAvailability String @db.VarChar(16)
+
+  /// The act this one superseded; NULL for the first. Unique, so no two acts
+  /// can claim to follow the same one — one linear history per Product.
+  supersedesActId String? @unique @db.VarChar(191)
+
+  /// The SELLER participant whose Product authority the act was made under, and
+  /// the account that acted.
+  participantId    String   @db.VarChar(191)
+  actedByAccountId String   @db.VarChar(191)
+  actedAt          DateTime @db.DateTime(3)
+
+  /// The effective lifecycle when the act was made — audit evidence that
+  /// AVAILABLE was set only while ACTIVE. Never read as current lifecycle.
+  lifecycleAtAct String @db.VarChar(16)
+
+  /// Unique while current — at most one current act per Product, as a database
+  /// guarantee. Released (NULL) when a later act supersedes this one.
+  currentForProductId String? @unique @db.VarChar(191)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+
+  product Product @relation(fields: [internalProductId], references: [internalProductId], onDelete: Restrict)
+
+  @@index([internalProductId, actedAt])
 }
 
 /// Durable AgentNet Node associated with a Monacado Product (Phase 0E.1).

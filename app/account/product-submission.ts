@@ -1,10 +1,15 @@
 /**
  * The browser half of drafting a Product (Phase 1.32) — pure, `fetch` injected.
  *
- * Sends exactly the facts the person entered — name, description, promotable,
+ * Sends exactly the facts the person entered — name, description,
  * availability, delivery — and nothing else: no account, participant, creator,
  * identifier, status, price, or any other Offer term. A blank description is
  * sent as `null`. A refusal reaches the person as one bounded sentence.
+ *
+ * `promotable` is always sent `false` (Phase 1.40). The draft contract still
+ * requires the legacy fact, but it is retired as a governing requirement
+ * (Contract §9.3) and no longer asked of the person: `false` claims nothing,
+ * and resale is governed by the separate resale-availability state.
  */
 
 import type {
@@ -25,7 +30,6 @@ export type ProductOutcome = { outcome: "created" } | { outcome: "failed"; messa
 export interface ProductDraftFields {
   name: string;
   description: string;
-  promotable: boolean;
   generalAvailabilityState: GeneralAvailabilityState;
   deliveryMode: DeliveryMode | null;
 }
@@ -46,7 +50,7 @@ export async function submitDraftProduct(
       body: JSON.stringify({
         name: fields.name,
         description: fields.description.trim() === "" ? null : fields.description,
-        promotable: fields.promotable,
+        promotable: false,
         generalAvailabilityState: fields.generalAvailabilityState,
         deliveryMode: fields.deliveryMode,
       }),

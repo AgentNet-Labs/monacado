@@ -30,7 +30,7 @@
  *
  * Requires no Storefront, Listing, or Offer, and writes none. Writes no source
  * version, no Order, payment, payout, Node, capsule, publication, or outbox
- * state. `resaleAvailability` does not exist yet and is not touched.
+ * state. `resaleAvailability` (Phase 1.40) is a separate axis and is not touched.
  */
 
 import "../server-only";

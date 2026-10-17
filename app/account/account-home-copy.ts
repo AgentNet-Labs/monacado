@@ -28,6 +28,7 @@ import type {
   ProductActivationBlocker,
   ProductLifecycleState,
 } from "../../src/contracts/product/product-lifecycle";
+import type { ProductResaleAvailability } from "../../src/contracts/product/product-resale-availability";
 
 export const EMAIL_VERIFIED_LABEL = "Verified";
 export const EMAIL_UNVERIFIED_LABEL = "Email not verified";
@@ -109,11 +110,6 @@ export const AVAILABILITY_LABELS: Readonly<Record<GeneralAvailabilityState, stri
   unavailable: "Unavailable",
   discontinued: "Discontinued",
 };
-
-export const PROMOTABLE_LABELS = {
-  true: "Promoters may feature it",
-  false: "Not open to promoters",
-} as const;
 
 // — Product revision and completeness (Phase 1.38) —
 
@@ -199,6 +195,59 @@ export function formatActivationBlocker(blockers: readonly ProductActivationBloc
   const first = blockers[0];
   return first === undefined ? null : `Can't activate yet: ${PRODUCT_ACTIVATION_BLOCKER_LABELS[first]}`;
 }
+
+// — Resale availability (Phase 1.40) —
+
+/**
+ * The Seller's recorded resale choice, stated as a choice — a separate line from
+ * the lifecycle badge, never merged into it. `AVAILABLE` on a Product that is
+ * not active is shown as a preference that is not in effect, never as resale.
+ */
+export function formatResaleAvailability(
+  resaleAvailability: ProductResaleAvailability,
+  resaleEffective: boolean,
+): string {
+  switch (resaleAvailability) {
+    case "NOT_OFFERED":
+      return "Not offered for resale";
+    case "AVAILABLE":
+      return resaleEffective
+        ? "Resale available"
+        : "Resale preference: Available, currently ineffective because the product is not active";
+    case "PAUSED":
+      return "Resale paused";
+    case "WITHDRAWN":
+      return "Withdrawn from resale";
+  }
+}
+
+/** What resale availability is, and what it is not. */
+export const RESALE_AVAILABILITY_HINT =
+  "Resale availability is your product-wide permission for third-party resale. It does not create an offer, approve any promoter, or list anything for sale.";
+
+/** The button for each governed target, worded from where the Product stands. */
+export function resaleActionLabel(
+  current: ProductResaleAvailability,
+  target: ProductResaleAvailability,
+): string {
+  if (target === "AVAILABLE") return current === "PAUSED" ? "Resume resale" : "Make available for resale";
+  if (target === "PAUSED") return "Pause resale";
+  if (target === "WITHDRAWN") return "Withdraw from resale";
+  return "Not offered for resale";
+}
+
+/** Why `AVAILABLE` cannot be newly chosen while the Product is not active. */
+export const RESALE_REQUIRES_ACTIVE =
+  "Resale can be made available only while the product is active.";
+
+/** Shown beside the withdrawal confirmation — it has no way back here. */
+export const RESALE_WITHDRAW_WARNING =
+  "Withdrawing ends resale availability for this product. Reopening a withdrawn product is not available.";
+
+export const RESALE_WITHDRAW_CONFIRM = "Confirm withdrawal";
+
+/** Shown once withdrawn, where no control remains. */
+export const RESALE_WITHDRAWN_NOTE = "Reopening a withdrawn product is not available.";
 
 // — Placements (Phase 1.34) —
 

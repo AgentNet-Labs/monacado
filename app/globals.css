@@ -482,11 +482,6 @@ main p {
   outline-offset: 2px;
 }
 
-.account-product-promotable {
-  display: flex;
-  margin: 0 0 1rem;
-}
-
 /* Phase 1.34 — seller-direct placements on /account. Same tokens, same rhythm
    as the Storefront and Product lists; no new visual language for a section
    that is the same kind of list. */

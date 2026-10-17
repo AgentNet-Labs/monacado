@@ -105,6 +105,13 @@ const {
   submitDraftProduct,
 } = await import("../app/account/product-submission");
 
+/* Phase 1.40 — the default resale state of a Product that is not ACTIVE. */
+const NOT_OFFERED_RESALE = {
+  resaleAvailability: "NOT_OFFERED" as const,
+  resaleEffective: false,
+  resaleOptions: [{ target: "AVAILABLE" as const, refusal: "PRODUCT_NOT_ACTIVE" as const }],
+};
+
 const DRAFT_SELLER: AccountHome["marketplace"] = {
   status: "DRAFT",
   roles: [{ role: "SELLER", status: "DRAFT" }],
@@ -331,7 +338,7 @@ describe("/account presentation", () => {
 
     expect(html).toContain('<h2 id="account-product-heading">Products</h2>');
     expect(html).toContain("Drafts are not listed and not for sale.");
-    for (const field of ['name="name"', 'name="description"', 'name="deliveryMode"', 'name="generalAvailabilityState"', 'name="promotable"']) {
+    for (const field of ['name="name"', 'name="description"', 'name="deliveryMode"', 'name="generalAvailabilityState"']) {
       expect(html).toContain(field);
     }
     expect(html).toContain('value="DIGITAL"');
@@ -353,7 +360,7 @@ describe("/account presentation", () => {
             productRef: "0123456789ABCDEFGHJKMNPQRSTVWXYZ",
             name: "Hand-thrown mug",
             description: "Stoneware, 350 ml.",
-            promotable: true,
+            ...NOT_OFFERED_RESALE,
             generalAvailabilityState: "available",
             deliveryMode: "PHYSICAL",
             recordStatus: "draft",
@@ -370,7 +377,7 @@ describe("/account presentation", () => {
 
     expect(text).toContain("Hand-thrown mug — Incomplete · Not listed for sale");
     expect(text).toContain(
-      "Physical (shipped) · No shipping charge chosen · Available · Promoters may feature it",
+      "Physical (shipped) · No shipping charge chosen · Available",
     );
     expect(text).toContain("Stoneware, 350 ml.");
     expect(html).not.toContain("mon:");
@@ -380,7 +387,7 @@ describe("/account presentation", () => {
     const base = {
       productRef: "0123456789ABCDEFGHJKMNPQRSTVWXYZ",
       description: "Stoneware, 350 ml.",
-      promotable: false,
+      ...NOT_OFFERED_RESALE,
       generalAvailabilityState: "available" as const,
       deliveryMode: "PHYSICAL" as const,
       recordStatus: "draft" as const,
@@ -445,7 +452,7 @@ describe("/account presentation", () => {
     const base = {
       productRef: "0123456789ABCDEFGHJKMNPQRSTVWXYZ",
       description: "Stoneware, 350 ml.",
-      promotable: false,
+      ...NOT_OFFERED_RESALE,
       generalAvailabilityState: "available" as const,
       deliveryMode: "DIGITAL" as const,
       recordStatus: "draft" as const,
@@ -478,8 +485,107 @@ describe("/account presentation", () => {
     expect(text).toContain("Can't activate yet: Finish payment setup first.");
     expect(text).not.toContain("classified this product for tax");
     expect(text).toContain("Can't activate yet: This product is suspended by Monacado.");
-    /* No Listing, Offer, or resale control arrives with activation. */
-    expect(text).not.toMatch(/resale|Promotion Authorization|Publish offer/i);
+    /* No Listing, Offer, or Promotion Authorization control arrives with
+       activation. (Resale availability, its own axis, arrives in Phase 1.40.) */
+    expect(text).not.toMatch(/Promotion Authorization|Publish offer/i);
+    expect(html).not.toContain("0123456789ABCDEFGHJKMNPQRSTVWXYZ");
+    expect(html).not.toContain("mon:");
+  });
+
+  it("shows resale availability as its own axis, with only the governed controls (Phase 1.40)", async () => {
+    const base = {
+      productRef: "0123456789ABCDEFGHJKMNPQRSTVWXYZ",
+      description: "Stoneware, 350 ml.",
+      generalAvailabilityState: "available" as const,
+      deliveryMode: "DIGITAL" as const,
+      recordStatus: "draft" as const,
+      revisionToken: "0123456789abcdef0123456789abcdef",
+      shippingPolicy: null,
+      completeness: { complete: true, missing: [] },
+      activationBlockers: [],
+    };
+    const html = await renderSignedIn(
+      home({
+        marketplace: DRAFT_SELLER,
+        canCreateProduct: true,
+        products: [
+          {
+            ...base,
+            name: "Offerable mug",
+            lifecycle: "ACTIVE",
+            resaleAvailability: "NOT_OFFERED",
+            resaleEffective: false,
+            resaleOptions: [{ target: "AVAILABLE", refusal: null }],
+          },
+          {
+            ...base,
+            name: "Resold mug",
+            lifecycle: "ACTIVE",
+            resaleAvailability: "AVAILABLE",
+            resaleEffective: true,
+            resaleOptions: [
+              { target: "PAUSED", refusal: null },
+              { target: "WITHDRAWN", refusal: null },
+            ],
+          },
+          {
+            ...base,
+            name: "Lapsed mug",
+            lifecycle: "COMPLETE",
+            resaleAvailability: "AVAILABLE",
+            resaleEffective: false,
+            resaleOptions: [
+              { target: "PAUSED", refusal: null },
+              { target: "WITHDRAWN", refusal: null },
+            ],
+          },
+          {
+            ...base,
+            name: "Paused mug",
+            lifecycle: "COMPLETE",
+            resaleAvailability: "PAUSED",
+            resaleEffective: false,
+            resaleOptions: [
+              { target: "AVAILABLE", refusal: "PRODUCT_NOT_ACTIVE" },
+              { target: "WITHDRAWN", refusal: null },
+            ],
+          },
+          {
+            ...base,
+            name: "Ended mug",
+            lifecycle: "ACTIVE",
+            resaleAvailability: "WITHDRAWN",
+            resaleEffective: false,
+            resaleOptions: [],
+          },
+        ],
+      }),
+    );
+    const text = html.replaceAll("<!-- -->", "").replace(/<[^>]+>/g, "");
+
+    /* The lifecycle badge is unchanged; resale is a separate line. */
+    expect(text).toContain("Offerable mug — Active · Not listed for sale");
+    expect(text).toContain("Not offered for resale");
+    expect(text).toContain("Resale available");
+    /* A preserved AVAILABLE on a Product that is not ACTIVE is never shown as resale. */
+    expect(text).toContain(
+      "Resale preference: Available, currently ineffective because the product is not active",
+    );
+    expect(text).toContain("Resale paused");
+    expect(text).toContain("Withdrawn from resale");
+
+    expect(text.match(/Make available for resale/g)).toHaveLength(1);
+    expect(text.match(/Pause resale/g)).toHaveLength(2);
+    /* Withdrawal is offered where governed and asks for confirmation before sending. */
+    expect(text.match(/Withdraw from resale/g)).toHaveLength(3);
+    expect(text).not.toContain("Confirm withdrawal");
+    /* PAUSED → AVAILABLE is held back while not ACTIVE, with the reason. */
+    expect(text).not.toContain("Resume resale");
+    expect(text).toContain("Resale can be made available only while the product is active.");
+    expect(text).toContain("Reopening a withdrawn product is not available.");
+    /* Resale is never presented as an Offer, a Promoter approval, or a sale. */
+    expect(text).toContain("It does not create an offer, approve any promoter, or list anything for sale.");
+    expect(text).not.toMatch(/Promoters may feature|Not open to promoters/);
     expect(html).not.toContain("0123456789ABCDEFGHJKMNPQRSTVWXYZ");
     expect(html).not.toContain("mon:");
   });
@@ -488,7 +594,7 @@ describe("/account presentation", () => {
     const draft = {
       productRef: "0123456789ABCDEFGHJKMNPQRSTVWXYZ",
       description: null,
-      promotable: false,
+      ...NOT_OFFERED_RESALE,
       generalAvailabilityState: "available" as const,
       deliveryMode: "DIGITAL" as const,
       recordStatus: "draft" as const,
@@ -747,7 +853,6 @@ describe("draft Product submission", () => {
   const fields = {
     name: "Mug",
     description: "   ",
-    promotable: false,
     generalAvailabilityState: "available" as const,
     deliveryMode: "PHYSICAL" as const,
   };
@@ -810,7 +915,7 @@ describe("placement presentation", () => {
     productRef: PRODUCT_REF,
     name: "Hand-thrown mug",
     description: null,
-    promotable: false,
+    ...NOT_OFFERED_RESALE,
     generalAvailabilityState: "available" as const,
     deliveryMode: "PHYSICAL" as const,
     recordStatus: "draft" as const,
@@ -1057,7 +1162,7 @@ describe("placement withdrawal presentation", () => {
     productRef: "0123456789ABCDEFGHJKMNPQRSTVWXYZ",
     name: "Hand-thrown mug",
     description: null,
-    promotable: false,
+    ...NOT_OFFERED_RESALE,
     generalAvailabilityState: "available" as const,
     deliveryMode: "PHYSICAL" as const,
     recordStatus: "draft" as const,
@@ -1274,7 +1379,7 @@ describe("placement pricing presentation", () => {
     productRef: "0123456789ABCDEFGHJKMNPQRSTVWXYZ",
     name: "Hand-thrown mug",
     description: null,
-    promotable: false,
+    ...NOT_OFFERED_RESALE,
     generalAvailabilityState: "available" as const,
     deliveryMode: "PHYSICAL" as const,
     recordStatus: "draft" as const,

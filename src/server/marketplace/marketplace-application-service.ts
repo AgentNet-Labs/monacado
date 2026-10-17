@@ -104,6 +104,10 @@ import { buildDraftProductSourceRecord } from "../product/draft-product-builder"
 import { cryptoProductIdProvider, type ProductIdProvider } from "../product/product-ids";
 import { reviseProductAs, type RevisedProduct } from "./product-revision-service";
 import { activateProductAs, type ActivatedProduct } from "./product-activation-service";
+import {
+  setProductResaleAvailabilityAs,
+  type ProductResaleAvailabilityResult,
+} from "./product-resale-availability-service";
 
 /**
  * What a caller may state.
@@ -517,6 +521,23 @@ export async function activateOwnProductAs(
   deps: { db?: ReturnType<typeof getPrisma> } = {},
 ): Promise<ActivatedProduct> {
   return await activateProductAs({ accountId: actor.accountId }, request, deps);
+}
+
+/**
+ * Set the resale availability of one of the acting account's own Products
+ * (Phase 1.40).
+ *
+ * Same division of labour as `activateOwnProductAs`: the account is the
+ * session's, the Product is named by its stable reference only, and every
+ * authority, lifecycle, and transition decision is made in
+ * `product-resale-availability-service`, inside its transaction.
+ */
+export async function setOwnProductResaleAvailabilityAs(
+  actor: ActingAccount,
+  request: { productRef: string; resaleAvailability: string; now: string },
+  deps: { db?: ReturnType<typeof getPrisma> } = {},
+): Promise<ProductResaleAvailabilityResult> {
+  return await setProductResaleAvailabilityAs({ accountId: actor.accountId }, request, deps);
 }
 
 // — Refund initiation (Phase 1.19) —
