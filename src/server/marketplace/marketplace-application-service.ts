@@ -108,6 +108,12 @@ import {
   setProductResaleAvailabilityAs,
   type ProductResaleAvailabilityResult,
 } from "./product-resale-availability-service";
+import {
+  cancelPromotionAuthorizationAs,
+  decidePromotionAuthorizationAs,
+  requestPromotionAuthorizationAs,
+  type PromotionAuthorizationResult,
+} from "./promotion-authorization-service";
 
 /**
  * What a caller may state.
@@ -538,6 +544,40 @@ export async function setOwnProductResaleAvailabilityAs(
   deps: { db?: ReturnType<typeof getPrisma> } = {},
 ): Promise<ProductResaleAvailabilityResult> {
   return await setProductResaleAvailabilityAs({ accountId: actor.accountId }, request, deps);
+}
+
+// — Promotion Authorization (Phase 1.41) —
+//
+// Same division of labour as the Product acts above: the account is the
+// session's, the Product and the cycle are named by their application
+// references only, and every authority, gate, and transition decision is made
+// in `promotion-authorization-service`, inside its transaction.
+
+/** Request Promotion Authorization for a Product, as the acting account's Promoter participant. */
+export async function requestPromotionAuthorizationForProductAs(
+  actor: ActingAccount,
+  request: { productRef: string; now: string },
+  deps: { db?: ReturnType<typeof getPrisma> } = {},
+): Promise<PromotionAuthorizationResult> {
+  return await requestPromotionAuthorizationAs({ accountId: actor.accountId }, request, deps);
+}
+
+/** Approve, deny, or revoke a Promoter on one of the acting account's own Products. */
+export async function decideOwnProductPromotionAuthorizationAs(
+  actor: ActingAccount,
+  request: { productRef: string; authorizationRef: string; decision: string; now: string },
+  deps: { db?: ReturnType<typeof getPrisma> } = {},
+): Promise<PromotionAuthorizationResult> {
+  return await decidePromotionAuthorizationAs({ accountId: actor.accountId }, request, deps);
+}
+
+/** Cancel the acting account's own Promotion Authorization request or participation. */
+export async function cancelOwnPromotionAuthorizationAs(
+  actor: ActingAccount,
+  request: { productRef: string; authorizationRef: string; now: string },
+  deps: { db?: ReturnType<typeof getPrisma> } = {},
+): Promise<PromotionAuthorizationResult> {
+  return await cancelPromotionAuthorizationAs({ accountId: actor.accountId }, request, deps);
 }
 
 // — Refund initiation (Phase 1.19) —

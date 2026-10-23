@@ -246,6 +246,7 @@ describeDb("1.29 — self-service Seller/Promoter onboarding", () => {
       /* Phase 1.34: nothing to place, nowhere to place it, and no SELLER role. */
       placements: [],
       canPlaceListing: false,
+      promoter: null,
     });
 
     await request(caller.cookieHeader, { roles: ["PROMOTER"] });

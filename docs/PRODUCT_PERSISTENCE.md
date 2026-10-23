@@ -395,6 +395,86 @@ Implementation record; the governing rules are Contract §9.3 (and §16.2 /
 - Writes no source version, lifecycle, Storefront, Listing, Offer, Order,
   payment, payout, Node, publication, or outbox state.
 
+## Promotion Authorization (Phase 1.41)
+
+Implementation record; the governing rules are Contract §16.1–§16.2, with the
+Phase 1.41 governance rulings on the request gate and on `APPROVED → CANCELLED`.
+Promotion Authorization is a relationship among the Product's Seller, the
+Product, and one Promoter — **not** a Product fact. It is never on a Product
+source version, never published, and never a capsule fact; it is documented
+here because it hangs off `Product`.
+
+- **Two append-only tables** (`20261023000000_add_promotion_authorization`):
+  - **`PromotionAuthorization`** — one **request cycle** per Promoter request:
+    the Product, the Promoter participant, `cycleNumber`, the cycle it follows
+    (`supersedesAuthorizationId`, unique), the requesting account and instant,
+    and an opaque application reference `authorizationRef` (the shared
+    32-character shape; `mon:pauth:` stays internal). The unique pair
+    (`currentForProductId`, `currentForPromoterParticipantId`) marks the **one
+    current relationship** per Product + Promoter; both are NULL once a later
+    cycle supersedes it.
+  - **`PromotionAuthorizationAct`** — one row per act (`REQUEST`, `APPROVE`,
+    `DENY`, `REVOKE`, `CANCEL`): the resulting and previous state, the act it
+    follows (`supersedesActId`, unique — one linear chain per cycle), the
+    authority it was made under (`SELLER` / `PROMOTER`), the acting participant
+    (for a Seller act, the participant holding Product authority at the
+    decision) and account, and the instant. The unique
+    `currentForAuthorizationId` marks the current act; **its `state` is the
+    cycle's state.** No state column on the cycle, and no authorization boolean
+    anywhere. Only markers move; no act is rewritten.
+- **Transitions** (`contracts/marketplace/promotion-authorization.ts`):
+  `REQUESTED → APPROVED | DENIED` (Seller), `REQUESTED → CANCELLED` (Promoter),
+  `APPROVED → REVOKED` (Seller), `APPROVED → CANCELLED` (Promoter). `DENIED`,
+  `REVOKED`, and `CANCELLED` end their cycle; a later request opens a **new**
+  cycle, so the old decision is preserved and approval is never restored.
+  Approving twice, denying or revoking the wrong state, cancelling a terminal
+  state, and acting on a superseded cycle are explicit 409s that write nothing.
+  Requesting while the current cycle is `REQUESTED` or `APPROVED` is an
+  explicit 409.
+- **Request gate** — `participantMayRequestPromotionAuthorization`: an enabled
+  account with a verified email and nonblank declared first and last names, a
+  participant in a drafting status (`RESTRICTED` included; `SUSPENDED`,
+  `CLOSED`, and a standing participant suspension refused), and a PROMOTER role
+  in `DRAFT`, `PENDING_ACTIVATION`, or `ACTIVE`. **Not** payment readiness,
+  underwriting, commerce approval, public readiness, Product `ACTIVE`, resale
+  `AVAILABLE`, an Offer, a Storefront, or a Listing. It does not redefine what an
+  `ACTIVE` PROMOTER role means anywhere else. A participant holding Seller
+  authority over the Product is refused (self-promotion, Contract §14) — the
+  strongest principal identity available today; cross-account principal
+  linkage does not exist.
+- **Authority.** Approve / deny / revoke: Seller authority over the Product
+  (`participantHoldsProductAuthority`) only — no internal grant substitutes, and
+  no Seller standing gate is added; unknown Product and another Seller's Product
+  are one 404. **Approval re-asks the Promoter's request gate** in the same
+  transaction and refuses with a conflict if it fails, leaving the request
+  pending. Cancel: the cycle's own Promoter only, with no gate — withdrawing is
+  standing down.
+- **Routes** (`server/marketplace/promotion-authorization-route-handler.ts`):
+  `POST /api/products/{productRef}/promotion-authorization/request` (`{}`),
+  `…/{authorizationRef}/decision` (`{ "decision": "APPROVE" | "DENY" | "REVOKE" }`),
+  `…/{authorizationRef}/cancel` (`{}`). Strict bodies; answers carry only
+  `productRef`, `authorizationRef`, and `state`.
+- **Concurrency.** Every act locks the Product row (`SELECT … FOR UPDATE`, the
+  lock activation, suspension, revision, and resale changes also take) before
+  reading what it decides on, so all acts on one Product serialise; the unique
+  markers and chain columns are the database's guarantee of no fork.
+- **Independence.** Nothing here reads or writes Product lifecycle or resale
+  availability, and no lifecycle, suspension, or resale change writes here: an
+  `APPROVED` relationship survives `PAUSED`, `WITHDRAWN`, `SUSPENDED`, and a fall
+  to `INCOMPLETE`.
+- **Future promoted-commerce helper.** `isPromotionAuthorizationApprovedIn`
+  (`server/marketplace/promotion-authorization-read-service.ts`) answers *is the
+  current cycle `APPROVED` for this Product + Promoter* — necessary, never
+  sufficient (§16.3). Nothing commercial consumes it yet.
+- **Pages.** `/account` lists each Product's pending and approved Promoters (by the
+  Promoter's declared first and last name — a declaration, not a verification;
+  never `Account.name` or an email) with Approve / Deny / Revoke, and, for a PROMOTER, its
+  requests by the Product reference it supplied, with Cancel / Request again
+  where governed, and a request form taking a reference. No discovery.
+- Writes no source version, Product row, lifecycle, resale, Storefront,
+  Listing, Offer, Order, payment, payout, Node, publication, outbox, or
+  notification state; the Product revision token is unchanged.
+
 ## Related: Product Node
 
 The durable AgentNet **Product Node** (opaque Registrar-issued identity + ANS

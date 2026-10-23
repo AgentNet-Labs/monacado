@@ -132,6 +132,7 @@ function home(overrides: Partial<AccountHome> = {}): AccountHome {
     canCreateProduct: false,
     placements: [],
     canPlaceListing: false,
+    promoter: null,
     ...overrides,
   };
 }
@@ -365,6 +366,7 @@ describe("/account presentation", () => {
             deliveryMode: "PHYSICAL",
             recordStatus: "draft",
             revisionToken: "0123456789abcdef0123456789abcdef",
+            promotionAuthorizations: [],
             lifecycle: "INCOMPLETE" as const,
             activationBlockers: ["PRODUCT_INCOMPLETE" as const],
             shippingPolicy: null,
@@ -392,6 +394,7 @@ describe("/account presentation", () => {
       deliveryMode: "PHYSICAL" as const,
       recordStatus: "draft" as const,
       revisionToken: "0123456789abcdef0123456789abcdef",
+      promotionAuthorizations: [],
     };
     const html = await renderSignedIn(
       home({
@@ -457,6 +460,7 @@ describe("/account presentation", () => {
       deliveryMode: "DIGITAL" as const,
       recordStatus: "draft" as const,
       revisionToken: "0123456789abcdef0123456789abcdef",
+      promotionAuthorizations: [],
       shippingPolicy: null,
       completeness: { complete: true, missing: [] },
     };
@@ -500,6 +504,7 @@ describe("/account presentation", () => {
       deliveryMode: "DIGITAL" as const,
       recordStatus: "draft" as const,
       revisionToken: "0123456789abcdef0123456789abcdef",
+      promotionAuthorizations: [],
       shippingPolicy: null,
       completeness: { complete: true, missing: [] },
       activationBlockers: [],
@@ -599,6 +604,7 @@ describe("/account presentation", () => {
       deliveryMode: "DIGITAL" as const,
       recordStatus: "draft" as const,
       revisionToken: "0123456789abcdef0123456789abcdef",
+      promotionAuthorizations: [],
       lifecycle: "INCOMPLETE" as const,
       activationBlockers: ["PRODUCT_INCOMPLETE" as const],
       shippingPolicy: null,
@@ -920,6 +926,7 @@ describe("placement presentation", () => {
     deliveryMode: "PHYSICAL" as const,
     recordStatus: "draft" as const,
     revisionToken: "0123456789abcdef0123456789abcdef",
+    promotionAuthorizations: [],
     lifecycle: "INCOMPLETE" as const,
     activationBlockers: ["PRODUCT_INCOMPLETE" as const],
     shippingPolicy: null,
@@ -1167,6 +1174,7 @@ describe("placement withdrawal presentation", () => {
     deliveryMode: "PHYSICAL" as const,
     recordStatus: "draft" as const,
     revisionToken: "0123456789abcdef0123456789abcdef",
+    promotionAuthorizations: [],
     lifecycle: "INCOMPLETE" as const,
     activationBlockers: ["PRODUCT_INCOMPLETE" as const],
     shippingPolicy: null,
@@ -1384,6 +1392,7 @@ describe("placement pricing presentation", () => {
     deliveryMode: "PHYSICAL" as const,
     recordStatus: "draft" as const,
     revisionToken: "0123456789abcdef0123456789abcdef",
+    promotionAuthorizations: [],
     lifecycle: "INCOMPLETE" as const,
     activationBlockers: ["PRODUCT_INCOMPLETE" as const],
     shippingPolicy: null,
@@ -1619,5 +1628,116 @@ describe("placement pricing submission", () => {
     for (const message of [PRICE_UNCHANGED, PRICE_NOT_REPRICEABLE]) {
       expect(message).not.toMatch(/live|on sale|for sale/i);
     }
+  });
+});
+
+describe("Promotion Authorization presentation (Phase 1.41)", () => {
+  beforeEach(() => {
+    resolvePageSession.mockReset();
+    readAccountHome.mockReset();
+    redirect.mockClear();
+  });
+
+  const PENDING_REF = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+  const APPROVED_REF = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+  const PRODUCT_REF = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+  const product = {
+    productRef: PRODUCT_REF,
+    name: "Hand-thrown mug",
+    description: null,
+    ...NOT_OFFERED_RESALE,
+    generalAvailabilityState: "available" as const,
+    deliveryMode: "PHYSICAL" as const,
+    recordStatus: "draft" as const,
+    revisionToken: "0123456789abcdef0123456789abcdef",
+    lifecycle: "INCOMPLETE" as const,
+    activationBlockers: ["PRODUCT_INCOMPLETE" as const],
+    shippingPolicy: null,
+    completeness: { complete: false, missing: ["SHIPPING_POLICY_MISSING" as const] },
+    promotionAuthorizations: [
+      { authorizationRef: PENDING_REF, promoterDeclaredName: "Pat Pending", state: "REQUESTED" as const },
+      { authorizationRef: APPROVED_REF, promoterDeclaredName: "Ava Approved", state: "APPROVED" as const },
+    ],
+  };
+  const text = (html: string) => html.replaceAll("<!-- -->", "").replace(/<[^>]+>/g, "");
+
+  it("shows the Seller each pending and approved Promoter, with Approve / Deny and an independent Revoke, while the Product is not even complete", async () => {
+    const html = await renderSignedIn(home({ marketplace: DRAFT_SELLER, canCreateProduct: true, products: [product] }));
+    const t = text(html);
+
+    expect(t).toContain("Pat Pending — Requested");
+    expect(t).toContain("Ava Approved — Approved");
+    expect(t).toContain("Approve");
+    expect(t).toContain("Deny");
+    expect(t).toContain("Revoke");
+    expect(t).toContain("It is permission only");
+    /* The references are action values, never rendered; nothing commercial is offered. */
+    expect(html).not.toContain(PENDING_REF);
+    expect(html).not.toContain(APPROVED_REF);
+    expect(t).not.toMatch(/commission|wholesale|offer terms/i);
+    expect(html).not.toContain("mon:");
+  });
+
+  it("shows no Promoter controls for a Product nobody has asked about", async () => {
+    const html = await renderSignedIn(
+      home({ marketplace: DRAFT_SELLER, canCreateProduct: true, products: [{ ...product, promotionAuthorizations: [] }] }),
+    );
+    expect(text(html)).not.toContain("Approve");
+    expect(text(html)).not.toContain("Revoke");
+  });
+
+  it("shows no Promoter section without a PROMOTER role", async () => {
+    const html = await renderSignedIn(home({ marketplace: DRAFT_SELLER }));
+    expect(text(html)).not.toContain("Promotion requests");
+  });
+
+  it("shows the Promoter its requests by the reference it supplied, every state, and Cancel / Request again where governed", async () => {
+    const authorization = (state: "REQUESTED" | "APPROVED" | "DENIED" | "REVOKED" | "CANCELLED", n: number) => ({
+      productRef: String(n).repeat(32),
+      authorizationRef: String.fromCharCode(67 + n).repeat(32),
+      state,
+      canCancel: state === "REQUESTED" || state === "APPROVED",
+      canRequestAgain: state === "DENIED" || state === "REVOKED" || state === "CANCELLED",
+    });
+    const html = await renderSignedIn(
+      home({
+        marketplace: { status: "DRAFT", roles: [{ role: "PROMOTER", status: "DRAFT" }], onboardingOpen: true },
+        promoter: {
+          canRequest: true,
+          requestRefusals: [],
+          authorizations: [
+            authorization("REQUESTED", 1),
+            authorization("APPROVED", 2),
+            authorization("DENIED", 3),
+            authorization("REVOKED", 4),
+            authorization("CANCELLED", 5),
+          ],
+        },
+      }),
+    );
+    const t = text(html);
+    expect(t).toContain("Promotion requests");
+    expect(t).toContain(`${"1".repeat(32)} — Requested Cancel request`);
+    expect(t).toContain(`${"2".repeat(32)} — Approved Stop promoting`);
+    expect(t).toContain(`${"3".repeat(32)} — Denied Request again`);
+    expect(t).toContain(`${"4".repeat(32)} — Revoked Request again`);
+    expect(t).toContain(`${"5".repeat(32)} — Cancelled Request again`);
+    expect(t).toContain("Product reference");
+    expect(t).toContain("Request permission");
+    /* No discovery: no search, browse, or list of other Sellers' Products. */
+    expect(t).not.toMatch(/search|browse/i);
+  });
+
+  it("tells a Promoter who cannot request yet why, and offers no request form", async () => {
+    const html = await renderSignedIn(
+      home({
+        emailVerified: false,
+        marketplace: { status: "DRAFT", roles: [{ role: "PROMOTER", status: "DRAFT" }], onboardingOpen: true },
+        promoter: { canRequest: false, requestRefusals: ["EMAIL_UNVERIFIED", "FIRST_NAME_MISSING"], authorizations: [] },
+      }),
+    );
+    const t = text(html);
+    expect(t).toContain("Before you can ask to promote products: verify your email address; add your first name.");
+    expect(t).not.toContain("Request permission");
   });
 });

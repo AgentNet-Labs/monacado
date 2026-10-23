@@ -321,6 +321,7 @@ describeDb("1.32 — SELLER-only private draft Product", () => {
         resaleAvailability: "NOT_OFFERED",
         resaleEffective: false,
         resaleOptions: [{ target: "AVAILABLE", refusal: "PRODUCT_NOT_ACTIVE" }],
+        promotionAuthorizations: [],
       },
       {
         productRef: expect.stringMatching(/^[0-9A-HJKMNP-TV-Z]{32}$/) as unknown as string,
@@ -337,6 +338,7 @@ describeDb("1.32 — SELLER-only private draft Product", () => {
         resaleAvailability: "NOT_OFFERED",
         resaleEffective: false,
         resaleOptions: [{ target: "AVAILABLE", refusal: "PRODUCT_NOT_ACTIVE" }],
+        promotionAuthorizations: [],
       },
     ]);
     expect(JSON.stringify(home)).not.toMatch(/mon:|an:node/);

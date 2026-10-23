@@ -94,12 +94,14 @@ model Product {
   // — Lifecycle authority (Phase 1.39). RESTRICT on the far side: an
   // activation is the Seller's explicit act and a suspension is Monacado's
   // governed decision, and neither history may be erased by deleting the Product.
-  activations            ProductActivation[]
-  suspensions            ProductSuspension[]
+  activations             ProductActivation[]
+  suspensions             ProductSuspension[]
   /// Monacado tax-classification acts (Phase 1.39) — audit evidence, RESTRICT.
-  taxClassificationActs  ProductTaxClassificationAct[]
+  taxClassificationActs   ProductTaxClassificationAct[]
   /// Seller resale-availability acts (Phase 1.40) — the Seller's own history, RESTRICT.
-  resaleAvailabilityActs ProductResaleAvailabilityAct[]
+  resaleAvailabilityActs  ProductResaleAvailabilityAct[]
+  /// Promotion Authorization request cycles (Phase 1.41) — relationship history, RESTRICT.
+  promotionAuthorizations PromotionAuthorization[]
 
   @@index([sourceRecordId])
 }
@@ -286,6 +288,101 @@ model ProductResaleAvailabilityAct {
   product Product @relation(fields: [internalProductId], references: [internalProductId], onDelete: Restrict)
 
   @@index([internalProductId, actedAt])
+}
+
+/// One Promotion Authorization REQUEST CYCLE between a Product and a Promoter
+/// (Phase 1.41, Contract §16.1). The Seller is the participant holding Product
+/// authority; it is not copied here, and every Seller act records who decided.
+///
+/// A cycle begins with a Promoter request and ends in DENIED, REVOKED, or
+/// CANCELLED. Re-requesting after a terminal state opens a NEW cycle naming the
+/// one it follows (`supersedesAuthorizationId`, unique) — the old cycle and its
+/// decision are never rewritten, and approval is never restored. The cycle row
+/// is immutable but for its current marker; its STATE is never stored here — it
+/// is the state of its current `PromotionAuthorizationAct`. No `isAuthorized`
+/// boolean exists anywhere.
+///
+/// `currentForProductId` + `currentForPromoterParticipantId` mark the ONE current
+/// relationship per Product + Promoter, as a database guarantee (unique pair;
+/// both NULL once superseded, and MySQL admits any number of NULL pairs).
+///
+/// Not on any Product source version, never published, never a capsule fact.
+model PromotionAuthorization {
+  /// Opaque identity (mon:pauth:<opaque>). Never exposed to a caller.
+  id String @id @db.VarChar(191)
+
+  /// Stable APPLICATION-FACING reference — opaque, un-namespaced, 32 Crockford
+  /// characters (the `productRef` construction). How a route names this cycle.
+  authorizationRef String @unique @db.VarChar(32)
+
+  internalProductId     String @db.VarChar(191)
+  promoterParticipantId String @db.VarChar(191)
+
+  /// 1 for the first cycle of this Product + Promoter, then 2, 3, …
+  cycleNumber Int
+
+  /// The cycle this one follows; NULL for the first. Unique: one linear history.
+  supersedesAuthorizationId String? @unique @db.VarChar(191)
+
+  /// Both set while this is the current cycle for the pair; both NULL after.
+  currentForProductId             String? @db.VarChar(191)
+  currentForPromoterParticipantId String? @db.VarChar(191)
+
+  requestedByAccountId String   @db.VarChar(191)
+  requestedAt          DateTime @db.DateTime(3)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+
+  product  Product                     @relation(fields: [internalProductId], references: [internalProductId], onDelete: Restrict)
+  promoter MarketplaceParticipant      @relation("PromotionAuthorizationPromoter", fields: [promoterParticipantId], references: [id], onDelete: Restrict)
+  acts     PromotionAuthorizationAct[]
+
+  @@unique([currentForProductId, currentForPromoterParticipantId])
+  @@unique([internalProductId, promoterParticipantId, cycleNumber])
+  @@index([promoterParticipantId])
+}
+
+/// One act on a Promotion Authorization cycle (Phase 1.41) — append-only.
+///
+/// REQUEST opens a cycle; APPROVE / DENY / REVOKE are Seller acts; CANCEL is the
+/// Promoter's. Each act names the act it follows (`supersedesActId`, unique), so
+/// a cycle's history is one linear chain; the current act holds
+/// `currentForAuthorizationId` (unique), and its `state` IS the cycle's state.
+/// Only the marker ever moves — no act is rewritten.
+model PromotionAuthorizationAct {
+  /// Opaque identity (mon:pauthact:<opaque>). Never exposed to a caller.
+  id String @id @db.VarChar(191)
+
+  authorizationId String @db.VarChar(191)
+
+  /// REQUEST | APPROVE | DENY | REVOKE | CANCEL.
+  act String @db.VarChar(16)
+
+  /// The state this act produced, and the one it replaced (NULL for REQUEST).
+  state         String  @db.VarChar(16)
+  previousState String? @db.VarChar(16)
+
+  /// The act this one followed; NULL for the cycle's REQUEST. Unique: no fork.
+  supersedesActId String? @unique @db.VarChar(191)
+
+  /// Unique while current — at most one current act per cycle.
+  currentForAuthorizationId String? @unique @db.VarChar(191)
+
+  /// SELLER | PROMOTER — the authority the act was made under. For a SELLER act,
+  /// `actorParticipantId` is the participant that held Product authority at the
+  /// decision; for a PROMOTER act, it is the cycle's Promoter.
+  actorAuthority     String   @db.VarChar(16)
+  actorParticipantId String   @db.VarChar(191)
+  actedByAccountId   String   @db.VarChar(191)
+  actedAt            DateTime @db.DateTime(3)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+
+  authorization PromotionAuthorization @relation(fields: [authorizationId], references: [id], onDelete: Restrict)
+  actor         MarketplaceParticipant @relation("PromotionAuthorizationActor", fields: [actorParticipantId], references: [id], onDelete: Restrict)
+
+  @@index([authorizationId, actedAt])
+  @@index([actorParticipantId])
 }
 
 /// Durable AgentNet Node associated with a Monacado Product (Phase 0E.1).
@@ -1327,6 +1424,11 @@ model MarketplaceParticipant {
   /// is terminal, so this is a 0..1 relation enforced by a unique participantId
   /// on the far side rather than by a service remembering to look.
   closure ParticipantClosure?
+
+  // — Promotion Authorization (Phase 1.41). Both RESTRICT on the far side: the
+  // relationship history and every act in it are evidence, never cascade-deleted.
+  promotionAuthorizationsAsPromoter PromotionAuthorization[]    @relation("PromotionAuthorizationPromoter")
+  promotionAuthorizationActs        PromotionAuthorizationAct[] @relation("PromotionAuthorizationActor")
 
   @@index([status])
 }

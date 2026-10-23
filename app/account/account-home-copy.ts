@@ -29,6 +29,10 @@ import type {
   ProductLifecycleState,
 } from "../../src/contracts/product/product-lifecycle";
 import type { ProductResaleAvailability } from "../../src/contracts/product/product-resale-availability";
+import type {
+  PromotionAuthorizationRequestRefusal,
+  PromotionAuthorizationState,
+} from "../../src/contracts/marketplace/promotion-authorization";
 
 export const EMAIL_VERIFIED_LABEL = "Verified";
 export const EMAIL_UNVERIFIED_LABEL = "Email not verified";
@@ -333,4 +337,55 @@ export function formatRetailPrice(amountMinorUnits: number, currency: string): s
   return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(
     amountMinorUnits / 100,
   );
+}
+
+// — Promotion Authorization (Phase 1.41) —
+
+/** Each relationship state in plain words. None of them says anything is for sale. */
+export const PROMOTION_AUTHORIZATION_STATE_LABELS: Record<PromotionAuthorizationState, string> = {
+  REQUESTED: "Requested",
+  APPROVED: "Approved",
+  DENIED: "Denied",
+  REVOKED: "Revoked",
+  CANCELLED: "Cancelled",
+};
+
+/** The Seller's per-Product heading, and what approval does and does not do. */
+export const PROMOTION_SELLER_HEADING = "Promoters";
+export const PROMOTION_SELLER_NOTE =
+  "Approving lets that promoter promote this product. It is permission only — nothing goes on sale, and you can revoke it at any time without affecting other promoters.";
+export const PROMOTION_APPROVE_LABEL = "Approve";
+export const PROMOTION_DENY_LABEL = "Deny";
+export const PROMOTION_REVOKE_LABEL = "Revoke";
+
+/** The Promoter's section. */
+export const PROMOTION_PROMOTER_HEADING = "Promotion requests";
+export const PROMOTION_PROMOTER_INTRO =
+  "Ask a seller for permission to promote one of their products, using the product reference they shared with you. Approval is permission only — nothing is for sale until the product and its terms are ready.";
+export const PROMOTION_REQUEST_FIELD_LABEL = "Product reference";
+export const PROMOTION_REQUEST_LABEL = "Request permission";
+export const PROMOTION_REQUEST_AGAIN_LABEL = "Request again";
+export const PROMOTION_NONE = "You haven't asked to promote any products yet.";
+
+/** The Promoter's withdrawal, worded for what it ends. */
+export function promotionCancelLabel(state: PromotionAuthorizationState): string {
+  return state === "APPROVED" ? "Stop promoting" : "Cancel request";
+}
+
+const PROMOTION_REQUEST_REFUSAL_TEXT: Record<PromotionAuthorizationRequestRefusal, string> = {
+  ACCOUNT_DISABLED: "this account is disabled",
+  EMAIL_UNVERIFIED: "verify your email address",
+  FIRST_NAME_MISSING: "add your first name",
+  LAST_NAME_MISSING: "add your last name",
+  PARTICIPANT_MISSING: "start Promoter setup",
+  PARTICIPANT_STATUS_NOT_ELIGIBLE: "your marketplace account isn't eligible",
+  PARTICIPANT_SUSPENDED: "your marketplace account is suspended",
+  PROMOTER_ROLE_NOT_HELD: "start Promoter setup",
+  PROMOTER_ROLE_NOT_ELIGIBLE: "your Promoter setup isn't eligible",
+};
+
+/** Why the Promoter cannot request yet, as one sentence. */
+export function formatPromotionRequestRefusals(refusals: readonly PromotionAuthorizationRequestRefusal[]): string {
+  const parts = [...new Set(refusals.map((r) => PROMOTION_REQUEST_REFUSAL_TEXT[r]))];
+  return `Before you can ask to promote products: ${parts.join("; ")}.`;
 }

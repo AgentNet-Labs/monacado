@@ -68,6 +68,11 @@ import {
   PRODUCT_INTRO,
   RESALE_AVAILABILITY_HINT,
   formatResaleAvailability,
+  PROMOTION_SELLER_HEADING,
+  PROMOTION_SELLER_NOTE,
+  PROMOTION_PROMOTER_HEADING,
+  PROMOTION_PROMOTER_INTRO,
+  formatPromotionRequestRefusals,
   PLACEMENT_DRAFT_STATUS,
   PLACEMENT_NEEDS_PRODUCT,
   PLACEMENT_NEEDS_STOREFRONT,
@@ -87,6 +92,8 @@ import { ProductForm } from "./product-form";
 import { ProductRevisionForm } from "./product-revision-form";
 import { ProductActivateButton } from "./product-activate-button";
 import { ProductResaleAvailabilityControls } from "./product-resale-availability-controls";
+import { PromotionAuthorizationSellerControls } from "./promotion-authorization-seller-controls";
+import { PromotionAuthorizationPromoterSection } from "./promotion-authorization-promoter-section";
 import { StorefrontForm } from "./storefront-form";
 import { StorefrontPresentationForm } from "./storefront-presentation-form";
 import { SignOutButton } from "./sign-out-button";
@@ -280,6 +287,18 @@ export default async function AccountPage() {
                         />
                       </>
                     ) : null}
+                    {/* Phase 1.41 — Promoter-specific permission, its own axis:
+                        shown whatever the lifecycle or resale state, and never
+                        as anything being for sale. Seller authority decides. */}
+                    {product.promotionAuthorizations.length > 0 ? (
+                      <div className="account-promotion">
+                        <p className="auth-hint">{`${PROMOTION_SELLER_HEADING} · ${PROMOTION_SELLER_NOTE}`}</p>
+                        <PromotionAuthorizationSellerControls
+                          productRef={product.productRef}
+                          authorizations={product.promotionAuthorizations}
+                        />
+                      </div>
+                    ) : null}
                     {home.canCreateProduct ? (
                       <ProductRevisionForm
                         productRef={product.productRef}
@@ -301,6 +320,22 @@ export default async function AccountPage() {
                 <ProductForm />
               </details>
             ) : null}
+          </section>
+        ) : null}
+
+        {/* Phase 1.41 — the Promoter's own requests. A reference the Seller
+            shared is the only entry point; there is no discovery here. */}
+        {home.promoter !== null ? (
+          <section className="account-section" aria-labelledby="account-promotion-heading">
+            <h2 id="account-promotion-heading">{PROMOTION_PROMOTER_HEADING}</h2>
+            <p className="auth-status">{PROMOTION_PROMOTER_INTRO}</p>
+            {home.promoter.canRequest ? null : (
+              <p className="auth-hint">{formatPromotionRequestRefusals(home.promoter.requestRefusals)}</p>
+            )}
+            <PromotionAuthorizationPromoterSection
+              canRequest={home.promoter.canRequest}
+              authorizations={home.promoter.authorizations}
+            />
           </section>
         ) : null}
 

@@ -65,6 +65,17 @@ import {
   type ResaleAvailabilityRefusal,
 } from "../../contracts/product/product-resale-availability";
 import { readProductResaleAvailabilitiesIn } from "../product/product-resale-availability-service";
+import {
+  governedPromotionAuthorizationActs,
+  participantMayRequestPromotionAuthorization,
+  type PromotionAuthorizationRequestRefusal,
+  type PromotionAuthorizationState,
+} from "../../contracts/marketplace/promotion-authorization";
+import {
+  readPromoterPromotionAuthorizationsIn,
+  readPromotionRequestFactsIn,
+  readSellerPromotionAuthorizationsIn,
+} from "../marketplace/promotion-authorization-read-service";
 import { readActingAccountRows } from "../marketplace/acting-subject-service";
 import { toMarketplaceSubject } from "../marketplace/participant-mapper";
 import { getPrisma } from "../db/client";
@@ -232,6 +243,52 @@ export interface AccountHomeProduct {
    * the reason the lifecycle holds it back now, if any. The route decides again.
    */
   resaleOptions: Array<{ target: ProductResaleAvailability; refusal: ResaleAvailabilityRefusal | null }>;
+  /**
+   * Promoters whose CURRENT Promotion Authorization for this Product is open —
+   * pending (`REQUESTED`) or approved (`APPROVED`) — oldest request first
+   * (Phase 1.41, Contract §16.2). Terminal cycles are history and not listed.
+   * Independent of `lifecycle` and `resaleAvailability`.
+   */
+  promotionAuthorizations: AccountHomeSellerPromotionAuthorization[];
+}
+
+/**
+ * One Promoter's open relationship with one of the Seller's Products (Phase
+ * 1.41). The reference is an action value, never shown. The Promoter is
+ * identified by its DECLARED first and last name — a declaration, never a
+ * verification — and never by `Account.name`, an email, or an id.
+ */
+export interface AccountHomeSellerPromotionAuthorization {
+  authorizationRef: string;
+  promoterDeclaredName: string;
+  state: "REQUESTED" | "APPROVED";
+}
+
+/**
+ * The Promoter's side of Promotion Authorization (Phase 1.41) — present only
+ * while the participant holds a PROMOTER role assignment of any status.
+ */
+export interface AccountHomePromoter {
+  /**
+   * `participantMayRequestPromotionAuthorization` over this account's rows —
+   * private marketplace identity and a drafting PROMOTER role. Never payment
+   * readiness. The route asks again, with the Product.
+   */
+  canRequest: boolean;
+  /** Why not, in the gate's closed vocabulary; empty when `canRequest`. */
+  requestRefusals: PromotionAuthorizationRequestRefusal[];
+  /** The current relationship for every Product this Promoter has requested, oldest first. */
+  authorizations: AccountHomePromoterAuthorization[];
+}
+
+export interface AccountHomePromoterAuthorization {
+  /** The reference the Promoter itself submitted — no Product fact is disclosed. */
+  productRef: string;
+  authorizationRef: string;
+  state: PromotionAuthorizationState;
+  /** `REQUESTED` and `APPROVED` may be cancelled by the Promoter; terminal states may be re-requested. */
+  canCancel: boolean;
+  canRequestAgain: boolean;
 }
 
 export interface AccountHome {
@@ -287,6 +344,8 @@ export interface AccountHome {
    * `products` and `storefronts`, which it already has.
    */
   canPlaceListing: boolean;
+  /** `null` unless the participant holds a PROMOTER role (Phase 1.41). */
+  promoter: AccountHomePromoter | null;
 }
 
 /** `undefined` when the account no longer exists — the page treats that as signed out. */
@@ -334,8 +393,11 @@ export async function readAccountHome(
   const onboardingOpen =
     participant === null || isDraftWritableParticipantStatus(participant.status as ParticipantStatus);
   const held = new Set(roles.map((r) => r.role));
+  const promoter =
+    participant !== null && held.has("PROMOTER") ? await readPromoterHome(db, accountId, participant.id) : null;
 
   return {
+    promoter,
     setupRolesAvailable: onboardingOpen
       ? SELF_SERVICE_ONBOARDING_ROLES.filter((role) => !held.has(role))
       : [],
@@ -641,6 +703,11 @@ async function readAuthoredProducts(
     db,
     products.map((p) => p.internalProductId),
   );
+  /* Phase 1.41 — each Product's current Promoter relationships, a third axis. */
+  const promotion = await readSellerPromotionAuthorizationsIn(
+    db,
+    products.map((p) => p.internalProductId),
+  );
 
   return products.flatMap((p) => {
     const v = current.get(p.sourceRecordId);
@@ -671,9 +738,38 @@ async function readAuthoredProducts(
           resaleAvailability,
         }).effective,
         resaleOptions: resaleAvailabilityOptions(resaleAvailability, lifecycle.lifecycle),
+        /* A relationship whose Promoter has no declared name (an invariant
+           violation — the request gate requires both) is dropped rather than
+           named by anything else, as an unresolvable placement name is above. */
+        promotionAuthorizations: (promotion.get(p.internalProductId) ?? []).flatMap((a) =>
+          (a.state === "REQUESTED" || a.state === "APPROVED") && a.promoterDeclaredName !== null
+            ? [{ authorizationRef: a.authorizationRef, promoterDeclaredName: a.promoterDeclaredName, state: a.state }]
+            : [],
+        ),
       },
     ];
   });
+}
+
+/** The Promoter's request eligibility and current relationships (Phase 1.41). */
+async function readPromoterHome(db: Db, accountId: string, participantId: string): Promise<AccountHomePromoter> {
+  const read = await readPromotionRequestFactsIn(db, { accountId });
+  const eligibility =
+    read === null
+      ? { eligible: false, refusals: ["PARTICIPANT_MISSING" as const] }
+      : participantMayRequestPromotionAuthorization(read.facts);
+  const authorizations = await readPromoterPromotionAuthorizationsIn(db, participantId);
+  return {
+    canRequest: eligibility.eligible,
+    requestRefusals: [...eligibility.refusals],
+    authorizations: authorizations.map((a) => ({
+      productRef: a.productRef,
+      authorizationRef: a.authorizationRef,
+      state: a.state,
+      canCancel: governedPromotionAuthorizationActs(a.state, "PROMOTER").includes("CANCEL"),
+      canRequestAgain: governedPromotionAuthorizationActs(a.state, "PROMOTER").length === 0 && eligibility.eligible,
+    })),
+  };
 }
 
 /** The current version's shipping policy, shaped for the page; `null` for none or malformed. */
