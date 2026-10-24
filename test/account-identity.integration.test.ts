@@ -604,9 +604,10 @@ describe("session cookie and isolation", () => {
     const source = (path: string): string =>
       readFileSync(new URL(path, import.meta.url).pathname, "utf8");
     // No route handlers exist anywhere in the app or src trees.
+    // `app/page.tsx` is no longer listed: the homepage now links to `/sign-in`
+    // and `/sign-up` by design, and `test/home-page.test.tsx` covers it.
     const files = [
       "../app/layout.tsx",
-      "../app/page.tsx",
     ];
     for (const file of files) {
       const code = source(file);
