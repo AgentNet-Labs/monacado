@@ -30,6 +30,11 @@ import type {
 } from "../../src/contracts/product/product-lifecycle";
 import type { ProductResaleAvailability } from "../../src/contracts/product/product-resale-availability";
 import type {
+  OfferActivationBlocker,
+  OfferLifecycleState,
+  OfferPromotionStatus,
+} from "../../src/contracts/marketplace/offer-source";
+import type {
   PromotionAuthorizationRequestRefusal,
   PromotionAuthorizationState,
 } from "../../src/contracts/marketplace/promotion-authorization";
@@ -388,4 +393,108 @@ const PROMOTION_REQUEST_REFUSAL_TEXT: Record<PromotionAuthorizationRequestRefusa
 export function formatPromotionRequestRefusals(refusals: readonly PromotionAuthorizationRequestRefusal[]): string {
   const parts = [...new Set(refusals.map((r) => PROMOTION_REQUEST_REFUSAL_TEXT[r]))];
   return `Before you can ask to promote products: ${parts.join("; ")}.`;
+}
+
+// — Offer (Phase 1.42) —
+
+export const OFFER_HEADING = "Offer for promoters";
+/** What an Offer is, and what it is not, in one sentence. */
+export const OFFER_NOTE =
+  "Your wholesale price and commission for promoted resale. Private to you — promoters don't see it yet, and nothing is listed or published.";
+
+export const OFFER_LIFECYCLE_LABELS: Readonly<Record<OfferLifecycleState, string>> = {
+  DRAFT: "Draft",
+  ACTIVE: "Active",
+  PAUSED: "Paused",
+  WITHDRAWN: "Withdrawn",
+  ENDED: "Ended",
+};
+
+export const OFFER_EFFECTIVE_LABELS: Readonly<Record<"STANDING" | "SCHEDULED_PROMOTION" | "NONE", string>> = {
+  STANDING: "Standing terms in force",
+  SCHEDULED_PROMOTION: "Promotion in force",
+  NONE: "No terms in force",
+};
+
+export const OFFER_PROMOTION_STATUS_LABELS: Readonly<Record<OfferPromotionStatus, string>> = {
+  SCHEDULED: "Scheduled",
+  RUNNING: "Running",
+  ENDED: "Ended",
+  ENDED_EARLY: "Ended early",
+  CANCELLED: "Replaced",
+};
+
+/**
+ * A promotion's status as the Seller should read it. The schedule status is
+ * history; whether the promotion is IN FORCE is the Offer's answer. A window
+ * covering now on a paused, withdrawn, or ended Offer is never "Running", and a
+ * scheduled one on a withdrawn or ended Offer will never start.
+ */
+export function formatOfferPromotionStatus(
+  promotion: { status: OfferPromotionStatus; inForce: boolean },
+  lifecycle: OfferLifecycleState,
+): string {
+  const terminal = lifecycle === "WITHDRAWN" || lifecycle === "ENDED";
+  const reason =
+    lifecycle === "WITHDRAWN"
+      ? "the offer was withdrawn"
+      : lifecycle === "ENDED"
+        ? "the offer has ended"
+        : lifecycle === "PAUSED"
+          ? "the offer is paused"
+          : "the offer is not active";
+  if (promotion.status === "RUNNING" && !promotion.inForce) return `Not in effect — ${reason}`;
+  if (promotion.status === "SCHEDULED" && terminal) return `Will not take effect — ${reason}`;
+  return OFFER_PROMOTION_STATUS_LABELS[promotion.status];
+}
+
+export const OFFER_ACTIVATION_BLOCKER_LABELS: Readonly<Record<OfferActivationBlocker, string>> = {
+  PRODUCT_NOT_ACTIVE: "Activate the product first.",
+  EMAIL_UNVERIFIED: "Verify your email address first.",
+  FIRST_NAME_MISSING: "Your account has no first name on record.",
+  LAST_NAME_MISSING: "Your account has no last name on record.",
+  PARTICIPANT_MISSING: "Set up your seller account first.",
+  PARTICIPANT_SUSPENDED: "Your account is suspended.",
+  PARTICIPANT_NOT_ACTIVE: "Your account has not been approved to sell yet.",
+  SELLER_ROLE_NOT_ACTIVE: "Your seller role is not active yet.",
+  PAYMENT_NOT_READY: "Finish payment setup first.",
+  COMMERCE_APPROVAL_MISSING: "Monacado has not approved your account for selling yet.",
+  OFFER_PUBLISH_RESTRICTED: "Offers are restricted on your account.",
+};
+
+/** One line naming the first thing in the way. */
+export function formatOfferBlocker(blockers: readonly OfferActivationBlocker[]): string | null {
+  const first = blockers[0];
+  return first === undefined ? null : `Can't go live yet: ${OFFER_ACTIVATION_BLOCKER_LABELS[first]}`;
+}
+
+/** "10% of wholesale" / "$2.00 per sale" — the method in words. */
+export function formatOfferCommission(
+  commission:
+    | { method: "PERCENT_OF_WHOLESALE"; commissionBasisPoints: number }
+    | { method: "FIXED_AMOUNT"; fixedCommissionMinorUnits: number },
+  currency: string,
+): string {
+  return commission.method === "PERCENT_OF_WHOLESALE"
+    ? `${commission.commissionBasisPoints / 100}% of wholesale`
+    : `${formatRetailPrice(commission.fixedCommissionMinorUnits, currency)} per sale`;
+}
+
+/**
+ * The economics line a Seller confirms: wholesale, commission, and what they
+ * receive per sale before separately disclosed fees, with the policy version.
+ */
+export function formatOfferEconomics(terms: {
+  wholesalePriceMinorUnits: number;
+  currency: string;
+  calculatedCommissionMinorUnits: number;
+  calculatedSellerGrossProceedsMinorUnits: number;
+  commissionCalculationPolicyVersion: string;
+}): string {
+  return [
+    `Wholesale ${formatRetailPrice(terms.wholesalePriceMinorUnits, terms.currency)}`,
+    `promoter commission ${formatRetailPrice(terms.calculatedCommissionMinorUnits, terms.currency)}`,
+    `you receive ${formatRetailPrice(terms.calculatedSellerGrossProceedsMinorUnits, terms.currency)} per sale before fees`,
+    `policy ${terms.commissionCalculationPolicyVersion}`,
+  ].join(" · ");
 }

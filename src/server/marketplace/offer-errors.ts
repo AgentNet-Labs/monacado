@@ -18,7 +18,10 @@
  */
 
 import { attachInternalCause } from "../product/error-cause";
-import type { OfferReasonCode } from "../../contracts/marketplace/offer-source";
+import type {
+  OfferActivationBlocker,
+  OfferReasonCode,
+} from "../../contracts/marketplace/offer-source";
 
 export type OfferErrorCode =
   | "INVALID_OFFER_INPUT"
@@ -30,7 +33,14 @@ export type OfferErrorCode =
   | "OFFER_NOT_AUTHORIZED"
   | "NO_MATERIAL_CHANGE"
   | "CORRUPT_OFFER_RECORD"
-  | "OFFER_PERSISTENCE_FAILURE";
+  | "OFFER_PERSISTENCE_FAILURE"
+  | "OFFER_ALREADY_EXISTS"
+  | "OFFER_VERSION_STALE"
+  | "OFFER_NOT_READY"
+  | "OFFER_PROMOTION_PENDING"
+  | "OFFER_PROMOTION_NOT_REPLACEABLE"
+  | "OFFER_PROMOTION_NOT_RUNNING"
+  | "OFFER_CONFLICT";
 
 export class OfferError extends Error {
   readonly code: OfferErrorCode;
@@ -160,5 +170,99 @@ export class OfferPersistenceFailureError extends OfferError {
     super("OFFER_PERSISTENCE_FAILURE", "An Offer persistence operation failed", cause);
     this.name = "OfferPersistenceFailureError";
     this.stage = stage;
+  }
+}
+
+// — Phase 1.42: Seller acts —
+
+/**
+ * The Product already has a NON-TERMINAL Offer (Phase 1.42). At most one may
+ * exist; a new one may be created once the current one is WITHDRAWN or ENDED.
+ */
+export class OfferAlreadyExistsError extends OfferError {
+  constructor() {
+    super("OFFER_ALREADY_EXISTS", "This Product already has a current Offer");
+    this.name = "OfferAlreadyExistsError";
+  }
+}
+
+/**
+ * The version the Seller was looking at is no longer the current one — the
+ * standing version (`expectedVersion`) or the current promotion
+ * (`expectedPromotionVersion`). Nothing is written.
+ */
+export class OfferVersionStaleError extends OfferError {
+  constructor() {
+    super("OFFER_VERSION_STALE", "The Offer changed since it was read");
+    this.name = "OfferVersionStaleError";
+  }
+}
+
+/**
+ * Activation or resumption readiness failed. `blockers` is the contract's
+ * bounded vocabulary, every one that applies, in order.
+ */
+export class OfferNotReadyError extends OfferError {
+  readonly blockers: OfferActivationBlocker[];
+  constructor(blockers: OfferActivationBlocker[]) {
+    super("OFFER_NOT_READY", "The Offer cannot become live yet");
+    this.name = "OfferNotReadyError";
+    this.blockers = blockers;
+  }
+}
+
+/** A promotion is SCHEDULED or RUNNING: standing revision and a second schedule both wait. */
+export class OfferPromotionPendingError extends OfferError {
+  constructor() {
+    super("OFFER_PROMOTION_PENDING", "A promotion is scheduled or running");
+    this.name = "OfferPromotionPendingError";
+  }
+}
+
+/** Only a promotion that has not begun may be replaced. */
+export class OfferPromotionNotReplaceableError extends OfferError {
+  constructor() {
+    super("OFFER_PROMOTION_NOT_REPLACEABLE", "That promotion can no longer be replaced");
+    this.name = "OfferPromotionNotReplaceableError";
+  }
+}
+
+/** Only a RUNNING promotion may be ended early. */
+export class OfferPromotionNotRunningError extends OfferError {
+  constructor() {
+    super("OFFER_PROMOTION_NOT_RUNNING", "That promotion is not running");
+    this.name = "OfferPromotionNotRunningError";
+  }
+}
+
+/** A concurrent write won a uniqueness race. Nothing from this request was written. */
+export class OfferConflictError extends OfferError {
+  constructor(cause?: unknown) {
+    super("OFFER_CONFLICT", "The Offer changed concurrently", cause);
+    this.name = "OfferConflictError";
+  }
+}
+
+/**
+ * The Seller's confirmation is missing or does not match the exact version this
+ * write would mint (Phase 1.42). Carries the server's own disclosure for that
+ * version — the Seller's own economics, never another party's — so a client can
+ * show it and resubmit with a confirmation that matches.
+ */
+export class OfferConfirmationRequiredError extends OfferNotAuthorizedError {
+  readonly disclosure: {
+    version: string;
+    calculatedCommissionMinorUnits: number;
+    calculatedSellerGrossProceedsMinorUnits: number;
+    commissionCalculationPolicyVersion: string;
+  };
+  constructor(
+    capability: string,
+    reasonCodes: OfferReasonCode[],
+    disclosure: OfferConfirmationRequiredError["disclosure"],
+  ) {
+    super(capability, reasonCodes);
+    this.name = "OfferConfirmationRequiredError";
+    this.disclosure = disclosure;
   }
 }

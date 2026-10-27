@@ -32,10 +32,9 @@
  *      precision, because a rounding error in money is the bug that surfaces as
  *      a settlement complaint months later.
  *
- *   3. **The effective interval.** Two nullable columns, and both-NULL means
- *      "no interval" — unambiguous because the contract refuses an interval
- *      whose bounds are both null. One fact, one representation, so a read can
- *      never mint a spurious material change.
+ *   3. **The promotion window (Phase 1.42).** Two nullable columns: both NULL
+ *      on a STANDING version, both set on a SCHEDULED_PROMOTION version. Any
+ *      other combination is refused by the contract as corruption.
  */
 
 import type {
@@ -47,7 +46,7 @@ import {
   OfferSourceRecord,
   OfferSourceVersion,
   type OfferCommercialTerms,
-  type OfferEffectiveIntervalField,
+  type OfferPromotionWindow,
   type OfferSourceRecord as SourceRecord,
   type OfferSourceVersion as SourceVersion,
 } from "../../contracts/marketplace/offer-source";
@@ -125,17 +124,17 @@ function termsFromRow(row: VersionRow): unknown {
 }
 
 /**
- * Rebuild the effective interval from its two nullable columns.
+ * Rebuild the promotion window from its two nullable columns.
  *
- * Both NULL is the canonical "no interval". Any other combination is an interval
- * with at least one bound, which is exactly what the contract accepts.
+ * Both NULL is "no window". A half-set pair is passed through as-is, so the
+ * contract refuses it rather than this adapter guessing a bound.
  */
-function effectiveIntervalFromRow(row: VersionRow): OfferEffectiveIntervalField {
-  if (row.effectiveStartsAt === null && row.effectiveEndsAt === null) return null;
+function promotionWindowFromRow(row: VersionRow): unknown {
+  if (row.promotionEffectiveFrom === null && row.promotionEffectiveUntil === null) return null;
   return {
-    startsAt: isoOrNull(row.effectiveStartsAt),
-    endsAt: isoOrNull(row.effectiveEndsAt),
-  } as OfferEffectiveIntervalField;
+    effectiveFrom: isoOrNull(row.promotionEffectiveFrom),
+    effectiveUntil: isoOrNull(row.promotionEffectiveUntil),
+  };
 }
 
 /**
@@ -163,10 +162,10 @@ export function versionRowToSourceVersion(row: VersionRow): SourceVersion {
 
     internalProductId: row.internalProductId,
     sellerParticipantId: row.sellerParticipantId,
-    lifecycle: row.lifecycle,
-    availability: row.availability,
+    termsKind: row.termsKind,
     terms: termsFromRow(row),
-    effectiveInterval: effectiveIntervalFromRow(row),
+    promotionWindow: promotionWindowFromRow(row),
+    basisStandingVersion: row.basisStandingVersion,
 
     economics: {
       calculatedCommissionMinorUnits: minorUnits(
@@ -189,10 +188,9 @@ export function versionRowToSourceVersion(row: VersionRow): SourceVersion {
 }
 
 /**
- * Reconstruct the stable record from its row and its current version.
+ * Reconstruct the stable record from its row and its current STANDING version.
  *
- * `terms`, `effectiveInterval`, and `economics` come from the **current
- * version**, not from the pointer row: the version is authoritative for material
+ * `terms` and `economics` come from the **current standing version**, not from the pointer row: the version is authoritative for material
  * facts, and duplicating commercial terms onto the stable row would create a
  * second answer that could drift from the one a Listing binds to.
  *
@@ -205,7 +203,9 @@ export function offerRowToSourceRecord(row: OfferRow, currentVersion: VersionRow
   const parsed = OfferSourceRecord.safeParse({
     offerSourceRecordId: row.offerSourceRecordId,
     internalOfferId: row.internalOfferId,
+    offerRef: row.offerRef,
     currentSourceRecordVersion: row.currentSourceRecordVersion,
+    currentPromotionVersion: row.currentPromotionVersion,
 
     internalProductId: row.internalProductId,
     sellerParticipantId: row.sellerParticipantId,
@@ -214,10 +214,7 @@ export function offerRowToSourceRecord(row: OfferRow, currentVersion: VersionRow
     sourceRecordType: currentVersion.sourceRecordType,
     sourceClass: currentVersion.sourceClass,
 
-    lifecycle: row.lifecycle,
-    availability: row.availability,
     terms: current.terms,
-    effectiveInterval: current.effectiveInterval,
     economics: current.economics,
 
     createdAt: iso(row.createdAt),
@@ -262,14 +259,14 @@ export function termsToColumns(terms: OfferCommercialTerms): {
   };
 }
 
-/** Flatten the canonical effective interval into its two nullable columns. */
-export function effectiveIntervalToColumns(interval: OfferEffectiveIntervalField): {
-  effectiveStartsAt: Date | null;
-  effectiveEndsAt: Date | null;
+/** Flatten a promotion window (or none) into its two nullable columns. */
+export function promotionWindowToColumns(window: OfferPromotionWindow | null): {
+  promotionEffectiveFrom: Date | null;
+  promotionEffectiveUntil: Date | null;
 } {
-  if (interval === null) return { effectiveStartsAt: null, effectiveEndsAt: null };
+  if (window === null) return { promotionEffectiveFrom: null, promotionEffectiveUntil: null };
   return {
-    effectiveStartsAt: interval.startsAt === null ? null : new Date(interval.startsAt),
-    effectiveEndsAt: interval.endsAt === null ? null : new Date(interval.endsAt),
+    promotionEffectiveFrom: new Date(window.effectiveFrom),
+    promotionEffectiveUntil: new Date(window.effectiveUntil),
   };
 }

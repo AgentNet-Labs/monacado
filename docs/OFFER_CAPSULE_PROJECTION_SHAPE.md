@@ -10,6 +10,20 @@ explicitly identified immutable `OfferSourceVersion`.
 **No persistence, publication, Node registration, Registrar interaction, route,
 UI, Storefront, or Listing work is introduced by this phase.**
 
+> **Phase 1.42.** The projection shape and capsule version are unchanged, and
+> **no Offer is projected or published in Phase 1.42** — Offer terms are
+> private. Three inputs moved, because lifecycle is no longer a version fact:
+>
+> - the lifecycle reaches the mapper as a **recorded context value**,
+>   `offerLifecycle`, derived by the caller at one instant from the Offer's acts,
+>   so the projection stays a pure function of its inputs;
+> - eligibility maps `ACTIVE` → `AVAILABLE`, `PAUSED` →
+>   `TEMPORARILY_UNAVAILABLE`, `ENDED` → `ENDED`; `DRAFT` and `WITHDRAWN` are
+>   ineligible as before. `SUSPENDED` is not a lifecycle member, so
+>   `SUSPENDED_PUBLICATION_DEFERRED` is gone;
+> - `validFrom` / `validThrough` come only from a `SCHEDULED_PROMOTION`
+>   version's window (both bounds); a STANDING version emits neither.
+
 ## 1. The database remains the sole source of Offer truth
 
 This phase reads; it never writes. It:
@@ -125,6 +139,10 @@ divergent answer to what the thing is. The only Product linkage is a Node
 reference.
 
 ## 5. Eligibility
+
+> **Superseded in part by Phase 1.42** — see the note at the top: eligibility is
+> decided on the recorded `offerLifecycle`, `PAUSED` is the temporarily
+> unavailable state, and there is no `SUSPENDED` row.
 
 | Source lifecycle + availability | Result |
 | --- | --- |

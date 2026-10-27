@@ -322,6 +322,9 @@ describeDb("1.32 — SELLER-only private draft Product", () => {
         resaleEffective: false,
         resaleOptions: [{ target: "AVAILABLE", refusal: "PRODUCT_NOT_ACTIVE" }],
         promotionAuthorizations: [],
+        /* Phase 1.42 — no Offer yet, and a DRAFT one may be created at once;
+           activating it is what waits on readiness. */
+        offer: { offer: null, canCreate: true },
       },
       {
         productRef: expect.stringMatching(/^[0-9A-HJKMNP-TV-Z]{32}$/) as unknown as string,
@@ -339,6 +342,7 @@ describeDb("1.32 — SELLER-only private draft Product", () => {
         resaleEffective: false,
         resaleOptions: [{ target: "AVAILABLE", refusal: "PRODUCT_NOT_ACTIVE" }],
         promotionAuthorizations: [],
+        offer: { offer: null, canCreate: true },
       },
     ]);
     expect(JSON.stringify(home)).not.toMatch(/mon:|an:node/);

@@ -64,27 +64,29 @@ import {
   OfferSourceRecordId,
   OfferSourceRecordVersion,
   OfferSourceVersion,
+  OfferLifecycleState,
   calculateOfferEconomics,
-  type OfferAvailability,
-  type OfferLifecycleState,
 } from "./offer-source";
 import { MarketplaceParticipantId } from "./participant";
 
 // — Eligibility —
 
 /**
- * Whether an Offer source version may be projected at all, and as what.
+ * Whether an Offer may be projected at all, and as what.
  *
- * `SUSPENDED` and `WITHDRAWN` are ineligible **in this phase**: whether a
- * suspension or withdrawal should supersede, revoke, or simply stop refreshing an
- * already-published capsule is a publication-lifecycle decision, and answering it
- * by quietly projecting something would be answering it by accident.
+ * Since Phase 1.42 the lifecycle is not a version fact: it is Seller authority,
+ * derived from acts, and reaches the projection as a RECORDED context value
+ * (`offerLifecycle`) so the projection stays deterministic.
+ *
+ * `WITHDRAWN` is ineligible **in this phase**: whether a withdrawal should
+ * supersede, revoke, or simply stop refreshing an already-published capsule is
+ * a publication-lifecycle decision, and answering it by quietly projecting
+ * something would be answering it by accident. (`SUSPENDED` is reserved, not a
+ * lifecycle member, and so needs no reason here.)
+ *
+ * No Offer is published in Phase 1.42: Offer terms are private.
  */
-export const PROJECTION_ELIGIBILITY_REASONS = [
-  "DRAFT_NOT_PUBLIC",
-  "SUSPENDED_PUBLICATION_DEFERRED",
-  "WITHDRAWN_PUBLICATION_DEFERRED",
-] as const;
+export const PROJECTION_ELIGIBILITY_REASONS = ["DRAFT_NOT_PUBLIC", "WITHDRAWN_PUBLICATION_DEFERRED"] as const;
 export const ProjectionIneligibilityReason = z.enum(PROJECTION_ELIGIBILITY_REASONS);
 export type ProjectionIneligibilityReason = z.infer<typeof ProjectionIneligibilityReason>;
 
@@ -101,23 +103,18 @@ export type OfferProjectionEligibility =
  */
 export function evaluateOfferProjectionEligibility(input: {
   lifecycle: OfferLifecycleState;
-  availability: OfferAvailability;
 }): OfferProjectionEligibility {
   switch (input.lifecycle) {
     case "DRAFT":
       return { eligible: false, reason: "DRAFT_NOT_PUBLIC" };
-    case "SUSPENDED":
-      return { eligible: false, reason: "SUSPENDED_PUBLICATION_DEFERRED" };
     case "WITHDRAWN":
       return { eligible: false, reason: "WITHDRAWN_PUBLICATION_DEFERRED" };
     case "ENDED":
       return { eligible: true, commercialState: "ENDED" };
+    case "PAUSED":
+      return { eligible: true, commercialState: "TEMPORARILY_UNAVAILABLE" };
     case "ACTIVE":
-      return {
-        eligible: true,
-        commercialState:
-          input.availability === "AVAILABLE" ? "AVAILABLE" : "TEMPORARILY_UNAVAILABLE",
-      };
+      return { eligible: true, commercialState: "AVAILABLE" };
   }
 }
 
@@ -161,6 +158,11 @@ export const OfferProjectionContext = z.strictObject({
   productBinding: ProductNodeBinding,
   authorityBinding: AuthorityNodeBinding,
   sourceVersionBinding: SourceVersionBinding,
+  /**
+   * The Offer's DERIVED lifecycle at generation time (Phase 1.42) — recorded
+   * here, like `generatedAt`, so the same inputs always project the same bytes.
+   */
+  offerLifecycle: OfferLifecycleState,
   /** The capsule-version identity, issued elsewhere; this phase issues nothing. */
   capsuleId: CapsuleId,
   /** Semantic version of this capsule. */
@@ -365,27 +367,24 @@ export function projectOfferCapsule(input: {
     throw new OfferProjectionError("UNSUPPORTED_MAPPING_VERSION");
   }
 
-  const eligibility = evaluateOfferProjectionEligibility({
-    lifecycle: source.lifecycle,
-    availability: source.availability,
-  });
+  const eligibility = evaluateOfferProjectionEligibility({ lifecycle: context.offerLifecycle });
   if (!eligibility.eligible) {
     throw new OfferProjectionError("NOT_PROJECTION_ELIGIBLE", eligibility.reason);
   }
 
   const commission = mapCommission(source);
-  const interval = source.effectiveInterval;
+  /* Phase 1.42 — a SCHEDULED_PROMOTION version's window is the only validity
+     interval a version holds; a STANDING version has none. */
+  const window = source.promotionWindow;
 
   const data: OfferCapsuleData = {
     commercialState: eligibility.commercialState,
     price: mapPrice(source),
     promotable: source.terms.promotion.type === "PROMOTABLE",
     ...(commission !== undefined ? { commission } : {}),
-    /* One canonical public absence: a bound the source does not hold is an
-       omitted key, never `null`. The source already has exactly one
-       representation of "no interval", so this mapping is total. */
-    ...(interval?.startsAt != null ? { validFrom: interval.startsAt } : {}),
-    ...(interval?.endsAt != null ? { validThrough: interval.endsAt } : {}),
+    /* One canonical public absence: a version without a window omits both
+       keys, never `null`. */
+    ...(window !== null ? { validFrom: window.effectiveFrom, validThrough: window.effectiveUntil } : {}),
     relationships: {
       itemOffered: context.productBinding.productNode,
       offeredBy: context.authorityBinding.authorityNode,

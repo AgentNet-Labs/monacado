@@ -19,8 +19,14 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  CreateDraftOfferInput,
-  UpdateOfferInput,
+  ActivateOfferInput,
+  CreateOfferInput,
+  EndPromotionInput,
+  ReplacePromotionInput,
+  ResumeOfferInput,
+  ReviseOfferTermsInput,
+  SchedulePromotionInput,
+  StandDownOfferInput,
 } from "../src/contracts/marketplace/offer-record";
 import {
   AssignStorefrontGovernanceInput,
@@ -71,8 +77,14 @@ const APPLICATION = "src/server/marketplace/marketplace-application-service.ts";
  * nothing when a file moved.
  */
 const MUTATION_INPUTS = {
-  CreateDraftOfferInput,
-  UpdateOfferInput,
+  CreateOfferInput,
+  ReviseOfferTermsInput,
+  ActivateOfferInput,
+  StandDownOfferInput,
+  ResumeOfferInput,
+  SchedulePromotionInput,
+  ReplacePromotionInput,
+  EndPromotionInput,
   CreateDraftStorefrontInput,
   UpdateStorefrontInput,
   AssignStorefrontGovernanceInput,
@@ -120,19 +132,15 @@ describe("1. no marketplace mutation input accepts an authorization conclusion",
        `hasProductAuthority: true` gets an input error, which is what turns a
        silently-ignored field into a visible contract break. */
     const offer = {
-      internalProductId: `mon:product:${"A".repeat(26)}`,
-      sellerParticipantId: `mon:mpart:${"B".repeat(26)}`,
-      terms: {
-        price: { type: "PAID", wholesalePriceMinorUnits: 5000, wholesalePriceCurrency: "USD" },
-        promotion: { type: "NOT_PROMOTABLE" },
-      },
-      actingAccountId: "acct_1",
+      productRef: "0123456789ABCDEFGHJKMNPQRSTVWXYZ",
+      terms: { wholesalePrice: "50.00", currency: "USD", commission: { method: "PERCENT_OF_WHOLESALE", percent: "10" } },
       now: "2027-10-01T09:00:00.000Z",
     };
-    expect(CreateDraftOfferInput.safeParse(offer).success).toBe(true);
-    expect(
-      CreateDraftOfferInput.safeParse({ ...offer, hasProductAuthority: true }).success,
-    ).toBe(false);
+    expect(CreateOfferInput.safeParse(offer).success).toBe(true);
+    expect(CreateOfferInput.safeParse({ ...offer, hasProductAuthority: true }).success).toBe(false);
+    /* Phase 1.42 — nor may a caller name the acting account or the Seller. */
+    expect(CreateOfferInput.safeParse({ ...offer, actingAccountId: "acct_1" }).success).toBe(false);
+    expect(CreateOfferInput.safeParse({ ...offer, sellerParticipantId: `mon:mpart:${"B".repeat(26)}` }).success).toBe(false);
 
     const storefront = {
       ownerParticipantId: `mon:mpart:${"B".repeat(26)}`,

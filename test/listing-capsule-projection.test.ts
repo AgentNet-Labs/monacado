@@ -756,7 +756,14 @@ describe("43/44. only a purchasable Listing projects", () => {
 
   it("44c. refuses a promoted Listing on an unselectable Offer or outstanding review", () => {
     try {
-      project(promoted(), upstream({ offerAvailability: "TEMPORARILY_UNAVAILABLE" }));
+      project(promoted(), upstream({ currentOfferState: "PAUSED" }));
+      throw new Error("expected a projection error");
+    } catch (error) {
+      expect((error as ListingProjectionError).code).toBe("NOT_PROJECTION_ELIGIBLE");
+    }
+    /* Phase 1.42 — an accepted version that does not resolve blocks too. */
+    try {
+      project(promoted(), upstream({ acceptedOfferVersion: undefined }));
       throw new Error("expected a projection error");
     } catch (error) {
       expect((error as ListingProjectionError).code).toBe("NOT_PROJECTION_ELIGIBLE");

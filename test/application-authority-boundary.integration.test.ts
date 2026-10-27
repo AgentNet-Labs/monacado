@@ -24,13 +24,13 @@ import { createDraftParticipant } from "../src/server/marketplace/participant-se
 import { createDraftStorefront } from "../src/server/marketplace/storefront-service";
 import {
   appointStorefrontGovernance,
+  createOwnOfferAs,
   createProductSourceRecordAs,
   openDraftStorefront,
   submitStorefrontSourceVersion,
 } from "../src/server/marketplace/marketplace-application-service";
 import { StorefrontNotAuthorizedError } from "../src/server/marketplace/storefront-errors";
 import { ProductCreatorParticipantRequiredError } from "../src/server/product/errors";
-import { createDraftOffer } from "../src/server/marketplace/offer-service";
 import { syntheticProductSourceRecord } from "../src/contracts/fixtures/synthetic-source-record";
 
 const RUN = process.env.RUN_DB_TESTS === "1";
@@ -89,6 +89,7 @@ async function cleanupProducts(): Promise<void> {
   await db.offerSourceRecordVersionRow.deleteMany({
     where: { internalProductId: { startsWith: PRODUCT_PREFIX } },
   });
+  await db.offerAct.deleteMany({ where: { offer: { internalProductId: { startsWith: PRODUCT_PREFIX } } } });
   await db.offer.deleteMany({ where: { internalProductId: { startsWith: PRODUCT_PREFIX } } });
   await db.productSourceRecordVersionRow.deleteMany({
     where: { internalProductId: { startsWith: PRODUCT_PREFIX } },
@@ -366,20 +367,20 @@ describe.skipIf(!RUN)("Phase 1.18 — the application authority boundary (dispos
     // The legacy opaque reference is untouched beside it, not replaced.
     expect(row.authorityCreatorId).toBe(created.authority.creatorId);
 
-    const offer = await createDraftOffer(
+    /* Phase 1.42 — the gated Seller act, named by the Product's reference: the
+       authority it decides on is the one minted above, never a caller's claim. */
+    const offer = await createOwnOfferAs(
+      resolution.actor,
       {
-        internalProductId: created.internalProductId,
-        sellerParticipantId: seller.participantId,
-        terms: {
-          price: { type: "PAID", wholesalePriceMinorUnits: 5_000, wholesalePriceCurrency: "USD" },
-          promotion: { type: "NOT_PROMOTABLE" },
-        },
-        actingAccountId: seller.accountId,
+        productRef,
+        terms: { wholesalePrice: "50.00", currency: "USD", commission: { method: "PERCENT_OF_WHOLESALE", percent: "10" } },
         now: NOW,
       },
       { db },
     );
-    expect(offer.record.sellerParticipantId).toBe(seller.participantId);
+    expect(offer.state).toBe("DRAFT");
+    const offerRow = await db.offer.findUniqueOrThrow({ where: { offerRef: offer.offerRef } });
+    expect(offerRow.sellerParticipantId).toBe(seller.participantId);
   });
 
   it("discards a claimed creatorParticipantId and refuses an account with no participant", async () => {

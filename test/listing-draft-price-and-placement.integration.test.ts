@@ -32,7 +32,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { createAccount } from "../src/server/account/account-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
-import { createDraftOffer } from "../src/server/marketplace/offer-service";
+import { recordOfferAct, seedOffer } from "./support/offer-fixture";
 import {
   createListingSourceVersion,
   createPromotedListing,
@@ -107,6 +107,7 @@ async function cleanup(): Promise<void> {
   await db.offerSourceRecordVersionRow.deleteMany({
     where: { internalProductId: { startsWith: PRODUCT_PREFIX } },
   });
+  await db.offerAct.deleteMany({ where: { offer: { internalProductId: { startsWith: PRODUCT_PREFIX } } } });
   await db.offer.deleteMany({ where: { internalProductId: { startsWith: PRODUCT_PREFIX } } });
   await db.productSourceRecordVersionRow.deleteMany({
     where: { internalProductId: { startsWith: PRODUCT_PREFIX } },
@@ -316,7 +317,7 @@ describe.skipIf(!RUN)("Phase 1.34 Ruling B — a private DRAFT Listing needs no 
     const promoter = await seedParticipant(["PROMOTER"]);
     const internalProductId = await seedProduct(seller.participantId);
     const storefrontId = await seedStorefront(promoter.participantId);
-    const offer = await createDraftOffer(
+    const offer = await seedOffer(
       {
         internalProductId,
         sellerParticipantId: seller.participantId,
@@ -591,7 +592,7 @@ describe.skipIf(!RUN)("Phase 1.34 Ruling C — one current Listing per Product +
     const promoter = await seedParticipant(["SELLER", "PROMOTER"]);
     const internalProductId = await seedProduct(seller.participantId);
     const storefrontId = await seedStorefront(promoter.participantId);
-    const offer = await createDraftOffer(
+    const offer = await seedOffer(
       {
         internalProductId,
         sellerParticipantId: seller.participantId,

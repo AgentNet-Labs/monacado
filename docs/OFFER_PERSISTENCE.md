@@ -1,4 +1,4 @@
-# Offer Persistence (Phase 0M.6)
+# Offer Persistence (Phase 0M.6; Seller acts in Phase 1.42)
 
 The authoritative Offer record, its immutable source-record versions, and the
 narrow service layer over them — the middle stage that was missing between the
@@ -22,6 +22,85 @@ stores exactly that and nothing more.
 
 ---
 
+## Phase 1.42 — Seller acts, lifecycle acts, and promotions
+
+> **Read this first.** Phase 1.42 (migration
+> `20261027000000_offer_lifecycle_acts_and_promotions`) replaced the 0M.6 write
+> path. Sections marked *Superseded by Phase 1.42* describe the earlier shape;
+> where they disagree with this section, this section governs. The semantics are
+> in [`AUTHORITATIVE_OFFER_SOURCE_MODEL.md`](AUTHORITATIVE_OFFER_SOURCE_MODEL.md)
+> (*Phase 1.42*).
+
+**Schema.**
+
+- `Offer` gains `offerRef` (unique, opaque, the only application-facing
+  selector), `currentPromotionVersion` (nullable), and
+  `nonTerminalForProductId` (nullable, **unique** — at most one non-terminal
+  Offer per Product). It **loses** `lifecycle` and `availability`.
+- `OfferSourceRecordVersionRow` gains `termsKind` (`STANDING` /
+  `SCHEDULED_PROMOTION`), `basisStandingVersion`, and
+  `promotionEffectiveFrom` / `promotionEffectiveUntil`; it **loses** `lifecycle`,
+  `availability`, and the effective-interval columns.
+- New **`OfferAct`**: one row per Seller act (`ACTIVATE`, `PAUSE`, `RESUME`,
+  `WITHDRAW`, `END_PROMOTION`) with `state` / `previousState`,
+  `supersedesActId` (**unique** — no fork), `currentForOfferId` (**unique** —
+  one current act), `activatedStandingVersion`, the overall `offerEffectiveUntil`
+  (ACTIVATE only), `endedPromotionVersion` (END_PROMOTION only), the acting
+  participant and account, and `actedAt`. Two more RESTRICT foreign keys (its
+  Offer and its actor); still no CASCADE.
+- The migration is **destructive by design and guarded**: it refuses to run
+  unless both Offer tables are empty. Production had zero Offer rows when it was
+  written.
+
+**Service** (`offer-service.ts`; routes reach it through
+`marketplace-application-service`):
+
+| Act | Writes |
+| --- | --- |
+| `createOfferAs` | Offer (DRAFT, marker held) + STANDING version "1" |
+| `reviseOfferTermsAs` | a new STANDING version, pointer moved |
+| `activateOfferAs` | an ACTIVATE act bound to the confirmed STANDING version |
+| `pauseOfferAs` / `resumeOfferAs` | a PAUSE / RESUME act — **no version** |
+| `withdrawOfferAs` | a WITHDRAW act; marker released |
+| `schedulePromotionAs` / `replacePromotionAs` | a SCHEDULED_PROMOTION version; promotion pointer moved |
+| `endPromotionAs` | an END_PROMOTION act; lifecycle unchanged |
+
+**Concurrency.** Every act locks the Product row `FOR UPDATE` before reading
+anything it decides on, so all Offer acts on a Product — and the Product's own
+lifecycle, suspension, resale, and Promotion Authorization acts — serialise. The
+uniques above back that; a uniqueness race is `OfferConflictError` (409) and
+nothing of the losing request is written.
+
+**No cron.** Nothing stores ENDED, a promotion's status, or the effective terms.
+An Offer past its overall end is derived ENDED with its marker still held; the
+next create on that Product, under the lock, derives the holder ENDED at its own
+instant and releases the marker before inserting — deterministic, and never
+earlier than the end.
+
+**Seller read model.** `readSellerProductOffersIn` (`offer-read-service.ts`)
+gives `/account` each Product's current (or most recent) Offer: derived
+lifecycle and promotion status at one instant, standing and promotion terms with
+exact commission, Seller gross proceeds, and policy version, readiness blockers,
+the next version label, and which acts are available. Seller-only; no internal
+id leaves it.
+
+The read model agrees with the services by construction. Each offered act is
+that act's own contract decision (`canChangeOfferTerms`, `canSchedulePromotion`,
+…) for the acting subject, available when allowed or refused only for the
+missing confirmation the two-step exchange supplies (`isOfferActionAvailable`).
+`canCreate` is the create operation's own gate (`evaluateOfferCreationIn`:
+authority, drafting gates, suspension, and the non-terminal marker at that
+instant), evaluated without writing. A promotion carries its **schedule**
+status and, separately, `inForce`: a window covering now on a `PAUSED`,
+`WITHDRAWN`, or `ENDED` Offer is `RUNNING` by schedule but not in force, and the
+page never presents it as running.
+
+**Compatibility.** Listing eligibility and checkout read the Offer's **current
+derived lifecycle** (`readOfferLifecycleBySourceRecordIn`) for "does the Seller
+currently offer this", and the accepted version (which now carries terms only)
+for the terms. Exact-version bindings — Listing `offerDependency`, transaction
+snapshots — are unchanged.
+
 ## 1. Database authority
 
 The database is the sole source of truth (ADR §12). Every column here is
@@ -35,6 +114,10 @@ publication state, and retention state. A projection mapping is a
 capsulization-layer control (ADR §12.2), and this is the transactional layer.
 
 ## 2. Stable Offer versus immutable source versions
+
+> **Superseded in part by Phase 1.42.** `Offer` no longer carries `lifecycle` or
+> `availability`; lifecycle is the `OfferAct` chain. Exactly one STANDING
+> version is current; promotions are versions too, pointed at separately.
 
 Two tables, mirroring the Product and Storefront pattern.
 
@@ -188,6 +271,13 @@ is hard-coded nowhere in this phase**, and a test asserts its absence.
 
 ## 8. Authorization
 
+> **Superseded in part by Phase 1.42.** The decisions are those listed in the
+> source model's *Phase 1.42* section. The "draft-capable only" limitation below
+> is **lifted**: activation and resumption now succeed for a Seller who meets
+> the readiness gates, which 0M.8 and Phases 1.37–1.39 made satisfiable.
+> Activation and resumption also pass the governed `offer:publish` seam
+> (`assertOfferMayBecomeCommerciallyLive`).
+
 Every decision is `0M.2A`'s own — `canCreateDraftOffer`, `canChangeOfferTerms`,
 `canActivateOffer`, `canResumeOffer`, `canSuspendOffer`, `canEndOffer`,
 `canWithdrawOffer`. The service assembles the facts they need and honours the
@@ -232,6 +322,9 @@ The authorization trace records an **opaque** `mon:actor:` identifier — never 
 email address or a display name.
 
 ## 10. Foreign keys and delete behaviour
+
+> **Phase 1.42:** eight, with `OfferAct.internalOfferId → Offer` and
+> `OfferAct.actorParticipantId → MarketplaceParticipant`, both RESTRICT.
 
 **Six foreign keys. All `RESTRICT`. No `CASCADE` anywhere**, and none was
 required:
@@ -316,6 +409,13 @@ Node, registers nothing, and creates no publication, outbox, or receipt row.
 
 ## 14. Service operations
 
+> **Superseded by Phase 1.42.** `createDraftOffer`, `createOfferSourceVersion`,
+> and `evaluateOfferState` are gone; the Seller acts are listed in *Phase 1.42*
+> above. The reads (`getOffer`, `getCurrentSourceVersion`, `getSourceVersion`,
+> `listSourceVersions`) remain, plus `readOfferStateIn`, `lifecycleAt`, and
+> `promotionStatusAt`. Instants are still caller-supplied; the routes supply the
+> request instant.
+
 All in `src/server/marketplace/offer-service.ts`. No HTTP route, no UI, no global
 Prisma access inside contract code, and dependency injection consistent with the
 Product, Participant, and Storefront server modules — the database, identity
@@ -336,6 +436,13 @@ An update that changes nothing material raises `NoMaterialOfferChangeError`
 rather than minting a version that asserts nothing.
 
 ## 15. Deferred
+
+> **Phase 1.42:** HTTP routes and a minimal Seller UI now exist. Still deferred:
+> Promoter visibility and acceptance of Offer terms, Listing propagation and
+> review on Offer change, aggregate promoted-commerce eligibility, Offer
+> publication and capsules, multiple simultaneous promotions, commission
+> promotional overrides, currencies other than USD, Promoter-specific Offers,
+> and any change to checkout.
 
 Not implemented, and named rather than silently omitted: Listing persistence
 (`0M.7`); Offer AgentNet Node issuance, publication, Registrar registration, and

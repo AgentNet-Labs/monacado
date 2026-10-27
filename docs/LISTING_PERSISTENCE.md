@@ -130,6 +130,14 @@ exact version in an update. There is no "rebind to current" flag and no code pat
 that upgrades an accepted version by observing a newer one. Prior Listing
 versions continue to record what was originally accepted.
 
+> **Phase 1.42.** Offer versions are now `STANDING` or `SCHEDULED_PROMOTION`, and
+> pausing, resuming, or withdrawing an Offer mints no version at all. None of it
+> touches a Listing's binding. A Listing whose Seller pauses, withdraws, or lets
+> the Offer end stops being buyer-active through the Offer's **current derived
+> lifecycle** (`OFFER_NOT_CURRENTLY_OFFERED`), with the accepted version left
+> exactly as it was. Applying a running promotion to a promoted Listing, and
+> review on Offer change, remain deferred (Contract §19, §34).
+
 ## 7. Retail price and the scheduled sale
 
 The commercial retail price is persisted as an authoritative Listing fact in

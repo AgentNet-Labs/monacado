@@ -1,4 +1,4 @@
-# Authoritative Offer Source Model (Phase 0M.2A, corrected by 0M.2C)
+# Authoritative Offer Source Model (Phase 0M.2A, corrected by 0M.2C; Seller authority in Phase 1.42)
 
 > **Authority status (Documentation Governance 2B).** Remains **governing
 > detail** for Offer authority and terms
@@ -22,6 +22,105 @@ source versions a later Offer Capsule Projection Shape will be generated *from*.
 **No capsule contract, JSON-LD, Node or capsule identity, projection mapping,
 canonicalization, hashing, publication preparation, persistence, migration,
 route, or UI is introduced by this phase.**
+
+## Phase 1.42 — Seller Offer Authority (reconciliation)
+
+> **Read this first.** Phase 1.42 implemented the Offer as the **Seller's
+> commercial authority for promoted resale** (Contract §12, §16, §19) and
+> changed the model below in the places marked *Superseded by Phase 1.42*. Where
+> the body and this section disagree, **this section governs**; the Contract
+> governs both.
+
+**Scope.** An Offer is the Seller-authored standing terms under which a Promoter
+may acquire and resell one Product: **wholesale price and commission**, PAID +
+PROMOTABLE, USD only, a positive wholesale amount. Retail price stays on the
+Listing (Contract §15). The 7.5% + $1 acquisition economics (§17–§18) are
+policy, never stored on the Offer. Promotion Authorization (§16.1) is a separate
+record and is neither required nor consulted by any Offer act.
+
+**Cardinality.** At most **one non-terminal Offer per Product**
+(`Offer.nonTerminalForProductId`, unique). A Product whose Offer is WITHDRAWN or
+ENDED may get a **new** Offer with a new `offerRef`; the terminal one keeps its
+full history.
+
+**Lifecycle is split from commercial versions.** Lifecycle is Seller authority
+recorded as an append-only, linear chain of `OfferAct` rows (ACTIVATE, PAUSE,
+RESUME, WITHDRAW, END_PROMOTION) and **derived on read**:
+
+| State | Meaning |
+| --- | --- |
+| `DRAFT` | created; no act yet |
+| `ACTIVE` | activated against the exact confirmed STANDING version |
+| `PAUSED` | the Seller stood it down; RESUME returns it to ACTIVE |
+| `WITHDRAWN` | terminal, by a Seller act |
+| `ENDED` | terminal, **derived only**: the optional overall `effectiveUntil` recorded on activation has passed (exclusive end). No act or job records it |
+
+Transitions: `ACTIVATE` DRAFT→ACTIVE · `PAUSE` ACTIVE→PAUSED · `RESUME`
+PAUSED→ACTIVE · `WITHDRAW` DRAFT/ACTIVE/PAUSED→WITHDRAWN. **PAUSE and RESUME
+mint no commercial version.** Seller-controlled `SUSPENDED` is **removed**: it is
+reserved for a future operator act and is not a lifecycle member. The Offer's
+"availability" (§16) is expressed by `PAUSED`; there is no separate
+availability field. Product lifecycle, resale availability, and readiness
+changes **never rewrite** Offer lifecycle — they gate activate and resume only.
+
+**Commercial versions hold terms only.** Each version is an immutable full
+snapshot, `termsKind` `STANDING` or `SCHEDULED_PROMOTION`, with its economics
+computed by the one calculator. Labels are **allocated by the server** (the next
+integer in the Offer's chain), and every version supersedes the previous one in
+one linear chain. Exactly one STANDING version is current
+(`currentSourceRecordVersion`).
+
+**Scheduled promotions.** A promotion is a `SCHEDULED_PROMOTION` version that
+overrides **wholesale only** (the commission is the standing one), over a
+half-open window `[effectiveFrom, effectiveUntil)`, built on a named
+`basisStandingVersion`. At most one is upcoming or running
+(`currentPromotionVersion`). It **starts and reverts automatically** — no act and
+no job; a future promotion may be **replaced** (the replaced version stays in
+history), and a running one may be **ended early** by an `END_PROMOTION` act.
+Promotions may be scheduled on an `ACTIVE` or `PAUSED` Offer, never backdated.
+
+**Effective terms.** `effectiveOfferTerms(offer, at)` is pure: not
+lifecycle-effective → none; ENDED → none; a RUNNING promotion → its version;
+else the standing version. It is **necessary, never sufficient**, for promoted
+commerce, and Phase 1.42 wires it into neither checkout nor Listings.
+
+**Confirmation and staleness.** Seller acts that depend on commercial state
+carry `expectedVersion` (and `expectedPromotionVersion`); a stale one is a 409.
+Activation confirms the exact current STANDING version's economics; a **live
+standing revision confirms the exact new version**; a promotion confirms the
+exact promotional version. An unconfirmed request is refused with the server's
+own disclosure of that version, which the Seller confirms and resends. DRAFT
+revisions need no confirmation. A standing revision is refused while a promotion
+is upcoming or running.
+
+**Readiness for activate and resume** (`evaluateOfferActivationReadiness`,
+every blocker reported): Product `ACTIVE`, verified email, nonblank declared
+names, participant `ACTIVE`, SELLER role `ACTIVE`, not suspended, commerce
+approval `APPROVED`, payment `ENABLED`, no `offer:publish` restriction — the
+Seller's public marketplace identity (Contract §5, §12). Not conditions: resale
+availability, Promotion Authorization, a Storefront, a Listing, or any Promoter
+fact.
+
+**Material changes (Contract §19).** Wholesale and commission changes are
+material: they mint a new version and are classified
+(`WHOLESALE_PRICE_CHANGED`, `COMMISSION_TERMS_CHANGED`,
+`OTHER_MATERIAL_OFFER_CHANGE`). `COMMERCIAL_AVAILABILITY_CHANGED` stays in the
+vocabulary and is **never emitted**: availability is no longer a version fact.
+Propagation to promoted Listings remains the Contract §34 gap.
+
+**Owner ruling — scheduled promotions are material (Contract §19).** A
+scheduled promotion's wholesale override is a material change. Promoter
+acceptance (not built in 1.42) binds the **exact promotional version**, and may
+be given any time after scheduling and before `effectiveFrom`. The arrival of
+`effectiveFrom` requires **no new acceptance**. When the promotion ends —
+naturally or early — and the exact prior standing version resumes, **no new
+acceptance** is needed if that standing version was already accepted and is
+unchanged. Because a standing revision is refused while a promotion is
+upcoming or running, the standing version that resumes is always the one the
+promotion was built on (`basisStandingVersion`).
+
+**Privacy.** Offer terms are **private and unpublished in Phase 1.42**: no
+Offer capsule, Node, or publication, and no Promoter visibility.
 
 ## 1. The database is the sole source of truth
 
@@ -107,6 +206,11 @@ any of them could arrive.
 
 ## 5. Operational lifecycle
 
+> **Superseded by Phase 1.42.** The table below is the 0M.2A lifecycle. It is
+> now `DRAFT`, `ACTIVE`, `PAUSED`, `WITHDRAWN`, `ENDED`, recorded as acts and
+> derived — see *Phase 1.42* above. `SUSPENDED` is reserved, not a member;
+> `ENDED` is derived from the overall end, not a transition anyone performs.
+
 ```
 DRAFT      → ACTIVE, WITHDRAWN
 ACTIVE     → SUSPENDED, ENDED, WITHDRAWN
@@ -127,6 +231,10 @@ and source-version retention state — four different questions, four vocabulari
 that share no member.
 
 ## 6. Commercial availability
+
+> **Superseded by Phase 1.42.** There is no availability field. A Seller stands
+> an Offer down by pausing it (`PAUSED`); "currently usable terms" is
+> `effectiveOfferTerms`. `isCommerciallySelectable` no longer exists.
 
 `AVAILABLE` | `TEMPORARILY_UNAVAILABLE`.
 
@@ -331,6 +439,14 @@ accepted order.**
 
 ## 9. Effective interval
 
+> **Superseded by Phase 1.42.** Versions carry no effective interval. The
+> Offer's optional overall end is recorded on the ACTIVATE act and derives
+> `ENDED` — so, unlike the rule below, **an elapsed overall end does move the
+> derived lifecycle**, deterministically and with the act that set it as its
+> record. A promotion's window is `promotionWindow` on a
+> `SCHEDULED_PROMOTION` version: both bounds required, `effectiveUntil`
+> strictly later; `null` is its only absence, on STANDING versions.
+
 Optional `startsAt` and `endsAt`, each expressed as an explicit `null` when
 absent — matching the nullable columns a persistence phase will use, so the
 authoritative snapshot and the eventual row agree without a translation step.
@@ -357,6 +473,18 @@ normalizing *inside* the record schema would make both spellings "valid input",
 which is how a second representation creeps back in.
 
 ## 10. Seller authority decisions
+
+> **Superseded in part by Phase 1.42.** The capabilities are now
+> `offer:draft:create`, `offer:activate`, `offer:terms:change`, `offer:pause`,
+> `offer:resume`, `offer:withdraw`, `offer:promotion:schedule`, and
+> `offer:promotion:end` (`canSuspendOffer` and `canEndOffer` are gone).
+> Activation and resumption decide Seller authority, Product authority, the
+> transition, and (activation) the exact-version confirmation; **commerce
+> readiness is decided separately** by `evaluateOfferActivationReadiness`, and
+> the service requires both. A `PAUSED` Offer's terms face the full commerce
+> gates and a confirmation, as an `ACTIVE` one's do. Stand-downs (pause,
+> withdraw, ending a promotion) still require neither readiness nor Product
+> authority.
 
 Seven pure decisions returning bounded `ALLOW` / `DENY` with safe reason codes.
 They **reuse** the Phase 0M.1 account, participant, role, and payment-readiness
@@ -410,6 +538,11 @@ that greps the module source.
 
 ## 11. Immutable source versioning
 
+> **Superseded in part by Phase 1.42.** The material snapshot is Product
+> reference, Seller reference, `termsKind`, terms, `promotionWindow`, and
+> `basisStandingVersion` — **no lifecycle, availability, or effective interval**.
+> Labels are allocated by the server, not supplied.
+
 **Every material Offer change creates a new immutable Authoritative Source
 Version.** A version carries:
 
@@ -458,6 +591,11 @@ mapping, projection-hash, Registrar, receipt, publication, or JSON-LD field, and
 that an ANS-shaped value is refused as the internal Offer id.
 
 ## 12. Material versus operational changes
+
+> **Superseded in part by Phase 1.42.** The material field set is
+> `internalProductId` · `sellerParticipantId` · `price` · `promotion` ·
+> `commission`. Lifecycle and availability are no longer version facts and are
+> not change fields at all.
 
 **Material** — a new source version is required:
 `internalProductId` · `sellerParticipantId` · `lifecycle` · `availability` ·

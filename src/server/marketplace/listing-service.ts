@@ -93,6 +93,8 @@ import {
 } from "./participant-standing-service";
 import { ParticipantActionNotPermittedError } from "./participant-standing-errors";
 import { versionRowToSourceVersion as offerVersionRowToSourceVersion } from "./offer-mapper";
+import { readOfferLifecycleBySourceRecordIn } from "./offer-service";
+import type { OfferLifecycleState } from "../../contracts/marketplace/offer-source";
 import {
   cryptoListingIdProvider,
   cryptoListingRefProvider,
@@ -647,7 +649,8 @@ export async function getEffectivePrice(
  */
 export async function evaluateBuyerEligibility(
   internalListingId: string,
-  supplied: { productAvailability: GeneralAvailabilityState },
+  /** `at` (Phase 1.42): the instant the Offer's derived lifecycle is read at. */
+  supplied: { productAvailability: GeneralAvailabilityState; at: string },
   deps: ListingServiceDeps = {},
 ): Promise<ListingBuyerEligibility> {
   const db = deps.db ?? getPrisma();
@@ -676,12 +679,12 @@ export async function evaluateBuyerEligibility(
        from the EXACT accepted version and never from the Offer's current one.
 
        And, separately, whether the Seller CURRENTLY offers it at all — Phase
-       1.15, Ruling 1. Resolved from the stable `Offer` record by the same
+       1.15, Ruling 1. Derived from the Offer's acts (Phase 1.42) by the same
        `offerSourceRecordId` the dependency names, so this read agrees with the
        checkout seam rather than reporting a Listing buyable that checkout would
        refuse. */
-    let offer: { lifecycle: string; availability: string } | undefined;
-    let currentOffer: { lifecycle: string; availability: string } | undefined;
+    let offer: { sourceRecordVersion: string } | undefined;
+    let currentOffer: { state: OfferLifecycleState } | undefined;
     if (placement.listingType === "PROMOTED") {
       const offerRow = await db.offerSourceRecordVersionRow.findUnique({
         where: {
@@ -691,18 +694,15 @@ export async function evaluateBuyerEligibility(
           },
         },
       });
-      if (offerRow !== null) {
-        offer = { lifecycle: offerRow.lifecycle, availability: offerRow.availability };
-      }
-      const stableOffer = await db.offer.findUnique({
-        where: { offerSourceRecordId: placement.offerDependency.offerSourceRecordId },
-      });
-      if (stableOffer !== null) {
-        currentOffer = {
-          lifecycle: stableOffer.lifecycle,
-          availability: stableOffer.availability,
-        };
-      }
+      if (offerRow !== null) offer = { sourceRecordVersion: offerRow.sourceRecordVersion };
+      /* Phase 1.42 — the CURRENT lifecycle is derived from the Offer's acts at an
+         explicit instant; nothing on any row says ACTIVE or ENDED. */
+      const state = await readOfferLifecycleBySourceRecordIn(
+        db,
+        placement.offerDependency.offerSourceRecordId,
+        supplied.at,
+      );
+      if (state !== null) currentOffer = { state };
     }
 
     return evaluateListingBuyerEligibility({
@@ -716,8 +716,8 @@ export async function evaluateBuyerEligibility(
       },
       controllingParticipantStatus: controller.status as never,
       controllingRoleStatus: (role?.status ?? "NONE") as never,
-      ...(offer === undefined ? {} : { offer: offer as never }),
-      ...(currentOffer === undefined ? {} : { currentOffer: currentOffer as never }),
+      ...(offer === undefined ? {} : { offer }),
+      ...(currentOffer === undefined ? {} : { currentOffer }),
       ...(placement.listingType === "PROMOTED"
         ? { upstreamReviewState: placement.upstreamReviewState }
         : {}),

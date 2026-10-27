@@ -20,11 +20,8 @@ import { grantProductCreatorAuthority } from "./support/product-authority-fixtur
 import { syntheticProductRef } from "./support/product-ref-fixture";
 import { createAccount } from "../src/server/account/account-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
-import {
-  createDraftOffer,
-  createOfferSourceVersion,
-  getSourceVersion as getOfferSourceVersion,
-} from "../src/server/marketplace/offer-service";
+import { getSourceVersion as getOfferSourceVersion } from "../src/server/marketplace/offer-service";
+import { seedOffer as seedOfferRows, seedOfferStandingVersion } from "./support/offer-fixture";
 import { createPromotedListing } from "../src/server/marketplace/listing-service";
 import {
   acknowledgeNotificationObligation,
@@ -116,6 +113,7 @@ async function cleanup(): Promise<void> {
   });
   await db.storefront.deleteMany({ where: { ownerParticipantId: owned } });
   await db.offerSourceRecordVersionRow.deleteMany({ where: { sellerParticipantId: owned } });
+  await db.offerAct.deleteMany({ where: { offer: { sellerParticipantId: owned } } });
   await db.offer.deleteMany({ where: { sellerParticipantId: owned } });
   /* Phase 1.18 — the Offer fixture now records creator authority on the
      Product's current source version, so the version row has to go first. */
@@ -199,7 +197,7 @@ const OFFER_TERMS_V1 = {
 };
 
 async function seedOffer(internalProductId: string, seller: { accountId: string; participantId: string }) {
-  return createDraftOffer(
+  return seedOfferRows(
     {
       internalProductId,
       sellerParticipantId: seller.participantId,
@@ -254,10 +252,9 @@ async function raiseWholesalePrice(
   seller: { accountId: string; participantId: string },
 ) {
   const prior = await getOfferSourceVersion(internalOfferId, "1", { db });
-  const next = await createOfferSourceVersion(
+  const label = await seedOfferStandingVersion(
     {
       internalOfferId,
-      sourceRecordVersion: "2",
       terms: {
         ...OFFER_TERMS_V1,
         price: {
@@ -271,6 +268,7 @@ async function raiseWholesalePrice(
     },
     { db },
   );
+  const next = { currentVersion: await getOfferSourceVersion(internalOfferId, label, { db }) };
   const categories = classifyOfferBusinessChanges(prior, next.currentVersion);
   return { prior, next, categories };
 }

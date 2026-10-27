@@ -69,11 +69,11 @@ const OfferType = z.union([
 /**
  * What a consumer of the capsule is told about the Offer's commercial standing.
  *
- * Derived from authoritative lifecycle **and** availability; never a copy of
- * either. The internal `DRAFT`, `SUSPENDED`, and `WITHDRAWN` states have no
- * public member here, because an Offer in one of those states is not projected
- * at all — a public vocabulary able to say "suspended" would invite publishing
- * one.
+ * Derived from the authoritative lifecycle; never a copy of it. Since Phase
+ * 1.42 that lifecycle is Seller authority recorded as acts: `ACTIVE` is
+ * `AVAILABLE`, `PAUSED` is `TEMPORARILY_UNAVAILABLE`, and a derived `ENDED` is
+ * `ENDED`. `DRAFT` and `WITHDRAWN` have no public member, because an Offer in
+ * either is not projected at all (and `SUSPENDED` is reserved, not a state).
  */
 export const PUBLIC_COMMERCIAL_STATES = [
   "AVAILABLE",
@@ -177,9 +177,9 @@ export type OfferRelationships = z.infer<typeof OfferRelationships>;
 /**
  * The complete public Offer claim set.
  *
- * `validFrom` / `validThrough` are **omitted** when the source has no bound —
- * one canonical public representation of absence, mirroring the source's single
- * canonical `null`. They are optional rather than nullable, so an explicit
+ * `validFrom` / `validThrough` are **omitted** when the source version has no
+ * window — since Phase 1.42, a STANDING version never has one, and a
+ * SCHEDULED_PROMOTION version always carries both bounds. They are optional rather than nullable, so an explicit
  * `null` is refused and two spellings cannot coexist.
  */
 export const OfferCapsuleDataBase = z.strictObject({

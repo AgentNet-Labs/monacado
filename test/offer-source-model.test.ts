@@ -1,5 +1,7 @@
 /**
- * Authoritative Offer source-model tests (Phase 0M.2A).
+ * Authoritative Offer source-model tests (Phase 0M.2A; lifecycle and promotion
+ * windows reworked in Phase 1.42 — the detailed lifecycle, promotion-status, and
+ * effective-terms cases live in `offer-lifecycle-and-terms.test.ts`).
  *
  * NO DATABASE, NO NETWORK, NO CLOCK. Every instant is an explicit literal, and
  * every authority decision is a pure function of its argument.
@@ -26,13 +28,13 @@ import {
   MAX_COMMISSION_BASIS_POINTS,
   NEVER_PROJECTION_ELIGIBLE_OFFER_DATA,
   OFFER_CAPABILITIES,
+  OFFER_LIFECYCLE_ACT_TRANSITIONS,
   OFFER_LIFECYCLE_STATES,
   OPERATIONAL_ONLY_OFFER_FIELDS,
   OfferAuthorityDecision,
-  OfferAvailability,
   OfferCommercialTerms,
-  OfferEffectiveInterval,
   OfferLifecycleState,
+  OfferPromotionWindow,
   OfferPrice,
   OfferSourceRecord,
   OfferSourceVersion,
@@ -43,20 +45,23 @@ import {
   OFFER_BUSINESS_CHANGE_ORDER,
   classifyOfferBusinessChanges,
   PROJECTION_ELIGIBLE_OFFER_FIELDS,
-  normalizeOfferEffectiveIntervalInput,
+  RESERVED_OFFER_LIFECYCLE_STATES,
   canActivateOffer,
   canChangeOfferTerms,
   canCreateDraftOffer,
-  canEndOffer,
+  canEndPromotion,
+  canPauseOffer,
   canResumeOffer,
-  canSuspendOffer,
+  canSchedulePromotion,
   canWithdrawOffer,
   classifyOfferChange,
-  isCommerciallySelectable,
+  decideOfferLifecycleAct,
+  deriveOfferLifecycleState,
+  effectiveOfferTerms,
+  evaluateOfferActivationReadiness,
   isNeverProjectionEligible,
   isProjectionEligibleOfferField,
   isTerminalOfferLifecycleState,
-  isValidOfferLifecycleTransition,
   materialChangesBetween,
   type OfferLifecycleActionRequest,
 } from "../src/contracts/marketplace/offer-source";
@@ -74,6 +79,7 @@ const OTHER_OFFER_ID = `mon:offer:${body(6)}`;
 const PRODUCT_ID = `mon:product:${body(7)}`;
 const OTHER_PRODUCT_ID = `mon:product:${body(8)}`;
 const ACTOR_ID = `mon:actor:${body(9)}`;
+const OFFER_REF = "ABCDEFGHJKMNPQRSTVWXYZ0123456789";
 
 const PAID_TERMS = {
   price: { type: "PAID", wholesalePriceMinorUnits: 10_000, wholesalePriceCurrency: "USD" },
@@ -84,16 +90,15 @@ function offerRecord(overrides: Record<string, unknown> = {}) {
   return OfferSourceRecord.parse({
     offerSourceRecordId: OFFER_SREC_ID,
     internalOfferId: INTERNAL_OFFER_ID,
+    offerRef: OFFER_REF,
     currentSourceRecordVersion: "1",
+    currentPromotionVersion: null,
     internalProductId: PRODUCT_ID,
     sellerParticipantId: SELLER_PARTICIPANT_ID,
     sourceSystem: "monacado",
     sourceRecordType: "Offer",
     sourceClass: "governed-database-record",
-    lifecycle: "DRAFT",
-    availability: "AVAILABLE",
     terms: PAID_TERMS,
-    effectiveInterval: null,
     economics: calculateOfferEconomics((overrides.terms ?? PAID_TERMS) as never),
     createdAt: "2026-08-01T00:00:00.000Z",
     updatedAt: "2026-08-01T00:00:00.000Z",
@@ -112,10 +117,10 @@ function offerVersion(overrides: Record<string, unknown> = {}) {
     sourceClass: "governed-database-record",
     internalProductId: PRODUCT_ID,
     sellerParticipantId: SELLER_PARTICIPANT_ID,
-    lifecycle: "ACTIVE",
-    availability: "AVAILABLE",
+    termsKind: "STANDING",
     terms: PAID_TERMS,
-    effectiveInterval: null,
+    promotionWindow: null,
+    basisStandingVersion: null,
     economics: calculateOfferEconomics((overrides.terms ?? PAID_TERMS) as never),
     authorizedBySellerParticipantId: SELLER_PARTICIPANT_ID,
     authorizedByActorId: ACTOR_ID,
@@ -258,12 +263,23 @@ describe("2. the immutable source version has a strict shape", () => {
     for (const field of [
       "internalProductId",
       "sellerParticipantId",
-      "lifecycle",
-      "availability",
+      "termsKind",
       "terms",
-      "effectiveInterval",
+      "promotionWindow",
+      "basisStandingVersion",
     ]) {
       expect(Object.keys(version)).toContain(field);
+    }
+  });
+
+  it("holds commercial terms only — lifecycle, availability, and an interval are refused (Phase 1.42)", () => {
+    for (const intruder of [
+      { lifecycle: "ACTIVE" },
+      { availability: "AVAILABLE" },
+      { effectiveInterval: null },
+    ]) {
+      expect(OfferSourceVersion.safeParse({ ...offerVersion(), ...intruder }).success).toBe(false);
+      expect(OfferSourceRecord.safeParse({ ...offerRecord(), ...intruder }).success).toBe(false);
     }
   });
 
@@ -359,60 +375,59 @@ describe("5. multiple Offers per Product are not forbidden by contract", () => {
 
 // — 6 —
 
-describe("6. lifecycle transitions are accepted and refused correctly", () => {
-  it("accepts exactly the permitted transitions", () => {
-    const permitted: ReadonlyArray<readonly [OfferLifecycleState, OfferLifecycleState]> = [
-      ["DRAFT", "ACTIVE"],
-      ["DRAFT", "WITHDRAWN"],
-      ["ACTIVE", "SUSPENDED"],
-      ["ACTIVE", "ENDED"],
-      ["ACTIVE", "WITHDRAWN"],
-      ["SUSPENDED", "ACTIVE"],
-      ["SUSPENDED", "ENDED"],
-      ["SUSPENDED", "WITHDRAWN"],
-    ];
-    for (const [from, to] of permitted) {
-      expect(isValidOfferLifecycleTransition(from, to)).toBe(true);
-    }
-    /* The table contains these and nothing else. */
-    const total = OFFER_LIFECYCLE_STATES.reduce(
-      (n, from) =>
-        n + OFFER_LIFECYCLE_STATES.filter((to) => isValidOfferLifecycleTransition(from, to)).length,
-      0,
-    );
-    expect(total).toBe(permitted.length);
+describe("6. lifecycle acts are accepted and refused correctly (Phase 1.42)", () => {
+  it("the act table is exactly the governed transitions", () => {
+    expect(OFFER_LIFECYCLE_ACT_TRANSITIONS).toEqual({
+      ACTIVATE: { from: ["DRAFT"], to: "ACTIVE" },
+      PAUSE: { from: ["ACTIVE"], to: "PAUSED" },
+      RESUME: { from: ["PAUSED"], to: "ACTIVE" },
+      WITHDRAW: { from: ["DRAFT", "ACTIVE", "PAUSED"], to: "WITHDRAWN" },
+    });
+    expect(Object.isFrozen(OFFER_LIFECYCLE_ACT_TRANSITIONS)).toBe(true);
   });
 
-  it("refuses reverse and skipping transitions", () => {
-    for (const [from, to] of [
-      ["ACTIVE", "DRAFT"],
-      ["SUSPENDED", "DRAFT"],
-      ["DRAFT", "SUSPENDED"],
-      ["DRAFT", "ENDED"],
-    ] as const) {
-      expect(isValidOfferLifecycleTransition(from, to)).toBe(false);
+  it("permits exactly the table's moves, and refuses every other pairing", () => {
+    let permitted = 0;
+    for (const from of OFFER_LIFECYCLE_STATES) {
+      for (const act of ["ACTIVATE", "PAUSE", "RESUME", "WITHDRAW"] as const) {
+        const decision = decideOfferLifecycleAct(from, act);
+        if (decision.outcome === "PERMITTED") {
+          permitted += 1;
+          expect(OFFER_LIFECYCLE_ACT_TRANSITIONS[act].from).toContain(from);
+          expect(decision.to).toBe(OFFER_LIFECYCLE_ACT_TRANSITIONS[act].to);
+        }
+      }
     }
+    expect(permitted).toBe(6);
+    expect(decideOfferLifecycleAct("DRAFT", "PAUSE")).toEqual({
+      outcome: "REFUSED",
+      reason: "OFFER_LIFECYCLE_TRANSITION_NOT_PERMITTED",
+    });
+    expect(decideOfferLifecycleAct("ACTIVE", "ACTIVATE").outcome).toBe("REFUSED");
+    expect(decideOfferLifecycleAct("PAUSED", "PAUSE").outcome).toBe("REFUSED");
   });
 
-  it("refuses self-transitions", () => {
-    for (const state of OFFER_LIFECYCLE_STATES) {
-      expect(isValidOfferLifecycleTransition(state, state)).toBe(false);
-    }
-  });
-
-  it("an Offer is created in DRAFT", () => {
+  it("an Offer is created in DRAFT; SUSPENDED is reserved, not a member", () => {
     expect(INITIAL_OFFER_LIFECYCLE_STATE).toBe("DRAFT");
+    expect(OFFER_LIFECYCLE_STATES).toEqual(["DRAFT", "ACTIVE", "PAUSED", "WITHDRAWN", "ENDED"]);
+    expect(RESERVED_OFFER_LIFECYCLE_STATES).toEqual(["SUSPENDED"]);
+    expect(OfferLifecycleState.safeParse("SUSPENDED").success).toBe(false);
   });
 });
 
 // — 7 —
 
 describe("7. terminal states cannot transition outward", () => {
-  it("ENDED and WITHDRAWN are terminal", () => {
+  it("ENDED and WITHDRAWN are terminal; nothing else is", () => {
+    for (const state of OFFER_LIFECYCLE_STATES) {
+      expect(isTerminalOfferLifecycleState(state)).toBe(state === "ENDED" || state === "WITHDRAWN");
+    }
     for (const terminal of ["ENDED", "WITHDRAWN"] as const) {
-      expect(isTerminalOfferLifecycleState(terminal)).toBe(true);
-      for (const to of OFFER_LIFECYCLE_STATES) {
-        expect(isValidOfferLifecycleTransition(terminal, to)).toBe(false);
+      for (const act of ["ACTIVATE", "PAUSE", "RESUME", "WITHDRAW"] as const) {
+        expect(decideOfferLifecycleAct(terminal, act)).toEqual({
+          outcome: "REFUSED",
+          reason: "OFFER_LIFECYCLE_TERMINAL",
+        });
       }
     }
   });
@@ -422,10 +437,11 @@ describe("7. terminal states cannot transition outward", () => {
       for (const decide of [
         canActivateOffer,
         canResumeOffer,
-        canSuspendOffer,
-        canEndOffer,
+        canPauseOffer,
         canWithdrawOffer,
         canChangeOfferTerms,
+        canSchedulePromotion,
+        canEndPromotion,
       ]) {
         expectDeny(decide(lifecycleRequest({ lifecycle })), "OFFER_LIFECYCLE_TERMINAL");
       }
@@ -435,47 +451,52 @@ describe("7. terminal states cannot transition outward", () => {
 
 // — 8 —
 
-describe("8. availability is separate from lifecycle", () => {
-  it("the vocabularies share no member", () => {
-    for (const availability of ["AVAILABLE", "TEMPORARILY_UNAVAILABLE"] as const) {
-      expect(OfferLifecycleState.safeParse(availability).success).toBe(false);
-    }
-    for (const lifecycle of OFFER_LIFECYCLE_STATES) {
-      expect(OfferAvailability.safeParse(lifecycle).success).toBe(false);
-    }
+describe("8. lifecycle is Seller authority, derived — never a version fact (Phase 1.42)", () => {
+  const derive = (recordedState: "ACTIVE" | "PAUSED" | "WITHDRAWN" | null, offerEffectiveUntil: string | null, at: string) =>
+    deriveOfferLifecycleState({ recordedState, offerEffectiveUntil, at });
+
+  it("no act is DRAFT; the recorded act is the state", () => {
+    expect(derive(null, null, "2026-08-01T00:00:00.000Z")).toBe("DRAFT");
+    expect(derive("ACTIVE", null, "2026-08-01T00:00:00.000Z")).toBe("ACTIVE");
+    expect(derive("PAUSED", null, "2026-08-01T00:00:00.000Z")).toBe("PAUSED");
   });
 
-  it("either axis may move without the other", () => {
-    const paused = offerRecord({ lifecycle: "ACTIVE", availability: "TEMPORARILY_UNAVAILABLE" });
-    expect(paused.lifecycle).toBe("ACTIVE");
-    const draftAvailable = offerRecord({ lifecycle: "DRAFT", availability: "AVAILABLE" });
-    expect(draftAvailable.availability).toBe("AVAILABLE");
+  it("ENDED is derived from the overall end only — exclusive, and never recorded", () => {
+    const until = "2026-09-01T00:00:00.000Z";
+    expect(derive("ACTIVE", until, "2026-08-31T23:59:59.999Z")).toBe("ACTIVE");
+    expect(derive("ACTIVE", until, until)).toBe("ENDED");
+    expect(derive("PAUSED", until, until)).toBe("ENDED");
   });
 
-  it("availability is not inventory, variants, publication, or workflow", () => {
-    expect(OfferAvailability.safeParse("OUT_OF_STOCK").success).toBe(false);
-    expect(OfferAvailability.safeParse("PUBLISHED").success).toBe(false);
-    expect(OfferAvailability.safeParse(0).success).toBe(false);
+  it("WITHDRAWN wins over an elapsed end", () => {
+    expect(derive("WITHDRAWN", "2026-09-01T00:00:00.000Z", "2027-01-01T00:00:00.000Z")).toBe("WITHDRAWN");
   });
 });
 
 // — 9 —
 
-describe("9. only ACTIVE and AVAILABLE is commercially selectable", () => {
-  it("selects only on both axes", () => {
-    expect(isCommerciallySelectable({ lifecycle: "ACTIVE", availability: "AVAILABLE" })).toBe(true);
+describe("9. only an ACTIVE Offer has terms in force", () => {
+  const input = (recordedState: "ACTIVE" | "PAUSED" | "WITHDRAWN" | null) => ({
+    recordedState,
+    offerEffectiveUntil: null,
+    standingVersion: "1",
+    promotion: null,
   });
 
-  it("an available non-ACTIVE Offer is never selectable", () => {
-    for (const lifecycle of ["DRAFT", "SUSPENDED", "ENDED", "WITHDRAWN"] as const) {
-      expect(isCommerciallySelectable({ lifecycle, availability: "AVAILABLE" })).toBe(false);
-    }
+  it("ACTIVE resolves to the standing version", () => {
+    expect(effectiveOfferTerms(input("ACTIVE"), "2026-08-01T00:00:00.000Z")).toEqual({
+      kind: "STANDING",
+      sourceRecordVersion: "1",
+    });
   });
 
-  it("an ACTIVE but temporarily unavailable Offer is not selectable", () => {
-    expect(
-      isCommerciallySelectable({ lifecycle: "ACTIVE", availability: "TEMPORARILY_UNAVAILABLE" }),
-    ).toBe(false);
+  it("DRAFT, PAUSED, and WITHDRAWN resolve to none", () => {
+    expect(effectiveOfferTerms(input(null), "2026-08-01T00:00:00.000Z")).toEqual({ kind: "NONE", lifecycle: "DRAFT" });
+    expect(effectiveOfferTerms(input("PAUSED"), "2026-08-01T00:00:00.000Z")).toEqual({ kind: "NONE", lifecycle: "PAUSED" });
+    expect(effectiveOfferTerms(input("WITHDRAWN"), "2026-08-01T00:00:00.000Z")).toEqual({
+      kind: "NONE",
+      lifecycle: "WITHDRAWN",
+    });
   });
 });
 
@@ -559,133 +580,54 @@ describe("13. currency is structurally validated", () => {
 
 // — 14 —
 
-describe("14. the effective interval is ordered and explicit", () => {
-  it("accepts either bound alone, or both", () => {
+describe("14. a promotion window is ordered, explicit, and closed (Phase 1.42)", () => {
+  it("requires both bounds, the end strictly later", () => {
     expect(
-      OfferEffectiveInterval.safeParse({ startsAt: "2026-08-01T00:00:00.000Z", endsAt: null })
-        .success,
-    ).toBe(true);
-    expect(
-      OfferEffectiveInterval.safeParse({ startsAt: null, endsAt: "2026-09-01T00:00:00.000Z" })
-        .success,
-    ).toBe(true);
-    expect(
-      OfferEffectiveInterval.safeParse({
-        startsAt: "2026-08-01T00:00:00.000Z",
-        endsAt: "2026-09-01T00:00:00.000Z",
+      OfferPromotionWindow.safeParse({
+        effectiveFrom: "2026-08-01T00:00:00.000Z",
+        effectiveUntil: "2026-09-01T00:00:00.000Z",
       }).success,
     ).toBe(true);
-  });
-
-  it("no interval at all is expressed as null on the record, not as an empty object", () => {
-    expect(offerRecord({ effectiveInterval: null }).effectiveInterval).toBeNull();
-  });
-
-  it("requires endsAt to be later than startsAt", () => {
-    expect(
-      OfferEffectiveInterval.safeParse({
-        startsAt: "2026-09-01T00:00:00.000Z",
-        endsAt: "2026-08-01T00:00:00.000Z",
-      }).success,
-    ).toBe(false);
-    expect(
-      OfferEffectiveInterval.safeParse({
-        startsAt: "2026-08-01T00:00:00.000Z",
-        endsAt: "2026-08-01T00:00:00.000Z",
-      }).success,
-    ).toBe(false);
-  });
-
-  it("requires normalized UTC instants", () => {
-    for (const startsAt of ["2026-08-01T00:00:00+02:00", "2026-08-01", "01/08/2026", "now"]) {
-      expect(OfferEffectiveInterval.safeParse({ startsAt, endsAt: null }).success).toBe(false);
+    for (const bad of [
+      { effectiveFrom: "2026-08-01T00:00:00.000Z" },
+      { effectiveUntil: "2026-09-01T00:00:00.000Z" },
+      { effectiveFrom: "2026-09-01T00:00:00.000Z", effectiveUntil: "2026-08-01T00:00:00.000Z" },
+      { effectiveFrom: "2026-08-01T00:00:00.000Z", effectiveUntil: "2026-08-01T00:00:00.000Z" },
+      { effectiveFrom: null, effectiveUntil: null },
+      { effectiveFrom: "2026-08-01T00:00:00.000Z", effectiveUntil: "2026-09-01T00:00:00.000Z", note: "x" },
+    ]) {
+      expect(OfferPromotionWindow.safeParse(bad).success).toBe(false);
     }
   });
 
-  it("an elapsed interval does not move the lifecycle by itself", () => {
-    const past = offerRecord({
-      lifecycle: "ACTIVE",
-      effectiveInterval: {
-        startsAt: "2020-01-01T00:00:00.000Z",
-        endsAt: "2020-02-01T00:00:00.000Z",
-      },
-    });
-    expect(past.lifecycle).toBe("ACTIVE");
+  it("requires normalized UTC instants", () => {
+    for (const effectiveFrom of ["2026-08-01T00:00:00+02:00", "2026-08-01", "01/08/2026", "now"]) {
+      expect(
+        OfferPromotionWindow.safeParse({ effectiveFrom, effectiveUntil: "2026-12-01T00:00:00.000Z" }).success,
+      ).toBe(false);
+    }
   });
 });
 
 // — 14b —
 
-describe("14b. an absent interval has exactly one canonical representation", () => {
-  it("a bounds-less interval object is refused", () => {
-    /* `null` already means "no effective interval". Allowing an object with both
-       bounds null would give one fact two authoritative snapshots — and therefore
-       a spurious material change and a spurious source version. */
-    expect(OfferEffectiveInterval.safeParse({ startsAt: null, endsAt: null }).success).toBe(false);
-    expect(
-      OfferSourceRecord.safeParse({
-        ...offerRecord(),
-        effectiveInterval: { startsAt: null, endsAt: null },
-      }).success,
-    ).toBe(false);
-    expect(
-      OfferSourceVersion.safeParse({
-        ...offerVersion(),
-        effectiveInterval: { startsAt: null, endsAt: null },
-      }).success,
-    ).toBe(false);
+describe("14b. a window exists on, and only on, a promotion version", () => {
+  const window = { effectiveFrom: "2026-08-01T00:00:00.000Z", effectiveUntil: "2026-09-01T00:00:00.000Z" };
+
+  it("a STANDING version has exactly one representation of 'no window': null", () => {
+    expect(offerVersion().promotionWindow).toBeNull();
+    expect(OfferSourceVersion.safeParse({ ...offerVersion(), promotionWindow: window }).success).toBe(false);
+    expect(OfferSourceVersion.safeParse({ ...offerVersion(), promotionWindow: {} }).success).toBe(false);
   });
 
-  it("every spelling of absence normalizes to the same canonical value", () => {
-    for (const input of [
-      undefined,
-      null,
-      {},
-      { startsAt: null },
-      { endsAt: null },
-      { startsAt: null, endsAt: null },
-      { startsAt: undefined, endsAt: undefined },
-    ] as const) {
-      expect(normalizeOfferEffectiveIntervalInput(input)).toBeNull();
-    }
-  });
-
-  it("omitted and explicitly null inputs cannot produce two distinct snapshots", () => {
-    const fromOmitted = offerRecord({
-      effectiveInterval: normalizeOfferEffectiveIntervalInput(undefined),
-    });
-    const fromEmptyObject = offerRecord({
-      effectiveInterval: normalizeOfferEffectiveIntervalInput({}),
-    });
-    const fromExplicitNulls = offerRecord({
-      effectiveInterval: normalizeOfferEffectiveIntervalInput({ startsAt: null, endsAt: null }),
-    });
-    expect(fromOmitted).toEqual(fromEmptyObject);
-    expect(fromEmptyObject).toEqual(fromExplicitNulls);
-    expect(materialChangesBetween(fromOmitted, fromExplicitNulls)).toEqual([]);
-  });
-
-  it("a single bound normalizes to an interval with an explicit null partner", () => {
-    expect(normalizeOfferEffectiveIntervalInput({ startsAt: "2026-08-01T00:00:00.000Z" })).toEqual({
-      startsAt: "2026-08-01T00:00:00.000Z",
-      endsAt: null,
-    });
-    expect(normalizeOfferEffectiveIntervalInput({ endsAt: "2026-09-01T00:00:00.000Z" })).toEqual({
-      startsAt: null,
-      endsAt: "2026-09-01T00:00:00.000Z",
-    });
-  });
-
-  it("normalization still enforces ordering and UTC", () => {
-    expect(() =>
-      normalizeOfferEffectiveIntervalInput({
-        startsAt: "2026-09-01T00:00:00.000Z",
-        endsAt: "2026-08-01T00:00:00.000Z",
-      }),
-    ).toThrow();
-    expect(() =>
-      normalizeOfferEffectiveIntervalInput({ startsAt: "2026-08-01T00:00:00+02:00" }),
-    ).toThrow();
+  it("a SCHEDULED_PROMOTION version requires its window and its standing basis", () => {
+    const promotion = { termsKind: "SCHEDULED_PROMOTION", promotionWindow: window, basisStandingVersion: "1" };
+    expect(offerVersion(promotion).promotionWindow).toEqual(window);
+    expect(OfferSourceVersion.safeParse({ ...offerVersion(), ...promotion, promotionWindow: null }).success).toBe(false);
+    expect(OfferSourceVersion.safeParse({ ...offerVersion(), ...promotion, basisStandingVersion: null }).success).toBe(
+      false,
+    );
+    expect(OfferSourceVersion.safeParse({ ...offerVersion(), basisStandingVersion: "1" }).success).toBe(false);
   });
 });
 
@@ -820,37 +762,63 @@ describe("19. a matching Seller may draft and activate when all gates pass", () 
 
   it("activates when admitted, active, and payable", () => {
     expectAllow(canActivateOffer(lifecycleRequest({ lifecycle: "DRAFT" })));
-    expectAllow(canResumeOffer(lifecycleRequest({ lifecycle: "SUSPENDED" })));
+    expectAllow(canResumeOffer(lifecycleRequest({ lifecycle: "PAUSED" })));
   });
 
-  it("a bare seller may draft but not activate", () => {
-    expectDeny(
-      canActivateOffer(lifecycleRequest({ subject: BARE_SELLER, lifecycle: "DRAFT" })),
-      "PARTICIPANT_NOT_ACTIVATED",
-    );
+  it("commerce readiness is decided separately, and reports every blocker (Phase 1.42)", () => {
+    /* The authority decision answers "is this the Seller, may this move happen";
+       readiness answers "may it go live now", and lists everything a Seller
+       must fix rather than the first thing. The service requires both. */
+    expectAllow(canActivateOffer(lifecycleRequest({ subject: BARE_SELLER, lifecycle: "DRAFT" })));
+    const notReady = evaluateOfferActivationReadiness({
+      productActive: false,
+      account: { emailVerifiedAt: null, firstName: null, lastName: " " },
+      participant: {
+        status: "DRAFT",
+        suspended: false,
+        offerPublishRestricted: true,
+        sellerRoleStatus: "DRAFT",
+        paymentReadiness: "NOT_STARTED",
+        commerceApproval: "NOT_REQUESTED",
+      },
+    });
+    expect(notReady.ready).toBe(false);
+    expect(notReady.blockers).toEqual([
+      "PRODUCT_NOT_ACTIVE",
+      "EMAIL_UNVERIFIED",
+      "FIRST_NAME_MISSING",
+      "LAST_NAME_MISSING",
+      "PARTICIPANT_NOT_ACTIVE",
+      "SELLER_ROLE_NOT_ACTIVE",
+      "PAYMENT_NOT_READY",
+      "COMMERCE_APPROVAL_MISSING",
+      "OFFER_PUBLISH_RESTRICTED",
+    ]);
   });
 
-  it("activation requires payment readiness", () => {
-    for (const [readiness, code] of [
-      ["NOT_STARTED", "PAYMENT_NOT_ENABLED"],
-      ["PENDING_PROVIDER", "PAYMENT_NOT_ENABLED"],
-      ["RESTRICTED", "PAYMENT_RESTRICTED"],
-    ] as const) {
-      expectDeny(
-        canActivateOffer(
-          lifecycleRequest({ subject: subject({ paymentReadiness: readiness }), lifecycle: "DRAFT" }),
-        ),
-        code,
-      );
-    }
+  it("a fully ready Seller has no blockers", () => {
+    expect(
+      evaluateOfferActivationReadiness({
+        productActive: true,
+        account: { emailVerifiedAt: "2026-08-01T00:00:00.000Z", firstName: "Ada", lastName: "Lovelace" },
+        participant: {
+          status: "ACTIVE",
+          suspended: false,
+          offerPublishRestricted: false,
+          sellerRoleStatus: "ACTIVE",
+          paymentReadiness: "ENABLED",
+          commerceApproval: "APPROVED",
+        },
+      }),
+    ).toEqual({ ready: true, blockers: [] });
   });
 
   it("standing an Offer down never requires payment readiness", () => {
     /* A seller whose payment capability was just restricted must still be able to
        take their Offer down. */
     const restricted = subject({ paymentReadiness: "RESTRICTED" });
-    expectAllow(canSuspendOffer(lifecycleRequest({ subject: restricted, lifecycle: "ACTIVE" })));
-    expectAllow(canEndOffer(lifecycleRequest({ subject: restricted, lifecycle: "ACTIVE" })));
+    expectAllow(canPauseOffer(lifecycleRequest({ subject: restricted, lifecycle: "ACTIVE" })));
+    expectAllow(canEndPromotion(lifecycleRequest({ subject: restricted, lifecycle: "ACTIVE" })));
     expectAllow(canWithdrawOffer(lifecycleRequest({ subject: restricted, lifecycle: "ACTIVE" })));
   });
 
@@ -908,25 +876,46 @@ describe("19. a matching Seller may draft and activate when all gates pass", () 
     );
   });
 
-  it("a SUSPENDED Offer's terms face the full commerce gates (remediation policy deferred)", () => {
-    /* Pinned, not designed: suspension is a stand-down, and this phase grants no
-       new editing permission during it. Whether a suspended seller should be able
-       to edit terms *in order to* cure a suspension is a remediation-policy
-       question, recorded as deferred rather than answered here. */
-    expectAllow(canChangeOfferTerms(lifecycleRequest({ lifecycle: "SUSPENDED" })));
+  it("a PAUSED Offer's terms face the full commerce gates and a confirmation", () => {
+    expectAllow(canChangeOfferTerms(lifecycleRequest({ lifecycle: "PAUSED" })));
     expectDeny(
       canChangeOfferTerms(
         lifecycleRequest({
           subject: subject({ paymentReadiness: "RESTRICTED" }),
-          lifecycle: "SUSPENDED",
+          lifecycle: "PAUSED",
         }),
       ),
       "PAYMENT_RESTRICTED",
     );
+    expectDeny(
+      canChangeOfferTerms(lifecycleRequest({ lifecycle: "PAUSED", economicsContext: undefined })),
+      "CREATOR_ECONOMICS_NOT_CONFIRMED",
+    );
+  });
+
+  it("a promotion is scheduled only on an activated Offer, and ended early only while live", () => {
+    expectAllow(canSchedulePromotion(lifecycleRequest({ lifecycle: "ACTIVE" })));
+    expectAllow(canSchedulePromotion(lifecycleRequest({ lifecycle: "PAUSED" })));
+    expectDeny(canSchedulePromotion(lifecycleRequest({ lifecycle: "DRAFT" })), "OFFER_LIFECYCLE_TRANSITION_NOT_PERMITTED");
+    expectDeny(
+      canSchedulePromotion(lifecycleRequest({ lifecycle: "ACTIVE", economicsContext: undefined })),
+      "CREATOR_ECONOMICS_NOT_CONFIRMED",
+    );
+    expectAllow(canEndPromotion(lifecycleRequest({ lifecycle: "ACTIVE", economicsContext: undefined })));
+    expectDeny(canEndPromotion(lifecycleRequest({ lifecycle: "DRAFT" })), "OFFER_LIFECYCLE_TRANSITION_NOT_PERMITTED");
   });
 
   it("every capability is covered by a named decision", () => {
-    expect(OFFER_CAPABILITIES).toHaveLength(7);
+    expect(OFFER_CAPABILITIES).toEqual([
+      "offer:draft:create",
+      "offer:activate",
+      "offer:terms:change",
+      "offer:pause",
+      "offer:resume",
+      "offer:withdraw",
+      "offer:promotion:schedule",
+      "offer:promotion:end",
+    ]);
   });
 });
 
@@ -997,11 +986,12 @@ describe("20. Promoter, Buyer, internal entitlement, and a mismatched Seller are
     );
     for (const [decide, lifecycle] of [
       [canActivateOffer, "DRAFT"],
-      [canResumeOffer, "SUSPENDED"],
-      [canSuspendOffer, "ACTIVE"],
-      [canEndOffer, "ACTIVE"],
+      [canResumeOffer, "PAUSED"],
+      [canPauseOffer, "ACTIVE"],
       [canWithdrawOffer, "ACTIVE"],
       [canChangeOfferTerms, "ACTIVE"],
+      [canSchedulePromotion, "ACTIVE"],
+      [canEndPromotion, "ACTIVE"],
     ] as const) {
       expectDeny(
         decide(lifecycleRequest({ subject: otherSeller, lifecycle })),
@@ -1062,7 +1052,7 @@ describe("21. Product authority is required", () => {
   it("standing an Offer down does not require Product authority", () => {
     /* Withdrawing a commitment you made is not an assertion about the Product. */
     expectAllow(canWithdrawOffer(lifecycleRequest({ hasProductAuthority: false })));
-    expectAllow(canSuspendOffer(lifecycleRequest({ hasProductAuthority: false })));
+    expectAllow(canPauseOffer(lifecycleRequest({ hasProductAuthority: false })));
   });
 });
 
@@ -1073,7 +1063,13 @@ describe("22. material changes require a new source version", () => {
     for (const field of MATERIAL_OFFER_FIELDS) {
       expect(classifyOfferChange([field]).requiresNewSourceVersion).toBe(true);
     }
-    expect(MATERIAL_OFFER_FIELDS).toHaveLength(8);
+    expect(MATERIAL_OFFER_FIELDS).toEqual([
+      "internalProductId",
+      "sellerParticipantId",
+      "price",
+      "promotion",
+      "commission",
+    ]);
   });
 
   it("a real diff reports exactly the fields that moved", () => {
@@ -1085,12 +1081,6 @@ describe("22. material changes require a new source version", () => {
     expect(
       materialChangesBetween(prior, offerRecord({ sellerParticipantId: OTHER_PARTICIPANT_ID })),
     ).toEqual(["sellerParticipantId"]);
-    expect(materialChangesBetween(prior, offerRecord({ lifecycle: "ACTIVE" }))).toEqual([
-      "lifecycle",
-    ]);
-    expect(
-      materialChangesBetween(prior, offerRecord({ availability: "TEMPORARILY_UNAVAILABLE" })),
-    ).toEqual(["availability"]);
     expect(
       materialChangesBetween(
         prior,
@@ -1099,14 +1089,12 @@ describe("22. material changes require a new source version", () => {
         }),
       ),
     ).toEqual(["price"]);
-    expect(
-      materialChangesBetween(
-        prior,
-        offerRecord({
-          effectiveInterval: { startsAt: "2026-09-01T00:00:00.000Z", endsAt: null },
-        }),
-      ),
-    ).toEqual(["effectiveInterval"]);
+  });
+
+  it("lifecycle and availability are not material fields — pausing mints no version (Phase 1.42)", () => {
+    for (const field of ["lifecycle", "availability", "effectiveInterval"]) {
+      expect(() => classifyOfferChange([field])).toThrow();
+    }
   });
 
   it("promotability and commission value are distinguished", () => {
@@ -1261,9 +1249,8 @@ describe("25. deferred extensions cannot enter as arbitrary metadata", () => {
 
 describe("26. unknown keys and enum values fail", () => {
   it("unknown enum members are refused", () => {
-    expect(OfferLifecycleState.safeParse("PAUSED").success).toBe(false);
+    expect(OfferLifecycleState.safeParse("SUSPENDED").success).toBe(false);
     expect(OfferLifecycleState.safeParse("PUBLISHED").success).toBe(false);
-    expect(OfferAvailability.safeParse("UNAVAILABLE").success).toBe(false);
     expect(OfferPrice.safeParse({ type: "SUBSCRIPTION" }).success).toBe(false);
   });
 
@@ -1271,7 +1258,11 @@ describe("26. unknown keys and enum values fail", () => {
     expect(OfferSourceRecord.safeParse({ ...offerRecord(), extra: 1 }).success).toBe(false);
     expect(OfferSourceVersion.safeParse({ ...offerVersion(), extra: 1 }).success).toBe(false);
     expect(
-      OfferEffectiveInterval.safeParse({ startsAt: null, endsAt: null, timezone: "UTC" }).success,
+      OfferPromotionWindow.safeParse({
+        effectiveFrom: "2026-08-01T00:00:00.000Z",
+        effectiveUntil: "2026-09-01T00:00:00.000Z",
+        timezone: "UTC",
+      }).success,
     ).toBe(false);
   });
 
@@ -1791,7 +1782,7 @@ describe("31. creator disclosure and exact-version confirmation", () => {
 
   it("standing an Offer down needs no economics confirmation", () => {
     /* Withdrawing a commitment asserts nothing about its economics. */
-    for (const decide of [canSuspendOffer, canEndOffer, canWithdrawOffer]) {
+    for (const decide of [canPauseOffer, canEndPromotion, canWithdrawOffer]) {
       expectAllow(decide(lifecycleRequest({ lifecycle: "ACTIVE", economicsContext: undefined })));
     }
   });
@@ -1800,20 +1791,24 @@ describe("31. creator disclosure and exact-version confirmation", () => {
 // — 32 —
 
 describe("32. business change classification", () => {
-  const state = (overrides: Record<string, unknown> = {}) => ({
-    internalProductId: PRODUCT_ID,
-    sellerParticipantId: SELLER_PARTICIPANT_ID,
-    lifecycle: "ACTIVE" as const,
-    availability: "AVAILABLE" as const,
-    terms: PAID_TERMS as never,
-    effectiveInterval: null,
-    ...overrides,
-  });
+  const state = (overrides: Record<string, unknown> = {}) =>
+    ({
+      internalProductId: PRODUCT_ID,
+      sellerParticipantId: SELLER_PARTICIPANT_ID,
+      termsKind: "STANDING",
+      terms: PAID_TERMS,
+      promotionWindow: null,
+      ...overrides,
+    }) as Parameters<typeof classifyOfferBusinessChanges>[0];
 
-  it("an availability change is classified", () => {
+  it("availability is no longer a version fact, so its category is never emitted (Phase 1.42)", () => {
+    /* Retained in the vocabulary for continuity; no pair of versions can differ
+       in availability, so no Promoter is asked to re-accept unchanged economics
+       because an Offer was paused. */
+    expect(OFFER_BUSINESS_CHANGE_ORDER).toContain("COMMERCIAL_AVAILABILITY_CHANGED");
     expect(
       classifyOfferBusinessChanges(state(), state({ availability: "TEMPORARILY_UNAVAILABLE" })),
-    ).toEqual(["COMMERCIAL_AVAILABILITY_CHANGED"]);
+    ).toEqual([]);
   });
 
   it("a wholesale increase and decrease are both classified", () => {
@@ -1888,7 +1883,16 @@ describe("32. business change classification", () => {
   });
 
   it("other material changes are classified separately", () => {
-    expect(classifyOfferBusinessChanges(state(), state({ lifecycle: "SUSPENDED" }))).toEqual([
+    expect(
+      classifyOfferBusinessChanges(
+        state(),
+        state({
+          termsKind: "SCHEDULED_PROMOTION",
+          promotionWindow: { effectiveFrom: "2026-09-01T00:00:00.000Z", effectiveUntil: "2026-10-01T00:00:00.000Z" },
+        }),
+      ),
+    ).toEqual(["OTHER_MATERIAL_OFFER_CHANGE"]);
+    expect(classifyOfferBusinessChanges(state(), state({ internalProductId: OTHER_PRODUCT_ID }))).toEqual([
       "OTHER_MATERIAL_OFFER_CHANGE",
     ]);
   });
@@ -1910,7 +1914,7 @@ describe("32. business change classification", () => {
       expect(source, `offer-source.ts must not call ${token}`).not.toContain(token);
     }
     const before = JSON.stringify(state());
-    classifyOfferBusinessChanges(state(), state({ availability: "TEMPORARILY_UNAVAILABLE" }));
+    classifyOfferBusinessChanges(state(), state({ internalProductId: OTHER_PRODUCT_ID }));
     expect(JSON.stringify(state())).toBe(before);
   });
 
@@ -2037,15 +2041,14 @@ describe("34. business changes are multi-category and deterministically ordered"
   });
 
   const state = (spec: {
-    availability?: "AVAILABLE" | "TEMPORARILY_UNAVAILABLE";
     wholesale?: number;
     basisPoints?: number;
-    lifecycle?: "ACTIVE" | "SUSPENDED";
+    otherProduct?: boolean;
   } = {}) => ({
-    internalProductId: PRODUCT_ID,
+    internalProductId: spec.otherProduct ? OTHER_PRODUCT_ID : PRODUCT_ID,
     sellerParticipantId: SELLER_PARTICIPANT_ID,
-    lifecycle: spec.lifecycle ?? ("ACTIVE" as const),
-    availability: spec.availability ?? ("AVAILABLE" as const),
+    termsKind: "STANDING" as const,
+    promotionWindow: null,
     terms: {
       price: {
         type: "PAID",
@@ -2054,7 +2057,6 @@ describe("34. business changes are multi-category and deterministically ordered"
       },
       promotion: { type: "PROMOTABLE", commission: percent(spec.basisPoints ?? 2_000) },
     } as never,
-    effectiveInterval: null,
   });
 
   it("returns a readonly array in the fixed order", () => {
@@ -2072,9 +2074,6 @@ describe("34. business changes are multi-category and deterministically ordered"
   });
 
   it("each single change returns exactly one category", () => {
-    expect(
-      classifyOfferBusinessChanges(state(), state({ availability: "TEMPORARILY_UNAVAILABLE" })),
-    ).toEqual(["COMMERCIAL_AVAILABILITY_CHANGED"]);
     expect(classifyOfferBusinessChanges(state(), state({ wholesale: 12_000 }))).toEqual([
       "WHOLESALE_PRICE_CHANGED",
     ]);
@@ -2083,41 +2082,24 @@ describe("34. business changes are multi-category and deterministically ordered"
     ]);
   });
 
-  it("availability plus wholesale returns both, in order", () => {
-    expect(
-      classifyOfferBusinessChanges(
-        state(),
-        state({ availability: "TEMPORARILY_UNAVAILABLE", wholesale: 12_000 }),
-      ),
-    ).toEqual(["COMMERCIAL_AVAILABILITY_CHANGED", "WHOLESALE_PRICE_CHANGED"]);
-  });
-
   it("wholesale plus commission inputs returns both, in order", () => {
     expect(
       classifyOfferBusinessChanges(state(), state({ wholesale: 12_000, basisPoints: 3_000 })),
     ).toEqual(["WHOLESALE_PRICE_CHANGED", "COMMISSION_TERMS_CHANGED"]);
   });
 
-  it("all three at once returns all three, in order", () => {
+  it("all three emitted categories at once, in order", () => {
     expect(
       classifyOfferBusinessChanges(
         state(),
-        state({
-          availability: "TEMPORARILY_UNAVAILABLE",
-          wholesale: 12_000,
-          basisPoints: 3_000,
-        }),
+        state({ wholesale: 12_000, basisPoints: 3_000, otherProduct: true }),
       ),
-    ).toEqual([
-      "COMMERCIAL_AVAILABILITY_CHANGED",
-      "WHOLESALE_PRICE_CHANGED",
-      "COMMISSION_TERMS_CHANGED",
-    ]);
+    ).toEqual(["WHOLESALE_PRICE_CHANGED", "COMMISSION_TERMS_CHANGED", "OTHER_MATERIAL_OFFER_CHANGE"]);
   });
 
   it("an unrelated material change appends the other category last", () => {
     expect(
-      classifyOfferBusinessChanges(state(), state({ wholesale: 12_000, lifecycle: "SUSPENDED" })),
+      classifyOfferBusinessChanges(state(), state({ wholesale: 12_000, otherProduct: true })),
     ).toEqual(["WHOLESALE_PRICE_CHANGED", "OTHER_MATERIAL_OFFER_CHANGE"]);
   });
 

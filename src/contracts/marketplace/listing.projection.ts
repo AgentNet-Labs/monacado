@@ -70,7 +70,6 @@ import {
   type ListingBlockingReason,
 } from "./listing-source";
 import { MarketplaceParticipantId, type ParticipantStatus, type RoleAssignmentStatus } from "./participant";
-import type { OfferAvailability, OfferLifecycleState } from "./offer-source";
 import type { StorefrontExposure } from "./storefront-source";
 
 // — Eligibility —
@@ -122,27 +121,25 @@ export const ListingUpstreamState = z.strictObject({
     "SUSPENDED",
     "REVOKED",
   ]),
-  /** Promoted Listings only — the EXACT accepted Offer version's terms. */
-  offerLifecycle: z.enum(["DRAFT", "ACTIVE", "SUSPENDED", "ENDED", "WITHDRAWN"]).optional(),
-  /** Promoted Listings only — the EXACT accepted Offer version's terms. */
-  offerAvailability: z.enum(["AVAILABLE", "TEMPORARILY_UNAVAILABLE"]).optional(),
   /**
-   * Promoted Listings only — the Offer's CURRENT stable state (Phase 1.15,
-   * Ruling 1).
+   * Promoted Listings only — whether the EXACT accepted Offer version resolves.
+   * Since Phase 1.42 a version carries terms only; there is no lifecycle or
+   * availability on it to report.
+   */
+  acceptedOfferVersion: z.string().min(1).max(64).optional(),
+  /**
+   * Promoted Listings only — the Offer's CURRENT derived lifecycle (Phase 1.15,
+   * Ruling 1; Phase 1.42).
    *
-   * Separate from the two above, which describe the immutable accepted version.
-   * A Seller who ends or withdraws their Offer stops new commerce, and a capsule
-   * projected from the frozen version alone would keep presenting a Listing as
-   * purchasable after the Seller stopped offering it.
+   * Separate from the accepted version above. A Seller who pauses or withdraws
+   * their Offer stops new commerce, and a capsule projected from the frozen
+   * version alone would keep presenting a Listing as purchasable after the
+   * Seller stopped offering it.
    *
    * Supplied, like every other upstream fact here — the projection reaches no
    * database.
    */
-  currentOfferLifecycle: z
-    .enum(["DRAFT", "ACTIVE", "SUSPENDED", "ENDED", "WITHDRAWN"])
-    .optional(),
-  /** Promoted Listings only — the Offer's CURRENT stable state. */
-  currentOfferAvailability: z.enum(["AVAILABLE", "TEMPORARILY_UNAVAILABLE"]).optional(),
+  currentOfferState: z.enum(["DRAFT", "ACTIVE", "PAUSED", "WITHDRAWN", "ENDED"]).optional(),
 });
 export type ListingUpstreamState = z.infer<typeof ListingUpstreamState>;
 
@@ -421,23 +418,11 @@ export function listingSourceRecordToCapsuleProjection(input: {
     } satisfies StorefrontExposure,
     controllingParticipantStatus: context.upstream.controllingParticipantStatus as ParticipantStatus,
     controllingRoleStatus: context.upstream.controllingRoleStatus as RoleAssignmentStatus,
-    ...(context.upstream.offerLifecycle !== undefined &&
-    context.upstream.offerAvailability !== undefined
-      ? {
-          offer: {
-            lifecycle: context.upstream.offerLifecycle as OfferLifecycleState,
-            availability: context.upstream.offerAvailability as OfferAvailability,
-          },
-        }
+    ...(context.upstream.acceptedOfferVersion !== undefined
+      ? { offer: { sourceRecordVersion: context.upstream.acceptedOfferVersion } }
       : {}),
-    ...(context.upstream.currentOfferLifecycle !== undefined &&
-    context.upstream.currentOfferAvailability !== undefined
-      ? {
-          currentOffer: {
-            lifecycle: context.upstream.currentOfferLifecycle as OfferLifecycleState,
-            availability: context.upstream.currentOfferAvailability as OfferAvailability,
-          },
-        }
+    ...(context.upstream.currentOfferState !== undefined
+      ? { currentOffer: { state: context.upstream.currentOfferState } }
       : {}),
     ...(source.placement.listingType === "PROMOTED"
       ? { upstreamReviewState: source.placement.upstreamReviewState }

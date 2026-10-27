@@ -72,10 +72,10 @@ function sourceVersion(overrides: Record<string, unknown> = {}): OfferSourceVers
     sourceClass: "governed-database-record",
     internalProductId: PRODUCT_ID,
     sellerParticipantId: SELLER_PARTICIPANT_ID,
-    lifecycle: "ACTIVE",
-    availability: "AVAILABLE",
+    termsKind: "STANDING",
     terms: PAID_TERMS,
-    effectiveInterval: null,
+    promotionWindow: null,
+    basisStandingVersion: null,
     economics: calculateOfferEconomics((overrides.terms ?? PAID_TERMS) as never),
     authorizedBySellerParticipantId: SELLER_PARTICIPANT_ID,
     authorizedByActorId: ACTOR_ID,
@@ -99,6 +99,7 @@ function projectionContext(overrides: Record<string, unknown> = {}): OfferProjec
     generatedAt: "2026-08-02T09:00:00.000Z",
     nodePolicy: { ref: "mon:policy:node/offer", version: "1" },
     capsulePolicy: { ref: "mon:policy:capsule/offer", version: "1" },
+    offerLifecycle: "ACTIVE",
     ...overrides,
   });
 }
@@ -202,10 +203,8 @@ describe("2. a current record or 'latest' input is impossible", () => {
       sourceSystem: "monacado",
       sourceRecordType: "Offer",
       sourceClass: "governed-database-record",
-      lifecycle: "ACTIVE",
-      availability: "AVAILABLE",
-      terms: PAID_TERMS,
-      effectiveInterval: null,
+      currentPromotionVersion: null,
+      offerRef: "ABCDEFGHJKMNPQRSTVWXYZ0123456789",
       createdAt: "2026-08-01T00:00:00.000Z",
       updatedAt: "2026-08-01T00:00:00.000Z",
     };
@@ -384,54 +383,54 @@ describe("6. a Seller/public-authority binding mismatch fails", () => {
 
 // — 7–11 —
 
-describe("7–11. eligibility maps lifecycle and availability correctly", () => {
+describe("7–11. eligibility maps the recorded lifecycle correctly (Phase 1.42)", () => {
+  /* Since Phase 1.42 the lifecycle is Seller authority recorded as acts, not a
+     version fact; it reaches the projection as a recorded context value. */
+  const atLifecycle = (offerLifecycle: string) => project({}, { offerLifecycle });
+
   it("DRAFT is ineligible", () => {
-    expect(
-      evaluateOfferProjectionEligibility({ lifecycle: "DRAFT", availability: "AVAILABLE" }),
-    ).toEqual({ eligible: false, reason: "DRAFT_NOT_PUBLIC" });
-    expectProjectionError(() => project({ lifecycle: "DRAFT" }), "NOT_PROJECTION_ELIGIBLE");
+    expect(evaluateOfferProjectionEligibility({ lifecycle: "DRAFT" })).toEqual({
+      eligible: false,
+      reason: "DRAFT_NOT_PUBLIC",
+    });
+    expectProjectionError(() => atLifecycle("DRAFT"), "NOT_PROJECTION_ELIGIBLE");
   });
 
-  it("ACTIVE + AVAILABLE maps to AVAILABLE", () => {
-    expect(
-      evaluateOfferProjectionEligibility({ lifecycle: "ACTIVE", availability: "AVAILABLE" }),
-    ).toEqual({ eligible: true, commercialState: "AVAILABLE" });
+  it("ACTIVE maps to AVAILABLE", () => {
+    expect(evaluateOfferProjectionEligibility({ lifecycle: "ACTIVE" })).toEqual({
+      eligible: true,
+      commercialState: "AVAILABLE",
+    });
     expect(project().data.commercialState).toBe("AVAILABLE");
   });
 
-  it("ACTIVE + TEMPORARILY_UNAVAILABLE maps to TEMPORARILY_UNAVAILABLE", () => {
-    expect(
-      evaluateOfferProjectionEligibility({
-        lifecycle: "ACTIVE",
-        availability: "TEMPORARILY_UNAVAILABLE",
-      }),
-    ).toEqual({ eligible: true, commercialState: "TEMPORARILY_UNAVAILABLE" });
-    expect(project({ availability: "TEMPORARILY_UNAVAILABLE" }).data.commercialState).toBe(
-      "TEMPORARILY_UNAVAILABLE",
-    );
+  it("PAUSED maps to TEMPORARILY_UNAVAILABLE", () => {
+    expect(evaluateOfferProjectionEligibility({ lifecycle: "PAUSED" })).toEqual({
+      eligible: true,
+      commercialState: "TEMPORARILY_UNAVAILABLE",
+    });
+    expect(atLifecycle("PAUSED").data.commercialState).toBe("TEMPORARILY_UNAVAILABLE");
   });
 
-  it("ENDED maps to ENDED, whatever the availability field says", () => {
-    for (const availability of ["AVAILABLE", "TEMPORARILY_UNAVAILABLE"] as const) {
-      expect(evaluateOfferProjectionEligibility({ lifecycle: "ENDED", availability })).toEqual({
-        eligible: true,
-        commercialState: "ENDED",
-      });
-    }
-    expect(project({ lifecycle: "ENDED" }).data.commercialState).toBe("ENDED");
+  it("ENDED maps to ENDED", () => {
+    expect(evaluateOfferProjectionEligibility({ lifecycle: "ENDED" })).toEqual({
+      eligible: true,
+      commercialState: "ENDED",
+    });
+    expect(atLifecycle("ENDED").data.commercialState).toBe("ENDED");
   });
 
-  it("SUSPENDED and WITHDRAWN are ineligible in this phase", () => {
-    expect(
-      evaluateOfferProjectionEligibility({ lifecycle: "SUSPENDED", availability: "AVAILABLE" }),
-    ).toEqual({ eligible: false, reason: "SUSPENDED_PUBLICATION_DEFERRED" });
-    expect(
-      evaluateOfferProjectionEligibility({ lifecycle: "WITHDRAWN", availability: "AVAILABLE" }),
-    ).toEqual({ eligible: false, reason: "WITHDRAWN_PUBLICATION_DEFERRED" });
+  it("WITHDRAWN is ineligible in this phase; SUSPENDED is not a lifecycle at all", () => {
+    expect(evaluateOfferProjectionEligibility({ lifecycle: "WITHDRAWN" })).toEqual({
+      eligible: false,
+      reason: "WITHDRAWN_PUBLICATION_DEFERRED",
+    });
+    expectProjectionError(() => atLifecycle("WITHDRAWN"), "NOT_PROJECTION_ELIGIBLE");
+    expect(() => atLifecycle("SUSPENDED")).toThrow();
+  });
 
-    for (const lifecycle of ["SUSPENDED", "WITHDRAWN"] as const) {
-      expectProjectionError(() => project({ lifecycle }), "NOT_PROJECTION_ELIGIBLE");
-    }
+  it("a lifecycle on the source version is refused — it is not a version fact", () => {
+    expect(() => sourceVersion({ lifecycle: "ACTIVE" })).toThrow();
   });
 
   it("the public vocabulary cannot express DRAFT, SUSPENDED, or WITHDRAWN", () => {
@@ -442,7 +441,7 @@ describe("7–11. eligibility maps lifecycle and availability correctly", () => 
   });
 
   it("producing an ENDED projection publishes, supersedes, and revokes nothing", () => {
-    const capsule = project({ lifecycle: "ENDED" });
+    const capsule = project({}, { offerLifecycle: "ENDED" });
     for (const key of ["publishedBy", "publishedAt", "supersedes", "revokes"]) {
       expect(Object.keys(capsule.metadata)).not.toContain(key);
     }
@@ -503,25 +502,33 @@ describe("13. a PAID projection preserves minor units and currency", () => {
 
 // — 14 —
 
-describe("14. an absent effective interval has one canonical output", () => {
-  it("omits both bounds when the source has no interval", () => {
-    const capsule = project({ effectiveInterval: null });
+const PROMOTION_WINDOW = {
+  effectiveFrom: "2026-09-01T00:00:00.000Z",
+  effectiveUntil: "2026-10-01T00:00:00.000Z",
+};
+const promotionSource = (window = PROMOTION_WINDOW) => ({
+  termsKind: "SCHEDULED_PROMOTION",
+  promotionWindow: window,
+  basisStandingVersion: "2",
+});
+
+describe("14. a validity interval comes only from a promotion window (Phase 1.42)", () => {
+  it("omits both bounds on a STANDING version", () => {
+    const capsule = project();
     expect(Object.keys(capsule.data)).not.toContain("validFrom");
     expect(Object.keys(capsule.data)).not.toContain("validThrough");
   });
 
-  it("emits only the bounds the source holds", () => {
-    const fromOnly = project({
-      effectiveInterval: { startsAt: "2026-09-01T00:00:00.000Z", endsAt: null },
-    });
-    expect(fromOnly.data.validFrom).toBe("2026-09-01T00:00:00.000Z");
-    expect(Object.keys(fromOnly.data)).not.toContain("validThrough");
+  it("emits both bounds from a SCHEDULED_PROMOTION version's window", () => {
+    const capsule = project(promotionSource());
+    expect(capsule.data.validFrom).toBe(PROMOTION_WINDOW.effectiveFrom);
+    expect(capsule.data.validThrough).toBe(PROMOTION_WINDOW.effectiveUntil);
+  });
 
-    const throughOnly = project({
-      effectiveInterval: { startsAt: null, endsAt: "2026-10-01T00:00:00.000Z" },
-    });
-    expect(throughOnly.data.validThrough).toBe("2026-10-01T00:00:00.000Z");
-    expect(Object.keys(throughOnly.data)).not.toContain("validFrom");
+  it("a window on a STANDING version, or none on a promotion, is refused", () => {
+    expect(() => sourceVersion({ promotionWindow: PROMOTION_WINDOW })).toThrow();
+    expect(() => sourceVersion({ ...promotionSource(), promotionWindow: null })).toThrow();
+    expect(() => sourceVersion({ ...promotionSource(), basisStandingVersion: null })).toThrow();
   });
 
   it("an explicit null bound is not a valid public representation", () => {
@@ -533,8 +540,8 @@ describe("14. an absent effective interval has one canonical output", () => {
   it("absence produces one hash, not two", () => {
     /* The source has exactly one representation of "no interval", so there is
        exactly one capsule and one hash for it. */
-    const a = project({ effectiveInterval: null });
-    const b = project({ effectiveInterval: null });
+    const a = project();
+    const b = project();
     expect(a.metadata.contentHash).toBe(b.metadata.contentHash);
   });
 
@@ -943,6 +950,7 @@ describe("21. the same inputs produce an identical capsule and hash", () => {
     const reordered = projectOfferCapsule({
       sourceVersion: sourceVersion(),
       context: OfferProjectionContext.parse({
+        offerLifecycle: "ACTIVE",
         capsulePolicy: { ref: "mon:policy:capsule/offer", version: "1" },
         nodePolicy: { ref: "mon:policy:node/offer", version: "1" },
         generatedAt: "2026-08-02T09:00:00.000Z",
@@ -969,8 +977,8 @@ describe("22. a material public change changes the hash", () => {
 
   it("price, state, promotion, interval, and bindings each change it", () => {
     const variants = [
-      project({ availability: "TEMPORARILY_UNAVAILABLE" }),
-      project({ lifecycle: "ENDED" }),
+      project({}, { offerLifecycle: "PAUSED" }),
+      project({}, { offerLifecycle: "ENDED" }),
       project({
         terms: {
           price: { type: "PAID", wholesalePriceMinorUnits: 12_000, wholesalePriceCurrency: "USD" },
@@ -989,7 +997,7 @@ describe("22. a material public change changes the hash", () => {
           promotion: { type: "PROMOTABLE", commission: { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 500 } },
         },
       }),
-      project({ effectiveInterval: { startsAt: "2026-09-01T00:00:00.000Z", endsAt: null } }),
+      project(promotionSource()),
       project({}, { generatedAt: "2026-08-02T10:00:00.000Z" }),
     ];
     const hashes = new Set(variants.map((c) => c.metadata.contentHash));

@@ -120,12 +120,10 @@ export function syntheticListingProjectionContext(): ListingProjectionContext {
       storefrontGoLiveApproval: "APPROVED",
       controllingParticipantStatus: "ACTIVE",
       controllingRoleStatus: "ACTIVE",
-      offerLifecycle: "ACTIVE",
-      offerAvailability: "AVAILABLE",
+      acceptedOfferVersion: "1",
       /* Phase 1.15, Ruling 1 — the Seller's CURRENT authorization for new
          commerce, separate from the accepted version's frozen terms above. */
-      currentOfferLifecycle: "ACTIVE",
-      currentOfferAvailability: "AVAILABLE",
+      currentOfferState: "ACTIVE",
     },
     capsuleId: `an:capsule:${CAPSULE}`,
     capsuleVersion: SUPPORTED_LISTING_CAPSULE_VERSION,

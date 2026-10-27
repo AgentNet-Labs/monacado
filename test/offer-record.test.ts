@@ -1,5 +1,5 @@
 /**
- * Offer persistence contracts and scope boundaries (Phase 0M.6).
+ * Offer persistence contracts and scope boundaries (Phase 0M.6; Phase 1.42).
  *
  * Offline. No database, no clock, no network — the DB behaviour lives in
  * `offer-persistence.integration.test.ts`.
@@ -13,15 +13,24 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
-  CreateDraftOfferInput,
+  ActivateOfferInput,
+  CreateOfferInput,
   DEFERRED_OFFER_PERSISTENCE_EXTENSIONS,
+  EndPromotionInput,
   NEVER_ON_OFFER_RECORD,
-  UpdateOfferInput,
+  ReplacePromotionInput,
+  ResumeOfferInput,
+  ReviseOfferTermsInput,
+  SchedulePromotionInput,
+  StandDownOfferInput,
+  percentToBasisPoints,
+  standingTermsFromRequest,
+  usdMinorUnits,
 } from "../src/contracts/marketplace/offer-record";
 import {
   OfferSourceVersion,
   PROJECTION_ELIGIBLE_OFFER_FIELDS,
-  calculateOfferEconomics,
+  PromotedResaleOfferTerms,
 } from "../src/contracts/marketplace/offer-source";
 import { OFFER_ID_PATTERNS } from "../src/server/marketplace/offer-ids";
 
@@ -31,213 +40,168 @@ const RECORD_CODE = readFileSync(
   "utf8",
 );
 
-const pad26 = (seed: string): string =>
-  (seed.toUpperCase().replace(/[ILOU]/g, "0") + "0".repeat(26)).slice(0, 26);
+const PRODUCT_REF = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+const OFFER_REF = "ABCDEFGHJKMNPQRSTVWXYZ0123456789";
+const NOW = "2027-10-01T09:00:00.000Z";
 
-const PRODUCT = `mon:product:${pad26("M6PRODUCT")}`;
-const SELLER = `mon:mpart:${pad26("M6SELLER")}`;
-const ACTOR = `mon:actor:${pad26("M6ACTOR")}`;
-
-const paidPromotableTerms = {
-  price: {
-    type: "PAID" as const,
-    wholesalePriceMinorUnits: 5000,
-    wholesalePriceCurrency: "USD",
-  },
-  promotion: {
-    type: "PROMOTABLE" as const,
-    commission: { method: "PERCENT_OF_WHOLESALE" as const, commissionBasisPoints: 2000 },
-  },
+const terms = {
+  wholesalePrice: "50.00",
+  currency: "USD",
+  commission: { method: "PERCENT_OF_WHOLESALE", percent: "20" },
 };
 
 const createInput = (overrides: Record<string, unknown> = {}) => ({
-  internalProductId: PRODUCT,
-  sellerParticipantId: SELLER,
-  terms: paidPromotableTerms,
-  actingAccountId: "acct_synthetic_0m6",
-  now: "2027-10-01T09:00:00.000Z",
+  productRef: PRODUCT_REF,
+  terms,
+  now: NOW,
   ...overrides,
 });
 
+const confirmation = {
+  version: "2",
+  calculatedCommissionMinorUnits: 1000,
+  calculatedSellerGrossProceedsMinorUnits: 4000,
+  commissionCalculationPolicyVersion: "WHOLESALE_COMMISSION_V1",
+};
+
 // — 1 —
 
-describe("create input", () => {
-  it("accepts a well-formed draft Offer input", () => {
-    expect(CreateDraftOfferInput.safeParse(createInput()).success).toBe(true);
+describe("create input (Phase 1.42)", () => {
+  it("accepts terms as typed, named by the Product reference", () => {
+    expect(CreateOfferInput.safeParse(createInput()).success).toBe(true);
   });
 
   it("refuses an unknown key — the schema is strict, so a field cannot arrive early", () => {
-    expect(
-      CreateDraftOfferInput.safeParse(createInput({ promoterRetailPrice: 9999 })).success,
-    ).toBe(false);
+    expect(CreateOfferInput.safeParse(createInput({ inventory: 3 })).success).toBe(false);
   });
 
-  it("has NO input for lifecycle or availability — neither is a caller choice", () => {
-    /* 0M.2A starts the lifecycle at DRAFT, and availability modifies a LIVE
-       Offer. A caller that could set either at creation could stage an Offer
-       that was never reviewed into a state implying it had been. */
-    expect(CreateDraftOfferInput.safeParse(createInput({ lifecycle: "ACTIVE" })).success).toBe(
-      false,
-    );
-    expect(
-      CreateDraftOfferInput.safeParse(createInput({ availability: "TEMPORARILY_UNAVAILABLE" }))
-        .success,
-    ).toBe(false);
+  it("has NO input for who acts, the Seller, a lifecycle, economics, or identity", () => {
+    for (const extra of [
+      { actingAccountId: "acct_1" },
+      { sellerParticipantId: `mon:mpart:${"B".repeat(26)}` },
+      { hasProductAuthority: true },
+      { lifecycle: "ACTIVE" },
+      { availability: "AVAILABLE" },
+      { economics: { calculatedCommissionMinorUnits: 0 } },
+      { internalOfferId: `mon:offer:${"C".repeat(26)}` },
+      { sourceRecordVersion: "1" },
+      { internalProductId: `mon:product:${"D".repeat(26)}` },
+    ]) {
+      expect(CreateOfferInput.safeParse(createInput(extra)).success).toBe(false);
+    }
   });
 
-  it("has NO input for economics — they are computed, never supplied", () => {
-    /* Accepting them would let a caller persist numbers the deterministic
-       calculator never produced, which is precisely what 0M.2C exists to stop. */
-    expect(
-      CreateDraftOfferInput.safeParse(
-        createInput({
-          economics: {
-            calculatedCommissionMinorUnits: 1,
-            calculatedCreatorGrossProceedsMinorUnits: 1,
-            commissionCalculationPolicyVersion: "WHOLESALE_COMMISSION_V1",
-          },
-        }),
-      ).success,
-    ).toBe(false);
-  });
-
-  it("has NO input for a source-record id or internal Offer id — identity is minted", () => {
-    expect(
-      CreateDraftOfferInput.safeParse(createInput({ internalOfferId: `mon:offer:${pad26("X")}` }))
-        .success,
-    ).toBe(false);
-    expect(
-      CreateDraftOfferInput.safeParse(createInput({ offerSourceRecordId: `mon:srec:${pad26("X")}` }))
-        .success,
-    ).toBe(false);
-  });
-
-  it("refuses hasProductAuthority — derived, never supplied (Phase 1.18)", () => {
-    /* The inversion of what this test asserted through Phase 1.17. The field was
-       the deciding fact behind `canCreateDraftOffer`, and any caller could write
-       `true`; the Offer service now reads it from the Product's current source
-       version. `strictObject` makes the removal active rather than passive — a
-       caller still sending it is refused, not quietly ignored. */
-    expect(CreateDraftOfferInput.safeParse(createInput()).success).toBe(true);
-    expect(
-      CreateDraftOfferInput.safeParse({ ...createInput(), hasProductAuthority: true }).success,
-    ).toBe(false);
-  });
-
-  it("refuses a non-opaque actor id, so an email can never become an actor", () => {
-    expect(
-      CreateDraftOfferInput.safeParse(createInput({ authorizedByActorId: "seller@example.com" }))
-        .success,
-    ).toBe(false);
-  });
-
-  it("refuses economically invalid terms at the input boundary", () => {
-    /* A promotable FREE Offer has no proceeds to pay a commission from. The
-       refusal comes from 0M.2A's own cross-field rule, not a second copy. */
-    expect(
-      CreateDraftOfferInput.safeParse(
-        createInput({
-          terms: {
-            price: { type: "FREE" },
-            promotion: {
-              type: "PROMOTABLE",
-              commission: { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 1000 },
-            },
-          },
-        }),
-      ).success,
-    ).toBe(false);
-  });
-
-  it("refuses a fixed commission exceeding the wholesale price", () => {
-    expect(
-      CreateDraftOfferInput.safeParse(
-        createInput({
-          terms: {
-            price: { type: "PAID", wholesalePriceMinorUnits: 500, wholesalePriceCurrency: "USD" },
-            promotion: {
-              type: "PROMOTABLE",
-              commission: {
-                method: "FIXED_AMOUNT",
-                fixedCommissionMinorUnits: 900,
-                fixedCommissionCurrency: "USD",
-              },
-            },
-          },
-        }),
-      ).success,
-    ).toBe(false);
+  it("admits USD only", () => {
+    expect(CreateOfferInput.safeParse(createInput({ terms: { ...terms, currency: "EUR" } })).success).toBe(false);
   });
 });
 
-// — 2 —
-
-describe("update input", () => {
-  const updateInput = (overrides: Record<string, unknown> = {}) => ({
-    internalOfferId: `mon:offer:${pad26("M6OFFER")}`,
-    sourceRecordVersion: "2",
-    actingAccountId: "acct_synthetic_0m6",
-    now: "2027-10-02T09:00:00.000Z",
-    ...overrides,
+describe("terms conversion — money parsed on the server, never rounded", () => {
+  it("converts decimal strings to minor units and percentages to basis points", () => {
+    expect(usdMinorUnits("19.9")).toBe(1990);
+    expect(usdMinorUnits("0")).toBeNull();
+    expect(usdMinorUnits("1.999")).toBeNull();
+    expect(usdMinorUnits("abc")).toBeNull();
+    expect(percentToBasisPoints("12.5")).toBe(1250);
+    expect(percentToBasisPoints("7.25")).toBe(725);
+    expect(percentToBasisPoints("100")).toBe(10_000);
+    expect(percentToBasisPoints("1.234")).toBeNull();
   });
 
-  it("accepts an update stating only what changes", () => {
-    expect(UpdateOfferInput.safeParse(updateInput({ availability: "TEMPORARILY_UNAVAILABLE" })).success).toBe(
-      true,
-    );
-  });
-
-  it("requires an explicit new version label — never generated for the caller", () => {
-    const { sourceRecordVersion: _drop, ...without } = updateInput();
-    expect(UpdateOfferInput.safeParse(without).success).toBe(false);
-  });
-
-  it("cannot reassign the Product or the seller through an update", () => {
-    /* Both are material fields on the source version, but neither is a member of
-       the update input: re-pointing an Offer at another Product, or handing it to
-       another seller, is not an edit — it is a different Offer. */
-    expect(UpdateOfferInput.safeParse(updateInput({ internalProductId: PRODUCT })).success).toBe(
-      false,
-    );
-    expect(
-      UpdateOfferInput.safeParse(updateInput({ sellerParticipantId: SELLER })).success,
-    ).toBe(false);
-  });
-
-  it("accepts null to clear the effective interval, and omission to leave it", () => {
-    expect(UpdateOfferInput.safeParse(updateInput({ effectiveInterval: null })).success).toBe(true);
-    expect(UpdateOfferInput.safeParse(updateInput({})).success).toBe(true);
-  });
-
-  it("refuses an interval with both bounds null — one representation per fact", () => {
-    expect(
-      UpdateOfferInput.safeParse(
-        updateInput({ effectiveInterval: { startsAt: null, endsAt: null } }),
-      ).success,
-    ).toBe(false);
-  });
-
-  it("carries an economics confirmation bound to both halves of the identity", () => {
-    const parsed = UpdateOfferInput.safeParse(
-      updateInput({
-        lifecycle: "ACTIVE",
-        economicsConfirmation: {
-          confirmedOfferSourceRecordId: `mon:srec:${pad26("M6SREC")}`,
-          confirmedOfferSourceRecordVersion: "2",
-          ...calculateOfferEconomics(paidPromotableTerms),
+  it("builds PAID + PROMOTABLE USD terms, and names fields it cannot convert", () => {
+    const ok = standingTermsFromRequest({ wholesalePrice: "50", currency: "USD", commission: { method: "FIXED_AMOUNT", amount: "2" } });
+    expect(ok).toEqual({
+      ok: true,
+      terms: {
+        price: { type: "PAID", wholesalePriceMinorUnits: 5000, wholesalePriceCurrency: "USD" },
+        promotion: {
+          type: "PROMOTABLE",
+          commission: { method: "FIXED_AMOUNT", fixedCommissionMinorUnits: 200, fixedCommissionCurrency: "USD" },
         },
-      }),
-    );
-    expect(parsed.success).toBe(true);
+      },
+    });
+    expect(
+      standingTermsFromRequest({ wholesalePrice: "0", currency: "USD", commission: { method: "PERCENT_OF_WHOLESALE", percent: "x" } }),
+    ).toEqual({ ok: false, fields: ["terms.wholesalePrice", "terms.commission.percent"] });
+  });
+
+  it("refuses FREE, NOT_PROMOTABLE, non-USD, zero, and over-100% terms at the write boundary", () => {
+    const paid = { type: "PAID", wholesalePriceMinorUnits: 5000, wholesalePriceCurrency: "USD" };
+    const promotable = { type: "PROMOTABLE", commission: { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 2000 } };
+    expect(PromotedResaleOfferTerms.safeParse({ price: paid, promotion: promotable }).success).toBe(true);
+    expect(PromotedResaleOfferTerms.safeParse({ price: { type: "FREE" }, promotion: { type: "NOT_PROMOTABLE" } }).success).toBe(false);
+    expect(PromotedResaleOfferTerms.safeParse({ price: paid, promotion: { type: "NOT_PROMOTABLE" } }).success).toBe(false);
+    expect(PromotedResaleOfferTerms.safeParse({ price: { ...paid, wholesalePriceCurrency: "EUR" }, promotion: promotable }).success).toBe(false);
+    expect(PromotedResaleOfferTerms.safeParse({ price: { ...paid, wholesalePriceMinorUnits: 0 }, promotion: promotable }).success).toBe(false);
+    expect(
+      PromotedResaleOfferTerms.safeParse({
+        price: paid,
+        promotion: { type: "PROMOTABLE", commission: { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 10_001 } },
+      }).success,
+    ).toBe(false);
+    expect(
+      PromotedResaleOfferTerms.safeParse({
+        price: paid,
+        promotion: { type: "PROMOTABLE", commission: { method: "FIXED_AMOUNT", fixedCommissionMinorUnits: 5001, fixedCommissionCurrency: "USD" } },
+      }).success,
+    ).toBe(false);
   });
 });
 
-// — 3 —
+describe("act inputs (Phase 1.42)", () => {
+  const sel = { productRef: PRODUCT_REF, offerRef: OFFER_REF, now: NOW };
+
+  it("requires expectedVersion where stale commercial state matters", () => {
+    expect(ReviseOfferTermsInput.safeParse({ ...sel, terms }).success).toBe(false);
+    expect(ReviseOfferTermsInput.safeParse({ ...sel, terms, expectedVersion: "1" }).success).toBe(true);
+    expect(ResumeOfferInput.safeParse(sel).success).toBe(false);
+    expect(ResumeOfferInput.safeParse({ ...sel, expectedVersion: "1" }).success).toBe(true);
+    const promotion = { ...sel, wholesalePrice: "40.00", effectiveFrom: NOW, effectiveUntil: "2027-10-08T09:00:00.000Z" };
+    expect(SchedulePromotionInput.safeParse(promotion).success).toBe(false);
+    expect(SchedulePromotionInput.safeParse({ ...promotion, expectedVersion: "1" }).success).toBe(true);
+    expect(ReplacePromotionInput.safeParse({ ...promotion, expectedVersion: "1" }).success).toBe(false);
+    expect(ReplacePromotionInput.safeParse({ ...promotion, expectedVersion: "1", expectedPromotionVersion: "2" }).success).toBe(true);
+    expect(EndPromotionInput.safeParse(sel).success).toBe(false);
+    expect(EndPromotionInput.safeParse({ ...sel, expectedPromotionVersion: "2" }).success).toBe(true);
+  });
+
+  it("requires an exact-version confirmation to activate, and never a version label to mint", () => {
+    expect(ActivateOfferInput.safeParse(sel).success).toBe(false);
+    expect(ActivateOfferInput.safeParse({ ...sel, confirmation }).success).toBe(true);
+    expect(ActivateOfferInput.safeParse({ ...sel, confirmation, effectiveUntil: "2028-01-01T00:00:00.000Z" }).success).toBe(true);
+    for (const schema of [ReviseOfferTermsInput, ActivateOfferInput, SchedulePromotionInput]) {
+      expect(Object.keys(schema.shape)).not.toContain("sourceRecordVersion");
+    }
+  });
+
+  it("carries nothing when standing down — pausing or withdrawing asserts no terms", () => {
+    expect(Object.keys(StandDownOfferInput.shape).sort()).toEqual(["now", "offerRef", "productRef"]);
+    expect(StandDownOfferInput.safeParse({ ...sel, lifecycle: "PAUSED" }).success).toBe(false);
+  });
+
+  it("names no actor, participant, or lifecycle on any act input", () => {
+    for (const schema of [
+      CreateOfferInput,
+      ReviseOfferTermsInput,
+      ActivateOfferInput,
+      StandDownOfferInput,
+      ResumeOfferInput,
+      SchedulePromotionInput,
+      ReplacePromotionInput,
+      EndPromotionInput,
+    ]) {
+      const keys = Object.keys(schema.shape);
+      for (const forbidden of ["actingAccountId", "sellerParticipantId", "lifecycle", "availability", "internalOfferId"]) {
+        expect(keys).not.toContain(forbidden);
+      }
+    }
+  });
+});
 
 describe("privacy and scope", () => {
   it("names every forbidden field, and the schema refuses each one", () => {
     for (const field of NEVER_ON_OFFER_RECORD) {
-      expect(CreateDraftOfferInput.safeParse(createInput({ [field]: "x" })).success).toBe(false);
+      expect(CreateOfferInput.safeParse(createInput({ [field]: "x" })).success).toBe(false);
     }
     expect(NEVER_ON_OFFER_RECORD.length).toBeGreaterThan(30);
   });
@@ -326,7 +290,8 @@ describe("schema shape", () => {
       SCHEMA_CODE.indexOf("model Listing {"),
     );
     const relations = offerTables.match(/@relation\([^)]*onDelete: \w+/g) ?? [];
-    expect(relations.length).toBe(6);
+    /* Six from 0M.6, plus OfferAct's two (Phase 1.42): its Offer and its actor. */
+    expect(relations.length).toBe(8);
     for (const relation of relations) expect(relation).toContain("onDelete: Restrict");
     expect(offerTables).not.toContain("onDelete: Cascade");
   });
@@ -384,22 +349,22 @@ describe("identity", () => {
 // — 6 —
 
 describe("the source model was not widened", () => {
-  it("adds no member to OfferSourceVersion", () => {
-    /* The persisted shape must be exactly the contract shape. If persistence had
-       introduced a field, this list would have grown and the projection would be
-       consuming something 0M.2B never agreed to. */
+  it("holds exactly the terms-only members of OfferSourceVersion (Phase 1.42)", () => {
+    /* The persisted shape must be exactly the contract shape. Phase 1.42 removed
+       lifecycle, availability, and the effective interval (lifecycle is Seller
+       authority, recorded as acts) and added the terms kind, the promotion
+       window, and the promotion's standing basis — and nothing else. */
     const members = Object.keys(OfferSourceVersion._def.shape ?? {});
     expect(members.sort()).toEqual(
       [
         "authorizedByActorId",
         "authorizedBySellerParticipantId",
-        "availability",
+        "basisStandingVersion",
         "economics",
-        "effectiveInterval",
         "internalOfferId",
         "internalProductId",
-        "lifecycle",
         "offerSourceRecordId",
+        "promotionWindow",
         "recordedAt",
         "sellerParticipantId",
         "sourceClass",
@@ -408,21 +373,21 @@ describe("the source model was not widened", () => {
         "sourceSystem",
         "supersedesSourceRecordVersion",
         "terms",
+        "termsKind",
       ].sort(),
     );
   });
 
-  it("leaves the 0M.2A projection-eligible field set untouched", () => {
+  it("names the projection-eligible fields (lifecycle now a recorded context value)", () => {
     expect([...PROJECTION_ELIGIBLE_OFFER_FIELDS]).toEqual([
       "internalOfferId",
       "internalProductId",
       "sellerParticipantId",
       "lifecycle",
-      "availability",
       "price",
       "promotion",
       "commission",
-      "effectiveInterval",
+      "promotionWindow",
     ]);
   });
 

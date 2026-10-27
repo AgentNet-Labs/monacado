@@ -550,13 +550,22 @@ one problem should not discover the next only after saving.
 | `STOREFRONT_NOT_PUBLICLY_ACCESSIBLE` | via the Storefront's own `isPubliclyAccessible` |
 | `CONTROLLING_PARTICIPANT_NOT_ACTIVE` | participant admission status |
 | `CONTROLLING_ROLE_NOT_ACTIVE` | the controlling role assignment |
-| `OFFER_NOT_COMMERCIALLY_SELECTABLE` | promoted only — Offer lifecycle/availability |
+| `OFFER_NOT_COMMERCIALLY_SELECTABLE` | promoted only — the accepted Offer version does not resolve (Phase 1.42: a version carries terms only) |
+| `OFFER_NOT_CURRENTLY_OFFERED` | promoted only — the Offer's **current derived lifecycle** is not `ACTIVE` (Phase 1.15, Ruling 1; Phase 1.42: `PAUSED`, `WITHDRAWN`, `ENDED`, `DRAFT`) |
 | `OFFER_VERSION_REVIEW_REQUIRED` | promoted only — review outstanding |
 
 Upstream states are **supplied, not fetched**; the function reaches no database.
 Each upstream entity's own rules decide its own domain — the Storefront's
 accessibility helper, the Offer's lifecycle and availability — so nothing here
 reinvents another entity's semantics or invents publication lifecycle.
+
+> **Phase 1.42.** The Offer's lifecycle is now derived from its Seller acts, not
+> read from a version, and there is no Offer availability field: a Seller's
+> pause is `PAUSED`. The accepted version supplies the terms; the Offer's current
+> derived lifecycle supplies the Seller's current authorization. A running
+> scheduled promotion is **not** applied to Listings in Phase 1.42 — effective-
+> terms resolution and Listing propagation on Offer change are deferred
+> (Contract §34, §19).
 
 ## 14. Derived versus authoritative
 

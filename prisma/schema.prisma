@@ -1373,6 +1373,8 @@ model MarketplaceParticipant {
   sellerOffers              Offer[]                       @relation("OfferSeller")
   sellerOfferSourceVersions OfferSourceRecordVersionRow[] @relation("OfferVersionSeller")
   authorizedOfferVersions   OfferSourceRecordVersionRow[] @relation("OfferVersionAuthorizer")
+  /// Seller lifecycle and promotion acts on Offers (Phase 1.42). RESTRICT.
+  offerActs                 OfferAct[]                    @relation("OfferActor")
 
   // — Listing relations (Phase 0M.7). All RESTRICT on the far side. The
   // controller is a seller or a promoter depending on the Listing branch; roles
@@ -2422,39 +2424,51 @@ model StorefrontGovernanceAssignment {
 // facts; several are other phases' entirely.
 // ---------------------------------------------------------------------------
 
-/// Stable Offer identity and current-version pointer (Phase 0M.6).
+/// Stable Offer identity and current-terms pointers (Phase 0M.6; Phase 1.42).
 ///
-/// The enduring record. Material commercial terms live on the immutable version
-/// rows; this row identifies the Offer across all of them and names which one is
-/// current. Business state is mirrored here for querying only — the version row
-/// stays authoritative, and both move in the same transaction.
+/// The enduring record. Commercial terms live on the immutable version rows;
+/// this row identifies the Offer across all of them and names which STANDING
+/// version is current and which SCHEDULED_PROMOTION version (if any) was last
+/// scheduled. **Lifecycle is not stored here, and not on any version** (Phase
+/// 1.42): it is derived from the append-only `OfferAct` chain plus the instant
+/// asked about, so a pause or a resume never mints a commercial version.
 model Offer {
   /// Opaque internal Offer identifier (mon:offer:<opaque>). Immutable, and never
   /// an AgentNet Node: `mon:offer:` is internal and a Node is issued elsewhere.
   internalOfferId String @id @db.VarChar(191)
+
+  /// Stable APPLICATION-FACING reference (Phase 1.42) — opaque, un-namespaced,
+  /// 32 Crockford characters (the `productRef` construction). How a route names
+  /// this Offer; the internal ids above are never exposed.
+  offerRef String @unique @db.VarChar(32)
 
   /// Opaque source-record identifier (mon:srec:<opaque>), constant across every
   /// version of this Offer; distinct from internalOfferId. The same convention
   /// the Product and Storefront source records already use.
   offerSourceRecordId String @unique @db.VarChar(191)
 
-  /// Pointer to the current immutable version's sourceRecordVersion.
+  /// Pointer to the current STANDING version's sourceRecordVersion.
   currentSourceRecordVersion String @db.VarChar(64)
+
+  /// The most recently scheduled SCHEDULED_PROMOTION version, or NULL if none
+  /// was ever scheduled (Phase 1.42). Whether it is upcoming, running, ended,
+  /// or ended early is DERIVED from its window, its END_PROMOTION act, and the
+  /// instant — never written when a window opens or closes.
+  currentPromotionVersion String? @db.VarChar(64)
 
   /// The Product these commercial terms are for. An Offer names a Product; it
   /// restates no Product descriptive fact (ADR §2 authority partitioning).
   internalProductId String @db.VarChar(191)
 
+  /// At most one NON-TERMINAL Offer per Product (Phase 1.42). Holds
+  /// `internalProductId` from creation until the Offer is WITHDRAWN, or until a
+  /// later create — under the Product row lock — observes this Offer to be
+  /// derived ENDED and releases it. Terminal Offers keep everything else.
+  nonTerminalForProductId String? @unique @db.VarChar(191)
+
   /// The participant holding Seller authority. A TRANSACTIONAL identity — never
   /// a Creator Node and never any public semantic identity (0M.2A §3).
   sellerParticipantId String @db.VarChar(191)
-
-  /// Current business state, mirrored from the current version for querying.
-  /// Denormalized pointer-side copies kept in the same transaction, never an
-  /// independent truth. `availability` needs 23 characters for
-  /// TEMPORARILY_UNAVAILABLE.
-  lifecycle    String @db.VarChar(16)
-  availability String @db.VarChar(32)
 
   createdAt DateTime @default(now()) @db.DateTime(3)
   updatedAt DateTime @updatedAt @db.DateTime(3)
@@ -2467,6 +2481,9 @@ model Offer {
 
   versions OfferSourceRecordVersionRow[]
 
+  /// Seller lifecycle and promotion acts (Phase 1.42). RESTRICT.
+  acts OfferAct[]
+
   /// Promoted Listing versions that name this Offer (0M.7). RESTRICT.
   promotedListingVersions ListingSourceRecordVersionRow[] @relation("ListingAcceptedOffer")
 
@@ -2475,7 +2492,6 @@ model Offer {
 
   @@index([internalProductId])
   @@index([sellerParticipantId])
-  @@index([lifecycle, availability])
 }
 
 /// Immutable authoritative Offer source-record version. Never updated in place.
@@ -2511,8 +2527,17 @@ model OfferSourceRecordVersionRow {
   // — The complete material snapshot —
   internalProductId   String @db.VarChar(191)
   sellerParticipantId String @db.VarChar(191)
-  lifecycle           String @db.VarChar(16)
-  availability        String @db.VarChar(32)
+
+  /// STANDING | SCHEDULED_PROMOTION (Phase 1.42). A STANDING version is the
+  /// Offer's normal terms and has no window; a SCHEDULED_PROMOTION version is a
+  /// complete snapshot of temporary terms, effective only inside its window.
+  /// Lifecycle is NOT a version fact: pausing or resuming mints nothing.
+  termsKind String @db.VarChar(24)
+
+  /// SCHEDULED_PROMOTION only: the STANDING version the promotion was built
+  /// from — its commission terms are that version's, unchanged. NULL for
+  /// STANDING.
+  basisStandingVersion String? @db.VarChar(64)
 
   // — Commercial terms, normalized to scalars —
   //
@@ -2546,14 +2571,14 @@ model OfferSourceRecordVersionRow {
   fixedCommissionMinorUnits BigInt?
   fixedCommissionCurrency   String? @db.VarChar(3)
 
-  // — Effective interval —
+  // — Promotion window (Phase 1.42) —
   //
-  // Two nullable columns are EXACTLY sufficient, with no ambiguity: the contract
-  // refuses an interval whose bounds are both null, so both-NULL here means "no
-  // effective interval" and nothing else. There is one representation per fact,
-  // which is what stops a spurious material change.
-  effectiveStartsAt DateTime? @db.DateTime(3)
-  effectiveEndsAt   DateTime? @db.DateTime(3)
+  // Both NULL on a STANDING version; both set on a SCHEDULED_PROMOTION version,
+  // as the half-open UTC window [effectiveFrom, effectiveUntil). The window is
+  // part of the immutable snapshot: replacing or ending a promotion never edits
+  // it — an `END_PROMOTION` act records that instead.
+  promotionEffectiveFrom  DateTime? @db.DateTime(3)
+  promotionEffectiveUntil DateTime? @db.DateTime(3)
 
   // — Accepted economics —
   //
@@ -2599,6 +2624,59 @@ model OfferSourceRecordVersionRow {
   @@index([internalProductId])
   @@index([sellerParticipantId])
   @@index([authorizedBySellerParticipantId])
+}
+
+/// One Seller act on an Offer (Phase 1.42) — append-only.
+///
+/// ACTIVATE / PAUSE / RESUME / WITHDRAW are lifecycle acts; END_PROMOTION ends
+/// (or, before its window opens, cancels) the current scheduled promotion. None
+/// mints a commercial version. Each act names the act it follows
+/// (`supersedesActId`, unique), so an Offer's acts form ONE linear chain; the
+/// current act holds `currentForOfferId` (unique), and its `state` IS the
+/// Offer's recorded lifecycle. An Offer with no act is DRAFT. ENDED is never
+/// written: it is derived when `offerEffectiveUntil` (set by ACTIVATE) passes.
+model OfferAct {
+  /// Opaque identity (mon:offeract:<opaque>). Never exposed to a caller.
+  id String @id @db.VarChar(191)
+
+  internalOfferId String @db.VarChar(191)
+
+  /// ACTIVATE | PAUSE | RESUME | WITHDRAW | END_PROMOTION.
+  act String @db.VarChar(16)
+
+  /// The recorded lifecycle this act produced (ACTIVE | PAUSED | WITHDRAWN), and
+  /// the one it replaced. END_PROMOTION leaves the lifecycle as it was.
+  state         String @db.VarChar(16)
+  previousState String @db.VarChar(16)
+
+  /// The act this one followed; NULL for the Offer's first act. Unique: no fork.
+  supersedesActId String? @unique @db.VarChar(191)
+
+  /// Unique while current — at most one current act per Offer.
+  currentForOfferId String? @unique @db.VarChar(191)
+
+  /// ACTIVATE: the exact STANDING version the Seller confirmed. NULL otherwise.
+  activatedStandingVersion String? @db.VarChar(64)
+
+  /// ACTIVATE only: the Offer's optional overall end. Once it passes, the Offer
+  /// is derived ENDED — terminal — with no write.
+  offerEffectiveUntil DateTime? @db.DateTime(3)
+
+  /// END_PROMOTION: the exact SCHEDULED_PROMOTION version ended. NULL otherwise.
+  endedPromotionVersion String? @db.VarChar(64)
+
+  /// The participant holding Seller authority over the Product at the act.
+  actorParticipantId String   @db.VarChar(191)
+  actedByAccountId   String   @db.VarChar(191)
+  actedAt            DateTime @db.DateTime(3)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+
+  offer Offer                  @relation(fields: [internalOfferId], references: [internalOfferId], onDelete: Restrict)
+  actor MarketplaceParticipant @relation("OfferActor", fields: [actorParticipantId], references: [id], onDelete: Restrict)
+
+  @@index([internalOfferId, actedAt])
+  @@index([actorParticipantId])
 }
 
 // ---------------------------------------------------------------------------

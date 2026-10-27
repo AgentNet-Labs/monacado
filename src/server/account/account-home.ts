@@ -17,6 +17,7 @@
  */
 
 import "../server-only";
+import { readSellerProductOffersIn, type SellerProductOffer } from "../marketplace/offer-read-service";
 import {
   permitsDrafting,
   type MarketplaceRole,
@@ -250,6 +251,12 @@ export interface AccountHomeProduct {
    * Independent of `lifecycle` and `resaleAvailability`.
    */
   promotionAuthorizations: AccountHomeSellerPromotionAuthorization[];
+  /**
+   * The Product's Offer as its Seller sees it (Phase 1.42): the current or most
+   * recent Offer, its derived state, standing terms and economics, promotion,
+   * blockers, and the acts available. Seller-facing only; never published.
+   */
+  offer: SellerProductOffer;
 }
 
 /**
@@ -351,9 +358,11 @@ export interface AccountHome {
 /** `undefined` when the account no longer exists — the page treats that as signed out. */
 export async function readAccountHome(
   accountId: string,
-  deps: { db?: Db } = {},
+  /** `now` (Phase 1.42): the instant Offer state is derived at. */
+  deps: { db?: Db; now?: string } = {},
 ): Promise<AccountHome | undefined> {
   const db = deps.db ?? getPrisma();
+  const now = deps.now ?? new Date().toISOString();
   const rows = await readActingAccountRows(db, accountId);
   if (rows === null) return undefined;
 
@@ -374,7 +383,7 @@ export async function readAccountHome(
   });
   const mayDraftStorefront = isAllowed(canCreateDraftStorefront(subject));
   const canCreateProduct = isAllowed(canCreateDraftProduct(subject));
-  const products = participant === null ? [] : await readAuthoredProducts(db, participant.id);
+  const products = participant === null ? [] : await readAuthoredProducts(db, accountId, participant.id, now);
   const placements =
     participant === null ? [] : await readSellerDirectPlacements(db, participant.id);
   /* Phase 1.34. The capability AND both sides of the act: a placement form with
@@ -658,7 +667,9 @@ async function readSellerDirectPlacements(
  */
 async function readAuthoredProducts(
   db: Db,
+  accountId: string,
   participantId: string,
+  now: string,
 ): Promise<AccountHomeProduct[]> {
   const products = await db.product.findMany({
     where: { versions: { some: { authorityCreatorParticipantId: participantId } } },
@@ -708,6 +719,14 @@ async function readAuthoredProducts(
     db,
     products.map((p) => p.internalProductId),
   );
+  /* Phase 1.42 — each Product's Offer, a fourth axis: Seller commercial authority
+     for promoted resale, derived at `now`. */
+  const offers = await readSellerProductOffersIn(
+    db,
+    products.map((p) => p.internalProductId),
+    { accountId, sellerParticipantId: participantId },
+    now,
+  );
 
   return products.flatMap((p) => {
     const v = current.get(p.sourceRecordId);
@@ -746,6 +765,7 @@ async function readAuthoredProducts(
             ? [{ authorizationRef: a.authorizationRef, promoterDeclaredName: a.promoterDeclaredName, state: a.state }]
             : [],
         ),
+        offer: offers.get(p.internalProductId) ?? { offer: null, canCreate: false },
       },
     ];
   });

@@ -48,7 +48,7 @@ import { createDraftParticipant } from "../src/server/marketplace/participant-se
 import { createDraftStorefront } from "../src/server/marketplace/storefront-service";
 import { resolveActingAccount } from "../src/server/account/acting-participant-boundary";
 import { createDraftProductAs } from "../src/server/marketplace/marketplace-application-service";
-import { createDraftOffer } from "../src/server/marketplace/offer-service";
+import { recordOfferAct, seedOffer } from "./support/offer-fixture";
 import {
   createPromotedListing,
   evaluateBuyerEligibility,
@@ -111,6 +111,7 @@ async function cleanup(): Promise<void> {
   await db.offerSourceRecordVersionRow.deleteMany({
     where: { sellerParticipantId: { in: participantIds } },
   });
+  await db.offerAct.deleteMany({ where: { offer: { sellerParticipantId: { in: participantIds } } } });
   await db.offer.deleteMany({ where: { sellerParticipantId: { in: participantIds } } });
   const productIds = (
     await db.productSourceRecordVersionRow.findMany({
@@ -669,7 +670,7 @@ describe.skipIf(!RUN)("Phase 1.36 — pricing a private DRAFT placement", () => 
     const storefront = await db.storefront.findUniqueOrThrow({
       where: { publicHandle: storefrontHandle },
     });
-    const offer = await createDraftOffer(
+    const offer = await seedOffer(
       {
         internalProductId: product.internalProductId,
         sellerParticipantId: sellerOfRecord.participantId!,
@@ -801,7 +802,7 @@ describe.skipIf(!RUN)("Phase 1.36 — pricing a private DRAFT placement", () => 
        is a commercial term, not a publication or an activation. */
     const eligibility = await evaluateBuyerEligibility(
       listing.internalListingId,
-      { productAvailability: "available" },
+      { productAvailability: "available", at: NOW },
       { db },
     );
     expect(eligibility.buyerActive).toBe(false);

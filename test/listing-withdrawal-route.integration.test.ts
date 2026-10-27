@@ -39,7 +39,7 @@ import { createDraftParticipant } from "../src/server/marketplace/participant-se
 import { createDraftStorefront } from "../src/server/marketplace/storefront-service";
 import { resolveActingAccount } from "../src/server/account/acting-participant-boundary";
 import { createDraftProductAs } from "../src/server/marketplace/marketplace-application-service";
-import { createDraftOffer } from "../src/server/marketplace/offer-service";
+import { recordOfferAct, seedOffer } from "./support/offer-fixture";
 import { createPromotedListing } from "../src/server/marketplace/listing-service";
 import {
   LISTING_PLACEMENT_ROUTE_ERROR_CODES as PLACE_CODES,
@@ -92,6 +92,7 @@ async function cleanup(): Promise<void> {
   await db.offerSourceRecordVersionRow.deleteMany({
     where: { sellerParticipantId: { in: participantIds } },
   });
+  await db.offerAct.deleteMany({ where: { offer: { sellerParticipantId: { in: participantIds } } } });
   await db.offer.deleteMany({ where: { sellerParticipantId: { in: participantIds } } });
   const productIds = (
     await db.productSourceRecordVersionRow.findMany({
@@ -434,7 +435,7 @@ describe.skipIf(!RUN)("Phase 1.35 — withdrawing a private DRAFT placement", ()
     const product = await db.product.findFirstOrThrow({ where: { productRef } });
     const storefrontHandle = await seedStorefront(promoter);
     const storefront = await db.storefront.findUniqueOrThrow({ where: { publicHandle: storefrontHandle } });
-    const offer = await createDraftOffer(
+    const offer = await seedOffer(
       {
         internalProductId: product.internalProductId,
         sellerParticipantId: sellerOfRecord.participantId!,

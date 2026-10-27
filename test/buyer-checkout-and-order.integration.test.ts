@@ -26,7 +26,7 @@ import { grantProductCreatorAuthority } from "./support/product-authority-fixtur
 import { syntheticProductRef } from "./support/product-ref-fixture";
 import { createAccount } from "../src/server/account/account-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
-import { createDraftOffer } from "../src/server/marketplace/offer-service";
+import { recordOfferAct, seedOffer } from "./support/offer-fixture";
 import { grantAccountEntitlement } from "../src/server/account/account-entitlement-service";
 import {
   getCurrentCommerceApproval,
@@ -219,6 +219,7 @@ async function cleanup(): Promise<void> {
       await db.offerSourceRecordVersionRow.deleteMany({
         where: { sellerParticipantId: { in: participantIds } },
       });
+      await db.offerAct.deleteMany({ where: { offer: { sellerParticipantId: { in: participantIds } } } });
       await db.offer.deleteMany({ where: { sellerParticipantId: { in: participantIds } } });
       await db.storefront.deleteMany({ where: { ownerParticipantId: { in: participantIds } } });
       await db.marketplaceRoleAssignment.deleteMany({
@@ -474,7 +475,7 @@ async function seedPromoted() {
   const internalProductId = await seedProduct(seller.participantId);
   const storefrontId = await seedStorefront(promoter.participantId);
 
-  const offer = await createDraftOffer(
+  const offer = await seedOffer(
     {
       internalProductId,
       sellerParticipantId: seller.participantId,
@@ -492,17 +493,10 @@ async function seedPromoted() {
   );
   /* A promoted Listing only sells when the accepted Offer version is itself
      commercially selectable. */
-  await db.offerSourceRecordVersionRow.updateMany({
-    where: { offerSourceRecordId: offer.record.offerSourceRecordId },
-    data: { lifecycle: "ACTIVE", availability: "AVAILABLE" },
-  });
   /* And, since Phase 1.15 (Ruling 1), only while the SELLER currently offers it.
      The accepted version above is the historical terms; the stable Offer row is
      the Seller's standing authorization for new commerce, and both must hold. */
-  await db.offer.update({
-    where: { internalOfferId: offer.record.internalOfferId },
-    data: { lifecycle: "ACTIVE", availability: "AVAILABLE" },
-  });
+  await recordOfferAct(db, offer.record.internalOfferId, { act: "ACTIVATE", now: NOW });
 
   const listing = await createPromotedListing(
     {

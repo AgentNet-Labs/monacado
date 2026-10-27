@@ -64,6 +64,8 @@ import {
 } from "./commercial-policy-errors";
 import { versionRowToSourceVersion as listingVersionRowToSourceVersion } from "./listing-mapper";
 import { versionRowToSourceVersion as offerVersionRowToSourceVersion } from "./offer-mapper";
+import { readOfferLifecycleBySourceRecordIn } from "./offer-service";
+import type { OfferLifecycleState } from "../../contracts/marketplace/offer-source";
 import { resolveCommerceApproval } from "./participant-commerce-approval-service";
 import {
   InvalidOrderInputError,
@@ -233,7 +235,7 @@ async function readCurrentListingVersion(
 async function requirePurchasable(
   db: Db,
   sourceVersion: ListingSourceVersion,
-  supplied: { productAvailability: "available" | "unavailable" },
+  supplied: { productAvailability: "available" | "unavailable"; at: string },
 ): Promise<void> {
   const placement = sourceVersion.placement;
 
@@ -260,14 +262,15 @@ async function requirePurchasable(
 
      Its CURRENT commercial authorization is a different question with a
      different source — Phase 1.15, Ruling 1. The accepted version row is frozen
-     and reads ACTIVE/AVAILABLE forever, which is correct for a historical
-     record and wrong as a standing permission: a Seller who ended or withdrew
-     their Offer went on selling through every promoted Listing bound to an
-     earlier version. The stable `Offer` row is the Seller's current answer, and
-     it is resolved by the SAME `offerSourceRecordId` the dependency already
-     names, so no new identity is invented. */
-  let offer: { lifecycle: string; availability: string } | undefined;
-  let currentOffer: { lifecycle: string; availability: string } | undefined;
+     forever, which is correct for a historical record and wrong as a standing
+     permission: a Seller who ended or withdrew their Offer went on selling
+     through every promoted Listing bound to an earlier version. The Offer's
+     DERIVED lifecycle (Phase 1.42: acts plus overall end, at `placedAt`) is the
+     Seller's current answer, resolved by the SAME `offerSourceRecordId` the
+     dependency already names, so no new identity is invented. Effective-terms
+     resolution is deliberately not wired into checkout in Phase 1.42. */
+  let offer: { sourceRecordVersion: string } | undefined;
+  let currentOffer: { state: OfferLifecycleState } | undefined;
   if (placement.listingType === "PROMOTED") {
     const offerRow = await db.offerSourceRecordVersionRow.findUnique({
       where: {
@@ -277,18 +280,15 @@ async function requirePurchasable(
         },
       },
     });
-    if (offerRow !== null) {
-      offer = { lifecycle: offerRow.lifecycle, availability: offerRow.availability };
-    }
-    const stableOffer = await db.offer.findUnique({
-      where: { offerSourceRecordId: placement.offerDependency.offerSourceRecordId },
-    });
-    if (stableOffer !== null) {
-      currentOffer = {
-        lifecycle: stableOffer.lifecycle,
-        availability: stableOffer.availability,
-      };
-    }
+    if (offerRow !== null) offer = { sourceRecordVersion: offerRow.sourceRecordVersion };
+    /* Phase 1.42 — the CURRENT lifecycle is derived from the Offer's acts at an
+       explicit instant; nothing on any row says ACTIVE or ENDED. */
+    const state = await readOfferLifecycleBySourceRecordIn(
+      db,
+      placement.offerDependency.offerSourceRecordId,
+      supplied.at,
+    );
+    if (state !== null) currentOffer = { state };
   }
 
   const eligibility = evaluateListingBuyerEligibility({
@@ -302,8 +302,8 @@ async function requirePurchasable(
     },
     controllingParticipantStatus: controller.status as never,
     controllingRoleStatus: (role?.status ?? "NONE") as never,
-    ...(offer === undefined ? {} : { offer: offer as never }),
-    ...(currentOffer === undefined ? {} : { currentOffer: currentOffer as never }),
+    ...(offer === undefined ? {} : { offer }),
+    ...(currentOffer === undefined ? {} : { currentOffer }),
     ...(placement.listingType === "PROMOTED"
       ? { upstreamReviewState: placement.upstreamReviewState }
       : {}),
@@ -371,6 +371,7 @@ export async function prepareCheckout(
 
     await requirePurchasable(db, sourceVersion, {
       productAvailability: v.productAvailability,
+      at: v.placedAt,
     });
 
     const placement = sourceVersion.placement;

@@ -153,7 +153,8 @@ describe("/account presentation", () => {
   it("shows name, email, and verified status, reads the home by the session's account, and hides the id", async () => {
     const html = await renderSignedIn(home());
 
-    expect(readAccountHome).toHaveBeenCalledWith(ACCOUNT_ID);
+    /* Phase 1.42 — the page passes the one instant its Offer states are derived at. */
+    expect(readAccountHome).toHaveBeenCalledWith(ACCOUNT_ID, { now: expect.any(String) });
     expect(html).toContain("<h1>Monacado</h1>");
     expect(html).toContain("You are signed in.");
     expect(html).toContain("<dd>Ada Seller</dd>");
@@ -367,6 +368,7 @@ describe("/account presentation", () => {
             recordStatus: "draft",
             revisionToken: "0123456789abcdef0123456789abcdef",
             promotionAuthorizations: [],
+            offer: { offer: null, canCreate: false },
             lifecycle: "INCOMPLETE" as const,
             activationBlockers: ["PRODUCT_INCOMPLETE" as const],
             shippingPolicy: null,
@@ -395,6 +397,7 @@ describe("/account presentation", () => {
       recordStatus: "draft" as const,
       revisionToken: "0123456789abcdef0123456789abcdef",
       promotionAuthorizations: [],
+      offer: { offer: null, canCreate: false },
     };
     const html = await renderSignedIn(
       home({
@@ -461,6 +464,7 @@ describe("/account presentation", () => {
       recordStatus: "draft" as const,
       revisionToken: "0123456789abcdef0123456789abcdef",
       promotionAuthorizations: [],
+      offer: { offer: null, canCreate: false },
       shippingPolicy: null,
       completeness: { complete: true, missing: [] },
     };
@@ -505,6 +509,7 @@ describe("/account presentation", () => {
       recordStatus: "draft" as const,
       revisionToken: "0123456789abcdef0123456789abcdef",
       promotionAuthorizations: [],
+      offer: { offer: null, canCreate: false },
       shippingPolicy: null,
       completeness: { complete: true, missing: [] },
       activationBlockers: [],
@@ -605,6 +610,7 @@ describe("/account presentation", () => {
       recordStatus: "draft" as const,
       revisionToken: "0123456789abcdef0123456789abcdef",
       promotionAuthorizations: [],
+      offer: { offer: null, canCreate: false },
       lifecycle: "INCOMPLETE" as const,
       activationBlockers: ["PRODUCT_INCOMPLETE" as const],
       shippingPolicy: null,
@@ -927,6 +933,7 @@ describe("placement presentation", () => {
     recordStatus: "draft" as const,
     revisionToken: "0123456789abcdef0123456789abcdef",
     promotionAuthorizations: [],
+    offer: { offer: null, canCreate: false },
     lifecycle: "INCOMPLETE" as const,
     activationBlockers: ["PRODUCT_INCOMPLETE" as const],
     shippingPolicy: null,
@@ -1175,6 +1182,7 @@ describe("placement withdrawal presentation", () => {
     recordStatus: "draft" as const,
     revisionToken: "0123456789abcdef0123456789abcdef",
     promotionAuthorizations: [],
+    offer: { offer: null, canCreate: false },
     lifecycle: "INCOMPLETE" as const,
     activationBlockers: ["PRODUCT_INCOMPLETE" as const],
     shippingPolicy: null,
@@ -1393,6 +1401,7 @@ describe("placement pricing presentation", () => {
     recordStatus: "draft" as const,
     revisionToken: "0123456789abcdef0123456789abcdef",
     promotionAuthorizations: [],
+    offer: { offer: null, canCreate: false },
     lifecycle: "INCOMPLETE" as const,
     activationBlockers: ["PRODUCT_INCOMPLETE" as const],
     shippingPolicy: null,
@@ -1651,6 +1660,7 @@ describe("Promotion Authorization presentation (Phase 1.41)", () => {
     recordStatus: "draft" as const,
     revisionToken: "0123456789abcdef0123456789abcdef",
     lifecycle: "INCOMPLETE" as const,
+    offer: { offer: null, canCreate: false as boolean },
     activationBlockers: ["PRODUCT_INCOMPLETE" as const],
     shippingPolicy: null,
     completeness: { complete: false, missing: ["SHIPPING_POLICY_MISSING" as const] },

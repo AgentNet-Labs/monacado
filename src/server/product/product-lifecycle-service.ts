@@ -188,6 +188,19 @@ async function readParticipantLifecycleFacts(
   };
 }
 
+/**
+ * The Seller-standing half of activation readiness for one participant — the
+ * account and participant facts `readProductLifecycleIn` decides on, exported so
+ * Offer activation (Phase 1.42) reads them from the one reader rather than a
+ * copy.
+ */
+export async function readSellerReadinessFactsIn(
+  tx: Tx,
+  participantId: string,
+): Promise<ParticipantLifecycleFacts["readiness"]> {
+  return (await readParticipantLifecycleFacts(tx, participantId)).readiness;
+}
+
 /** The recorded basis of one activation row, as the contract compares it. */
 function basisOfActivationRow(row: {
   participantId: string;

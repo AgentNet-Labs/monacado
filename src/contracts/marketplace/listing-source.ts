@@ -65,7 +65,6 @@ import {
   OfferSourceRecordId,
   OfferSourceRecordVersion,
   InternalOfferId,
-  type OfferAvailability,
   type OfferBusinessChangeCategory,
   type OfferLifecycleState,
 } from "./offer-source";
@@ -1070,16 +1069,18 @@ export const LISTING_BLOCKING_REASONS = [
   "STOREFRONT_NOT_PUBLICLY_ACCESSIBLE",
   "CONTROLLING_PARTICIPANT_NOT_ACTIVE",
   "CONTROLLING_ROLE_NOT_ACTIVE",
+  /** The exact accepted Offer version does not resolve (Phase 1.42: a version
+      carries no lifecycle, so this is the whole of what it can mean now). */
   "OFFER_NOT_COMMERCIALLY_SELECTABLE",
   "OFFER_VERSION_REVIEW_REQUIRED",
   /**
    * The Seller no longer offers this commercially (Phase 1.15, Ruling 1).
    *
    * DISTINCT FROM `OFFER_NOT_COMMERCIALLY_SELECTABLE`, and the distinction is
-   * the whole correction. That code answers "were the accepted TERMS sellable
-   * when the promoter accepted them", read from the exact immutable version the
-   * Listing binds. This one answers "does the Seller CURRENTLY authorise new
-   * commerce under that Offer", read from the Offer's stable record.
+   * the whole correction. That code answers "do the accepted TERMS resolve",
+   * read from the exact immutable version the Listing binds. This one answers
+   * "does the Seller CURRENTLY authorise new commerce under that Offer", derived
+   * from the Offer's lifecycle acts (Phase 1.42) — never from a version row.
    *
    * Two questions, two sources, and conflating them is what let a Seller end or
    * withdraw an Offer while dependent promoted Listings kept selling: the bound
@@ -1162,25 +1163,27 @@ export function evaluateListingBuyerEligibility(input: {
   controllingParticipantStatus: ParticipantStatus;
   controllingRoleStatus: RoleAssignmentStatus;
   /**
-   * Promoted Listings only — the EXACT accepted Offer version.
+   * Promoted Listings only — the EXACT accepted Offer version, resolved.
    *
-   * The historical, immutable terms the promoter accepted. Supplies what the
-   * sale is priced on, and answers whether those terms were commercially
-   * selectable. Never the Offer's current state.
+   * The historical, immutable terms the promoter accepted, which supply what the
+   * sale is priced on. Since Phase 1.42 a version carries commercial terms only
+   * — no lifecycle, no availability — so the only question left here is whether
+   * the accepted version resolves at all. Never the Offer's current state.
    */
   offer?: {
-    lifecycle: OfferLifecycleState;
-    availability: OfferAvailability;
+    sourceRecordVersion: string;
   };
   /**
-   * Promoted Listings only — the Offer's CURRENT stable state (Phase 1.15,
-   * Ruling 1).
+   * Promoted Listings only — the Offer's CURRENT derived lifecycle (Phase 1.15,
+   * Ruling 1; Phase 1.42).
    *
    * The Seller's standing authorization for new commerce under this Offer,
-   * read from the stable `Offer` record rather than from any version row. A
-   * Seller who ends or withdraws their Offer stops new dependent sales through
-   * this input, without anything rewriting the accepted version the Listing
-   * binds or the Listing version that binds it.
+   * derived from its lifecycle acts and overall end rather than from any version
+   * row. A Seller who pauses or withdraws their Offer — or whose Offer reaches
+   * its end — stops new dependent sales through this input, without anything
+   * rewriting the accepted version the Listing binds or the Listing version
+   * that binds it. Effective-terms resolution (a running promotion) is NOT
+   * applied here in Phase 1.42.
    *
    * OPTIONAL, and its absence is treated as a REFUSAL for a promoted Listing
    * rather than a pass — a promoted sale whose upstream Offer cannot be resolved
@@ -1188,8 +1191,7 @@ export function evaluateListingBuyerEligibility(input: {
    * rule `goLiveApproval` already follows.
    */
   currentOffer?: {
-    lifecycle: OfferLifecycleState;
-    availability: OfferAvailability;
+    state: OfferLifecycleState;
   };
   /** Promoted Listings only. */
   upstreamReviewState?: ListingUpstreamReviewState;
@@ -1207,11 +1209,7 @@ export function evaluateListingBuyerEligibility(input: {
   if (input.controllingRoleStatus !== "ACTIVE") reasons.push("CONTROLLING_ROLE_NOT_ACTIVE");
 
   if (input.listingType === "PROMOTED") {
-    const offerSelectable =
-      input.offer !== undefined &&
-      input.offer.lifecycle === "ACTIVE" &&
-      input.offer.availability === "AVAILABLE";
-    if (!offerSelectable) reasons.push("OFFER_NOT_COMMERCIALLY_SELECTABLE");
+    if (input.offer === undefined) reasons.push("OFFER_NOT_COMMERCIALLY_SELECTABLE");
 
     /* Phase 1.15, Ruling 1 — the accepted version supplies the TERMS; the stable
        Offer supplies CURRENT AUTHORIZATION for new commerce. Both must hold.
@@ -1220,10 +1218,7 @@ export function evaluateListingBuyerEligibility(input: {
        operator reading "the accepted terms were not selectable" about a Seller
        who simply withdrew their Offer last week would look for a problem in the
        promoter's acceptance, which is the wrong place entirely. */
-    const currentlyOffered =
-      input.currentOffer !== undefined &&
-      input.currentOffer.lifecycle === "ACTIVE" &&
-      input.currentOffer.availability === "AVAILABLE";
+    const currentlyOffered = input.currentOffer !== undefined && input.currentOffer.state === "ACTIVE";
     if (!currentlyOffered) reasons.push("OFFER_NOT_CURRENTLY_OFFERED");
 
     if (input.upstreamReviewState === "REVIEW_REQUIRED") {

@@ -1,1119 +1,879 @@
 /**
- * Offer persistence integration tests (Phase 0M.6).
+ * Offer persistence and Seller acts, against a real database (Phase 0M.6;
+ * rewritten for Phase 1.42).
  *
  * Run ONLY against the identified disposable local MySQL database:
  *   RUN_DB_TESTS=1  DATABASE_URL=mysql://root@127.0.0.1:3308/monacado_phase0e2
  * The whole suite self-skips unless RUN_DB_TESTS=1. Never point at production.
  *
- * NO NETWORK. Instants and identities are injected, so nothing depends on a real
- * clock. Every value is synthetic; no real personal data appears.
+ * NO NETWORK. Every act takes an explicit instant; nothing reads a clock. The
+ * Seller is made ready and the Product ACTIVE through the real paths
+ * (`seller-commerce-fixture`), and every Offer write goes through the service.
  *
- * The tests that matter most are the round-trip ones: a persisted source version
- * must reconstruct into the exact contract shape `projectOfferCapsule` already
- * consumes, and must produce a byte-identical capsule to the equivalent
- * in-memory source. That is the whole reason this phase exists.
+ * Proves:
+ *   - CREATE — a DRAFT Offer, an opaque `offerRef`, STANDING version "1", no
+ *     act; an unknown or another Seller's Product is one refusal; one
+ *     non-terminal Offer per Product;
+ *   - REVISE — a new STANDING version, server-labelled and linked; stale
+ *     `expectedVersion` and no-change refused; a live revision needs the exact
+ *     version confirmed, and the refusal discloses it;
+ *   - ACTIVATE / PAUSE / RESUME / WITHDRAW — acts, never versions; readiness
+ *     gates going live and nothing else; terminal is terminal;
+ *   - ENDED — derived from the overall end, no write; the marker is released by
+ *     the next create, never earlier;
+ *   - PROMOTIONS — scheduled, replaced before start (history kept), refused
+ *     while pending, ended early by an act, reverting with no write;
+ *   - OWNERSHIP — another Seller's Offer is the same 404 as an unknown one;
+ *   - INTEGRITY — RESTRICT foreign keys, loud corruption, the projection fed by
+ *     a persisted version and a derived lifecycle; no publication side effects.
  */
 
 import "dotenv/config";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
-import { createAccount } from "../src/server/account/account-service";
-import { createDraftParticipant } from "../src/server/marketplace/participant-service";
-import { grantProductCreatorAuthority } from "./support/product-authority-fixture";
-import { syntheticProductRef } from "./support/product-ref-fixture";
+import { readAccountHome } from "../src/server/account/account-home";
+import { suspendProduct } from "../src/server/marketplace/product-suspension-service";
+import { imposeParticipantRestriction } from "../src/server/marketplace/participant-restriction-service";
+import { ProductNotAvailableError } from "../src/server/product/errors";
+import { ParticipantActionNotPermittedError } from "../src/server/marketplace/participant-standing-errors";
 import {
-  createDraftOffer,
-  createOfferSourceVersion,
-  evaluateOfferState,
+  MARKETPLACE_POLICY_VERSION_1,
+  MONACADO_MARKETPLACE_POLICY_ID,
+} from "../src/contracts/marketplace/marketplace-policy-content";
+import {
+  activateOfferAs,
+  createOfferAs,
+  endPromotionAs,
   getCurrentSourceVersion,
   getOffer,
   getSourceVersion,
+  lifecycleAt,
   listSourceVersions,
+  pauseOfferAs,
+  promotionStatusAt,
+  readOfferStateIn,
+  replacePromotionAs,
+  resumeOfferAs,
+  reviseOfferTermsAs,
+  schedulePromotionAs,
+  withdrawOfferAs,
 } from "../src/server/marketplace/offer-service";
+import { readSellerProductOffersIn } from "../src/server/marketplace/offer-read-service";
 import {
   CorruptOfferRecordError,
-  DuplicateOfferSourceVersionError,
   InvalidOfferInputError,
   NoMaterialOfferChangeError,
+  OfferAlreadyExistsError,
+  OfferConfirmationRequiredError,
   OfferNotAuthorizedError,
   OfferNotFoundError,
-  OfferProductNotFoundError,
+  OfferNotReadyError,
+  OfferPromotionNotReplaceableError,
+  OfferPromotionNotRunningError,
+  OfferPromotionPendingError,
   OfferVersionNotFoundError,
-  SellerParticipantNotFoundError,
+  OfferVersionStaleError,
 } from "../src/server/marketplace/offer-errors";
 import { OFFER_ID_PATTERNS } from "../src/server/marketplace/offer-ids";
 import { versionRowToSourceVersion } from "../src/server/marketplace/offer-mapper";
-import {
-  OfferSourceVersion,
-  calculateOfferEconomics,
-} from "../src/contracts/marketplace/offer-source";
-import {
-  OFFER_PROJECTION_MAPPING_VERSION,
-  projectOfferCapsule,
-} from "../src/contracts/marketplace/offer.projection";
+import { OfferSourceVersion, effectiveOfferTerms } from "../src/contracts/marketplace/offer-source";
+import { OFFER_PROJECTION_MAPPING_VERSION, projectOfferCapsule } from "../src/contracts/marketplace/offer.projection";
 import { canonicalJsonString } from "../src/contracts/integrity/canonical-json";
+import { sellerCommerceFixture, type FixtureActor, type FixtureProduct } from "./support/seller-commerce-fixture";
 
 const RUN = process.env.RUN_DB_TESTS === "1";
 const db = RUN ? getPrisma() : (undefined as unknown as ReturnType<typeof getPrisma>);
 
-const NOW = "2027-10-01T09:00:00.000Z";
-const LATER = "2027-10-02T09:00:00.000Z";
-const PASSWORD = "correct-horse-battery-staple-9271";
+const NOW = "2029-01-01T09:00:00.000Z";
+/** Offer acts run a month after the fixture's own instants, one minute apart. */
+const BASE = Date.parse("2029-02-01T09:00:00.000Z");
+const ORIGIN = "https://monacado.test";
+const UNKNOWN_REF = "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ";
 
-const pad26 = (seed: string): string =>
-  (seed.toUpperCase().replace(/[ILOU]/g, "0") + "0".repeat(26)).slice(0, 26);
+const fx = sellerCommerceFixture({ db, emailPrefix: "p142offer", now: NOW, origin: ORIGIN });
 
-let seq = 0;
+let minute = 0;
+/** The next Offer-act instant, strictly increasing. */
+const next = (): string => new Date(BASE + (minute += 1) * 60_000).toISOString();
+/** An instant `hours` after `from`. */
+const plus = (from: string, hours: number): string => new Date(Date.parse(from) + hours * 3_600_000).toISOString();
 
-const ACTOR = `mon:actor:${pad26("M6ACTOR")}`;
+/** $50.00 wholesale, 20% commission: $10.00 to the Promoter, $40.00 to the Seller. */
+const TERMS = { wholesalePrice: "50.00", currency: "USD", commission: { method: "PERCENT_OF_WHOLESALE", percent: "20" } };
+const REPRICED = { ...TERMS, wholesalePrice: "60.00" };
 
-/** `JSON.stringify` refuses BigInt, and version rows carry a BigInt `seq`. */
-const safeStringify = (value: unknown): string =>
-  JSON.stringify(value, (_k, v) => (typeof v === "bigint" ? v.toString() : v));
-
-/* Crockford alphabet only — it excludes I, L, O, and U, so the tag uses a
-   zero rather than the letter O. */
-const PRODUCT_ID_TAG = "M6PR0D";
-const PRODUCT_PREFIX = `mon:product:${PRODUCT_ID_TAG}`;
-const ACCOUNT_EMAIL_PREFIX = "offer-seller";
-
-/**
- * Remove only what THIS suite creates.
- *
- * Deliberately **scoped**, not a global truncate. An earlier draft deleted every
- * Product and every Account, which passed in isolation and failed in the full
- * suite: other suites' Products are referenced by their Nodes, publications, and
- * outbox rows, so a blanket delete hit the very RESTRICT rules this phase
- * relies on. Destroying another suite's fixtures to tidy up after this one is
- * the wrong trade in both directions — so identities are prefixed and cleanup
- * matches on the prefix.
- *
- * Children still go before parents, which documents the delete rules.
- */
-async function cleanup(): Promise<void> {
-  await db.offerSourceRecordVersionRow.deleteMany({});
-  await db.offer.deleteMany({});
-
-  const accounts = await db.account.findMany({
-    where: { email: { startsWith: ACCOUNT_EMAIL_PREFIX } },
-    select: { id: true },
-  });
-  /* Product source versions first: Phase 1.18 made them reference the creator
-     participant with onDelete: Restrict, so a participant that authored one
-     cannot be deleted beneath it — which is the point of the constraint. */
-  await db.productSourceRecordVersionRow.deleteMany({
-    where: { internalProductId: { startsWith: PRODUCT_PREFIX } },
-  });
-
-  const accountIds = accounts.map((a) => a.id);
-  if (accountIds.length > 0) {
-    const participants = await db.marketplaceParticipant.findMany({
-      where: { accountId: { in: accountIds } },
-      select: { id: true },
-    });
-    const participantIds = participants.map((p) => p.id);
-    if (participantIds.length > 0) {
-      await db.participantActivation.deleteMany({
-        where: { participantId: { in: participantIds } },
-      });
-      await db.participantProfile.deleteMany({
-        where: { participantId: { in: participantIds } },
-      });
-      await db.marketplaceRoleAssignment.deleteMany({
-        where: { participantId: { in: participantIds } },
-      });
-      await db.marketplaceParticipant.deleteMany({ where: { id: { in: participantIds } } });
-    }
-    await db.accountEntitlement.deleteMany({ where: { accountId: { in: accountIds } } });
-    await db.accountSession.deleteMany({ where: { accountId: { in: accountIds } } });
-    await db.account.deleteMany({ where: { id: { in: accountIds } } });
-  }
-
-  await db.product.deleteMany({ where: { internalProductId: { startsWith: PRODUCT_PREFIX } } });
-}
+const as = (actor: { accountId: string }) => ({ accountId: actor.accountId });
 
 /**
- * A persisted Product for an Offer to name, with its creator authority recorded.
- *
- * `creatorParticipantId` is optional: omitting it produces a Product whose
- * current source version names no participant, which is the historical NULL the
- * derivation must fail closed on.
+ * Run a write unconfirmed, and return the disclosure the refusal carries. Any
+ * other refusal (invalid input, a pending promotion) comes first and is rethrown.
  */
-async function seedProduct(creatorParticipantId?: string): Promise<string> {
-  seq += 1;
-  const internalProductId = `${PRODUCT_PREFIX}${pad26(String(seq)).slice(0, 26 - PRODUCT_ID_TAG.length)}`;
-  await db.product.create({
-    data: {
-      productRef: syntheticProductRef(),
-      internalProductId,
-      sourceRecordId: `mon:srec:${pad26(`M6PSREC${seq}`)}`,
-      currentSourceRecordVersion: "1",
-      recordStatus: "DRAFT",
-    },
-  });
-  if (creatorParticipantId !== undefined) {
-    await grantProductCreatorAuthority(db, {
-      internalProductId,
-      participantId: creatorParticipantId,
-      now: NOW,
-    });
+async function disclosureOf(write: () => Promise<unknown>) {
+  try {
+    await write();
+  } catch (error) {
+    if (!(error instanceof OfferConfirmationRequiredError)) throw error;
+    return error.disclosure;
   }
-  return internalProductId;
+  throw new Error("expected the write to ask for confirmation");
 }
 
-/** A participant holding a SELLER role, able to draft an Offer. */
-async function seedSeller(): Promise<{ participantId: string; accountId: string }> {
-  seq += 1;
-  const account = await createAccount(
-    {
-      name: "Synthetic Seller",
-      email: `${ACCOUNT_EMAIL_PREFIX}${seq}@example.com`,
-      password: PASSWORD,
-      createdAt: NOW,
-    },
-    { db },
-  );
-  const snapshot = await createDraftParticipant(
-    { accountId: account.accountId, initialRoles: ["SELLER"], now: NOW },
-    { db },
-  );
-  return { participantId: snapshot.participant.participantId, accountId: account.accountId };
+interface Ready {
+  seller: FixtureActor;
+  product: FixtureProduct;
+  offerRef: string;
+  internalOfferId: string;
 }
 
-const paidPromotableTerms = {
-  price: {
-    type: "PAID" as const,
-    wholesalePriceMinorUnits: 5000,
-    wholesalePriceCurrency: "USD",
-  },
-  promotion: {
-    type: "PROMOTABLE" as const,
-    commission: { method: "PERCENT_OF_WHOLESALE" as const, commissionBasisPoints: 2000 },
-  },
+/** A ready Seller, an ACTIVE Product, and a DRAFT Offer on it. */
+async function draftOffer(): Promise<Ready> {
+  const seller = await fx.readySeller();
+  const product = await fx.activeProduct(seller);
+  const created = await createOfferAs(as(seller), { productRef: product.productRef, terms: TERMS, now: next() }, { db });
+  const { internalOfferId } = await db.offer.findUniqueOrThrow({ where: { offerRef: created.offerRef } });
+  return { seller, product, offerRef: created.offerRef, internalOfferId };
+}
+
+/** A confirmation of some other version — what a Seller who has not looked yet would send. */
+const UNCONFIRMED = {
+  version: "999",
+  calculatedCommissionMinorUnits: 0,
+  calculatedSellerGrossProceedsMinorUnits: 0,
+  commissionCalculationPolicyVersion: "WHOLESALE_COMMISSION_V1",
 };
 
-async function seedOffer(overrides: Record<string, unknown> = {}) {
-  /* The seller is resolved FIRST, because the Product's creator authority now
-     has to name them: Phase 1.18 derives `hasProductAuthority` from the
-     Product's current source version rather than taking it from this input. */
-  const seller = (overrides.seller as { participantId: string; accountId: string }) ??
-    (await seedSeller());
-  const internalProductId =
-    (overrides.internalProductId as string) ?? (await seedProduct(seller.participantId));
-  const snapshot = await createDraftOffer(
-    {
-      internalProductId,
-      sellerParticipantId: seller.participantId,
-      terms: paidPromotableTerms,
-      actingAccountId: seller.accountId,
-      now: NOW,
-      ...overrides,
-    },
-    { db },
-  );
-  return { internalProductId, seller, snapshot };
-}
-
-/**
- * A synthetic projection context for a persisted source version.
- *
- * Node and capsule identities are SYNTHETIC and test-only. This phase issues no
- * Node and registers nothing — the projection takes its public identities from
- * the supplied context, which is exactly the boundary 0M.2B drew.
- */
-function projectionContext(v: {
-  internalOfferId: string;
-  internalProductId: string;
-  sellerParticipantId: string;
-  offerSourceRecordId: string;
-  sourceRecordVersion: string;
-}) {
-  return {
-    offerBinding: {
-      offerNode: `an:node:${pad26("M6OFFERNODE")}`,
-      internalOfferId: v.internalOfferId,
-    },
-    productBinding: {
-      productNode: `an:node:${pad26("M6PRODUCTNODE")}`,
-      internalProductId: v.internalProductId,
-    },
-    authorityBinding: {
-      authorityNode: `an:node:${pad26("M6AUTHNODE")}`,
-      sellerParticipantId: v.sellerParticipantId,
-    },
-    sourceVersionBinding: {
-      offerSourceRecordId: v.offerSourceRecordId,
-      sourceRecordVersion: v.sourceRecordVersion,
-    },
-    capsuleId: `an:capsule:${pad26("M6CAPSULE")}`,
-    capsuleVersion: "2.0.0",
-    mappingVersion: OFFER_PROJECTION_MAPPING_VERSION,
-    generatedAt: LATER,
-    nodePolicy: { ref: "mon:policy:node/offer", version: "1" },
-    capsulePolicy: { ref: "mon:policy:capsule/offer", version: "1" },
+/** Activate through the two-step confirmation: ask, read the disclosure, confirm it. */
+async function activate(o: Ready, opts: { effectiveUntil?: string; now?: string } = {}) {
+  const body = {
+    productRef: o.product.productRef,
+    offerRef: o.offerRef,
+    ...(opts.effectiveUntil ? { effectiveUntil: opts.effectiveUntil } : {}),
+    now: opts.now ?? next(),
   };
+  const disclosure = await disclosureOf(() => activateOfferAs(as(o.seller), { ...body, confirmation: UNCONFIRMED }, { db }));
+  return activateOfferAs(as(o.seller), { ...body, confirmation: disclosure }, { db });
 }
 
-/**
- * Seed an ACTIVE source version DIRECTLY at the database layer, and advance the
- * pointer to it.
- *
- * Deliberately bypassing the service, and deliberately NOT weakening it. 0M.2A
- * gates activation behind commerce tests this phase cannot satisfy (see test
- * 33), so the service cannot produce an ACTIVE Offer and must not be persuaded
- * to. But the mapper and the projection have to be proven against the state
- * 0M.8 WILL produce, and a row is the honest way to express it: this is a
- * fixture for the read path, not a way in through the write path.
- */
-async function seedActiveVersionRow(
-  internalOfferId: string,
-  offerSourceRecordId: string,
-  base: { internalProductId: string; sellerParticipantId: string; actingAccountId?: string },
-): Promise<void> {
-  const economics = calculateOfferEconomics(paidPromotableTerms);
-  await db.offerSourceRecordVersionRow.create({
-    data: {
-      offerSourceRecordId,
-      sourceRecordVersion: "2",
-      supersedesSourceRecordVersion: "1",
-      internalOfferId,
-      sourceSystem: "monacado",
-      sourceRecordType: "Offer",
-      sourceClass: "governed-database-record",
-      internalProductId: base.internalProductId,
-      sellerParticipantId: base.sellerParticipantId,
-      lifecycle: "ACTIVE",
-      availability: "AVAILABLE",
-      priceType: "PAID",
-      wholesalePriceMinorUnits: 5000n,
-      wholesalePriceCurrency: "USD",
-      promotionType: "PROMOTABLE",
-      commissionMethod: "PERCENT_OF_WHOLESALE",
-      commissionBasisPoints: 2000,
-      fixedCommissionMinorUnits: null,
-      fixedCommissionCurrency: null,
-      effectiveStartsAt: null,
-      effectiveEndsAt: null,
-      calculatedCommissionMinorUnits: BigInt(economics.calculatedCommissionMinorUnits),
-      calculatedCreatorGrossProceedsMinorUnits: BigInt(
-        economics.calculatedCreatorGrossProceedsMinorUnits,
-      ),
-      commissionCalculationPolicyVersion: economics.commissionCalculationPolicyVersion,
-      authorizedBySellerParticipantId: base.sellerParticipantId,
-      /* The account convention the service now writes (Phase 1.18); a raw row
-         may still carry a historical `mon:actor:` value, which stays readable. */
-      authorizedByActorId: base.actingAccountId ?? ACTOR,
-      recordedAt: new Date(LATER),
-    },
-  });
-  await db.offer.update({
-    where: { internalOfferId },
-    data: { currentSourceRecordVersion: "2", lifecycle: "ACTIVE", availability: "AVAILABLE" },
-  });
+async function activeOffer(opts: { effectiveUntil?: string } = {}): Promise<Ready> {
+  const o = await draftOffer();
+  await activate(o, opts);
+  return o;
+}
+
+/** The Seller's own read model of their Products' Offers, at `at`. */
+function readOffers(o: { seller: FixtureActor; product: FixtureProduct }, at: string) {
+  return readSellerProductOffersIn(
+    db,
+    [o.product.internalProductId],
+    { accountId: o.seller.accountId, sellerParticipantId: o.seller.participantId },
+    at,
+  );
+}
+
+async function stateOf(internalOfferId: string) {
+  const offer = await db.offer.findUniqueOrThrow({ where: { internalOfferId } });
+  return readOfferStateIn(db, offer);
+}
+
+/** Schedule a promotion through the two-step confirmation. */
+async function schedule(o: Ready, window: { from: string; until: string }, wholesalePrice = "40.00", now = next()) {
+  const offer = await db.offer.findUniqueOrThrow({ where: { internalOfferId: o.internalOfferId } });
+  const body = {
+    productRef: o.product.productRef,
+    offerRef: o.offerRef,
+    expectedVersion: offer.currentSourceRecordVersion,
+    wholesalePrice,
+    effectiveFrom: window.from,
+    effectiveUntil: window.until,
+    now,
+  };
+  const disclosure = await disclosureOf(() => schedulePromotionAs(as(o.seller), body, { db }));
+  return schedulePromotionAs(as(o.seller), { ...body, confirmation: disclosure }, { db });
 }
 
 const describeDb = RUN ? describe : describe.skip;
 
-describeDb("Offer persistence (Phase 0M.6)", () => {
-  beforeEach(cleanup);
+describeDb("Offer persistence and Seller acts (Phase 1.42)", () => {
+  beforeEach(fx.cleanup);
   afterAll(async () => {
-    await cleanup();
+    await fx.cleanup();
     await disconnectPrisma();
   });
 
-  // — Creation and stable identity —
+  // — Create —
 
-  it("1. creates an Offer and its first immutable source version", async () => {
-    const { snapshot } = await seedOffer();
-    expect(snapshot.record.internalOfferId).toMatch(OFFER_ID_PATTERNS.offer);
-    expect(snapshot.record.offerSourceRecordId).toMatch(OFFER_ID_PATTERNS.sourceRecord);
+  it("1. creates a DRAFT Offer with an opaque ref and STANDING version 1, and records no act", async () => {
+    const o = await draftOffer();
+    expect(o.offerRef).toMatch(/^[0-9A-HJKMNP-TV-Z]{32}$/);
+    expect(o.internalOfferId).toMatch(OFFER_ID_PATTERNS.offer);
+    const snapshot = await getOffer(o.internalOfferId, { db });
     expect(snapshot.record.currentSourceRecordVersion).toBe("1");
-    expect(snapshot.currentVersion.sourceRecordVersion).toBe("1");
-    expect(snapshot.currentVersion.supersedesSourceRecordVersion).toBeNull();
-  });
-
-  it("2. stable Offer identity persists and is readable back", async () => {
-    const { snapshot } = await seedOffer();
-    const reread = await getOffer(snapshot.record.internalOfferId, { db });
-    expect(reread.record.internalOfferId).toBe(snapshot.record.internalOfferId);
-    expect(reread.record.offerSourceRecordId).toBe(snapshot.record.offerSourceRecordId);
-  });
-
-  it("3. starts DRAFT + AVAILABLE, and is therefore not commercially selectable", async () => {
-    const { snapshot } = await seedOffer();
-    expect(snapshot.record.lifecycle).toBe("DRAFT");
-    expect(snapshot.record.availability).toBe("AVAILABLE");
-    const state = await evaluateOfferState(snapshot.record.internalOfferId, { db });
-    /* Only ACTIVE + AVAILABLE selects. A DRAFT Offer is unselectable whatever
-       availability says — availability modifies a live Offer. */
-    expect(state.commerciallySelectable).toBe(false);
-  });
-
-  it("4. enforces the Product foreign key", async () => {
-    const { snapshot, internalProductId } = await seedOffer();
-    const row = await db.offer.findUnique({
-      where: { internalOfferId: snapshot.record.internalOfferId },
-    });
-    expect(row?.internalProductId).toBe(internalProductId);
-  });
-
-  it("5. refuses an Offer naming a Product that does not exist", async () => {
-    const seller = await seedSeller();
-    await expect(
-      createDraftOffer(
-        {
-          internalProductId: `mon:product:${pad26("M6MISSING")}`,
-          sellerParticipantId: seller.participantId,
-          terms: paidPromotableTerms,
-          actingAccountId: seller.accountId,
-          now: NOW,
-        },
-        { db },
-      ),
-    ).rejects.toBeInstanceOf(OfferProductNotFoundError);
-  });
-
-  it("6. refuses an Offer whose seller participant does not exist", async () => {
-    const internalProductId = await seedProduct();
-    const seller = await seedSeller();
-    await expect(
-      createDraftOffer(
-        {
-          internalProductId,
-          sellerParticipantId: `mon:mpart:${pad26("M6NOBODY")}`,
-          terms: paidPromotableTerms,
-          actingAccountId: seller.accountId,
-          now: NOW,
-        },
-        { db },
-      ),
-    ).rejects.toBeInstanceOf(SellerParticipantNotFoundError);
-  });
-
-  // — Version identity and history —
-
-  it("7. the stable Offer points at its current version", async () => {
-    const { snapshot } = await seedOffer();
-    const row = await db.offer.findUnique({
-      where: { internalOfferId: snapshot.record.internalOfferId },
-    });
-    const versions = await db.offerSourceRecordVersionRow.findMany({
-      where: { internalOfferId: snapshot.record.internalOfferId },
-    });
-    expect(versions).toHaveLength(1);
-    expect(row?.currentSourceRecordVersion).toBe(versions[0]!.sourceRecordVersion);
-  });
-
-  it("8. an exact historical version is retrievable by name, never as 'the latest'", async () => {
-    const { snapshot, seller } = await seedOffer();
-    await createOfferSourceVersion(
-      {
-        internalOfferId: snapshot.record.internalOfferId,
-        sourceRecordVersion: "2",
-        availability: "TEMPORARILY_UNAVAILABLE",
-        actingAccountId: seller.accountId,
-        now: LATER,
-      },
-      { db },
-    );
-
-    const v1 = await getSourceVersion(snapshot.record.internalOfferId, "1", { db });
-    expect(v1.sourceRecordVersion).toBe("1");
-    expect(v1.availability).toBe("AVAILABLE");
-
-    const current = await getCurrentSourceVersion(snapshot.record.internalOfferId, { db });
-    expect(current.sourceRecordVersion).toBe("2");
-    expect(current.availability).toBe("TEMPORARILY_UNAVAILABLE");
-  });
-
-  it("9. refuses an unknown version rather than falling back to the current one", async () => {
-    const { snapshot } = await seedOffer();
-    await expect(
-      getSourceVersion(snapshot.record.internalOfferId, "999", { db }),
-    ).rejects.toBeInstanceOf(OfferVersionNotFoundError);
-  });
-
-  it("10. a material update mints a new version and leaves the prior one untouched", async () => {
-    const { snapshot, seller } = await seedOffer();
-    const before = await db.offerSourceRecordVersionRow.findFirst({
-      where: { internalOfferId: snapshot.record.internalOfferId, sourceRecordVersion: "1" },
-    });
-
-    await createOfferSourceVersion(
-      {
-        internalOfferId: snapshot.record.internalOfferId,
-        sourceRecordVersion: "2",
-        terms: {
-          price: { type: "PAID", wholesalePriceMinorUnits: 7500, wholesalePriceCurrency: "USD" },
-          promotion: {
-            type: "PROMOTABLE",
-            commission: { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 2000 },
-          },
-        },
-        actingAccountId: seller.accountId,
-        now: LATER,
-      },
-      { db },
-    );
-
-    const after = await db.offerSourceRecordVersionRow.findFirst({
-      where: { internalOfferId: snapshot.record.internalOfferId, sourceRecordVersion: "1" },
-    });
-    /* Byte-for-byte identical: the historical row is never updated in place. */
-    expect(safeStringify(after)).toBe(safeStringify(before));
-    expect(after!.wholesalePriceMinorUnits).toBe(5000n);
-  });
-
-  it("11. the current-version pointer advances with the new version, atomically", async () => {
-    const { snapshot, seller } = await seedOffer();
-    await createOfferSourceVersion(
-      {
-        internalOfferId: snapshot.record.internalOfferId,
-        sourceRecordVersion: "2",
-        availability: "TEMPORARILY_UNAVAILABLE",
-        actingAccountId: seller.accountId,
-        now: LATER,
-      },
-      { db },
-    );
-    const row = await db.offer.findUnique({
-      where: { internalOfferId: snapshot.record.internalOfferId },
-    });
-    expect(row?.currentSourceRecordVersion).toBe("2");
-    /* The denormalized pointer-side copy moved in the same transaction, so it
-       cannot disagree with the version it points at. */
-    expect(row?.availability).toBe("TEMPORARILY_UNAVAILABLE");
-  });
-
-  it("12. records lineage — each version names the one it supersedes", async () => {
-    const { snapshot, seller } = await seedOffer();
-    await createOfferSourceVersion(
-      {
-        internalOfferId: snapshot.record.internalOfferId,
-        sourceRecordVersion: "2",
-        availability: "TEMPORARILY_UNAVAILABLE",
-        actingAccountId: seller.accountId,
-        now: LATER,
-      },
-      { db },
-    );
-    const versions = await listSourceVersions(snapshot.record.internalOfferId, { db });
-    expect(versions.map((v) => v.sourceRecordVersion)).toEqual(["1", "2"]);
-    expect(versions[0]!.supersedesSourceRecordVersion).toBeNull();
-    expect(versions[1]!.supersedesSourceRecordVersion).toBe("1");
-  });
-
-  it("13. refuses a duplicate version label — a label mints once", async () => {
-    const { snapshot, seller } = await seedOffer();
-    await expect(
-      createOfferSourceVersion(
-        {
-          internalOfferId: snapshot.record.internalOfferId,
-          sourceRecordVersion: "1",
-          availability: "TEMPORARILY_UNAVAILABLE",
-          actingAccountId: seller.accountId,
-          now: LATER,
-        },
-        { db },
-      ),
-    ).rejects.toBeInstanceOf(DuplicateOfferSourceVersionError);
-  });
-
-  it("14. an update changing nothing material mints no version", async () => {
-    const { snapshot, seller } = await seedOffer();
-    await expect(
-      createOfferSourceVersion(
-        {
-          internalOfferId: snapshot.record.internalOfferId,
-          sourceRecordVersion: "2",
-          availability: "AVAILABLE",
-          actingAccountId: seller.accountId,
-          now: LATER,
-        },
-        { db },
-      ),
-    ).rejects.toBeInstanceOf(NoMaterialOfferChangeError);
-
-    const versions = await db.offerSourceRecordVersionRow.count({
-      where: { internalOfferId: snapshot.record.internalOfferId },
-    });
-    expect(versions).toBe(1);
-  });
-
-  // — Economics round-trip —
-
-  it("15. round-trips a PAID wholesale price and currency exactly", async () => {
-    const { snapshot } = await seedOffer();
-    const v = snapshot.currentVersion;
-    expect(v.terms.price).toEqual({
-      type: "PAID",
-      wholesalePriceMinorUnits: 5000,
-      wholesalePriceCurrency: "USD",
-    });
-  });
-
-  it("16. round-trips a percentage commission exactly", async () => {
-    const { snapshot } = await seedOffer();
-    expect(snapshot.currentVersion.terms.promotion).toEqual({
-      type: "PROMOTABLE",
-      commission: { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 2000 },
-    });
-  });
-
-  it("17. round-trips a fixed commission exactly, with no percentage fields", async () => {
-    const { snapshot } = await seedOffer({
+    expect(snapshot.record.currentPromotionVersion).toBeNull();
+    expect(snapshot.currentVersion).toMatchObject({
+      sourceRecordVersion: "1",
+      supersedesSourceRecordVersion: null,
+      termsKind: "STANDING",
+      promotionWindow: null,
+      basisStandingVersion: null,
       terms: {
-        price: { type: "PAID", wholesalePriceMinorUnits: 4000, wholesalePriceCurrency: "GBP" },
-        promotion: {
-          type: "PROMOTABLE",
-          commission: {
-            method: "FIXED_AMOUNT",
-            fixedCommissionMinorUnits: 250,
-            fixedCommissionCurrency: "GBP",
-          },
-        },
+        price: { type: "PAID", wholesalePriceMinorUnits: 5000, wholesalePriceCurrency: "USD" },
+        promotion: { type: "PROMOTABLE", commission: { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 2000 } },
       },
+      economics: { calculatedCommissionMinorUnits: 1000, calculatedCreatorGrossProceedsMinorUnits: 4000 },
+      authorizedBySellerParticipantId: o.seller.participantId,
+      authorizedByActorId: o.seller.accountId,
     });
-    expect(snapshot.currentVersion.terms.promotion).toEqual({
-      type: "PROMOTABLE",
-      commission: {
-        method: "FIXED_AMOUNT",
-        fixedCommissionMinorUnits: 250,
-        fixedCommissionCurrency: "GBP",
-      },
-    });
-    expect(snapshot.currentVersion.terms.promotion).not.toHaveProperty(
-      "commission.commissionBasisPoints",
-    );
+    expect(await db.offerAct.count({ where: { internalOfferId: o.internalOfferId } })).toBe(0);
+    const row = await db.offer.findUniqueOrThrow({ where: { internalOfferId: o.internalOfferId } });
+    expect(row.nonTerminalForProductId).toBe(o.product.internalProductId);
+    expect(lifecycleAt(await stateOf(o.internalOfferId), next())).toBe("DRAFT");
   });
 
-  it("18. a FREE Offer has NO wholesale amount and NO currency — absence by construction", async () => {
-    const { snapshot } = await seedOffer({
-      terms: { price: { type: "FREE" }, promotion: { type: "NOT_PROMOTABLE" } },
-    });
-    expect(snapshot.currentVersion.terms.price).toEqual({ type: "FREE" });
-    expect(Object.keys(snapshot.currentVersion.terms.price)).toEqual(["type"]);
-
-    const row = await db.offerSourceRecordVersionRow.findFirst({
-      where: { internalOfferId: snapshot.record.internalOfferId },
-    });
-    expect(row!.wholesalePriceMinorUnits).toBeNull();
-    expect(row!.wholesalePriceCurrency).toBeNull();
+  it("2. an unknown Product and another Seller's Product are one refusal", async () => {
+    const seller = await fx.readySeller();
+    const other = await fx.readySeller();
+    const theirs = await fx.draftProduct(other);
+    for (const productRef of [UNKNOWN_REF, theirs.productRef]) {
+      await expect(createOfferAs(as(seller), { productRef, terms: TERMS, now: next() }, { db })).rejects.toBeInstanceOf(
+        ProductNotAvailableError,
+      );
+    }
+    const promoter = await fx.draftParticipant(["PROMOTER"]);
+    await expect(
+      createOfferAs(as(promoter), { productRef: theirs.productRef, terms: TERMS, now: next() }, { db }),
+    ).rejects.toBeInstanceOf(ProductNotAvailableError);
+    expect(await db.offer.count({ where: { internalProductId: theirs.internalProductId } })).toBe(0);
   });
 
-  it("19. persists the accepted economics, matching the deterministic calculator", async () => {
-    const { snapshot } = await seedOffer();
-    /* 20% of 5000 = 1000; creator gross proceeds = 4000. Stored, not recomputed
-       on read — the contract re-checks them on the way out. */
-    expect(snapshot.currentVersion.economics).toEqual(
-      calculateOfferEconomics(paidPromotableTerms),
-    );
-    expect(snapshot.currentVersion.economics.calculatedCommissionMinorUnits).toBe(1000);
-    expect(snapshot.currentVersion.economics.calculatedCreatorGrossProceedsMinorUnits).toBe(4000);
-    expect(snapshot.currentVersion.economics.commissionCalculationPolicyVersion).toBe(
-      "WHOLESALE_COMMISSION_V1",
-    );
+  it("3. refuses terms the promoted-resale scope does not admit, naming the fields", async () => {
+    const seller = await fx.readySeller();
+    const product = await fx.draftProduct(seller);
+    for (const [terms, field] of [
+      [{ ...TERMS, wholesalePrice: "0" }, "terms.wholesalePrice"],
+      [{ ...TERMS, wholesalePrice: "19.999" }, "terms.wholesalePrice"],
+      [{ ...TERMS, commission: { method: "PERCENT_OF_WHOLESALE", percent: "100.5" } }, "terms"],
+      [{ ...TERMS, commission: { method: "FIXED_AMOUNT", amount: "60.00" } }, "terms"],
+    ] as const) {
+      const error = await createOfferAs(as(seller), { productRef: product.productRef, terms, now: next() }, { db }).catch(
+        (e: unknown) => e,
+      );
+      expect(error).toBeInstanceOf(InvalidOfferInputError);
+      expect((error as InvalidOfferInputError).fields.some((f) => f.startsWith(field))).toBe(true);
+    }
+    expect(await db.offer.count({ where: { internalProductId: product.internalProductId } })).toBe(0);
   });
 
-  it("20. recomputes economics for a repriced version rather than carrying them over", async () => {
-    const { snapshot, seller } = await seedOffer();
-    const next = await createOfferSourceVersion(
+  it("4. one non-terminal Offer per Product: a second create is refused while the first is DRAFT, ACTIVE, or PAUSED", async () => {
+    const o = await draftOffer();
+    const again = () => createOfferAs(as(o.seller), { productRef: o.product.productRef, terms: TERMS, now: next() }, { db });
+    await expect(again()).rejects.toBeInstanceOf(OfferAlreadyExistsError);
+    await activate(o);
+    await expect(again()).rejects.toBeInstanceOf(OfferAlreadyExistsError);
+    await pauseOfferAs(as(o.seller), { productRef: o.product.productRef, offerRef: o.offerRef, now: next() }, { db });
+    await expect(again()).rejects.toBeInstanceOf(OfferAlreadyExistsError);
+    expect(await db.offer.count({ where: { internalProductId: o.product.internalProductId } })).toBe(1);
+  });
+
+  // — Revise —
+
+  it("5. revising a DRAFT mints STANDING version 2, linked to 1, and moves the pointer; 1 is untouched", async () => {
+    const o = await draftOffer();
+    const before = await getSourceVersion(o.internalOfferId, "1", { db });
+    const result = await reviseOfferTermsAs(
+      as(o.seller),
+      { productRef: o.product.productRef, offerRef: o.offerRef, expectedVersion: "1", terms: REPRICED, now: next() },
+      { db },
+    );
+    expect(result).toMatchObject({ state: "DRAFT", standingVersion: "2", promotionVersion: null });
+    const v2 = await getCurrentSourceVersion(o.internalOfferId, { db });
+    expect(v2).toMatchObject({ sourceRecordVersion: "2", supersedesSourceRecordVersion: "1", termsKind: "STANDING" });
+    expect(v2.economics.calculatedCommissionMinorUnits).toBe(1200);
+    expect(await getSourceVersion(o.internalOfferId, "1", { db })).toEqual(before);
+    expect((await listSourceVersions(o.internalOfferId, { db })).map((v) => v.sourceRecordVersion)).toEqual(["1", "2"]);
+  });
+
+  it("6. a stale expectedVersion and an unchanged revision are refused, and write nothing", async () => {
+    const o = await draftOffer();
+    const sel = { productRef: o.product.productRef, offerRef: o.offerRef };
+    await expect(
+      reviseOfferTermsAs(as(o.seller), { ...sel, expectedVersion: "7", terms: REPRICED, now: next() }, { db }),
+    ).rejects.toBeInstanceOf(OfferVersionStaleError);
+    await expect(
+      reviseOfferTermsAs(as(o.seller), { ...sel, expectedVersion: "1", terms: TERMS, now: next() }, { db }),
+    ).rejects.toBeInstanceOf(NoMaterialOfferChangeError);
+    expect(await db.offerSourceRecordVersionRow.count({ where: { internalOfferId: o.internalOfferId } })).toBe(1);
+  });
+
+  it("7. revising a live Offer requires the exact new version confirmed; the refusal discloses it", async () => {
+    const o = await activeOffer();
+    const body = { productRef: o.product.productRef, offerRef: o.offerRef, expectedVersion: "1", terms: REPRICED };
+    const disclosure = await disclosureOf(() => reviseOfferTermsAs(as(o.seller), { ...body, now: next() }, { db }));
+    expect(disclosure).toEqual({
+      version: "2",
+      calculatedCommissionMinorUnits: 1200,
+      calculatedSellerGrossProceedsMinorUnits: 4800,
+      commissionCalculationPolicyVersion: expect.any(String),
+    });
+    /* A confirmation of the CURRENT version does not authorize the next one. */
+    await expect(
+      reviseOfferTermsAs(as(o.seller), { ...body, confirmation: { ...disclosure, version: "1" }, now: next() }, { db }),
+    ).rejects.toBeInstanceOf(OfferConfirmationRequiredError);
+    expect(await db.offerSourceRecordVersionRow.count({ where: { internalOfferId: o.internalOfferId } })).toBe(1);
+
+    const result = await reviseOfferTermsAs(as(o.seller), { ...body, confirmation: disclosure, now: next() }, { db });
+    expect(result).toMatchObject({ state: "ACTIVE", standingVersion: "2" });
+  });
+
+  // — Lifecycle acts —
+
+  it("8. activation records an ACTIVATE act bound to the confirmed standing version, and mints no version", async () => {
+    const o = await draftOffer();
+    const result = await activate(o);
+    expect(result).toMatchObject({ state: "ACTIVE", standingVersion: "1" });
+    const acts = await db.offerAct.findMany({ where: { internalOfferId: o.internalOfferId } });
+    expect(acts).toHaveLength(1);
+    expect(acts[0]).toMatchObject({
+      act: "ACTIVATE",
+      state: "ACTIVE",
+      previousState: "DRAFT",
+      supersedesActId: null,
+      currentForOfferId: o.internalOfferId,
+      activatedStandingVersion: "1",
+      offerEffectiveUntil: null,
+      actorParticipantId: o.seller.participantId,
+      actedByAccountId: o.seller.accountId,
+    });
+    expect(await db.offerSourceRecordVersionRow.count({ where: { internalOfferId: o.internalOfferId } })).toBe(1);
+  });
+
+  it("9. activation is refused, with every blocker, until the Product is ACTIVE", async () => {
+    const seller = await fx.readySeller();
+    const product = await fx.draftProduct(seller);
+    const created = await createOfferAs(as(seller), { productRef: product.productRef, terms: TERMS, now: next() }, { db });
+    const o = { seller, product, offerRef: created.offerRef, internalOfferId: "" };
+    const error = await activate(o).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(OfferNotReadyError);
+    expect((error as OfferNotReadyError).blockers).toEqual(["PRODUCT_NOT_ACTIVE"]);
+    expect(await db.offerAct.count({ where: { offer: { offerRef: created.offerRef } } })).toBe(0);
+  });
+
+  it("10. an offer:publish restriction blocks activation", async () => {
+    const o = await draftOffer();
+    await imposeParticipantRestriction(
       {
-        internalOfferId: snapshot.record.internalOfferId,
-        sourceRecordVersion: "2",
-        terms: {
-          price: { type: "PAID", wholesalePriceMinorUnits: 9000, wholesalePriceCurrency: "USD" },
-          promotion: {
-            type: "PROMOTABLE",
-            commission: { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 2000 },
-          },
-        },
-        actingAccountId: seller.accountId,
-        now: LATER,
+        participantId: o.seller.participantId,
+        scope: "offer:publish",
+        reasonCode: "UNDERWRITING_REVIEW_REQUIRED",
+        actingAccountId: await fx.seedOperator("participant:restrict"),
+        imposedAt: next(),
       },
       { db },
     );
-    expect(next.currentVersion.economics.calculatedCommissionMinorUnits).toBe(1800);
-    expect(next.currentVersion.economics.calculatedCreatorGrossProceedsMinorUnits).toBe(7200);
-
-    /* Version 1's accepted numbers are untouched — the creator agreed to those. */
-    const v1 = await getSourceVersion(snapshot.record.internalOfferId, "1", { db });
-    expect(v1.economics.calculatedCommissionMinorUnits).toBe(1000);
+    const error = await activate(o).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(OfferNotReadyError);
+    expect((error as OfferNotReadyError).blockers).toContain("OFFER_PUBLISH_RESTRICTED");
   });
 
-  it("21. refuses economically invalid terms — invalid seller proceeds cannot persist", async () => {
-    const internalProductId = await seedProduct();
-    const seller = await seedSeller();
+  it("11. pause and resume record acts, mint no version, and resume names the standing version", async () => {
+    const o = await activeOffer();
+    const sel = { productRef: o.product.productRef, offerRef: o.offerRef };
+    expect(await pauseOfferAs(as(o.seller), { ...sel, now: next() }, { db })).toMatchObject({ state: "PAUSED" });
     await expect(
-      createDraftOffer(
-        {
-          internalProductId,
-          sellerParticipantId: seller.participantId,
-          terms: {
-            price: { type: "PAID", wholesalePriceMinorUnits: 500, wholesalePriceCurrency: "USD" },
-            promotion: {
-              type: "PROMOTABLE",
-              commission: {
-                method: "FIXED_AMOUNT",
-                fixedCommissionMinorUnits: 900,
-                fixedCommissionCurrency: "USD",
-              },
-            },
-          },
-          actingAccountId: seller.accountId,
-          now: NOW,
-        },
-        { db },
-      ),
-    ).rejects.toBeInstanceOf(InvalidOfferInputError);
-    expect(await db.offer.count()).toBe(0);
-  });
-
-  it("22. refuses a cross-currency fixed commission", async () => {
-    const internalProductId = await seedProduct();
-    const seller = await seedSeller();
-    await expect(
-      createDraftOffer(
-        {
-          internalProductId,
-          sellerParticipantId: seller.participantId,
-          terms: {
-            price: { type: "PAID", wholesalePriceMinorUnits: 5000, wholesalePriceCurrency: "USD" },
-            promotion: {
-              type: "PROMOTABLE",
-              commission: {
-                method: "FIXED_AMOUNT",
-                fixedCommissionMinorUnits: 250,
-                fixedCommissionCurrency: "EUR",
-              },
-            },
-          },
-          actingAccountId: seller.accountId,
-          now: NOW,
-        },
-        { db },
-      ),
-    ).rejects.toBeInstanceOf(InvalidOfferInputError);
-  });
-
-  // — Interval, trace, timestamps —
-
-  it("23. round-trips an effective interval, and both-null means no interval", async () => {
-    const withInterval = await seedOffer({
-      effectiveInterval: { startsAt: "2027-11-01T00:00:00.000Z", endsAt: null },
+      resumeOfferAs(as(o.seller), { ...sel, expectedVersion: "2", now: next() }, { db }),
+    ).rejects.toBeInstanceOf(OfferVersionStaleError);
+    expect(await resumeOfferAs(as(o.seller), { ...sel, expectedVersion: "1", now: next() }, { db })).toMatchObject({
+      state: "ACTIVE",
     });
-    expect(withInterval.snapshot.currentVersion.effectiveInterval).toEqual({
-      startsAt: "2027-11-01T00:00:00.000Z",
-      endsAt: null,
-    });
-
-    const withoutInterval = await seedOffer();
-    expect(withoutInterval.snapshot.currentVersion.effectiveInterval).toBeNull();
+    const acts = await db.offerAct.findMany({ where: { internalOfferId: o.internalOfferId }, orderBy: { actedAt: "asc" } });
+    expect(acts.map((a) => [a.act, a.previousState, a.state])).toEqual([
+      ["ACTIVATE", "DRAFT", "ACTIVE"],
+      ["PAUSE", "ACTIVE", "PAUSED"],
+      ["RESUME", "PAUSED", "ACTIVE"],
+    ]);
+    /* One linear chain: each act supersedes the last, and only the last is current. */
+    expect(acts[1]!.supersedesActId).toBe(acts[0]!.id);
+    expect(acts[2]!.supersedesActId).toBe(acts[1]!.id);
+    expect(acts.filter((a) => a.currentForOfferId !== null).map((a) => a.id)).toEqual([acts[2]!.id]);
+    expect(await db.offerSourceRecordVersionRow.count({ where: { internalOfferId: o.internalOfferId } })).toBe(1);
   });
 
-  it("24. round-trips the authorization trace and recordedAt", async () => {
-    const { snapshot, seller } = await seedOffer();
-    /* The resolved acting account (Phase 1.18): the audit actor IS the identity
-       the authorization decision was evaluated against, not a second value the
-       caller supplied beside it. */
-    expect(snapshot.currentVersion.authorizedByActorId).toBe(seller.accountId);
-    expect(snapshot.currentVersion.authorizedBySellerParticipantId).toBe(seller.participantId);
-    expect(snapshot.currentVersion.recordedAt).toBe(NOW);
-  });
-
-  it("25. stores an opaque actor id, never an email or a display name", async () => {
-    const { snapshot } = await seedOffer();
-    const row = await db.offerSourceRecordVersionRow.findFirst({
-      where: { internalOfferId: snapshot.record.internalOfferId },
-    });
-    /* Still opaque — the namespace moved to the account, the guarantee did not. */
-    expect(row!.authorizedByActorId).toMatch(/^mon:acct:/);
-    expect(row!.authorizedByActorId).not.toContain("@");
-  });
-
-  // — Authorization —
-
-  it("26. an unrelated participant cannot create an Offer under another's authority", async () => {
-    const internalProductId = await seedProduct();
-    const seller = await seedSeller();
-    const stranger = await seedSeller();
-
-    await expect(
-      createDraftOffer(
-        {
-          internalProductId,
-          sellerParticipantId: seller.participantId,
-          terms: paidPromotableTerms,
-          /* The stranger acts, but the Offer names the other seller. */
-          actingAccountId: stranger.accountId,
-          now: NOW,
-        },
-        { db },
-      ),
-    ).rejects.toMatchObject({
-      name: "OfferNotAuthorizedError",
-      reasonCodes: ["SELLER_PARTICIPANT_MISMATCH"],
+  it("12. a PAUSED Offer stays PAUSED when its terms are revised", async () => {
+    const o = await activeOffer();
+    const sel = { productRef: o.product.productRef, offerRef: o.offerRef };
+    await pauseOfferAs(as(o.seller), { ...sel, now: next() }, { db });
+    const body = { ...sel, expectedVersion: "1", terms: REPRICED };
+    const disclosure = await disclosureOf(() => reviseOfferTermsAs(as(o.seller), { ...body, now: next() }, { db }));
+    expect(await reviseOfferTermsAs(as(o.seller), { ...body, confirmation: disclosure, now: next() }, { db })).toMatchObject({
+      state: "PAUSED",
+      standingVersion: "2",
     });
   });
 
-  it("27. refuses creation without Product authority — derived, not supplied", async () => {
-    /* Phase 1.18. Through 1.17 this was expressed by passing
-       `hasProductAuthority: false`, which meant the test proved only that the
-       service read its own input. Both ways of NOT holding the authority are
-       asserted now, and neither is reachable by anything a caller can send.
-
-       First: a Product whose current source version names no creator
-       participant at all — the historical NULL the column is nullable for.
-       Authority that cannot be evidenced is granted to nobody. */
-    const unattributed = await seedProduct();
-    const seller = await seedSeller();
-    await expect(
-      createDraftOffer(
-        {
-          internalProductId: unattributed,
-          sellerParticipantId: seller.participantId,
-          terms: paidPromotableTerms,
-          actingAccountId: seller.accountId,
-          now: NOW,
-        },
-        { db },
-      ),
-    ).rejects.toMatchObject({ reasonCodes: ["PRODUCT_AUTHORITY_REQUIRED"] });
-
-    /* Second, and the one that matters: another creator's Product. An active
-       SELLER cannot state commercial terms over work they do not control, and
-       knowing the Product id does not help. */
-    const creator = await seedSeller();
-    const theirProduct = await seedProduct(creator.participantId);
-    await expect(
-      createDraftOffer(
-        {
-          internalProductId: theirProduct,
-          sellerParticipantId: seller.participantId,
-          terms: paidPromotableTerms,
-          actingAccountId: seller.accountId,
-          now: NOW,
-        },
-        { db },
-      ),
-    ).rejects.toMatchObject({ reasonCodes: ["PRODUCT_AUTHORITY_REQUIRED"] });
-
-    /* And a revoked authority is not an authority, even naming the right
-       participant. */
-    const revoked = await seedProduct();
-    await grantProductCreatorAuthority(db, {
-      internalProductId: revoked,
-      participantId: seller.participantId,
-      authorizationState: "revoked",
-      now: NOW,
-    });
-    await expect(
-      createDraftOffer(
-        {
-          internalProductId: revoked,
-          sellerParticipantId: seller.participantId,
-          terms: paidPromotableTerms,
-          actingAccountId: seller.accountId,
-          now: NOW,
-        },
-        { db },
-      ),
-    ).rejects.toMatchObject({ reasonCodes: ["PRODUCT_AUTHORITY_REQUIRED"] });
-  });
-
-  it("28. an unknown acting account is the guest subject, and is refused", async () => {
-    const internalProductId = await seedProduct();
-    const seller = await seedSeller();
-    await expect(
-      createDraftOffer(
-        {
-          internalProductId,
-          sellerParticipantId: seller.participantId,
-          terms: paidPromotableTerms,
-          actingAccountId: "acct_does_not_exist",
-          now: NOW,
-        },
-        { db },
-      ),
-    ).rejects.toMatchObject({ reasonCodes: ["ACCOUNT_REQUIRED"] });
-  });
-
-  it("29. a stranger cannot mutate an existing Offer", async () => {
-    const { snapshot } = await seedOffer();
-    const stranger = await seedSeller();
-    await expect(
-      createOfferSourceVersion(
-        {
-          internalOfferId: snapshot.record.internalOfferId,
-          sourceRecordVersion: "2",
-          availability: "TEMPORARILY_UNAVAILABLE",
-          actingAccountId: stranger.accountId,
-          now: LATER,
-        },
-        { db },
-      ),
-    ).rejects.toMatchObject({ reasonCodes: ["SELLER_PARTICIPANT_MISMATCH"] });
-
-    /* And nothing was written. */
-    expect(
-      await db.offerSourceRecordVersionRow.count({
-        where: { internalOfferId: snapshot.record.internalOfferId },
-      }),
-    ).toBe(1);
-  });
-
-  it("30. the authorized seller can perform an allowed draft-stage update", async () => {
-    const { snapshot, seller } = await seedOffer();
-    const next = await createOfferSourceVersion(
+  it("13. Product suspension never rewrites the Offer; it blocks resume, never pause", async () => {
+    const o = await activeOffer();
+    const sel = { productRef: o.product.productRef, offerRef: o.offerRef };
+    await suspendProduct(
       {
-        internalOfferId: snapshot.record.internalOfferId,
-        sourceRecordVersion: "2",
-        availability: "TEMPORARILY_UNAVAILABLE",
-        actingAccountId: seller.accountId,
-        now: LATER,
+        internalProductId: o.product.internalProductId,
+        reasonCode: "SAFETY_CONCERN",
+        actingAccountId: await fx.seedOperator("product:suspend"),
+        suspendedAt: next(),
       },
       { db },
     );
-    expect(next.record.currentSourceRecordVersion).toBe("2");
-    expect(next.record.availability).toBe("TEMPORARILY_UNAVAILABLE");
+    const at = next();
+    expect(lifecycleAt(await stateOf(o.internalOfferId), at)).toBe("ACTIVE");
+    expect(await db.offerAct.count({ where: { internalOfferId: o.internalOfferId } })).toBe(1);
+
+    await pauseOfferAs(as(o.seller), { ...sel, now: next() }, { db });
+    const error = await resumeOfferAs(as(o.seller), { ...sel, expectedVersion: "1", now: next() }, { db }).catch(
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(OfferNotReadyError);
+    expect((error as OfferNotReadyError).blockers).toContain("PRODUCT_NOT_ACTIVE");
   });
 
-  it("31. refuses an invalid lifecycle transition using 0M.2A's own table", async () => {
-    const { snapshot, seller } = await seedOffer();
-    /* DRAFT → SUSPENDED is not an edge: DRAFT permits only ACTIVE and WITHDRAWN. */
+  it("14. withdrawal is terminal, releases the Product, and a new Offer gets a new ref", async () => {
+    const o = await activeOffer();
+    const sel = { productRef: o.product.productRef, offerRef: o.offerRef };
+    expect(await withdrawOfferAs(as(o.seller), { ...sel, now: next() }, { db })).toMatchObject({ state: "WITHDRAWN" });
+    const row = await db.offer.findUniqueOrThrow({ where: { internalOfferId: o.internalOfferId } });
+    expect(row.nonTerminalForProductId).toBeNull();
+
+    for (const act of [
+      () => pauseOfferAs(as(o.seller), { ...sel, now: next() }, { db }),
+      () => withdrawOfferAs(as(o.seller), { ...sel, now: next() }, { db }),
+      () => resumeOfferAs(as(o.seller), { ...sel, expectedVersion: "1", now: next() }, { db }),
+    ]) {
+      const error = await act().catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(OfferNotAuthorizedError);
+      expect((error as OfferNotAuthorizedError).reasonCodes).toEqual(["OFFER_LIFECYCLE_TERMINAL"]);
+    }
+
+    const fresh = await createOfferAs(as(o.seller), { productRef: o.product.productRef, terms: TERMS, now: next() }, { db });
+    expect(fresh.offerRef).not.toBe(o.offerRef);
+    expect(fresh).toMatchObject({ state: "DRAFT", standingVersion: "1" });
+    /* The withdrawn Offer and its history are untouched. */
+    expect(await db.offerAct.count({ where: { internalOfferId: o.internalOfferId } })).toBe(2);
+  });
+
+  // — ENDED —
+
+  it("15. ENDED is derived at the overall end with no write; the next create releases the marker, never earlier", async () => {
+    const o = await draftOffer();
+    const now = next();
+    const until = plus(now, 24);
+    await activate(o, { effectiveUntil: until, now });
+    const actsBefore = await db.offerAct.count({ where: { internalOfferId: o.internalOfferId } });
+
+    expect(lifecycleAt(await stateOf(o.internalOfferId), plus(until, -0.001))).toBe("ACTIVE");
+    expect(lifecycleAt(await stateOf(o.internalOfferId), until)).toBe("ENDED");
+
+    /* Before the end, the Product is still held. */
     await expect(
-      createOfferSourceVersion(
-        {
-          internalOfferId: snapshot.record.internalOfferId,
-          sourceRecordVersion: "2",
-          lifecycle: "SUSPENDED",
-          actingAccountId: seller.accountId,
-          now: LATER,
-        },
+      createOfferAs(as(o.seller), { productRef: o.product.productRef, terms: TERMS, now: plus(until, -1) }, { db }),
+    ).rejects.toBeInstanceOf(OfferAlreadyExistsError);
+    const fresh = await createOfferAs(as(o.seller), { productRef: o.product.productRef, terms: TERMS, now: until }, { db });
+    expect(fresh.offerRef).not.toBe(o.offerRef);
+    expect(await db.offerAct.count({ where: { internalOfferId: o.internalOfferId } })).toBe(actsBefore);
+    const ended = await db.offer.findUniqueOrThrow({ where: { internalOfferId: o.internalOfferId } });
+    expect(ended.nonTerminalForProductId).toBeNull();
+    minute += 24 * 60 + 5;
+  });
+
+  it("16. an overall end at or before the activation instant is refused", async () => {
+    const o = await draftOffer();
+    const now = next();
+    await expect(activate(o, { effectiveUntil: now, now })).rejects.toBeInstanceOf(InvalidOfferInputError);
+  });
+
+  // — Promotions —
+
+  it("17. a promotion is a SCHEDULED_PROMOTION version on its basis; standing is untouched; it reverts with no write", async () => {
+    const o = await activeOffer();
+    const now = next();
+    const from = plus(now, 1);
+    const until = plus(now, 2);
+    const result = await schedule(o, { from, until }, "40.00", now);
+    expect(result).toMatchObject({ standingVersion: "1", promotionVersion: "2" });
+    const promotion = await getSourceVersion(o.internalOfferId, "2", { db });
+    expect(promotion).toMatchObject({
+      termsKind: "SCHEDULED_PROMOTION",
+      basisStandingVersion: "1",
+      supersedesSourceRecordVersion: "1",
+      promotionWindow: { effectiveFrom: from, effectiveUntil: until },
+      terms: { price: { wholesalePriceMinorUnits: 4000 } },
+      economics: { calculatedCommissionMinorUnits: 800, calculatedCreatorGrossProceedsMinorUnits: 3200 },
+    });
+    expect((await getCurrentSourceVersion(o.internalOfferId, { db })).sourceRecordVersion).toBe("1");
+
+    const state = await stateOf(o.internalOfferId);
+    expect(promotionStatusAt(state, now)).toBe("SCHEDULED");
+    expect(effectiveOfferTerms(state.resolution, now)).toEqual({ kind: "STANDING", sourceRecordVersion: "1" });
+    expect(promotionStatusAt(state, from)).toBe("RUNNING");
+    expect(effectiveOfferTerms(state.resolution, from)).toEqual({ kind: "SCHEDULED_PROMOTION", sourceRecordVersion: "2" });
+    expect(promotionStatusAt(state, until)).toBe("ENDED");
+    expect(effectiveOfferTerms(state.resolution, until)).toEqual({ kind: "STANDING", sourceRecordVersion: "1" });
+    minute += 3 * 60;
+  });
+
+  it("18. while a promotion is pending, a second schedule and a standing revision are refused", async () => {
+    const o = await activeOffer();
+    const now = next();
+    await schedule(o, { from: plus(now, 1), until: plus(now, 2) }, "40.00", now);
+    const later = plus(now, 0.5);
+    await expect(schedule(o, { from: plus(now, 3), until: plus(now, 4) }, "45.00", later)).rejects.toBeInstanceOf(
+      OfferPromotionPendingError,
+    );
+    await expect(
+      reviseOfferTermsAs(
+        as(o.seller),
+        { productRef: o.product.productRef, offerRef: o.offerRef, expectedVersion: "1", terms: REPRICED, now: later },
         { db },
       ),
-    ).rejects.toMatchObject({ reasonCodes: ["OFFER_LIFECYCLE_TRANSITION_NOT_PERMITTED"] });
+    ).rejects.toBeInstanceOf(OfferPromotionPendingError);
+    minute += 3 * 60;
   });
 
-  it("32. a terminal Offer refuses further change", async () => {
-    const { snapshot, seller } = await seedOffer();
-    await createOfferSourceVersion(
+  it("19. a promotion may not be backdated, nor scheduled on a DRAFT", async () => {
+    const o = await activeOffer();
+    const now = next();
+    await expect(schedule(o, { from: plus(now, -1), until: plus(now, 1) }, "40.00", now)).rejects.toBeInstanceOf(
+      InvalidOfferInputError,
+    );
+    const d = await draftOffer();
+    const error = await schedulePromotionAs(
+      as(d.seller),
       {
-        internalOfferId: snapshot.record.internalOfferId,
-        sourceRecordVersion: "2",
-        lifecycle: "WITHDRAWN",
-        actingAccountId: seller.accountId,
-        now: LATER,
+        productRef: d.product.productRef,
+        offerRef: d.offerRef,
+        expectedVersion: "1",
+        wholesalePrice: "40.00",
+        effectiveFrom: plus(now, 1),
+        effectiveUntil: plus(now, 2),
+        now,
       },
       { db },
-    );
-
-    await expect(
-      createOfferSourceVersion(
-        {
-          internalOfferId: snapshot.record.internalOfferId,
-          sourceRecordVersion: "3",
-          availability: "TEMPORARILY_UNAVAILABLE",
-          actingAccountId: seller.accountId,
-          now: LATER,
-        },
-        { db },
-      ),
-    ).rejects.toMatchObject({ reasonCodes: ["OFFER_LIFECYCLE_TERMINAL"] });
+    ).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(OfferNotAuthorizedError);
+    expect((error as OfferNotAuthorizedError).reasonCodes).toEqual(["OFFER_LIFECYCLE_TRANSITION_NOT_PERMITTED"]);
   });
 
-  it("33. activation is unreachable this phase — the commerce gates refuse it", async () => {
-    /* NOT a defect, and NOT worked around. 0M.2A gates going live behind the
-       full commerce test, and this phase fails it TWICE over:
-
-         - `participant.status !== ACTIVE` → PARTICIPANT_NOT_ACTIVATED. Reaching
-           ACTIVE is a governed activation decision, and 0M.5 makes none.
-         - `paymentReadiness !== ENABLED` → PAYMENT_NOT_ENABLED, behind it. No
-           payment record exists until 0M.8, so readiness is always NOT_STARTED.
-
-       The participant gate is checked first, so that is the code asserted here.
-       Weakening either to make an Offer activate would let an unactivated,
-       unpayable seller sell — so 0M.6 is draft-capable only, exactly as 0M.5
-       was, and for the same reason. */
-    const { snapshot, seller } = await seedOffer();
-    await expect(
-      createOfferSourceVersion(
-        {
-          internalOfferId: snapshot.record.internalOfferId,
-          sourceRecordVersion: "2",
-          lifecycle: "ACTIVE",
-          actingAccountId: seller.accountId,
-          economicsConfirmation: {
-            confirmedOfferSourceRecordId: snapshot.record.offerSourceRecordId,
-            confirmedOfferSourceRecordVersion: "2",
-            ...calculateOfferEconomics(paidPromotableTerms),
-          },
-          now: LATER,
-        },
-        { db },
-      ),
-    ).rejects.toMatchObject({ reasonCodes: ["PARTICIPANT_NOT_ACTIVATED"] });
-  });
-
-  // — Delete/FK behaviour —
-
-  it("34. refuses to delete a Product an Offer depends on", async () => {
-    const { internalProductId } = await seedOffer();
-    await expect(
-      db.product.delete({ where: { internalProductId } }),
-    ).rejects.toMatchObject({ code: "P2003" });
-  });
-
-  it("35. refuses to delete a participant holding Offer authority", async () => {
-    const { seller } = await seedOffer();
-    await expect(
-      db.marketplaceParticipant.delete({ where: { id: seller.participantId } }),
-    ).rejects.toMatchObject({ code: "P2003" });
-  });
-
-  it("36. refuses to delete an Offer while its history exists", async () => {
-    const { snapshot } = await seedOffer();
-    await expect(
-      db.offer.delete({ where: { internalOfferId: snapshot.record.internalOfferId } }),
-    ).rejects.toMatchObject({ code: "P2003" });
-  });
-
-  // — Exact reconstruction and projection compatibility —
-
-  it("37. a persisted row reconstructs into the canonical source contract", async () => {
-    const { snapshot } = await seedOffer();
-    const row = await db.offerSourceRecordVersionRow.findFirst({
-      where: { internalOfferId: snapshot.record.internalOfferId },
+  it("20. a future promotion may be replaced — history kept — but not once it has begun", async () => {
+    const o = await activeOffer();
+    const now = next();
+    await schedule(o, { from: plus(now, 1), until: plus(now, 2) }, "40.00", now);
+    const body = {
+      productRef: o.product.productRef,
+      offerRef: o.offerRef,
+      expectedVersion: "1",
+      expectedPromotionVersion: "2",
+      wholesalePrice: "45.00",
+      effectiveFrom: plus(now, 1.5),
+      effectiveUntil: plus(now, 3),
+    };
+    const at = plus(now, 0.25);
+    const disclosure = await disclosureOf(() => replacePromotionAs(as(o.seller), { ...body, now: at }, { db }));
+    expect(disclosure.version).toBe("3");
+    expect(await replacePromotionAs(as(o.seller), { ...body, confirmation: disclosure, now: at }, { db })).toMatchObject({
+      promotionVersion: "3",
     });
-    const reconstructed = versionRowToSourceVersion(row!);
-    expect(OfferSourceVersion.safeParse(reconstructed).success).toBe(true);
-    expect(reconstructed).toEqual(snapshot.currentVersion);
+    expect((await listSourceVersions(o.internalOfferId, { db })).map((v) => [v.sourceRecordVersion, v.termsKind])).toEqual([
+      ["1", "STANDING"],
+      ["2", "SCHEDULED_PROMOTION"],
+      ["3", "SCHEDULED_PROMOTION"],
+    ]);
+
+    /* Running now: no longer replaceable. */
+    await expect(
+      replacePromotionAs(
+        as(o.seller),
+        { ...body, expectedPromotionVersion: "3", effectiveFrom: plus(now, 4), effectiveUntil: plus(now, 5), now: plus(now, 2) },
+        { db },
+      ),
+    ).rejects.toBeInstanceOf(OfferPromotionNotReplaceableError);
+    /* A stale promotion version is refused before anything else. */
+    await expect(replacePromotionAs(as(o.seller), { ...body, now: at }, { db })).rejects.toBeInstanceOf(
+      OfferVersionStaleError,
+    );
+    minute += 4 * 60;
   });
 
-  it("38. a corrupt persisted row fails loudly rather than returning a best-effort object", async () => {
-    const { snapshot } = await seedOffer();
-    /* Drift the stored commission away from what the terms imply. The contract
-       re-checks stored economics against the deterministic calculator, so this
-       must be refused rather than projected. */
+  it("21. a running promotion ends early by an act; the lifecycle is unchanged and standing terms apply at once", async () => {
+    const o = await activeOffer();
+    const now = next();
+    await schedule(o, { from: plus(now, 1), until: plus(now, 3) }, "40.00", now);
+    const sel = { productRef: o.product.productRef, offerRef: o.offerRef, expectedPromotionVersion: "2" };
+    await expect(endPromotionAs(as(o.seller), { ...sel, now: plus(now, 0.5) }, { db })).rejects.toBeInstanceOf(
+      OfferPromotionNotRunningError,
+    );
+    const endedAt = plus(now, 2);
+    expect(await endPromotionAs(as(o.seller), { ...sel, now: endedAt }, { db })).toMatchObject({ state: "ACTIVE" });
+    const act = await db.offerAct.findFirstOrThrow({ where: { internalOfferId: o.internalOfferId, act: "END_PROMOTION" } });
+    expect(act).toMatchObject({ previousState: "ACTIVE", state: "ACTIVE", endedPromotionVersion: "2" });
+
+    const state = await stateOf(o.internalOfferId);
+    expect(promotionStatusAt(state, endedAt)).toBe("ENDED_EARLY");
+    expect(effectiveOfferTerms(state.resolution, endedAt)).toEqual({ kind: "STANDING", sourceRecordVersion: "1" });
+    /* Ended, so no longer pending: a new one may be scheduled. */
+    expect(await schedule(o, { from: plus(now, 4), until: plus(now, 5) }, "42.00", plus(now, 2.5))).toMatchObject({
+      promotionVersion: "3",
+    });
+    minute += 6 * 60;
+  });
+
+  // — Ownership —
+
+  it("22. another Seller's Offer, an unknown ref, and an Offer named under another Product are one 404", async () => {
+    const o = await activeOffer();
+    const other = await fx.readySeller();
+    const otherProduct = await fx.draftProduct(other);
+    const promoter = await fx.draftParticipant(["PROMOTER"]);
+    for (const [actor, productRef, offerRef] of [
+      [other, o.product.productRef, o.offerRef],
+      [promoter, o.product.productRef, o.offerRef],
+      [o.seller, o.product.productRef, UNKNOWN_REF],
+      [o.seller, otherProduct.productRef, o.offerRef],
+    ] as const) {
+      await expect(pauseOfferAs(as(actor), { productRef, offerRef, now: next() }, { db })).rejects.toBeInstanceOf(
+        OfferNotFoundError,
+      );
+      await expect(withdrawOfferAs(as(actor), { productRef, offerRef, now: next() }, { db })).rejects.toBeInstanceOf(
+        OfferNotFoundError,
+      );
+    }
+    const at = next();
+    expect(lifecycleAt(await stateOf(o.internalOfferId), at)).toBe("ACTIVE");
+  });
+
+  // — Read model —
+
+  it("23. the Seller's read model shows the derived state, actions, and blockers", async () => {
+    const o = await draftOffer();
+    const at = next();
+    const draft = (await readOffers(o, at)).get(o.product.internalProductId)!;
+    expect(draft.canCreate).toBe(false);
+    expect(draft.offer).toMatchObject({
+      offerRef: o.offerRef,
+      lifecycle: "DRAFT",
+      effective: "NONE",
+      nextVersion: "2",
+      blockers: [],
+      standing: { version: "1", calculatedCommissionMinorUnits: 1000, calculatedSellerGrossProceedsMinorUnits: 4000 },
+      actions: { activate: true, revise: true, withdraw: true, pause: false, schedulePromotion: false },
+    });
+    expect(JSON.stringify(draft)).not.toContain(o.internalOfferId);
+
+    await withdrawOfferAs(as(o.seller), { productRef: o.product.productRef, offerRef: o.offerRef, now: next() }, { db });
+    const home = await readAccountHome(o.seller.accountId, { db, now: next() });
+    const product = home!.products.find((p) => p.productRef === o.product.productRef)!;
+    expect(product.offer.canCreate).toBe(true);
+    expect(product.offer.offer).toMatchObject({ lifecycle: "WITHDRAWN", actions: { withdraw: false, revise: false } });
+  });
+
+  it("23a. a promotion whose window covers now is in force only while the Offer is ACTIVE", async () => {
+    const o = await activeOffer();
+    const now = next();
+    await schedule(o, { from: plus(now, 1), until: plus(now, 3) }, "40.00", now);
+    const sel = { productRef: o.product.productRef, offerRef: o.offerRef };
+    const within = () => plus(now, 1.5);
+    const promotionAt = async (at: string) => (await readOffers(o, at)).get(o.product.internalProductId)!.offer!;
+
+    expect(await promotionAt(within())).toMatchObject({
+      lifecycle: "ACTIVE",
+      effective: "SCHEDULED_PROMOTION",
+      promotion: { status: "RUNNING", inForce: true },
+    });
+
+    await pauseOfferAs(as(o.seller), { ...sel, now: plus(now, 1.2) }, { db });
+    /* The schedule fact is kept — its window covers now — but it is not in force. */
+    expect(await promotionAt(within())).toMatchObject({
+      lifecycle: "PAUSED",
+      effective: "NONE",
+      promotion: { status: "RUNNING", inForce: false },
+    });
+
+    await withdrawOfferAs(as(o.seller), { ...sel, now: plus(now, 1.3) }, { db });
+    expect(await promotionAt(within())).toMatchObject({
+      lifecycle: "WITHDRAWN",
+      effective: "NONE",
+      promotion: { status: "RUNNING", inForce: false },
+    });
+    minute += 4 * 60;
+  });
+
+  it("23b. canCreate agrees with the create operation: a suspension or an inactive SELLER role is false", async () => {
+    const suspended = await fx.readySeller();
+    const suspendedProduct = await fx.activeProduct(suspended);
+    /* A suspension names the policy version it was imposed under. Arrange that
+       row only if no earlier suite left one, and remove only what was arranged. */
+    const policyKey = { policyId: MONACADO_MARKETPLACE_POLICY_ID, policyVersion: MARKETPLACE_POLICY_VERSION_1 };
+    const arrangedPolicy = (await db.marketplacePolicy.count({ where: { id: policyKey.policyId } })) === 0;
+    const arrangedVersion = (await db.marketplacePolicyVersionRow.count({ where: policyKey })) === 0;
+    if (arrangedPolicy) {
+      await db.marketplacePolicy.create({ data: { id: policyKey.policyId, label: "p142offer fixture", createdAt: new Date(NOW) } });
+    }
+    if (arrangedVersion) {
+      await db.marketplacePolicyVersionRow.create({
+        data: {
+          ...policyKey,
+          status: "DRAFT",
+          title: "p142offer fixture",
+          contentRef: "p142offer/fixture",
+          contentHash: "0".repeat(64),
+          requiresReacceptance: false,
+          effectiveFrom: new Date(NOW),
+          recordedByAccountId: suspended.accountId,
+          recordedAt: new Date(NOW),
+        },
+      });
+    }
+    try {
+      await db.participantSuspension.create({
+        data: {
+          id: `mon:psus:p142offer${(minute += 1)}`,
+          participantId: suspended.participantId,
+          reasonCode: "ADVERSE_OUTCOME_LEVEL_UNSUSTAINABLE",
+          status: "ACTIVE",
+          statusBeforeSuspension: "ACTIVE",
+          imposedAt: new Date(next()),
+          imposedByAccountId: await fx.seedOperator("participant:suspend"),
+          marketplacePolicyId: MONACADO_MARKETPLACE_POLICY_ID,
+          marketplacePolicyVersion: MARKETPLACE_POLICY_VERSION_1,
+          activeForParticipantId: suspended.participantId,
+        },
+      });
+      const at = next();
+      expect(
+        (await readOffers({ seller: suspended, product: suspendedProduct }, at)).get(suspendedProduct.internalProductId),
+      ).toEqual({ offer: null, canCreate: false });
+      await expect(
+        createOfferAs(as(suspended), { productRef: suspendedProduct.productRef, terms: TERMS, now: at }, { db }),
+      ).rejects.toBeInstanceOf(ParticipantActionNotPermittedError);
+    } finally {
+      await db.participantSuspension.deleteMany({ where: { participantId: suspended.participantId } });
+      if (arrangedVersion) await db.marketplacePolicyVersionRow.deleteMany({ where: policyKey });
+      if (arrangedPolicy) await db.marketplacePolicy.deleteMany({ where: { id: policyKey.policyId } });
+    }
+
+    const revoked = await fx.readySeller();
+    const revokedProduct = await fx.activeProduct(revoked);
+    await db.marketplaceRoleAssignment.updateMany({
+      where: { participantId: revoked.participantId, role: "SELLER" },
+      data: { status: "REVOKED" },
+    });
+    const later = next();
+    expect((await readOffers({ seller: revoked, product: revokedProduct }, later)).get(revokedProduct.internalProductId))
+      .toEqual({ offer: null, canCreate: false });
+    await expect(
+      createOfferAs(as(revoked), { productRef: revokedProduct.productRef, terms: TERMS, now: later }, { db }),
+    ).rejects.toBeInstanceOf(OfferNotAuthorizedError);
+    expect(await db.offer.count({ where: { internalProductId: { in: [suspendedProduct.internalProductId, revokedProduct.internalProductId] } } })).toBe(0);
+  });
+
+  it("23c. offered actions agree with each act's refusal: restricted payments withdraw revise and promotions, not stand-downs", async () => {
+    const o = await activeOffer();
+    await db.participantPaymentAccount.updateMany({
+      where: { participantId: o.seller.participantId },
+      data: { readiness: "RESTRICTED" },
+    });
+    const at = next();
+    expect((await readOffers(o, at)).get(o.product.internalProductId)!.offer!.actions).toEqual({
+      revise: false,
+      activate: false,
+      pause: true,
+      resume: false,
+      withdraw: true,
+      schedulePromotion: false,
+      replacePromotion: false,
+      endPromotion: false,
+    });
+    const sel = { productRef: o.product.productRef, offerRef: o.offerRef };
+    await expect(
+      reviseOfferTermsAs(as(o.seller), { ...sel, expectedVersion: "1", terms: REPRICED, now: at }, { db }),
+    ).rejects.toBeInstanceOf(OfferNotAuthorizedError);
+    await expect(
+      schedulePromotionAs(
+        as(o.seller),
+        { ...sel, expectedVersion: "1", wholesalePrice: "40.00", effectiveFrom: plus(at, 1), effectiveUntil: plus(at, 2), now: at },
+        { db },
+      ),
+    ).rejects.toBeInstanceOf(OfferNotAuthorizedError);
+    /* Standing down stays open — the Seller who most needs to stop can. */
+    expect(await pauseOfferAs(as(o.seller), { ...sel, now: next() }, { db })).toMatchObject({ state: "PAUSED" });
+  });
+
+  // — Integrity —
+
+  it("24. history is RESTRICT-protected: no Product, participant, or Offer delete beneath it", async () => {
+    const o = await activeOffer();
+    await expect(db.product.delete({ where: { internalProductId: o.product.internalProductId } })).rejects.toThrow();
+    await expect(db.marketplaceParticipant.delete({ where: { id: o.seller.participantId } })).rejects.toThrow();
+    await expect(db.offer.delete({ where: { internalOfferId: o.internalOfferId } })).rejects.toThrow();
+  });
+
+  it("25. a persisted row reconstructs into the contract; corruption fails loudly", async () => {
+    const o = await draftOffer();
+    const row = await db.offerSourceRecordVersionRow.findFirstOrThrow({ where: { internalOfferId: o.internalOfferId } });
+    expect(OfferSourceVersion.safeParse(versionRowToSourceVersion(row)).success).toBe(true);
+    await expect(getSourceVersion(o.internalOfferId, "9", { db })).rejects.toBeInstanceOf(OfferVersionNotFoundError);
+
     await db.offerSourceRecordVersionRow.updateMany({
-      where: { internalOfferId: snapshot.record.internalOfferId },
+      where: { internalOfferId: o.internalOfferId },
       data: { calculatedCommissionMinorUnits: 4242n },
     });
-    await expect(getOffer(snapshot.record.internalOfferId, { db })).rejects.toBeInstanceOf(
-      CorruptOfferRecordError,
-    );
-  });
-
-  it("39. a corrupt discriminator is refused rather than guessed at", async () => {
-    const { snapshot } = await seedOffer();
+    await expect(getOffer(o.internalOfferId, { db })).rejects.toBeInstanceOf(CorruptOfferRecordError);
     await db.offerSourceRecordVersionRow.updateMany({
-      where: { internalOfferId: snapshot.record.internalOfferId },
-      data: { priceType: "NONSENSE" },
+      where: { internalOfferId: o.internalOfferId },
+      data: { calculatedCommissionMinorUnits: 1000n, termsKind: "NONSENSE" },
     });
-    await expect(getOffer(snapshot.record.internalOfferId, { db })).rejects.toBeInstanceOf(
-      CorruptOfferRecordError,
-    );
+    await expect(getOffer(o.internalOfferId, { db })).rejects.toBeInstanceOf(CorruptOfferRecordError);
   });
 
-  it("40. a DRAFT Offer is correctly NOT projection-eligible", async () => {
-    /* 0M.2B refuses to project a DRAFT Offer, with one coarse reason so a public
-       failure cannot probe a seller's standing. Persistence does not change
-       that, and this phase should not want it to. */
-    const { snapshot } = await seedOffer();
-    const persisted = await getCurrentSourceVersion(snapshot.record.internalOfferId, { db });
-    expect(() =>
-      projectOfferCapsule({ sourceVersion: persisted, context: projectionContext(persisted) }),
-    ).toThrow(/NOT_PROJECTION_ELIGIBLE/);
-  });
-
-  it("41. a persisted source version feeds the existing Offer capsule projection", async () => {
-    const { snapshot, seller, internalProductId } = await seedOffer();
-    await seedActiveVersionRow(
-      snapshot.record.internalOfferId,
-      snapshot.record.offerSourceRecordId,
-      {
-        internalProductId,
-        sellerParticipantId: seller.participantId,
-        actingAccountId: seller.accountId,
+  it("26. a persisted version and a derived lifecycle feed the Offer projection; a DRAFT is refused", async () => {
+    const o = await activeOffer();
+    const persisted = await getCurrentSourceVersion(o.internalOfferId, { db });
+    const at = next();
+    const context = (offerLifecycle: string) => ({
+      offerBinding: { offerNode: `an:node:${"1".repeat(26)}`, internalOfferId: persisted.internalOfferId },
+      productBinding: { productNode: `an:node:${"2".repeat(26)}`, internalProductId: persisted.internalProductId },
+      authorityBinding: { authorityNode: `an:node:${"3".repeat(26)}`, sellerParticipantId: persisted.sellerParticipantId },
+      sourceVersionBinding: {
+        offerSourceRecordId: persisted.offerSourceRecordId,
+        sourceRecordVersion: persisted.sourceRecordVersion,
       },
-    );
-
-    /* Read back THROUGH the service and the mapper — the pipeline stage this
-       phase exists to supply. */
-    const persisted = await getCurrentSourceVersion(snapshot.record.internalOfferId, { db });
-    const context = projectionContext(persisted);
-
-    const fromPersisted = projectOfferCapsule({ sourceVersion: persisted, context });
-    expect(fromPersisted).toBeTruthy();
-
-    /* An INDEPENDENTLY constructed canonical source with the same values — not a
-       copy of the persisted object — projected under the identical context. The
-       two capsules must be byte-identical. That equality is the whole reason
-       this phase exists: the projection can no longer tell whether its source
-       came from the database or from a fixture. */
-    const canonical = OfferSourceVersion.parse({
-      offerSourceRecordId: snapshot.record.offerSourceRecordId,
-      sourceRecordVersion: "2",
-      supersedesSourceRecordVersion: "1",
-      internalOfferId: snapshot.record.internalOfferId,
-      sourceSystem: "monacado",
-      sourceRecordType: "Offer",
-      sourceClass: "governed-database-record",
-      internalProductId,
-      sellerParticipantId: seller.participantId,
-      lifecycle: "ACTIVE",
-      availability: "AVAILABLE",
-      terms: paidPromotableTerms,
-      effectiveInterval: null,
-      economics: calculateOfferEconomics(paidPromotableTerms),
-      authorizedBySellerParticipantId: seller.participantId,
-      /* The resolved acting account (Phase 1.18). */
-      authorizedByActorId: seller.accountId,
-      recordedAt: LATER,
+      capsuleId: `an:capsule:${"4".repeat(26)}`,
+      capsuleVersion: "2.0.0",
+      mappingVersion: OFFER_PROJECTION_MAPPING_VERSION,
+      generatedAt: at,
+      nodePolicy: { ref: "mon:policy:node/offer", version: "1" },
+      capsulePolicy: { ref: "mon:policy:capsule/offer", version: "1" },
+      offerLifecycle,
     });
-
-    expect(persisted).toEqual(canonical);
-    const fromCanonical = projectOfferCapsule({ sourceVersion: canonical, context });
-    expect(canonicalJsonString(fromPersisted)).toBe(canonicalJsonString(fromCanonical));
-  });
-
-  it("42. the projection never receives Monacado or promoter economics", async () => {
-    const { snapshot } = await seedOffer();
-    const persisted = await getCurrentSourceVersion(snapshot.record.internalOfferId, { db });
-    const serialized = canonicalJsonString(persisted);
-    for (const forbidden of [
-      "retailPrice",
-      "promoterSpread",
-      "monacadoRetained",
-      "wholesaleAcquisition",
-      "platformFee",
-      "tax",
-      "shipping",
-    ]) {
-      expect(serialized).not.toContain(forbidden);
+    const lifecycle = lifecycleAt(await stateOf(o.internalOfferId), at);
+    const capsule = projectOfferCapsule({ sourceVersion: persisted, context: context(lifecycle) as never });
+    expect(capsule.data.commercialState).toBe("AVAILABLE");
+    const serialized = canonicalJsonString(capsule);
+    for (const internal of [o.internalOfferId, o.seller.participantId, o.seller.accountId]) {
+      expect(serialized).not.toContain(internal);
     }
+    expect(() => projectOfferCapsule({ sourceVersion: persisted, context: context("DRAFT") as never })).toThrow(
+      /NOT_PROJECTION_ELIGIBLE/,
+    );
   });
 
-  // — Scope —
-
-  it("43. issues no Offer Node and creates no publication, outbox, or receipt", async () => {
-    const { snapshot } = await seedOffer();
-    expect(snapshot.record).not.toHaveProperty("nodeId");
-    expect(snapshot.currentVersion).not.toHaveProperty("nodeId");
-    expect(snapshot.currentVersion).not.toHaveProperty("mappingVersion");
-    /* No Offer publication path exists at all: the only publication tables are
-       the Product ones, and this phase wrote to none of them. */
-    expect(await db.publicationOutbox.count()).toBe(0);
-    expect(await db.registrarReceipt.count()).toBe(0);
-    expect(await db.productPublication.count()).toBe(0);
-  });
-
-  it("44. refuses an unknown Offer rather than inventing one", async () => {
-    await expect(
-      getOffer(`mon:offer:${pad26("M6NOSUCH")}`, { db }),
-    ).rejects.toBeInstanceOf(OfferNotFoundError);
-    await expect(
-      listSourceVersions(`mon:offer:${pad26("M6NOSUCH")}`, { db }),
-    ).rejects.toBeInstanceOf(OfferNotFoundError);
+  it("27. no Offer act publishes anything", async () => {
+    const counts = async () => [
+      await db.publicationOutbox.count(),
+      await db.registrarReceipt.count(),
+      await db.productPublication.count(),
+    ];
+    const before = await counts();
+    const o = await activeOffer();
+    const now = next();
+    await schedule(o, { from: plus(now, 1), until: plus(now, 2) }, "40.00", now);
+    await pauseOfferAs(as(o.seller), { productRef: o.product.productRef, offerRef: o.offerRef, now: plus(now, 0.5) }, { db });
+    expect(await counts()).toEqual(before);
+    minute += 3 * 60;
   });
 });

@@ -64,8 +64,18 @@ import "../server-only";
 import type { ActingAccount } from "../account/acting-participant-boundary";
 import { beginParticipantOnboarding } from "./participant-service";
 import type { ParticipantServiceDeps, ParticipantSnapshot } from "./participant-service";
-import { createOfferSourceVersion } from "./offer-service";
-import type { OfferServiceDeps, OfferSnapshot } from "./offer-service";
+import {
+  activateOfferAs,
+  createOfferAs,
+  endPromotionAs,
+  pauseOfferAs,
+  replacePromotionAs,
+  resumeOfferAs,
+  reviseOfferTermsAs,
+  schedulePromotionAs,
+  withdrawOfferAs,
+} from "./offer-service";
+import type { OfferActResult, OfferServiceDeps } from "./offer-service";
 import {
   createSellerDirectListing,
   createPromotedListing,
@@ -142,20 +152,43 @@ function withActor(
   return { ...rest, actingAccountId: actor.accountId };
 }
 
-/**
- * Mutate an Offer's commercial source version — including taking it live.
- *
- * The most authority-sensitive Offer act: activation requires the full commerce
- * gates, the seller's own Product authority, and a creator economics
- * confirmation bound to this exact version.
- */
-export async function submitOfferSourceVersion(
-  actor: ActingAccount,
-  input: ApplicationCommandInput,
-  deps: OfferServiceDeps = {},
-): Promise<OfferSnapshot> {
-  return await createOfferSourceVersion(withActor(input, actor), deps);
+// — Offer Seller acts (Phase 1.42) —
+//
+// The account is the session's; the Seller participant is derived from it; the
+// Product and the Offer are named by their application references only. Every
+// authority, readiness, confirmation, and transition decision is made in
+// `offer-service`, inside its transaction under the Product row lock. The input
+// has any `actingAccountId` stripped, as `withActor` does, so a body never carries an actor.
+
+type OfferAct = (
+  actor: { accountId: string },
+  input: unknown,
+  deps?: OfferServiceDeps,
+) => Promise<OfferActResult>;
+
+function offerActAs(act: OfferAct) {
+  return async (
+    actor: ActingAccount,
+    input: ApplicationCommandInput,
+    deps: OfferServiceDeps = {},
+  ): Promise<OfferActResult> => {
+    const { actingAccountId: _discarded, ...rest } = input;
+    return await act({ accountId: actor.accountId }, rest, deps);
+  };
 }
+
+/** Create a DRAFT Offer on one of the acting account's own Products. */
+export const createOwnOfferAs = offerActAs(createOfferAs);
+/** Revise the standing terms of the acting account's own Offer. */
+export const reviseOwnOfferTermsAs = offerActAs(reviseOfferTermsAs);
+/** Activate — the most authority-sensitive Offer act: readiness and exact-version confirmation. */
+export const activateOwnOfferAs = offerActAs(activateOfferAs);
+export const pauseOwnOfferAs = offerActAs(pauseOfferAs);
+export const resumeOwnOfferAs = offerActAs(resumeOfferAs);
+export const withdrawOwnOfferAs = offerActAs(withdrawOfferAs);
+export const scheduleOwnOfferPromotionAs = offerActAs(schedulePromotionAs);
+export const replaceOwnOfferPromotionAs = offerActAs(replacePromotionAs);
+export const endOwnOfferPromotionAs = offerActAs(endPromotionAs);
 
 /**
  * Mutate a Storefront's source version — including activation and go-live.

@@ -69,6 +69,8 @@ import {
   RESALE_AVAILABILITY_HINT,
   formatResaleAvailability,
   PROMOTION_SELLER_HEADING,
+  OFFER_HEADING,
+  OFFER_NOTE,
   PROMOTION_SELLER_NOTE,
   PROMOTION_PROMOTER_HEADING,
   PROMOTION_PROMOTER_INTRO,
@@ -93,6 +95,7 @@ import { ProductRevisionForm } from "./product-revision-form";
 import { ProductActivateButton } from "./product-activate-button";
 import { ProductResaleAvailabilityControls } from "./product-resale-availability-controls";
 import { PromotionAuthorizationSellerControls } from "./promotion-authorization-seller-controls";
+import { OfferSellerControls } from "./offer-seller-controls";
 import { PromotionAuthorizationPromoterSection } from "./promotion-authorization-promoter-section";
 import { StorefrontForm } from "./storefront-form";
 import { StorefrontPresentationForm } from "./storefront-presentation-form";
@@ -113,7 +116,7 @@ export default async function AccountPage() {
 
   /* The session resolved, but the account can still have gone in between. That
      is a signed-out visitor, not an error page. */
-  const home = await readAccountHome(session.accountId);
+  const home = await readAccountHome(session.accountId, { now: new Date().toISOString() });
   if (home === undefined) redirect(SIGN_OUT_DESTINATION);
 
   const marketplace = home.marketplace;
@@ -297,6 +300,15 @@ export default async function AccountPage() {
                           productRef={product.productRef}
                           authorizations={product.promotionAuthorizations}
                         />
+                      </div>
+                    ) : null}
+                    {/* Phase 1.42 — the Seller's Offer: commercial authority for
+                        promoted resale, its own axis. Private to the Seller; no
+                        Promoter sees it and nothing here is listed. */}
+                    {product.offer.offer !== null || product.offer.canCreate ? (
+                      <div className="account-promotion">
+                        <p className="auth-hint">{`${OFFER_HEADING} · ${OFFER_NOTE}`}</p>
+                        <OfferSellerControls productRef={product.productRef} offer={product.offer} />
                       </div>
                     ) : null}
                     {home.canCreateProduct ? (

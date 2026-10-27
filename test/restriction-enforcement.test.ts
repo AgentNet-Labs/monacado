@@ -319,10 +319,24 @@ describe("risk analytics cannot reach an enforcement seam", () => {
 describe("stand-down is never gated", () => {
   /* A participant whose commerce was just withheld must still be able to stop
      trading. Each seam guards only the branch that makes something live. */
-  it("the offer seam guards activation only", () => {
+  it("the offer seam guards activation and resumption only (Phase 1.42)", () => {
     const src = read("src/server/marketplace/offer-service.ts");
-    expect(src).toContain('next.lifecycle === "ACTIVE" && current.lifecycle !== "ACTIVE"');
-    expect(src).toContain("assertOfferMayBecomeCommerciallyLive");
+    /* The going-live gate calls the seam; only the acts that make an Offer live
+       call the gate. */
+    const gate = src.slice(src.indexOf("async function assertReadyToGoLive"), src.indexOf("async function withOwnedOffer"));
+    expect(gate).toContain("assertOfferMayBecomeCommerciallyLive(");
+    const body = (name: string) => {
+      const start = src.indexOf(`export async function ${name}(`);
+      const end = src.indexOf("\nexport async function ", start + 1);
+      return src.slice(start, end === -1 ? undefined : end);
+    };
+    for (const live of ["activateOfferAs", "resumeOfferAs"]) {
+      expect(body(live), live).toContain("assertReadyToGoLive(");
+    }
+    for (const standDown of ["pauseOfferAs", "withdrawOfferAs", "endPromotionAs"]) {
+      expect(body(standDown), standDown).not.toContain("assertReadyToGoLive(");
+      expect(body(standDown), standDown).not.toContain("assertOfferMayBecomeCommerciallyLive(");
+    }
   });
 
   it("the listing seam guards going live only", () => {

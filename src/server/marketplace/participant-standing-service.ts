@@ -155,9 +155,9 @@ export async function readProductActivationStanding(
  * May this Offer become — or stay — commercially live?
  *
  * The seam named by `offer:publish`. Gates activation and resumption; never
- * suspend, end, or withdraw, for the reason `canSuspendOffer` already gives in
- * the Offer source model: a seller whose commerce was just withheld must still
- * be able to take their Offer down.
+ * pause, withdraw, or ending a promotion, for the reason `canPauseOffer` already
+ * gives in the Offer source model: a seller whose commerce was just withheld
+ * must still be able to take their Offer down.
  */
 export async function assertOfferMayBecomeCommerciallyLive(
   tx: Tx,

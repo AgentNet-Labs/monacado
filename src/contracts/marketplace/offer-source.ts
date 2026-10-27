@@ -37,7 +37,12 @@
  */
 
 import { z } from "zod";
-import { AUTHORIZING_ACTOR_ID_RE, INTERNAL_PRODUCT_ID_RE, SOURCE_RECORD_ID_RE } from "../capsule/identity";
+import {
+  APPLICATION_REF_RE,
+  AUTHORIZING_ACTOR_ID_RE,
+  INTERNAL_PRODUCT_ID_RE,
+  SOURCE_RECORD_ID_RE,
+} from "../capsule/identity";
 import { canonicalJsonString } from "../integrity/canonical-json";
 import { INTERNAL_OFFER_ID_RE } from "./identity";
 import { CapabilityReasonCode } from "./capability";
@@ -100,83 +105,131 @@ export type AuthorizingActorId = z.infer<typeof AuthorizingActorId>;
 export const OfferSourceRecordVersion = z.string().min(1).max(64);
 export type OfferSourceRecordVersion = z.infer<typeof OfferSourceRecordVersion>;
 
-// — Operational lifecycle —
+/**
+ * The stable APPLICATION-FACING Offer reference (Phase 1.42): opaque,
+ * un-namespaced, 32 Crockford characters — the `productRef` construction. How a
+ * route names an Offer; the internal ids are never exposed.
+ */
+export const OfferRef = z
+  .string()
+  .regex(APPLICATION_REF_RE, "offerRef must be a 32-character opaque application reference");
+export type OfferRef = z.infer<typeof OfferRef>;
+
+// — Lifecycle (Phase 1.42) —
 
 /**
- * The Offer's own operational lifecycle.
+ * The Offer's lifecycle — Seller AUTHORITY, never a commercial term.
  *
- * Separate from commercial availability, from publication state, from Node state,
- * and from source-version retention state. Four different questions; four
- * vocabularies that share no member.
+ * Until Phase 1.42 lifecycle and availability lived on every immutable
+ * commercial version, so pausing an Offer minted a "commercial" version that
+ * changed no term. Lifecycle is now recorded as append-only `OfferAct` rows and
+ * **derived on read**; versions hold commercial terms only.
+ *
+ *   - `DRAFT`     — created, never activated.
+ *   - `ACTIVE`    — activated against an exact confirmed STANDING version.
+ *   - `PAUSED`    — the Seller stood it down; RESUME returns it to ACTIVE.
+ *   - `WITHDRAWN` — terminal, by a Seller act.
+ *   - `ENDED`     — terminal, DERIVED ONLY: the optional overall
+ *                   `offerEffectiveUntil` recorded on activation has passed.
+ *                   No cron writes it and no act records it.
+ *
+ * `SUSPENDED` is **reserved** for a future operator act and is not a member: a
+ * Seller cannot suspend their own Offer (they pause it), and no operator path
+ * exists yet. Adding it later is additive.
+ *
+ * Product lifecycle, resale availability, and Seller readiness changes **never
+ * rewrite** this lifecycle. They gate the acts that make an Offer live
+ * (activate, resume), and nothing else.
  */
-export const OFFER_LIFECYCLE_STATES = [
-  "DRAFT",
-  "ACTIVE",
-  "SUSPENDED",
-  "ENDED",
-  "WITHDRAWN",
-] as const;
+export const OFFER_LIFECYCLE_STATES = ["DRAFT", "ACTIVE", "PAUSED", "WITHDRAWN", "ENDED"] as const;
 export const OfferLifecycleState = z.enum(OFFER_LIFECYCLE_STATES);
 export type OfferLifecycleState = z.infer<typeof OfferLifecycleState>;
 
-/**
- * Permitted lifecycle transitions.
- *
- * `ENDED` and `WITHDRAWN` are terminal. An Offer that ended and must sell again is
- * a **new Offer** — reviving a terminal one would silently reattach a new
- * commercial commitment to a record buyers already saw close.
- */
-export const OFFER_LIFECYCLE_TRANSITIONS: Record<
-  OfferLifecycleState,
-  readonly OfferLifecycleState[]
-> = Object.freeze({
-  DRAFT: ["ACTIVE", "WITHDRAWN"],
-  ACTIVE: ["SUSPENDED", "ENDED", "WITHDRAWN"],
-  SUSPENDED: ["ACTIVE", "ENDED", "WITHDRAWN"],
-  ENDED: [],
-  WITHDRAWN: [],
-});
+/** The states an act can RECORD. `DRAFT` is the absence of acts; `ENDED` is never recorded. */
+export const RECORDED_OFFER_LIFECYCLE_STATES = ["ACTIVE", "PAUSED", "WITHDRAWN"] as const;
+export const RecordedOfferLifecycleState = z.enum(RECORDED_OFFER_LIFECYCLE_STATES);
+export type RecordedOfferLifecycleState = z.infer<typeof RecordedOfferLifecycleState>;
+
+/** Reserved, not admitted (Phase 1.42): see `OFFER_LIFECYCLE_STATES`. */
+export const RESERVED_OFFER_LIFECYCLE_STATES = ["SUSPENDED"] as const;
 
 /** The only state an Offer may be created in. */
 export const INITIAL_OFFER_LIFECYCLE_STATE: OfferLifecycleState = "DRAFT";
 
-export function isValidOfferLifecycleTransition(
-  from: OfferLifecycleState,
-  to: OfferLifecycleState,
-): boolean {
-  return OFFER_LIFECYCLE_TRANSITIONS[from].includes(to);
-}
-
+/**
+ * Terminal: nothing further may be authorized. An Offer that must sell again
+ * after it ended or was withdrawn is a **new Offer**, with a new `offerRef` —
+ * reviving a terminal one would reattach a new commitment to a record that
+ * already closed.
+ */
 export function isTerminalOfferLifecycleState(state: OfferLifecycleState): boolean {
-  return OFFER_LIFECYCLE_TRANSITIONS[state].length === 0;
+  return state === "WITHDRAWN" || state === "ENDED";
 }
 
-// — Commercial availability —
+/** The Seller acts that move the lifecycle. */
+export const OFFER_LIFECYCLE_ACTS = ["ACTIVATE", "PAUSE", "RESUME", "WITHDRAW"] as const;
+export const OfferLifecycleAct = z.enum(OFFER_LIFECYCLE_ACTS);
+export type OfferLifecycleAct = z.infer<typeof OfferLifecycleAct>;
 
 /**
- * Whether an otherwise ACTIVE Offer may presently be selected commercially.
- *
- * This is **not** inventory quantity, variants, publication status, or an
- * internal workflow step. It answers one question — "can a buyer choose this
- * right now" — for an Offer that is already live.
+ * Every act an `OfferAct` row may record: the lifecycle acts, plus
+ * `END_PROMOTION`, which ends a running promotion early and leaves the
+ * lifecycle exactly where it was.
  */
-export const OFFER_AVAILABILITY_STATES = ["AVAILABLE", "TEMPORARILY_UNAVAILABLE"] as const;
-export const OfferAvailability = z.enum(OFFER_AVAILABILITY_STATES);
-export type OfferAvailability = z.infer<typeof OfferAvailability>;
+export const OFFER_ACTS = [...OFFER_LIFECYCLE_ACTS, "END_PROMOTION"] as const;
+export const OfferActKind = z.enum(OFFER_ACTS);
+export type OfferActKind = z.infer<typeof OfferActKind>;
+
+/** The governed transitions — the whole table. */
+export const OFFER_LIFECYCLE_ACT_TRANSITIONS: Readonly<
+  Record<OfferLifecycleAct, { from: readonly OfferLifecycleState[]; to: RecordedOfferLifecycleState }>
+> = Object.freeze({
+  ACTIVATE: { from: ["DRAFT"], to: "ACTIVE" },
+  PAUSE: { from: ["ACTIVE"], to: "PAUSED" },
+  RESUME: { from: ["PAUSED"], to: "ACTIVE" },
+  WITHDRAW: { from: ["DRAFT", "ACTIVE", "PAUSED"], to: "WITHDRAWN" },
+});
+
+export type OfferLifecycleActDecision =
+  | { outcome: "PERMITTED"; from: OfferLifecycleState; to: RecordedOfferLifecycleState }
+  | { outcome: "REFUSED"; reason: "OFFER_LIFECYCLE_TERMINAL" | "OFFER_LIFECYCLE_TRANSITION_NOT_PERMITTED" };
+
+/** Decide one lifecycle act against the DERIVED current state. Pure. */
+export function decideOfferLifecycleAct(
+  current: OfferLifecycleState,
+  act: OfferLifecycleAct,
+): OfferLifecycleActDecision {
+  if (isTerminalOfferLifecycleState(current)) {
+    return { outcome: "REFUSED", reason: "OFFER_LIFECYCLE_TERMINAL" };
+  }
+  const rule = OFFER_LIFECYCLE_ACT_TRANSITIONS[act];
+  if (!rule.from.includes(current)) {
+    return { outcome: "REFUSED", reason: "OFFER_LIFECYCLE_TRANSITION_NOT_PERMITTED" };
+  }
+  return { outcome: "PERMITTED", from: current, to: rule.to };
+}
 
 /**
- * Commercial selectability, derived from both axes and never stored.
+ * The derived lifecycle at one instant.
  *
- * Only `ACTIVE` + `AVAILABLE` selects. A `DRAFT`, `SUSPENDED`, `ENDED`, or
- * `WITHDRAWN` Offer is unselectable **whatever the availability field says** —
- * availability is a modifier on a live Offer, never a way to make a dead one
- * live.
+ * `recordedState` is the current act's state (`null` when no act exists);
+ * `offerEffectiveUntil` is the overall end recorded on the ACTIVATE act.
+ *
+ * WITHDRAWN wins — a withdrawal is the Seller's explicit last word. Otherwise an
+ * Offer whose overall end has passed is ENDED, whether it was ACTIVE or PAUSED,
+ * at exactly `at >= offerEffectiveUntil` (the end is exclusive).
  */
-export function isCommerciallySelectable(input: {
-  lifecycle: OfferLifecycleState;
-  availability: OfferAvailability;
-}): boolean {
-  return input.lifecycle === "ACTIVE" && input.availability === "AVAILABLE";
+export function deriveOfferLifecycleState(input: {
+  recordedState: RecordedOfferLifecycleState | null;
+  offerEffectiveUntil: string | null;
+  at: string;
+}): OfferLifecycleState {
+  if (input.recordedState === "WITHDRAWN") return "WITHDRAWN";
+  if (input.recordedState === null) return "DRAFT";
+  if (input.offerEffectiveUntil !== null && Date.parse(input.at) >= Date.parse(input.offerEffectiveUntil)) {
+    return "ENDED";
+  }
+  return input.recordedState;
 }
 
 // — Price terms —
@@ -467,68 +520,189 @@ export function economicsMatch(terms: OfferCommercialTerms, stored: OfferEconomi
   );
 }
 
-// — Effective interval —
+// — Promoted-resale terms (Phase 1.42) —
 
 /**
- * When the Offer's terms are intended to apply.
- *
- * Either bound may be absent, expressed as explicit `null` — matching the
- * nullable columns a persistence phase will use, so the authoritative snapshot
- * and the eventual row agree without a translation step.
- *
- * **There is exactly one representation of "no interval at all".** An interval
- * object with both bounds null is refused, because `null` (no interval) and
- * `{ startsAt: null, endsAt: null }` would otherwise be two authoritative
- * snapshots of the same fact — and two snapshots of one fact means a spurious
- * material change, a spurious source version, and a diff that cannot decide
- * whether anything happened. Use `normalizeOfferEffectiveIntervalInput` to fold
- * a convenient input into the canonical form.
- *
- * Every instant is an explicit caller-supplied UTC value — `z.iso.datetime()`
- * accepts only a `Z`-suffixed instant, and **nothing here reads a clock**. An
- * interval that has passed does **not** move the lifecycle on its own: expiry is
- * a governed transition someone performs, not a state the data drifts into while
- * nobody is looking.
+ * The one currency Phase 1.42 admits. `CurrencyCode` stays structural; this is
+ * the narrower write-time rule for Seller-authored promoted-resale terms.
  */
-export const OfferEffectiveInterval = z
+export const OFFER_SUPPORTED_CURRENCIES = ["USD"] as const;
+
+/**
+ * The terms a Seller may AUTHOR in Phase 1.42: an Offer is the Seller's
+ * commercial authority for **promoted resale only** (Contract §12, §16), so it is
+ * PAID, PROMOTABLE, and USD. Seller-direct commerce uses no Offer, and a FREE or
+ * NOT_PROMOTABLE Offer would be one no Promoter could ever act on.
+ *
+ * Kept separate from `OfferCommercialTerms`, which remains the general,
+ * structural contract every stored version and the capsule projection read: the
+ * narrowing is a write rule, not a change to what a version can mean.
+ *
+ * Retail price is a Listing fact, and the 7.5% + $1 acquisition economics are
+ * policy (0M.R); neither is a member here or anywhere on an Offer.
+ */
+export const PromotedResaleOfferTerms = OfferCommercialTerms.superRefine((terms, ctx) => {
+  if (terms.price.type !== "PAID") {
+    ctx.addIssue({ code: "custom", path: ["price", "type"], message: "an Offer must be PAID" });
+    return;
+  }
+  if (!(OFFER_SUPPORTED_CURRENCIES as readonly string[]).includes(terms.price.wholesalePriceCurrency)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["price", "wholesalePriceCurrency"],
+      message: "only USD is supported",
+    });
+  }
+  if (terms.promotion.type !== "PROMOTABLE") {
+    ctx.addIssue({ code: "custom", path: ["promotion", "type"], message: "an Offer must be PROMOTABLE" });
+  }
+});
+export type PromotedResaleOfferTerms = z.infer<typeof PromotedResaleOfferTerms>;
+
+// — Terms kinds and the promotion window (Phase 1.42) —
+
+/**
+ * What one immutable version is.
+ *
+ *   - `STANDING`            — the Offer's normal terms. Exactly one is current.
+ *   - `SCHEDULED_PROMOTION` — a complete snapshot of temporary terms: the
+ *     standing commission, unchanged, with a promotional wholesale price, in
+ *     force only inside its window. Still an ordinary exact version, so a later
+ *     acceptance or Listing may bind it exactly as it binds a standing one.
+ */
+export const OFFER_TERMS_KINDS = ["STANDING", "SCHEDULED_PROMOTION"] as const;
+export const OfferTermsKind = z.enum(OFFER_TERMS_KINDS);
+export type OfferTermsKind = z.infer<typeof OfferTermsKind>;
+
+/**
+ * A promotion's half-open UTC window, `[effectiveFrom, effectiveUntil)`.
+ *
+ * Both bounds required, `effectiveUntil` strictly later. Nothing here reads a
+ * clock: whether a window is upcoming, running, or over is decided against an
+ * explicit instant by `derivePromotionStatus`, and no act or job records a
+ * window opening or closing.
+ */
+export const OfferPromotionWindow = z
   .strictObject({
-    startsAt: z.iso.datetime().nullable(),
-    endsAt: z.iso.datetime().nullable(),
+    effectiveFrom: z.iso.datetime(),
+    effectiveUntil: z.iso.datetime(),
   })
-  .refine((i) => i.startsAt !== null || i.endsAt !== null, {
-    message:
-      "an interval with no bounds is not an interval; use null for 'no effective interval'",
-  })
-  .refine(
-    (i) => i.startsAt === null || i.endsAt === null || Date.parse(i.endsAt) > Date.parse(i.startsAt),
-    { path: ["endsAt"], message: "endsAt must be later than startsAt" },
-  );
-export type OfferEffectiveInterval = z.infer<typeof OfferEffectiveInterval>;
-
-/** The canonical authoritative field: an interval with at least one bound, or none. */
-export const OfferEffectiveIntervalField = OfferEffectiveInterval.nullable();
-export type OfferEffectiveIntervalField = z.infer<typeof OfferEffectiveIntervalField>;
+  .refine((w) => Date.parse(w.effectiveUntil) > Date.parse(w.effectiveFrom), {
+    path: ["effectiveUntil"],
+    message: "effectiveUntil must be later than effectiveFrom",
+  });
+export type OfferPromotionWindow = z.infer<typeof OfferPromotionWindow>;
 
 /**
- * Convenience input, folded to the canonical representation.
+ * A promotion's status at one instant — derived, never stored.
  *
- * Accepts `undefined`, `null`, a bounds-less object, or an object with either
- * bound omitted — and returns exactly one canonical value for each. Convenience
- * lives here, at the edge, so that **the authoritative schema stays strict**:
- * normalizing inside the record schema would let two spellings of the same fact
- * both be "valid input", which is how two representations creep back in.
+ *   - `SCHEDULED`   — `at < effectiveFrom`.
+ *   - `RUNNING`     — `effectiveFrom <= at < effectiveUntil`, not ended early.
+ *   - `ENDED`       — `at >= effectiveUntil`: standing terms apply again, with
+ *                     no act and no job.
+ *   - `ENDED_EARLY` — an END_PROMOTION act at or before `at` ended it.
+ *   - `CANCELLED`   — replaced by a later promotion before it began.
+ *
+ * "Pending" means SCHEDULED or RUNNING: at most one promotion may be pending.
  */
-export function normalizeOfferEffectiveIntervalInput(
-  input:
-    | { startsAt?: string | null; endsAt?: string | null }
-    | null
-    | undefined,
-): OfferEffectiveIntervalField {
-  if (input === null || input === undefined) return null;
-  const startsAt = input.startsAt ?? null;
-  const endsAt = input.endsAt ?? null;
-  if (startsAt === null && endsAt === null) return null;
-  return OfferEffectiveInterval.parse({ startsAt, endsAt });
+export const OFFER_PROMOTION_STATUSES = ["SCHEDULED", "RUNNING", "ENDED", "ENDED_EARLY", "CANCELLED"] as const;
+export const OfferPromotionStatus = z.enum(OFFER_PROMOTION_STATUSES);
+export type OfferPromotionStatus = z.infer<typeof OfferPromotionStatus>;
+
+export function isPendingPromotionStatus(status: OfferPromotionStatus): boolean {
+  return status === "SCHEDULED" || status === "RUNNING";
+}
+
+export function derivePromotionStatus(input: {
+  window: OfferPromotionWindow;
+  /** When an END_PROMOTION act ended this promotion, if one did. */
+  endedEarlyAt: string | null;
+  /** When a later promotion replaced this one, if one did. */
+  replacedAt: string | null;
+  at: string;
+}): OfferPromotionStatus {
+  const at = Date.parse(input.at);
+  if (input.replacedAt !== null && at >= Date.parse(input.replacedAt)) return "CANCELLED";
+  if (input.endedEarlyAt !== null && at >= Date.parse(input.endedEarlyAt)) return "ENDED_EARLY";
+  if (at < Date.parse(input.window.effectiveFrom)) return "SCHEDULED";
+  if (at < Date.parse(input.window.effectiveUntil)) return "RUNNING";
+  return "ENDED";
+}
+
+// — Effective terms (Phase 1.42) —
+
+/**
+ * Which exact version's terms are in force at one instant.
+ *
+ *   1. not lifecycle-effective (DRAFT, PAUSED, WITHDRAWN) → none;
+ *   2. ENDED → none;
+ *   3. a RUNNING promotion covers the instant → that promotion's version;
+ *   4. otherwise → the current STANDING version.
+ *
+ * Pure, and the only place this order is written. It is NOT an aggregate
+ * commerce gate: Product lifecycle, resale availability, Promotion
+ * Authorization, Listings, and Promoter readiness are other axes, and Phase 1.42
+ * wires this into neither checkout nor Listings.
+ */
+export type EffectiveOfferTerms =
+  | { kind: "NONE"; lifecycle: OfferLifecycleState }
+  | { kind: "STANDING"; sourceRecordVersion: string }
+  | { kind: "SCHEDULED_PROMOTION"; sourceRecordVersion: string };
+
+export interface OfferTermsResolutionInput {
+  recordedState: RecordedOfferLifecycleState | null;
+  offerEffectiveUntil: string | null;
+  standingVersion: string;
+  /** The current (most recently scheduled) promotion, if any. */
+  promotion: { sourceRecordVersion: string; window: OfferPromotionWindow; endedEarlyAt: string | null } | null;
+}
+
+export function effectiveOfferTerms(offer: OfferTermsResolutionInput, at: string): EffectiveOfferTerms {
+  const lifecycle = deriveOfferLifecycleState({
+    recordedState: offer.recordedState,
+    offerEffectiveUntil: offer.offerEffectiveUntil,
+    at,
+  });
+  if (lifecycle !== "ACTIVE") return { kind: "NONE", lifecycle };
+  if (
+    offer.promotion !== null &&
+    derivePromotionStatus({
+      window: offer.promotion.window,
+      endedEarlyAt: offer.promotion.endedEarlyAt,
+      replacedAt: null,
+      at,
+    }) === "RUNNING"
+  ) {
+    return { kind: "SCHEDULED_PROMOTION", sourceRecordVersion: offer.promotion.sourceRecordVersion };
+  }
+  return { kind: "STANDING", sourceRecordVersion: offer.standingVersion };
+}
+
+/** The Seller-facing state at one instant: lifecycle, promotion, and what is in force. */
+export interface SellerOfferState {
+  lifecycle: OfferLifecycleState;
+  promotionStatus: OfferPromotionStatus | null;
+  effective: EffectiveOfferTerms;
+}
+
+export function deriveSellerOfferState(offer: OfferTermsResolutionInput, at: string): SellerOfferState {
+  return {
+    lifecycle: deriveOfferLifecycleState({
+      recordedState: offer.recordedState,
+      offerEffectiveUntil: offer.offerEffectiveUntil,
+      at,
+    }),
+    promotionStatus:
+      offer.promotion === null
+        ? null
+        : derivePromotionStatus({
+            window: offer.promotion.window,
+            endedEarlyAt: offer.promotion.endedEarlyAt,
+            replacedAt: null,
+            at,
+          }),
+    effective: effectiveOfferTerms(offer, at),
+  };
 }
 
 // — The authoritative current Offer record —
@@ -546,8 +720,15 @@ export const OfferSourceRecordBase = z.strictObject({
   // Identity
   offerSourceRecordId: OfferSourceRecordId,
   internalOfferId: InternalOfferId,
-  /** The latest immutable source version; the pointer into version history. */
+  /** The stable application-facing reference (Phase 1.42). */
+  offerRef: OfferRef,
+  /**
+   * The current STANDING version — exactly one is current (Phase 1.42). A
+   * scheduled promotion never moves this pointer.
+   */
   currentSourceRecordVersion: OfferSourceRecordVersion,
+  /** The most recently scheduled promotion version, or `null` (Phase 1.42). */
+  currentPromotionVersion: OfferSourceRecordVersion.nullable(),
 
   // Authoritative references
   internalProductId: InternalProductId,
@@ -562,11 +743,9 @@ export const OfferSourceRecordBase = z.strictObject({
   sourceRecordType: z.literal("Offer"),
   sourceClass: z.literal("governed-database-record"),
 
-  // Business state
-  lifecycle: OfferLifecycleState,
-  availability: OfferAvailability,
+  // Business state — the current STANDING terms. Lifecycle is not a member:
+  // it is Seller authority, recorded as acts and derived (Phase 1.42).
   terms: OfferCommercialTerms,
-  effectiveInterval: OfferEffectiveIntervalField,
 
   // Record control — explicit instants, never read from a clock here
   /**
@@ -629,10 +808,13 @@ export const OfferSourceVersionBase = z.strictObject({
   // The complete material snapshot
   internalProductId: InternalProductId,
   sellerParticipantId: MarketplaceParticipantId,
-  lifecycle: OfferLifecycleState,
-  availability: OfferAvailability,
+  /** STANDING, or SCHEDULED_PROMOTION (Phase 1.42). Never a lifecycle. */
+  termsKind: OfferTermsKind,
   terms: OfferCommercialTerms,
-  effectiveInterval: OfferEffectiveIntervalField,
+  /** SCHEDULED_PROMOTION only: its window. `null` on a STANDING version. */
+  promotionWindow: OfferPromotionWindow.nullable(),
+  /** SCHEDULED_PROMOTION only: the STANDING version it was built from. */
+  basisStandingVersion: OfferSourceRecordVersion.nullable(),
 
   // Authorization trace — who authorized this change, and when it was recorded
   /** The exact economics accepted for this version. */
@@ -643,7 +825,35 @@ export const OfferSourceVersionBase = z.strictObject({
   recordedAt: z.iso.datetime(),
 });
 
-export const OfferSourceVersion = OfferSourceVersionBase.superRefine(economicsRefine);
+/** A STANDING version carries no window and no basis; a promotion carries both. */
+function termsKindRefine(
+  value: {
+    termsKind: OfferTermsKind;
+    promotionWindow: OfferPromotionWindow | null;
+    basisStandingVersion: string | null;
+  },
+  ctx: z.RefinementCtx,
+): void {
+  const promotion = value.termsKind === "SCHEDULED_PROMOTION";
+  if (promotion !== (value.promotionWindow !== null)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["promotionWindow"],
+      message: "a window is required on, and only on, a SCHEDULED_PROMOTION version",
+    });
+  }
+  if (promotion !== (value.basisStandingVersion !== null)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["basisStandingVersion"],
+      message: "a basis is required on, and only on, a SCHEDULED_PROMOTION version",
+    });
+  }
+}
+
+export const OfferSourceVersion = OfferSourceVersionBase.superRefine(economicsRefine).superRefine(
+  termsKindRefine,
+);
 export type OfferSourceVersion = z.infer<typeof OfferSourceVersion>;
 
 // — Creator disclosure and exact-version confirmation —
@@ -768,6 +978,12 @@ export function checkCreatorEconomicsConfirmation(input: {
  * the fixed amount itself.
  */
 export const OFFER_BUSINESS_CHANGE_CATEGORIES = [
+  /**
+   * Retained in the vocabulary, and NEVER EMITTED since Phase 1.42:
+   * availability is no longer a version fact, so no pair of versions can differ
+   * in it. Pausing or resuming an Offer is a lifecycle act that mints no version
+   * and therefore asks no Promoter to re-accept unchanged economics.
+   */
   "COMMERCIAL_AVAILABILITY_CHANGED",
   "WHOLESALE_PRICE_CHANGED",
   "COMMISSION_TERMS_CHANGED",
@@ -778,12 +994,7 @@ export type OfferBusinessChangeCategory = z.infer<typeof OfferBusinessChangeCate
 
 type OfferBusinessState = Pick<
   OfferSourceVersion,
-  | "internalProductId"
-  | "sellerParticipantId"
-  | "lifecycle"
-  | "availability"
-  | "terms"
-  | "effectiveInterval"
+  "internalProductId" | "sellerParticipantId" | "termsKind" | "terms" | "promotionWindow"
 >;
 
 function commissionTermsOf(terms: OfferCommercialTerms): unknown {
@@ -838,7 +1049,6 @@ export function classifyOfferBusinessChanges(
   const categories: OfferBusinessChangeCategory[] = [];
   const differs = (a: unknown, b: unknown) => canonicalJsonString(a) !== canonicalJsonString(b);
 
-  if (prior.availability !== next.availability) categories.push("COMMERCIAL_AVAILABILITY_CHANGED");
   if (differs(wholesaleOf(prior.terms), wholesaleOf(next.terms))) {
     categories.push("WHOLESALE_PRICE_CHANGED");
   }
@@ -848,8 +1058,8 @@ export function classifyOfferBusinessChanges(
   if (
     prior.internalProductId !== next.internalProductId ||
     prior.sellerParticipantId !== next.sellerParticipantId ||
-    prior.lifecycle !== next.lifecycle ||
-    differs(prior.effectiveInterval, next.effectiveInterval)
+    prior.termsKind !== next.termsKind ||
+    differs(prior.promotionWindow, next.promotionWindow)
   ) {
     categories.push("OTHER_MATERIAL_OFFER_CHANGE");
   }
@@ -869,12 +1079,9 @@ export function classifyOfferBusinessChanges(
 export const MATERIAL_OFFER_FIELDS = [
   "internalProductId",
   "sellerParticipantId",
-  "lifecycle",
-  "availability",
   "price",
   "promotion",
   "commission",
-  "effectiveInterval",
 ] as const;
 export const MaterialOfferField = z.enum(MATERIAL_OFFER_FIELDS);
 export type MaterialOfferField = z.infer<typeof MaterialOfferField>;
@@ -942,15 +1149,7 @@ export function classifyOfferChange(changedFields: readonly string[]): OfferChan
  * price are different business events, even though both live under `terms`.
  */
 export function materialChangesBetween(
-  prior: Pick<
-    OfferSourceRecord,
-    | "internalProductId"
-    | "sellerParticipantId"
-    | "lifecycle"
-    | "availability"
-    | "terms"
-    | "effectiveInterval"
-  >,
+  prior: Pick<OfferSourceRecord, "internalProductId" | "sellerParticipantId" | "terms">,
   next: typeof prior,
 ): MaterialOfferField[] {
   const changed: MaterialOfferField[] = [];
@@ -958,8 +1157,6 @@ export function materialChangesBetween(
 
   if (prior.internalProductId !== next.internalProductId) changed.push("internalProductId");
   if (prior.sellerParticipantId !== next.sellerParticipantId) changed.push("sellerParticipantId");
-  if (prior.lifecycle !== next.lifecycle) changed.push("lifecycle");
-  if (prior.availability !== next.availability) changed.push("availability");
   if (differs(prior.terms.price, next.terms.price)) changed.push("price");
 
   const priorPromotion = prior.terms.promotion;
@@ -972,8 +1169,6 @@ export function materialChangesBetween(
   ) {
     changed.push("commission");
   }
-
-  if (differs(prior.effectiveInterval, next.effectiveInterval)) changed.push("effectiveInterval");
   return changed;
 }
 
@@ -992,11 +1187,10 @@ export const PROJECTION_ELIGIBLE_OFFER_FIELDS = [
   "internalProductId",
   "sellerParticipantId",
   "lifecycle",
-  "availability",
   "price",
   "promotion",
   "commission",
-  "effectiveInterval",
+  "promotionWindow",
 ] as const;
 
 /**
@@ -1048,7 +1242,13 @@ export function isNeverProjectionEligible(field: string): boolean {
  */
 export const DEFERRED_OFFER_EXTENSIONS = [
   "discounts",
-  "promotionalPriceSchedules",
+  /* `promotionalPriceSchedules` left this list in Phase 1.42: ONE scheduled
+     wholesale promotion per Offer is now modelled. Several at once, commission
+     promotions, and Promoter-specific terms remain deferred. */
+  "multiplePromotionSchedules",
+  "commissionPromotions",
+  "promoterSpecificOffers",
+  "additionalCurrencies",
   "inventoryQuantity",
   "inventoryReservations",
   "variants",
@@ -1073,10 +1273,11 @@ export const OFFER_CAPABILITIES = [
   "offer:draft:create",
   "offer:activate",
   "offer:terms:change",
-  "offer:suspend",
+  "offer:pause",
   "offer:resume",
-  "offer:end",
   "offer:withdraw",
+  "offer:promotion:schedule",
+  "offer:promotion:end",
 ] as const;
 export const OfferCapability = z.enum(OFFER_CAPABILITIES);
 export type OfferCapability = z.infer<typeof OfferCapability>;
@@ -1109,6 +1310,21 @@ export const OfferSpecificReasonCode = z.enum(OFFER_SPECIFIC_REASON_CODES);
 export const OfferReasonCode = z.union([CapabilityReasonCode, OfferSpecificReasonCode]);
 export type OfferReasonCode = z.infer<typeof OfferReasonCode>;
 
+/** The reasons that mean "the confirmation is absent or stale", not "you may not". */
+export const OFFER_CONFIRMATION_REASON_CODES = [
+  "CREATOR_ECONOMICS_NOT_CONFIRMED",
+  "CREATOR_CONFIRMATION_SOURCE_RECORD_MISMATCH",
+  "CREATOR_CONFIRMATION_VERSION_MISMATCH",
+  "CREATOR_CONFIRMATION_STALE",
+  "CREATOR_CONFIRMATION_POLICY_MISMATCH",
+] as const satisfies readonly OfferReasonCode[];
+
+/** The reasons that mean "the lifecycle does not permit this act". */
+export const OFFER_LIFECYCLE_REASON_CODES = [
+  "OFFER_LIFECYCLE_TRANSITION_NOT_PERMITTED",
+  "OFFER_LIFECYCLE_TERMINAL",
+] as const satisfies readonly OfferReasonCode[];
+
 export const OfferAuthorityDecision = z
   .strictObject({
     capability: OfferCapability,
@@ -1134,16 +1350,25 @@ export function isOfferActionAllowed(decision: OfferAuthorityDecision): boolean 
 }
 
 /**
+ * May the Seller be offered this act? Allowed, or refused ONLY because the
+ * exact-version confirmation is not yet in hand — which the two-step exchange
+ * supplies. Any other reason is a refusal the act would meet deterministically.
+ */
+export function isOfferActionAvailable(decision: OfferAuthorityDecision): boolean {
+  return (
+    decision.decision === "ALLOW" ||
+    decision.reasonCodes.every((r) => (OFFER_CONFIRMATION_REASON_CODES as readonly string[]).includes(r))
+  );
+}
+
+/**
  * What an Offer authority decision may consider.
  *
  * `hasProductAuthority` stays a supplied *input to this pure decision* — the
  * Product model owns the question, and re-deriving it here would put two
- * answers in the repository that could disagree. What changed in Phase 1.18 is
- * its **provenance**, one layer out: the Offer service reads it from the
- * Product's current source version (`participantHoldsProductAuthority`) rather
- * than accepting it on `CreateDraftOfferInput` / `UpdateOfferInput`, where any
- * caller could write `true`. The rules below are unchanged; only the caller's
- * ability to forge their premise is gone.
+ * answers in the repository that could disagree. Its **provenance** is the
+ * Offer service, which reads it from the Product's current source version
+ * (`participantHoldsProductAuthority`, Phase 1.18); no caller input carries it.
  */
 export const OfferAuthorityRequest = z.strictObject({
   subject: MarketplaceSubject,
@@ -1154,13 +1379,14 @@ export const OfferAuthorityRequest = z.strictObject({
 });
 export type OfferAuthorityRequest = z.infer<typeof OfferAuthorityRequest>;
 
-/** A request about an Offer that already exists, and therefore has a state. */
+/** A request about an Offer that already exists, and therefore has a DERIVED state. */
 export const OfferLifecycleActionRequest = OfferAuthorityRequest.extend({
   lifecycle: OfferLifecycleState,
   /**
-   * The version and terms being acted on, plus the creator's confirmation of the
-   * economics they were shown. Supplied for activation; absent elsewhere because
-   * standing an Offer down asserts nothing about its economics.
+   * The version and terms being confirmed, plus the Seller's confirmation of
+   * the economics they were shown. Supplied for activation, a live terms
+   * revision, and scheduling a promotion; absent elsewhere, because standing an
+   * Offer down asserts nothing about its economics.
    */
   economicsContext: z
     .strictObject({
@@ -1233,33 +1459,6 @@ export function canCreateDraftOffer(request: OfferAuthorityRequest): OfferAuthor
   return allow(capability);
 }
 
-/**
- * A lifecycle-changing action: full commerce gates when the result is a live
- * Offer, matching Seller authority always, and a permitted transition.
- */
-function evaluateLifecycleAction(
-  capability: OfferCapability,
-  request: OfferLifecycleActionRequest,
-  target: OfferLifecycleState,
-  options: { requiresCommerce: boolean; requiresProductAuthority: boolean },
-): OfferAuthorityDecision {
-  const problem = options.requiresCommerce
-    ? commerceProblem(request.subject)
-    : draftingProblem(request.subject);
-  if (problem) return deny(capability, problem);
-  if (!sellerMatches(request)) return deny(capability, "SELLER_PARTICIPANT_MISMATCH");
-  if (options.requiresProductAuthority && !request.hasProductAuthority) {
-    return deny(capability, "PRODUCT_AUTHORITY_REQUIRED");
-  }
-  if (isTerminalOfferLifecycleState(request.lifecycle)) {
-    return deny(capability, "OFFER_LIFECYCLE_TERMINAL");
-  }
-  if (!isValidOfferLifecycleTransition(request.lifecycle, target)) {
-    return deny(capability, "OFFER_LIFECYCLE_TRANSITION_NOT_PERMITTED");
-  }
-  return allow(capability);
-}
-
 const CONFIRMATION_REASON_BY_MISMATCH: Record<ConfirmationMismatchReason, OfferReasonCode> = {
   CONFIRMATION_MISSING: "CREATOR_ECONOMICS_NOT_CONFIRMED",
   CONFIRMATION_SOURCE_RECORD_MISMATCH: "CREATOR_CONFIRMATION_SOURCE_RECORD_MISMATCH",
@@ -1269,12 +1468,11 @@ const CONFIRMATION_REASON_BY_MISMATCH: Record<ConfirmationMismatchReason, OfferR
 };
 
 /**
- * Going live requires the creator to have confirmed **this exact version's**
- * economics.
+ * The Seller must have confirmed **this exact version's** economics.
  *
- * A material change to the wholesale price or commission terms mints a new
- * version, so a confirmation bound to the previous one stops matching by
- * construction — the creator has to look again before the new terms can sell.
+ * A material change mints a new version, so a confirmation bound to the
+ * previous one stops matching by construction — the Seller has to look again
+ * before the new terms can sell.
  */
 function creatorConfirmationProblem(
   request: OfferLifecycleActionRequest,
@@ -1291,69 +1489,80 @@ function creatorConfirmationProblem(
 }
 
 /**
- * Taking an Offer live. Full commerce gates, Product authority, **and the
- * creator's exact-version economics confirmation.**
+ * A lifecycle act: the gate it names, matching Seller authority always, Product
+ * authority where the act makes the Offer live, and the governed transition.
+ */
+function evaluateLifecycleAct(
+  capability: OfferCapability,
+  act: OfferLifecycleAct,
+  request: OfferLifecycleActionRequest,
+  options: { requiresProductAuthority: boolean },
+): OfferAuthorityDecision {
+  const problem = draftingProblem(request.subject);
+  if (problem) return deny(capability, problem);
+  if (!sellerMatches(request)) return deny(capability, "SELLER_PARTICIPANT_MISMATCH");
+  if (options.requiresProductAuthority && !request.hasProductAuthority) {
+    return deny(capability, "PRODUCT_AUTHORITY_REQUIRED");
+  }
+  const transition = decideOfferLifecycleAct(request.lifecycle, act);
+  if (transition.outcome === "REFUSED") return deny(capability, transition.reason);
+  return allow(capability);
+}
+
+/**
+ * Taking a DRAFT Offer live: Seller and Product authority, the governed
+ * transition, and the Seller's exact-version confirmation of the STANDING
+ * version being activated.
+ *
+ * Commerce READINESS — Product ACTIVE, verified email, declared names,
+ * participant and SELLER role ACTIVE, no suspension, commerce approval, payment
+ * ENABLED, no `offer:publish` restriction — is decided separately by
+ * `evaluateOfferActivationReadiness`, which reports every blocker rather than the
+ * first. Neither resale availability, Promotion Authorization, a Storefront, a
+ * Listing, nor any Promoter fact is a condition.
  */
 export function canActivateOffer(request: OfferLifecycleActionRequest): OfferAuthorityDecision {
-  const gated = evaluateLifecycleAction("offer:activate", request, "ACTIVE", {
-    requiresCommerce: true,
+  const gated = evaluateLifecycleAct("offer:activate", "ACTIVATE", request, {
     requiresProductAuthority: true,
   });
   if (!isOfferActionAllowed(gated)) return gated;
   const confirmation = creatorConfirmationProblem(request);
-  return confirmation === undefined
-    ? gated
-    : { capability: "offer:activate", decision: "DENY", reasonCodes: [confirmation] };
+  return confirmation === undefined ? gated : deny("offer:activate", confirmation);
 }
 
-/** Resuming a suspended Offer — live again, so the same gates as activation. */
+/** Resuming a PAUSED Offer — live again, so the same authority and readiness as activation. */
 export function canResumeOffer(request: OfferLifecycleActionRequest): OfferAuthorityDecision {
-  return evaluateLifecycleAction("offer:resume", request, "ACTIVE", {
-    requiresCommerce: true,
-    requiresProductAuthority: true,
-  });
+  return evaluateLifecycleAct("offer:resume", "RESUME", request, { requiresProductAuthority: true });
 }
 
 /**
- * Suspending, ending, and withdrawing **stand down** a commercial commitment.
+ * Pausing and withdrawing **stand down** a commercial commitment.
  *
- * They deliberately do not require payment readiness: a seller whose payment
- * capability was just restricted must still be able to take their Offer down.
- * Requiring an intact commerce gate to *stop* selling would trap the exact seller
- * who most needs to stop.
+ * They deliberately do not require payment readiness or Product authority: a
+ * seller whose payment capability was just restricted must still be able to take
+ * their Offer down. Requiring an intact commerce gate to *stop* selling would
+ * trap the exact seller who most needs to stop.
  */
-export function canSuspendOffer(request: OfferLifecycleActionRequest): OfferAuthorityDecision {
-  return evaluateLifecycleAction("offer:suspend", request, "SUSPENDED", {
-    requiresCommerce: false,
-    requiresProductAuthority: false,
-  });
-}
-
-export function canEndOffer(request: OfferLifecycleActionRequest): OfferAuthorityDecision {
-  return evaluateLifecycleAction("offer:end", request, "ENDED", {
-    requiresCommerce: false,
-    requiresProductAuthority: false,
-  });
+export function canPauseOffer(request: OfferLifecycleActionRequest): OfferAuthorityDecision {
+  return evaluateLifecycleAct("offer:pause", "PAUSE", request, { requiresProductAuthority: false });
 }
 
 export function canWithdrawOffer(request: OfferLifecycleActionRequest): OfferAuthorityDecision {
-  return evaluateLifecycleAction("offer:withdraw", request, "WITHDRAWN", {
-    requiresCommerce: false,
-    requiresProductAuthority: false,
-  });
+  return evaluateLifecycleAct("offer:withdraw", "WITHDRAW", request, { requiresProductAuthority: false });
 }
 
 /**
- * Changing commercial terms.
+ * Revising the STANDING terms.
  *
- * On a **live** Offer this is a commercial act and faces the full commerce gates:
- * changing the price of something currently on sale is selling. On a `DRAFT` it
- * faces only the drafting gates — that is what drafting is for. Terminal Offers
- * refuse outright: their terms are history.
+ * On a `DRAFT` it faces only the drafting gates — that is what drafting is for.
+ * On an `ACTIVE` or `PAUSED` Offer it is a commercial act: the full commerce
+ * gates, and the Seller's confirmation of the exact version being minted.
+ * (Whether a promotion is pending is the service's question; it refuses then.)
+ * Terminal Offers refuse outright: their terms are history.
  */
 export function canChangeOfferTerms(request: OfferLifecycleActionRequest): OfferAuthorityDecision {
   const capability = "offer:terms:change" as const;
-  const live = request.lifecycle === "ACTIVE" || request.lifecycle === "SUSPENDED";
+  const live = request.lifecycle === "ACTIVE" || request.lifecycle === "PAUSED";
   const problem = live ? commerceProblem(request.subject) : draftingProblem(request.subject);
   if (problem) return deny(capability, problem);
   if (!sellerMatches(request)) return deny(capability, "SELLER_PARTICIPANT_MISMATCH");
@@ -1361,5 +1570,113 @@ export function canChangeOfferTerms(request: OfferLifecycleActionRequest): Offer
   if (isTerminalOfferLifecycleState(request.lifecycle)) {
     return deny(capability, "OFFER_LIFECYCLE_TERMINAL");
   }
+  if (live) {
+    const confirmation = creatorConfirmationProblem(request);
+    if (confirmation !== undefined) return deny(capability, confirmation);
+  }
   return allow(capability);
+}
+
+/**
+ * Scheduling (or replacing) a promotion: an activated, non-terminal Offer —
+ * `ACTIVE` or `PAUSED` — the full commerce gates, Product authority, and the
+ * Seller's confirmation of the exact promotion version being minted.
+ */
+export function canSchedulePromotion(request: OfferLifecycleActionRequest): OfferAuthorityDecision {
+  const capability = "offer:promotion:schedule" as const;
+  const problem = commerceProblem(request.subject);
+  if (problem) return deny(capability, problem);
+  if (!sellerMatches(request)) return deny(capability, "SELLER_PARTICIPANT_MISMATCH");
+  if (!request.hasProductAuthority) return deny(capability, "PRODUCT_AUTHORITY_REQUIRED");
+  if (isTerminalOfferLifecycleState(request.lifecycle)) {
+    return deny(capability, "OFFER_LIFECYCLE_TERMINAL");
+  }
+  if (request.lifecycle === "DRAFT") return deny(capability, "OFFER_LIFECYCLE_TRANSITION_NOT_PERMITTED");
+  const confirmation = creatorConfirmationProblem(request);
+  return confirmation === undefined ? allow(capability) : deny(capability, confirmation);
+}
+
+/**
+ * Ending a running promotion early returns the Offer to standing terms the Seller
+ * already confirmed — a stand-down, gated like pausing.
+ */
+export function canEndPromotion(request: OfferLifecycleActionRequest): OfferAuthorityDecision {
+  const capability = "offer:promotion:end" as const;
+  const problem = draftingProblem(request.subject);
+  if (problem) return deny(capability, problem);
+  if (!sellerMatches(request)) return deny(capability, "SELLER_PARTICIPANT_MISMATCH");
+  if (isTerminalOfferLifecycleState(request.lifecycle)) {
+    return deny(capability, "OFFER_LIFECYCLE_TERMINAL");
+  }
+  if (request.lifecycle === "DRAFT") return deny(capability, "OFFER_LIFECYCLE_TRANSITION_NOT_PERMITTED");
+  return allow(capability);
+}
+
+// — Activation and resumption readiness (Phase 1.42) —
+
+/**
+ * Why an Offer may not become live yet — reported together, in this order, so a
+ * Seller fixing one sees the rest. The Seller-standing codes are the Product
+ * activation codes (one vocabulary), plus the two Offer-specific ones.
+ */
+export const OFFER_ACTIVATION_BLOCKERS = [
+  "PRODUCT_NOT_ACTIVE",
+  "EMAIL_UNVERIFIED",
+  "FIRST_NAME_MISSING",
+  "LAST_NAME_MISSING",
+  "PARTICIPANT_MISSING",
+  "PARTICIPANT_SUSPENDED",
+  "PARTICIPANT_NOT_ACTIVE",
+  "SELLER_ROLE_NOT_ACTIVE",
+  "PAYMENT_NOT_READY",
+  "COMMERCE_APPROVAL_MISSING",
+  "OFFER_PUBLISH_RESTRICTED",
+] as const;
+export const OfferActivationBlocker = z.enum(OFFER_ACTIVATION_BLOCKERS);
+export type OfferActivationBlocker = z.infer<typeof OfferActivationBlocker>;
+
+/** The current facts activation and resumption readiness is decided on. */
+export interface OfferActivationReadinessFacts {
+  /** The Product's DERIVED lifecycle is ACTIVE. */
+  productActive: boolean;
+  account: { emailVerifiedAt: string | null; firstName: string | null; lastName: string | null };
+  participant: {
+    status: string;
+    suspended: boolean;
+    /** An ACTIVE `offer:publish` restriction exists. */
+    offerPublishRestricted: boolean;
+    sellerRoleStatus: string | null;
+    paymentReadiness: string;
+    commerceApproval: string;
+  } | null;
+}
+
+const nonBlank = (value: string | null): boolean => value !== null && value.trim() !== "";
+
+/**
+ * Every readiness blocker that applies. Pure.
+ *
+ * Deliberately NOT conditions: resale availability, Promotion Authorization, a
+ * Storefront, a Listing, and Promoter readiness. Those are other axes.
+ */
+export function evaluateOfferActivationReadiness(
+  facts: OfferActivationReadinessFacts,
+): { ready: boolean; blockers: OfferActivationBlocker[] } {
+  const blockers: OfferActivationBlocker[] = [];
+  if (!facts.productActive) blockers.push("PRODUCT_NOT_ACTIVE");
+  if (facts.account.emailVerifiedAt === null) blockers.push("EMAIL_UNVERIFIED");
+  if (!nonBlank(facts.account.firstName)) blockers.push("FIRST_NAME_MISSING");
+  if (!nonBlank(facts.account.lastName)) blockers.push("LAST_NAME_MISSING");
+  const participant = facts.participant;
+  if (participant === null) {
+    blockers.push("PARTICIPANT_MISSING");
+  } else {
+    if (participant.suspended) blockers.push("PARTICIPANT_SUSPENDED");
+    if (participant.status !== "ACTIVE") blockers.push("PARTICIPANT_NOT_ACTIVE");
+    if (participant.sellerRoleStatus !== "ACTIVE") blockers.push("SELLER_ROLE_NOT_ACTIVE");
+    if (participant.paymentReadiness !== "ENABLED") blockers.push("PAYMENT_NOT_READY");
+    if (participant.commerceApproval !== "APPROVED") blockers.push("COMMERCE_APPROVAL_MISSING");
+    if (participant.offerPublishRestricted) blockers.push("OFFER_PUBLISH_RESTRICTED");
+  }
+  return { ready: blockers.length === 0, blockers };
 }

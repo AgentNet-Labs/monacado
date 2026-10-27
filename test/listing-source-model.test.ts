@@ -1171,7 +1171,7 @@ describe("30-33. the promoted Listing binds one exact Offer version", () => {
     const eligibility = evaluateListingBuyerEligibility(
       eligibilityInput({
         listingType: "PROMOTED",
-        offer: { lifecycle: "ACTIVE", availability: "AVAILABLE" },
+        offer: { sourceRecordVersion: "4" },
         upstreamReviewState: "REVIEW_REQUIRED",
       }),
     );
@@ -1200,9 +1200,9 @@ describe("30-33. the promoted Listing binds one exact Offer version", () => {
     const eligibility = evaluateListingBuyerEligibility(
       eligibilityInput({
         listingType: "PROMOTED",
-        offer: { lifecycle: "ACTIVE", availability: "AVAILABLE" },
+        offer: { sourceRecordVersion: "4" },
         /* Phase 1.15, Ruling 1 — the Seller must also CURRENTLY offer it. */
-        currentOffer: { lifecycle: "ACTIVE", availability: "AVAILABLE" },
+        currentOffer: { state: "ACTIVE" },
         upstreamReviewState: "ACCEPTED_CURRENT_VERSION",
       }),
     );
@@ -1256,21 +1256,29 @@ describe("34-37. upstream states block a Listing", () => {
     expect(byRole.blockingReasons).toContain("CONTROLLING_ROLE_NOT_ACTIVE");
   });
 
-  it("37. blocks a promoted Listing on an unselectable Offer", () => {
-    for (const offer of [
-      { lifecycle: "SUSPENDED" as const, availability: "AVAILABLE" as const },
-      { lifecycle: "ACTIVE" as const, availability: "TEMPORARILY_UNAVAILABLE" as const },
-      { lifecycle: "WITHDRAWN" as const, availability: "AVAILABLE" as const },
-    ]) {
+  it("37. blocks a promoted Listing on an unresolvable accepted version or a Seller not currently offering it", () => {
+    const unresolved = evaluateListingBuyerEligibility(
+      eligibilityInput({
+        listingType: "PROMOTED",
+        currentOffer: { state: "ACTIVE" },
+        upstreamReviewState: "ACCEPTED_CURRENT_VERSION",
+      }),
+    );
+    expect(unresolved.buyerActive).toBe(false);
+    expect(unresolved.blockingReasons).toEqual(["OFFER_NOT_COMMERCIALLY_SELECTABLE"]);
+
+    /* Phase 1.42 — PAUSED is the Seller's stand-down; SUSPENDED is not a state. */
+    for (const state of ["DRAFT", "PAUSED", "WITHDRAWN", "ENDED"] as const) {
       const result = evaluateListingBuyerEligibility(
         eligibilityInput({
           listingType: "PROMOTED",
-          offer,
+          offer: { sourceRecordVersion: "4" },
+          currentOffer: { state },
           upstreamReviewState: "ACCEPTED_CURRENT_VERSION",
         }),
       );
       expect(result.buyerActive).toBe(false);
-      expect(result.blockingReasons).toContain("OFFER_NOT_COMMERCIALLY_SELECTABLE");
+      expect(result.blockingReasons).toEqual(["OFFER_NOT_CURRENTLY_OFFERED"]);
     }
   });
 
@@ -1314,8 +1322,8 @@ describe("34-37. upstream states block a Listing", () => {
     const sellerStoppedOffering = evaluateListingBuyerEligibility(
       eligibilityInput({
         listingType: "PROMOTED",
-        offer: { lifecycle: "ACTIVE", availability: "AVAILABLE" },
-        currentOffer: { lifecycle: "ENDED", availability: "AVAILABLE" },
+        offer: { sourceRecordVersion: "4" },
+        currentOffer: { state: "ENDED" },
         upstreamReviewState: "ACCEPTED_CURRENT_VERSION",
       }),
     );
@@ -1332,7 +1340,7 @@ describe("34-37. upstream states block a Listing", () => {
     const unresolvable = evaluateListingBuyerEligibility(
       eligibilityInput({
         listingType: "PROMOTED",
-        offer: { lifecycle: "ACTIVE", availability: "AVAILABLE" },
+        offer: { sourceRecordVersion: "4" },
         upstreamReviewState: "ACCEPTED_CURRENT_VERSION",
       }),
     );

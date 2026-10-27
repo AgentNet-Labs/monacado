@@ -1,5 +1,5 @@
 /**
- * Persisted Offer records (Phase 0M.6).
+ * Persisted Offer records (Phase 0M.6; Seller acts, Phase 1.42).
  *
  * The record shapes behind the 0M.2A source model. `offer-source.ts` says what
  * an Offer *is* and who may change it; this module says what a caller supplies
@@ -36,119 +36,217 @@
  */
 
 import { z } from "zod";
-import { MarketplaceParticipantId } from "./participant";
+import { ProductRef } from "./listing-record";
+import { parseRetailAmount } from "./retail-amount";
 import {
-  CreatorEconomicsConfirmation,
-  InternalOfferId,
-  InternalProductId,
-  OfferAvailability,
-  OfferCommercialTerms,
-  OfferEffectiveIntervalField,
-  OfferLifecycleState,
+  CommissionCalculationPolicyVersion,
+  MAX_MINOR_UNIT_AMOUNT,
+  OfferRef,
   OfferSourceRecordVersion,
+  PromotedResaleOfferTerms,
+  type OfferCommercialTerms,
 } from "./offer-source";
 
 /**
- * The account whose marketplace subject is evaluated for authority.
- *
- * An account id rather than a pre-built subject: the service materializes the
- * subject from persisted state using the existing 0M.5 machinery, so an
- * authorization decision is made against the database rather than against
- * whatever a caller asserted about themselves.
- *
- * **This names who is asking, never what they may do (Phase 1.18).** There is
- * deliberately no member on either input below through which a caller can
- * assert an authorization conclusion — `hasProductAuthority` used to be exactly
- * that, and the Offer service now reads it from the Product's current source
- * version instead. The account id is itself an identity claim, and it is only
- * as trustworthy as the boundary that produced it: a production caller must
- * take it from an authenticated session, never from a request body. See
- * `src/server/account/acting-participant-boundary.ts`.
+ * Everything below is what a Seller states through an authenticated route
+ * (Phase 1.42). **No member names who is acting**: the acting account comes from
+ * the session, the Seller participant is derived from it, and Product authority
+ * is read from the Product's current source version (Phase 1.18). No member
+ * names a lifecycle, an economics figure the server must trust, a version label
+ * to mint, a participant, or an internal id.
  */
-const ActingAccountId = z.string().min(1).max(191);
 
-// — Create —
+// — Terms, as a Seller states them —
 
 /**
- * Create one draft Offer and its first immutable source version.
- *
- * The first version is always `DRAFT` and `AVAILABLE`, and neither is a caller
- * choice: 0M.2A's lifecycle starts at `DRAFT`, and availability is a modifier on
- * a live Offer rather than a way to pre-stand-down one that was never live.
- * Taking an Offer live is a separate, separately authorized act.
- *
- * `effectiveInterval` is optional here and canonicalized by the service through
- * `normalizeOfferEffectiveIntervalInput`, so the several convenient spellings of
- * "no interval" all fold to the single canonical `null`.
+ * Money arrives as the decimal a person typed ("19.99") and is converted HERE,
+ * on the server, by the one exact converter (`parseRetailAmount`: string
+ * surgery and BigInt, never a float, refused rather than rounded). A browser's
+ * rounding never becomes an authoritative price — the Phase 1.36 convention.
  */
-export const CreateDraftOfferInput = z.strictObject({
-  internalProductId: InternalProductId,
-  /** The participant that will hold Seller authority over this Offer. */
-  sellerParticipantId: MarketplaceParticipantId,
+const DecimalAmount = z.string().trim().min(1).max(40);
 
-  /** Wholesale price and promotion together — validated as a unit by 0M.2A. */
-  terms: OfferCommercialTerms,
-
-  /** Either bound, both, or absent. Absent and bounds-less both mean "none". */
-  effectiveInterval: z
-    .strictObject({
-      startsAt: z.iso.datetime().nullable().optional(),
-      endsAt: z.iso.datetime().nullable().optional(),
-    })
-    .nullable()
-    .optional(),
-
-  /** The account acting. The audit actor is derived from it, never supplied. */
-  actingAccountId: ActingAccountId,
-
-  /** Explicit instants. Nothing here reads a clock. */
-  now: z.iso.datetime(),
-});
-export type CreateDraftOfferInput = z.infer<typeof CreateDraftOfferInput>;
-
-// — Update —
+/** A commission percentage as typed: "10", "12.5", "7.25". At most two decimals. */
+const PERCENT_RE = /^(?:0|[1-9][0-9]{0,2})(?:\.[0-9]{1,2})?$/;
 
 /**
- * A material update, minting a new immutable source version.
- *
- * Every business member is optional: a caller states only what changes, and the
- * service compares the result against the current version using 0M.2A's own
- * `materialChangesBetween`. An update that changes nothing material mints no
- * version — a version asserting nothing would be history noise.
- *
- * `sourceRecordVersion` is supplied rather than generated, matching the Product
- * and Storefront convention: the version label is a caller-controlled identity,
- * and a service that invented one would make two concurrent writers agree by
- * accident.
- *
- * `economicsConfirmation` carries the creator's confirmation of the exact
- * version's economics, required by 0M.2A when an Offer goes live. It binds to
- * both halves of the identity, so a confirmation cannot survive a repricing.
+ * The commission a Seller states: a percentage of the wholesale price, or a
+ * fixed amount in the wholesale currency (the only one admitted, USD).
  */
-export const UpdateOfferInput = z.strictObject({
-  internalOfferId: InternalOfferId,
-  /** The new immutable version's label. Must not already exist. */
-  sourceRecordVersion: OfferSourceRecordVersion,
+export const OfferCommissionRequest = z.discriminatedUnion("method", [
+  z.strictObject({ method: z.literal("PERCENT_OF_WHOLESALE"), percent: DecimalAmount }),
+  z.strictObject({ method: z.literal("FIXED_AMOUNT"), amount: DecimalAmount }),
+]);
+export type OfferCommissionRequest = z.infer<typeof OfferCommissionRequest>;
 
-  /** Only the members a caller intends to change. */
-  terms: OfferCommercialTerms.optional(),
-  lifecycle: OfferLifecycleState.optional(),
-  availability: OfferAvailability.optional(),
-  /** `null` clears the interval; omitted leaves it unchanged. */
-  effectiveInterval: OfferEffectiveIntervalField.optional(),
-
-  actingAccountId: ActingAccountId,
-
-  /**
-   * The creator's confirmation of this version's economics. Required to
-   * activate; ignored by every action that stands an Offer *down*, because
-   * suspending or ending asserts nothing about economics.
-   */
-  economicsConfirmation: CreatorEconomicsConfirmation.nullable().optional(),
-
-  now: z.iso.datetime(),
+/** Standing terms as a Seller states them. */
+export const OfferTermsRequest = z.strictObject({
+  wholesalePrice: DecimalAmount,
+  currency: z.literal("USD"),
+  commission: OfferCommissionRequest,
 });
-export type UpdateOfferInput = z.infer<typeof UpdateOfferInput>;
+export type OfferTermsRequest = z.infer<typeof OfferTermsRequest>;
+
+/** "12.5" → 1250 basis points, by string surgery. `null` when malformed. */
+export function percentToBasisPoints(percent: string): number | null {
+  if (!PERCENT_RE.test(percent)) return null;
+  const [integer, fraction = ""] = percent.split(".") as [string, string?];
+  return Number(integer) * 100 + Number(fraction.padEnd(2, "0"));
+}
+
+/** One decimal amount in USD minor units, or `null` (malformed, zero, too precise, too large). */
+export function usdMinorUnits(amount: string): number | null {
+  const parsed = parseRetailAmount({ amount, currency: "USD" });
+  return parsed.ok ? parsed.retail.retailPriceMinorUnits : null;
+}
+
+/**
+ * Fold a Seller's terms into the contract's PAID + PROMOTABLE shape, or name the
+ * fields that could not be converted. Cross-field rules (a fixed commission not
+ * above the wholesale price, 1–10 000 basis points) are `PromotedResaleOfferTerms`'.
+ */
+export function standingTermsFromRequest(
+  request: OfferTermsRequest,
+): { ok: true; terms: unknown } | { ok: false; fields: string[] } {
+  const wholesale = usdMinorUnits(request.wholesalePrice);
+  const fields: string[] = [];
+  if (wholesale === null) fields.push("terms.wholesalePrice");
+  let commission: unknown = null;
+  if (request.commission.method === "PERCENT_OF_WHOLESALE") {
+    const bp = percentToBasisPoints(request.commission.percent);
+    if (bp === null) fields.push("terms.commission.percent");
+    else commission = { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: bp };
+  } else {
+    const fixed = usdMinorUnits(request.commission.amount);
+    if (fixed === null) fields.push("terms.commission.amount");
+    else commission = { method: "FIXED_AMOUNT", fixedCommissionMinorUnits: fixed, fixedCommissionCurrency: request.currency };
+  }
+  if (fields.length > 0) return { ok: false, fields };
+  return {
+    ok: true,
+    terms: {
+      price: { type: "PAID", wholesalePriceMinorUnits: wholesale, wholesalePriceCurrency: request.currency },
+      promotion: { type: "PROMOTABLE", commission },
+    },
+  };
+}
+
+/**
+ * A promotion's terms: the STANDING terms with only the wholesale price
+ * replaced. The commission is the standing commission, unchanged — a commission
+ * promotion is deferred.
+ */
+export function promotionTermsFrom(
+  standing: OfferCommercialTerms,
+  wholesalePriceMinorUnits: number,
+): unknown {
+  if (standing.price.type !== "PAID") return { price: { type: "FREE" }, promotion: standing.promotion };
+  return {
+    price: { ...standing.price, wholesalePriceMinorUnits },
+    promotion: standing.promotion,
+  };
+}
+
+export { PromotedResaleOfferTerms };
+
+// — Exact-version confirmation, as a Seller sends it —
+
+/**
+ * What the Seller confirms: the exact version label and the economics they were
+ * shown for it. The server pairs it with the Offer's own source-record id to
+ * build a `CreatorEconomicsConfirmation`, so it cannot name another Offer.
+ *
+ * For a live revision or a promotion, `version` is the label the read model
+ * advertised as `nextVersion` — the one the write will mint — so a concurrent
+ * write that took that label makes the confirmation stale by construction.
+ */
+export const OfferVersionConfirmation = z.strictObject({
+  version: OfferSourceRecordVersion,
+  calculatedCommissionMinorUnits: z.int().min(0).max(MAX_MINOR_UNIT_AMOUNT),
+  calculatedSellerGrossProceedsMinorUnits: z.int().min(0).max(MAX_MINOR_UNIT_AMOUNT),
+  commissionCalculationPolicyVersion: CommissionCalculationPolicyVersion,
+});
+export type OfferVersionConfirmation = z.infer<typeof OfferVersionConfirmation>;
+
+const Selectors = { productRef: ProductRef, offerRef: OfferRef };
+const Instant = z.iso.datetime();
+
+// — Acts —
+
+/** Create a DRAFT Offer and its first STANDING version. */
+export const CreateOfferInput = z.strictObject({
+  productRef: ProductRef,
+  terms: OfferTermsRequest,
+  now: Instant,
+});
+export type CreateOfferInput = z.infer<typeof CreateOfferInput>;
+
+/**
+ * Revise the STANDING terms. `expectedVersion` is the standing version the
+ * Seller was looking at; a confirmation is required unless the Offer is DRAFT.
+ */
+export const ReviseOfferTermsInput = z.strictObject({
+  ...Selectors,
+  expectedVersion: OfferSourceRecordVersion,
+  terms: OfferTermsRequest,
+  confirmation: OfferVersionConfirmation.nullable().optional(),
+  now: Instant,
+});
+export type ReviseOfferTermsInput = z.infer<typeof ReviseOfferTermsInput>;
+
+/**
+ * Activate a DRAFT Offer, confirming the exact current STANDING version.
+ * `effectiveUntil` is the optional overall end; once it passes, the Offer is
+ * derived ENDED.
+ */
+export const ActivateOfferInput = z.strictObject({
+  ...Selectors,
+  confirmation: OfferVersionConfirmation,
+  effectiveUntil: Instant.nullable().optional(),
+  now: Instant,
+});
+export type ActivateOfferInput = z.infer<typeof ActivateOfferInput>;
+
+/** Pause or withdraw: standing down asserts nothing about terms. */
+export const StandDownOfferInput = z.strictObject({ ...Selectors, now: Instant });
+export type StandDownOfferInput = z.infer<typeof StandDownOfferInput>;
+
+/** Resume a PAUSED Offer under the standing version the Seller was looking at. */
+export const ResumeOfferInput = z.strictObject({
+  ...Selectors,
+  expectedVersion: OfferSourceRecordVersion,
+  now: Instant,
+});
+export type ResumeOfferInput = z.infer<typeof ResumeOfferInput>;
+
+/** Schedule a promotion: a promotional wholesale price over a half-open window. */
+export const SchedulePromotionInput = z.strictObject({
+  ...Selectors,
+  /** The STANDING version the promotion is built from. */
+  expectedVersion: OfferSourceRecordVersion,
+  /** The promotional wholesale price, as typed; converted on the server. */
+  wholesalePrice: DecimalAmount,
+  effectiveFrom: Instant,
+  effectiveUntil: Instant,
+  /** Absent on the first ask: the refusal then discloses what to confirm. */
+  confirmation: OfferVersionConfirmation.nullable().optional(),
+  now: Instant,
+});
+export type SchedulePromotionInput = z.infer<typeof SchedulePromotionInput>;
+
+/** Replace the current promotion before it begins. History is kept. */
+export const ReplacePromotionInput = SchedulePromotionInput.extend({
+  expectedPromotionVersion: OfferSourceRecordVersion,
+});
+export type ReplacePromotionInput = z.infer<typeof ReplacePromotionInput>;
+
+/** End the running promotion early; the standing terms apply at once. */
+export const EndPromotionInput = z.strictObject({
+  ...Selectors,
+  expectedPromotionVersion: OfferSourceRecordVersion,
+  now: Instant,
+});
+export type EndPromotionInput = z.infer<typeof EndPromotionInput>;
 
 // — Privacy —
 

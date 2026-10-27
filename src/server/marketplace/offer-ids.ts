@@ -17,6 +17,7 @@ import "../server-only";
 import { randomBytes } from "node:crypto";
 import { CROCKFORD_ALPHABET, SOURCE_RECORD_ID_RE } from "../../contracts/capsule/identity";
 import { INTERNAL_OFFER_ID_RE } from "../../contracts/marketplace/identity";
+import { randomApplicationRef } from "../application-reference";
 
 /** Length of the opaque body shared by every Monacado identifier. */
 const OPAQUE_BODY_LENGTH = 26;
@@ -37,11 +38,17 @@ function randomOpaqueBody(): string {
 export interface OfferIdProvider {
   nextInternalOfferId(): string;
   nextOfferSourceRecordId(): string;
+  /** The application-facing reference (Phase 1.42) — `randomApplicationRef`. */
+  nextOfferRef(): string;
+  /** One `OfferAct` row (Phase 1.42). */
+  nextOfferActId(): string;
 }
 
 export const cryptoOfferIdProvider: OfferIdProvider = {
   nextInternalOfferId: () => `mon:offer:${randomOpaqueBody()}`,
   nextOfferSourceRecordId: () => `mon:srec:${randomOpaqueBody()}`,
+  nextOfferRef: randomApplicationRef,
+  nextOfferActId: () => `mon:offeract:${randomOpaqueBody()}`,
 };
 
 /** Shapes asserted by a test rather than guarded at runtime — they hold by construction. */

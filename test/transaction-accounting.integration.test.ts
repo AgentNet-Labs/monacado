@@ -26,7 +26,7 @@ import { syntheticProductRef } from "./support/product-ref-fixture";
 import { createAccount } from "../src/server/account/account-service";
 import { grantAccountEntitlement } from "../src/server/account/account-entitlement-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
-import { createDraftOffer, createOfferSourceVersion } from "../src/server/marketplace/offer-service";
+import { recordOfferAct, seedOffer, seedOfferStandingVersion } from "./support/offer-fixture";
 import {
   createListingSourceVersion,
   createPromotedListing,
@@ -123,6 +123,7 @@ async function cleanup(): Promise<void> {
       await db.offerSourceRecordVersionRow.deleteMany({
         where: { sellerParticipantId: { in: participantIds } },
       });
+      await db.offerAct.deleteMany({ where: { offer: { sellerParticipantId: { in: participantIds } } } });
       await db.offer.deleteMany({ where: { sellerParticipantId: { in: participantIds } } });
       await db.storefront.deleteMany({
         where: { ownerParticipantId: { in: participantIds } },
@@ -330,7 +331,7 @@ async function seedPromoted() {
   const internalProductId = await seedProduct(seller.participantId);
   const storefrontId = await seedStorefront(promoter.participantId);
 
-  const offer = await createDraftOffer(
+  const offer = await seedOffer(
     {
       internalProductId,
       sellerParticipantId: seller.participantId,
@@ -710,10 +711,9 @@ describeDb("0M.T1 — MoR transaction accounting foundation", () => {
       );
 
       // The seller raises wholesale to $70.00 and drops the commission to 5%.
-      await createOfferSourceVersion(
+      await seedOfferStandingVersion(
         {
           internalOfferId: offer.record.internalOfferId,
-          sourceRecordVersion: "2",
           terms: {
             price: {
               type: "PAID",
