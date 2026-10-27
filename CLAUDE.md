@@ -119,6 +119,25 @@ Pushing first deploys code against a schema that does not yet exist. If the
 deployment tooling later supports an explicit deployment hold or manual
 Production promotion, this rule may be revised.
 
+### Production migration constraints
+
+Learned applying Phase 1.42's migration, which failed twice on Production
+before succeeding:
+
+- **Production (Aiven MySQL) enforces `sql_require_primary_key=ON`.** A table
+  created without a primary key — even a transient helper — fails (error 3750).
+- **The Production migration user intentionally lacks `DROP`** (it holds
+  `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `CREATE`, `REFERENCES`, `INDEX`,
+  `ALTER`). A migration that creates and then drops a helper table fails
+  (error 1142) and can leave the table behind. Prefer ALTER-only guards, e.g. an
+  emptiness check via `ADD CONSTRAINT … CHECK (<not-null column> IS NULL)`
+  followed by `DROP CHECK`.
+- **Local migration validation must emulate both**: run the disposable MySQL
+  with `--sql-require-primary-key=ON` and apply migrations as a user granted
+  exactly the Production migration privilege set — not as root.
+- A failed Production migration must be resolved (`prisma migrate resolve
+  --rolled-back <name>`) before it can be re-applied.
+
 ### Non-migration changes
 
 Commits with no Production schema dependency may be pushed to `main` normally
