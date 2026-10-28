@@ -40,3 +40,15 @@ export const cryptoPromotionAuthorizationIdProvider: PromotionAuthorizationIdPro
   nextPromotionAuthorizationRef: randomApplicationRef,
   nextPromotionAuthorizationActId: () => `mon:pauthact:${randomOpaqueBody()}`,
 };
+
+/**
+ * Opaque identity for Offer-package acceptances (Phase 1.44). Internal audit
+ * only — no acceptance is ever named by a caller or shown to one.
+ */
+export interface PromotionOfferAcceptanceIdProvider {
+  nextPromotionOfferAcceptanceId(): string;
+}
+
+export const cryptoPromotionOfferAcceptanceIdProvider: PromotionOfferAcceptanceIdProvider = {
+  nextPromotionOfferAcceptanceId: () => `mon:pofacc:${randomOpaqueBody()}`,
+};

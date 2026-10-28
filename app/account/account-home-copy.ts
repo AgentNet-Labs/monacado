@@ -368,6 +368,29 @@ export const PROMOTION_PROMOTER_MNAME_MISSING = "Promoter without an mName (cann
 export const PROMOTION_DENY_LABEL = "Deny";
 export const PROMOTION_REVOKE_LABEL = "Revoke";
 
+/**
+ * Phase 1.44 — whether an APPROVED Promoter has accepted the Seller's current
+ * terms, as the Seller sees it: the exact versions and the date, never an id.
+ */
+export function promotionTermsAcceptanceStatus(view: {
+  packageAccepted: boolean;
+  acceptance: { standingVersion: string; promotionVersion: string | null; acceptedAt: string } | null;
+}): string {
+  const versions = (a: { standingVersion: string; promotionVersion: string | null }) =>
+    a.promotionVersion === null
+      ? `standard terms version ${a.standingVersion}`
+      : `standard terms version ${a.standingVersion} + promotional terms version ${a.promotionVersion}`;
+  const date = (iso: string) =>
+    new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "UTC" }).format(new Date(iso));
+  if (view.packageAccepted && view.acceptance !== null) {
+    return `accepted your current terms (${versions(view.acceptance)}) on ${date(view.acceptance.acceptedAt)}`;
+  }
+  if (view.acceptance !== null) {
+    return `hasn't accepted your current terms (last accepted ${versions(view.acceptance)} on ${date(view.acceptance.acceptedAt)})`;
+  }
+  return "hasn't accepted your current terms yet";
+}
+
 /** The Promoter's section. */
 export const PROMOTION_PROMOTER_HEADING = "Promotion requests";
 export const PROMOTION_PROMOTER_INTRO =

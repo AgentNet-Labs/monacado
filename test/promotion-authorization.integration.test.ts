@@ -84,6 +84,7 @@ async function cleanup(): Promise<void> {
       select: { id: true },
     })
   ).map((c) => c.id);
+  await db.promotionOfferAcceptance.deleteMany({ where: { authorizationId: { in: cycleIds } } });
   await db.promotionAuthorizationAct.deleteMany({ where: { authorizationId: { in: cycleIds } } });
   await db.promotionAuthorization.deleteMany({ where: { id: { in: cycleIds } } });
   await db.productResaleAvailabilityAct.deleteMany({ where: { internalProductId: { in: productIds } } });
@@ -946,7 +947,7 @@ describeDb("1.41 — Promotion Authorization", () => {
       const sellerHome = await readAccountHome(seller.accountId, { db });
       const shown = sellerHome!.products.find((p) => p.productRef === a.productRef)!.promotionAuthorizations;
       expect(shown).toEqual([
-        { authorizationRef: expect.any(String), promoterMName: await mNameOf(promoter), state: "REQUESTED", canApprove: true },
+        { authorizationRef: expect.any(String), promoterMName: await mNameOf(promoter), state: "REQUESTED", canApprove: true, termsAcceptance: null },
       ]);
     });
 
@@ -989,7 +990,7 @@ describeDb("1.41 — Promotion Authorization", () => {
 
       const home = await readAccountHome(seller.accountId, { db });
       expect(home!.products[0]!.promotionAuthorizations).toEqual([
-        { authorizationRef: ref, promoterMName: null, state: "REQUESTED", canApprove: false },
+        { authorizationRef: ref, promoterMName: null, state: "REQUESTED", canApprove: false, termsAcceptance: null },
       ]);
       for (const privateName of ["Display Alias", "Pat", "Promoter"]) {
         expect(JSON.stringify(home!.products)).not.toContain(privateName);

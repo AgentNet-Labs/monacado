@@ -241,15 +241,17 @@ export function sellerCommerceFixture(config: { db: PrismaClient; emailPrefix: s
         select: { internalOfferId: true },
       })
     ).map((o) => o.internalOfferId);
-    await db.offerAct.deleteMany({ where: { internalOfferId: { in: offerIds } } });
-    await db.offerSourceRecordVersionRow.deleteMany({ where: { internalOfferId: { in: offerIds } } });
-    await db.offer.deleteMany({ where: { internalOfferId: { in: offerIds } } });
     const cycleIds = (
       await db.promotionAuthorization.findMany({
         where: { OR: [{ internalProductId: { in: productIds } }, { promoterParticipantId: { in: participantIds } }] },
         select: { id: true },
       })
     ).map((c) => c.id);
+    /* Phase 1.44 — acceptances reference both the cycles and the Offer versions. */
+    await db.promotionOfferAcceptance.deleteMany({ where: { authorizationId: { in: cycleIds } } });
+    await db.offerAct.deleteMany({ where: { internalOfferId: { in: offerIds } } });
+    await db.offerSourceRecordVersionRow.deleteMany({ where: { internalOfferId: { in: offerIds } } });
+    await db.offer.deleteMany({ where: { internalOfferId: { in: offerIds } } });
     await db.promotionAuthorizationAct.deleteMany({ where: { authorizationId: { in: cycleIds } } });
     await db.promotionAuthorization.deleteMany({ where: { id: { in: cycleIds } } });
     await db.productResaleAvailabilityAct.deleteMany({ where: { internalProductId: { in: productIds } } });

@@ -48,9 +48,11 @@ import { readProductResaleAvailabilitiesIn } from "../product/product-resale-ava
 import { readParticipantStanding } from "./participant-standing-service";
 import { promotionStatusAt, readOfferStateIn } from "./offer-service";
 import {
+  readCurrentPromotionAuthorizationIn,
   readPromoterPromotionAuthorizationsIn,
   readPromotionRequestFactsIn,
 } from "./promotion-authorization-read-service";
+import { readPromoterOfferPackageIn, type PromoterOfferPackageView } from "./promotion-offer-acceptance-read-service";
 
 type Db = ReturnType<typeof getPrisma>;
 type Tx = Db | Prisma.TransactionClient;
@@ -108,6 +110,18 @@ export interface PromotableCatalogTerms {
 /** The viewer's own relationship with the Product: "NONE" covers none, DENIED, REVOKED, and CANCELLED. */
 export type PromotableCatalogAuthorization = "NONE" | "REQUESTED" | "APPROVED";
 
+/**
+ * A scheduled or running promotion, beside the standard terms (Phase 1.44): its
+ * exact terms, its whole window, and whether it is in force now. Never
+ * characterized as better or worse than the standard terms.
+ */
+export type PromotableCatalogPromotion = PromotableCatalogTerms & {
+  effectiveFrom: string;
+  effectiveUntil: string;
+  /** `true` while RUNNING; `false` while SCHEDULED. */
+  inForce: boolean;
+};
+
 export interface PromotableCatalogCard {
   productRef: string;
   name: string;
@@ -115,11 +129,13 @@ export interface PromotableCatalogCard {
   /** The description's first line, cut for a card; `null` without one. */
   summary: string | null;
   deliveryMode: PromotableCatalogDeliveryMode | null;
-  /** The terms in force now. */
+  /** The terms in force now — what the filters and sorts read. */
   terms: PromotableCatalogTerms;
   termsInForce: "STANDING" | "SCHEDULED_PROMOTION";
-  /** When the running promotion ends; `null` unless one is in force. */
-  promotionEndsAt: string | null;
+  /** The standard (standing) terms — always shown, promotion or not (Phase 1.44). */
+  standardTerms: PromotableCatalogTerms;
+  /** A SCHEDULED or RUNNING promotion, shown alongside; `null` when none. */
+  promotion: PromotableCatalogPromotion | null;
   authorization: PromotableCatalogAuthorization;
 }
 
@@ -133,12 +149,13 @@ export interface PromotableCatalogPage {
 
 export interface PromotableCatalogDetail extends PromotableCatalogCard {
   description: string | null;
-  /** The standing terms that resume when a running promotion ends; `null` unless one is in force. */
-  standingTerms: PromotableCatalogTerms | null;
-  /** A promotion scheduled to start later, with its own terms; `null` when none. */
-  upcomingPromotion: (PromotableCatalogTerms & { effectiveFrom: string; effectiveUntil: string }) | null;
   /** The Offer's own overall end, if its Seller set one. */
   offerEffectiveUntil: string | null;
+  /**
+   * Phase 1.44 — the exact package this viewer may accept, with its acceptance
+   * status; `null` unless the viewer's current authorization is `APPROVED`.
+   */
+  termsAcceptance: PromoterOfferPackageView | null;
 }
 
 // — Derivation —
@@ -170,7 +187,9 @@ interface ProductFacts {
 
 interface CatalogEntry {
   keys: PromotableCatalogSortKeys;
-  detail: Omit<PromotableCatalogDetail, "authorization">;
+  /** For the detail page, the viewer's own cycle (internal; never rendered). */
+  internalProductId: string;
+  detail: Omit<PromotableCatalogDetail, "authorization" | "termsAcceptance">;
 }
 
 /** Pass 1: the stored markers the database can answer. */
@@ -278,11 +297,11 @@ async function deriveEntry(
   const inForce = catalogTerms(inForceVersion);
   if (inForce === null) return null;
   const promotionStatus = promotionStatusAt(state, at);
-  const standingTerms = catalogTerms(state.standing);
+  const standardTerms = catalogTerms(state.standing);
+  if (standardTerms === null) return null;
   const window = state.resolution.promotion?.window ?? null;
-
-  const upcomingTerms =
-    promotionStatus === "SCHEDULED" && state.promotion !== null ? catalogTerms(state.promotion) : null;
+  const pending = promotionStatus === "SCHEDULED" || promotionStatus === "RUNNING";
+  const promotionTerms = pending && state.promotion !== null ? catalogTerms(state.promotion) : null;
 
   const activatedAt = caches.activatedAt.get(offer.internalOfferId);
   if (activatedAt === undefined) return null;
@@ -296,6 +315,7 @@ async function deriveEntry(
       wholesalePriceMinorUnits: inForce.wholesalePriceMinorUnits,
       calculatedCommissionMinorUnits: inForce.calculatedCommissionMinorUnits,
     },
+    internalProductId: offer.internalProductId,
     detail: {
       productRef: facts.productRef,
       name: facts.name,
@@ -305,11 +325,15 @@ async function deriveEntry(
       deliveryMode: facts.deliveryMode,
       terms: inForce,
       termsInForce: promotionInForce ? "SCHEDULED_PROMOTION" : "STANDING",
-      promotionEndsAt: promotionInForce && window !== null ? window.effectiveUntil : null,
-      standingTerms: promotionInForce ? standingTerms : null,
-      upcomingPromotion:
-        upcomingTerms !== null && window !== null
-          ? { ...upcomingTerms, effectiveFrom: window.effectiveFrom, effectiveUntil: window.effectiveUntil }
+      standardTerms,
+      promotion:
+        promotionTerms !== null && window !== null
+          ? {
+              ...promotionTerms,
+              effectiveFrom: window.effectiveFrom,
+              effectiveUntil: window.effectiveUntil,
+              inForce: promotionStatus === "RUNNING",
+            }
           : null,
       offerEffectiveUntil: state.resolution.offerEffectiveUntil,
     },
@@ -397,7 +421,8 @@ function toCard(detail: CatalogEntry["detail"], authorization: PromotableCatalog
     deliveryMode: detail.deliveryMode,
     terms: detail.terms,
     termsInForce: detail.termsInForce,
-    promotionEndsAt: detail.promotionEndsAt,
+    standardTerms: detail.standardTerms,
+    promotion: detail.promotion,
     authorization,
   };
 }
@@ -471,5 +496,16 @@ export async function readPromotableCatalogDetail(
   const [entry] = await deriveEntries(tx, offers, at, () => true);
   if (entry === undefined) return null;
   const authorizations = await authorizationsOf(tx, viewer.viewerParticipantId);
-  return { ...entry.detail, authorization: authorizations.get(entry.keys.productRef) ?? "NONE" };
+  const authorization = authorizations.get(entry.keys.productRef) ?? "NONE";
+  /* Phase 1.44 — the package an APPROVED viewer may accept, from the one reader
+     the acceptance route's own gates agree with. */
+  const cycle =
+    authorization === "APPROVED"
+      ? await readCurrentPromotionAuthorizationIn(tx, {
+          internalProductId: entry.internalProductId,
+          promoterParticipantId: viewer.viewerParticipantId,
+        })
+      : null;
+  const termsAcceptance = cycle === null ? null : await readPromoterOfferPackageIn(tx, cycle, at);
+  return { ...entry.detail, authorization, termsAcceptance };
 }

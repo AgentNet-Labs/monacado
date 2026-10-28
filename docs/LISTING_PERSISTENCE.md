@@ -137,6 +137,11 @@ versions continue to record what was originally accepted.
 > lifecycle** (`OFFER_NOT_CURRENTLY_OFFERED`), with the accepted version left
 > exactly as it was. Applying a running promotion to a promoted Listing, and
 > review on Offer change, remain deferred (Contract §19, §34).
+>
+> **Phase 1.44.** Promoter acceptance now exists as `PromotionOfferAcceptance`
+> (per cycle, per exact package; `PRODUCT_PERSISTENCE.md`). The Listing's
+> `acceptedOffer*` binding is untouched and not migrated; reconciling it with
+> package acceptance, and gating promoted Listings on coverage, is Phase 1.45.
 
 ## 7. Retail price and the scheduled sale
 

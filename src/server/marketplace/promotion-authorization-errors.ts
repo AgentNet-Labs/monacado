@@ -25,7 +25,8 @@ export type PromotionAuthorizationErrorCode =
   | "PROMOTION_AUTHORIZATION_SUPERSEDED"
   | "PROMOTION_AUTHORIZATION_PROMOTER_NOT_ELIGIBLE"
   | "PROMOTION_AUTHORIZATION_CONFLICT"
-  | "PROMOTION_AUTHORIZATION_CORRUPT_RECORD";
+  | "PROMOTION_AUTHORIZATION_CORRUPT_RECORD"
+  | "PROMOTION_OFFER_ACCEPTANCE_REFUSED";
 
 export class PromotionAuthorizationError extends Error {
   readonly code: PromotionAuthorizationErrorCode;
@@ -123,5 +124,44 @@ export class PromotionAuthorizationCorruptRecordError extends PromotionAuthoriza
   constructor(message: string) {
     super("PROMOTION_AUTHORIZATION_CORRUPT_RECORD", message);
     this.name = "PromotionAuthorizationCorruptRecordError";
+  }
+}
+
+// — Offer-package acceptance (Phase 1.44) —
+
+/**
+ * Why an Offer-package acceptance was refused. A closed vocabulary, safe to
+ * return: each names a state of the request or of the terms, never a value.
+ *
+ *   - `AUTHORIZATION_NOT_APPROVED` — the current cycle is not `APPROVED`;
+ *   - `PRODUCT_NOT_ACTIVE`         — the Product's lifecycle is not `ACTIVE`;
+ *   - `RESALE_NOT_OFFERED`         — resale is `NOT_OFFERED` or `WITHDRAWN`
+ *                                    (`PAUSED` admits acceptance);
+ *   - `OFFER_NOT_ACCEPTING`        — no such current Offer for this Product, or
+ *                                    it is not `ACTIVE`;
+ *   - `STANDING_VERSION_STALE`     — the standing version named is not current;
+ *   - `PROMOTION_CHANGED`          — the promotion named (or its absence) is not
+ *                                    the current package's;
+ *   - `TERMS_MISMATCH`             — the economics or window restated differ
+ *                                    from the named immutable versions.
+ */
+export const OFFER_ACCEPTANCE_REFUSALS = [
+  "AUTHORIZATION_NOT_APPROVED",
+  "PRODUCT_NOT_ACTIVE",
+  "RESALE_NOT_OFFERED",
+  "OFFER_NOT_ACCEPTING",
+  "STANDING_VERSION_STALE",
+  "PROMOTION_CHANGED",
+  "TERMS_MISMATCH",
+] as const;
+export type OfferAcceptanceRefusal = (typeof OFFER_ACCEPTANCE_REFUSALS)[number];
+
+/** The acceptance was refused; nothing is written. */
+export class PromotionOfferAcceptanceRefusedError extends PromotionAuthorizationError {
+  readonly reason: OfferAcceptanceRefusal;
+  constructor(reason: OfferAcceptanceRefusal) {
+    super("PROMOTION_OFFER_ACCEPTANCE_REFUSED", `The Offer package cannot be accepted: ${reason}`);
+    this.name = "PromotionOfferAcceptanceRefusedError";
+    this.reason = reason;
   }
 }

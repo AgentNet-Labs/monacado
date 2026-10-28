@@ -77,6 +77,12 @@ import {
   readPromotionRequestFactsIn,
   readSellerPromotionAuthorizationsIn,
 } from "../marketplace/promotion-authorization-read-service";
+import {
+  readPromoterOfferPackageByRefIn,
+  readSellerOfferAcceptancesIn,
+  type PromoterOfferPackageView,
+  type SellerOfferAcceptanceView,
+} from "../marketplace/promotion-offer-acceptance-read-service";
 import { readActingAccountRows } from "../marketplace/acting-subject-service";
 import { toMarketplaceSubject } from "../marketplace/participant-mapper";
 import { getPrisma } from "../db/client";
@@ -254,8 +260,8 @@ export interface AccountHomeProduct {
   /**
    * The Product's Offer as its Seller sees it (Phase 1.42): the current or most
    * recent Offer, its derived state, standing terms and economics, promotion,
-   * blockers, and the acts available. Seller-facing (Promoters see only the
-   * terms in force, in the Promotable Catalog — Phase 1.43); never published.
+   * blockers, and the acts available. Seller-facing (Promoters see the standard terms and any
+   * promotion, never the proceeds — Phase 1.43, 1.44); never published.
    */
   offer: SellerProductOffer;
 }
@@ -280,6 +286,12 @@ export interface AccountHomeSellerPromotionAuthorization {
    * without would offer a refusal. Deny and Revoke are always offered.
    */
   canApprove: boolean;
+  /**
+   * Phase 1.44 — for an APPROVED Promoter while the Offer is `ACTIVE`: whether
+   * it has accepted the current package, and which versions, when. `null`
+   * otherwise. Never an acceptance id or account.
+   */
+  termsAcceptance: SellerOfferAcceptanceView | null;
 }
 
 /**
@@ -307,6 +319,12 @@ export interface AccountHomePromoterAuthorization {
   /** `REQUESTED` and `APPROVED` may be cancelled by the Promoter; terminal states may be re-requested. */
   canCancel: boolean;
   canRequestAgain: boolean;
+  /**
+   * Phase 1.44 — for an APPROVED relationship, the exact package the Promoter
+   * may accept now, with its status; `null` when none may be accepted (not
+   * approved, Product not `ACTIVE`, resale not offered, or Offer not `ACTIVE`).
+   */
+  termsAcceptance: PromoterOfferPackageView | null;
 }
 
 export interface AccountHome {
@@ -420,7 +438,7 @@ export async function readAccountHome(
     participant === null || isDraftWritableParticipantStatus(participant.status as ParticipantStatus);
   const held = new Set(roles.map((r) => r.role));
   const promoter =
-    participant !== null && held.has("PROMOTER") ? await readPromoterHome(db, accountId, participant.id) : null;
+    participant !== null && held.has("PROMOTER") ? await readPromoterHome(db, accountId, participant.id, now) : null;
 
   return {
     promoter,
@@ -737,6 +755,21 @@ async function readAuthoredProducts(
     db,
     products.map((p) => p.internalProductId),
   );
+  /* Phase 1.44 — each APPROVED Promoter's acceptance of the current package. */
+  const acceptance = new Map<string, Map<string, SellerOfferAcceptanceView>>();
+  for (const p of products) {
+    const approved = (promotion.get(p.internalProductId) ?? []).filter((a) => a.state === "APPROVED");
+    if (approved.length === 0) continue;
+    acceptance.set(
+      p.internalProductId,
+      await readSellerOfferAcceptancesIn(
+        db,
+        p.internalProductId,
+        approved.map((a) => a.authorizationRef),
+        now,
+      ),
+    );
+  }
   /* Phase 1.42 — each Product's Offer, a fourth axis: Seller commercial authority
      for promoted resale, derived at `now`. */
   const offers = await readSellerProductOffersIn(
@@ -787,6 +820,7 @@ async function readAuthoredProducts(
                   promoterMName: a.promoterMName,
                   state: a.state,
                   canApprove: a.state === "REQUESTED" && a.promoterMName !== null,
+                  termsAcceptance: acceptance.get(p.internalProductId)?.get(a.authorizationRef) ?? null,
                 },
               ]
             : [],
@@ -798,7 +832,7 @@ async function readAuthoredProducts(
 }
 
 /** The Promoter's request eligibility and current relationships (Phase 1.41). */
-async function readPromoterHome(db: Db, accountId: string, participantId: string): Promise<AccountHomePromoter> {
+async function readPromoterHome(db: Db, accountId: string, participantId: string, now: string): Promise<AccountHomePromoter> {
   const read = await readPromotionRequestFactsIn(db, { accountId });
   const eligibility =
     read === null
@@ -808,13 +842,24 @@ async function readPromoterHome(db: Db, accountId: string, participantId: string
   return {
     canRequest: eligibility.eligible,
     requestRefusals: [...eligibility.refusals],
-    authorizations: authorizations.map((a) => ({
-      productRef: a.productRef,
-      authorizationRef: a.authorizationRef,
-      state: a.state,
-      canCancel: governedPromotionAuthorizationActs(a.state, "PROMOTER").includes("CANCEL"),
-      canRequestAgain: governedPromotionAuthorizationActs(a.state, "PROMOTER").length === 0 && eligibility.eligible,
-    })),
+    authorizations: await Promise.all(
+      authorizations.map(async (a) => ({
+        productRef: a.productRef,
+        authorizationRef: a.authorizationRef,
+        state: a.state,
+        canCancel: governedPromotionAuthorizationActs(a.state, "PROMOTER").includes("CANCEL"),
+        canRequestAgain: governedPromotionAuthorizationActs(a.state, "PROMOTER").length === 0 && eligibility.eligible,
+        /* Phase 1.44 — the package this Promoter may accept now, if any. */
+        termsAcceptance:
+          a.state === "APPROVED"
+            ? await readPromoterOfferPackageByRefIn(
+                db,
+                { authorizationRef: a.authorizationRef, promoterParticipantId: participantId },
+                now,
+              )
+            : null,
+      })),
+    ),
   };
 }
 

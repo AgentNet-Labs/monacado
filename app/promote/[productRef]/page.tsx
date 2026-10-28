@@ -2,10 +2,12 @@
  * `/promote/{productRef}` — one Promotable Catalog Product (Phase 1.43).
  *
  * The full description, the Seller's mName (with "More from this seller",
- * `/promote?seller=<mName>` — no internal id in the URL), delivery, the terms in
- * force with the commission shown as the Offer states it, the standing terms a
- * running promotion will return to, any upcoming promotion, the Offer's own end,
- * and Request to Promote.
+ * `/promote?seller=<mName>` — no internal id in the URL), delivery, the
+ * standard terms with the commission shown as the Offer states it, a scheduled
+ * or running promotion beside them with its window (Phase 1.44 — the standard
+ * terms are always shown, and a running promotion is marked as in force), the
+ * Offer's own end, and Request to Promote. An APPROVED viewer also sees the
+ * exact package it may accept, with one Accept action for all of it.
  *
  * A Product not in the catalog for this viewer — no such Product, not included
  * at this instant, or the viewer's own — is a 404, one answer for all three.
@@ -29,20 +31,20 @@ import {
   CATALOG_DELIVERY_LABELS,
   CATALOG_NOT_PROMOTER,
   CATALOG_TITLE,
-  DETAIL_AFTER_PROMOTION,
   DETAIL_BACK,
   DETAIL_COMMISSION,
   DETAIL_DELIVERY,
   DETAIL_MORE_FROM_SELLER,
   DETAIL_OFFER_ENDS,
-  DETAIL_PROMOTION_UNTIL,
+  DETAIL_PROMOTION_HEADING,
   DETAIL_REQUEST_NOTE,
   DETAIL_SELLER,
-  DETAIL_TERMS_NOW,
-  DETAIL_UPCOMING_PROMOTION,
+  DETAIL_STANDARD_RESUMES,
+  DETAIL_STANDARD_TERMS,
   DETAIL_WHOLESALE,
   formatCatalogCommissionDetail,
 } from "../promote-copy";
+import { OfferPackageAcceptance } from "../offer-package-acceptance";
 import { RequestToPromoteButton } from "./request-to-promote-button";
 
 export const dynamic = "force-dynamic";
@@ -110,23 +112,12 @@ export default async function PromoteDetailPage({ params }: { params: Promise<{ 
         ) : null}
 
         <section className="account-section">
-          <Terms
-            heading={
-              detail.termsInForce === "SCHEDULED_PROMOTION" && detail.promotionEndsAt !== null
-                ? DETAIL_PROMOTION_UNTIL(detail.promotionEndsAt)
-                : DETAIL_TERMS_NOW
-            }
-            terms={detail.terms}
-          />
-          {detail.standingTerms !== null ? <Terms heading={DETAIL_AFTER_PROMOTION} terms={detail.standingTerms} /> : null}
-          {detail.upcomingPromotion !== null ? (
-            <Terms
-              heading={DETAIL_UPCOMING_PROMOTION(
-                detail.upcomingPromotion.effectiveFrom,
-                detail.upcomingPromotion.effectiveUntil,
-              )}
-              terms={detail.upcomingPromotion}
-            />
+          <Terms heading={DETAIL_STANDARD_TERMS} terms={detail.standardTerms} />
+          {detail.promotion !== null ? (
+            <>
+              <Terms heading={DETAIL_PROMOTION_HEADING(detail.promotion)} terms={detail.promotion} />
+              <p className="auth-hint">{DETAIL_STANDARD_RESUMES}</p>
+            </>
           ) : null}
           {detail.offerEffectiveUntil !== null ? (
             <p className="auth-hint">{DETAIL_OFFER_ENDS(detail.offerEffectiveUntil)}</p>
@@ -142,6 +133,12 @@ export default async function PromoteDetailPage({ params }: { params: Promise<{ 
             refusalMessage={access.canRequest ? null : formatPromotionRequestRefusals(access.requestRefusals)}
           />
         </section>
+
+        {detail.termsAcceptance !== null ? (
+          <section className="account-section">
+            <OfferPackageAcceptance productRef={detail.productRef} view={detail.termsAcceptance} />
+          </section>
+        ) : null}
       </div>
     </main>
   );

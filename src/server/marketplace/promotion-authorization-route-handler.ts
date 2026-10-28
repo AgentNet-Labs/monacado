@@ -7,6 +7,9 @@
  *        `{ "decision": "APPROVE" | "DENY" | "REVOKE" }` — the Product's Seller.
  *   POST /api/products/{productRef}/promotion-authorization/{authorizationRef}/cancel
  *        `{}` — the cycle's own Promoter.
+ *   POST /api/products/{productRef}/promotion-authorization/{authorizationRef}/offer-acceptance
+ *        `{ offerRef, standing, promotion }` — the cycle's own Promoter accepts
+ *        the exact Offer package it was shown (Phase 1.44).
  *
  * The shape follows the Phase 1.40 resale handler: origin, then session, then
  * the path selectors, then a strict JSON body, then the domain through
@@ -17,6 +20,11 @@
  * `productRef` and `authorizationRef` in the path; the bodies carry at most the
  * Seller's decision. A participant, a Seller, a Promoter, a state, a lifecycle,
  * an Offer, a price, or a commission has nowhere to go — every body is strict.
+ * The one exception is the Phase 1.44 acceptance, whose strict body RESTATES
+ * the exact package the Promoter was shown — the Offer reference, the version
+ * labels, the economics, and the window — so the server can refuse anything
+ * that is not exactly the package in force. It still names no participant,
+ * state, or authority, and nothing in it is taken as a fact.
  *
  * ## Refusals
  *
@@ -35,14 +43,25 @@
  * | 409    | `PROMOTION_AUTHORIZATION_SUPERSEDED`               | acting on a cycle a re-request replaced           |
  * | 409    | `PROMOTION_AUTHORIZATION_PROMOTER_NOT_ELIGIBLE`    | approval while the Promoter no longer qualifies   |
  * | 409    | `PROMOTION_AUTHORIZATION_CONFLICT`                 | a concurrent change won (not expected)            |
+ * | 409    | `OFFER_ACCEPTANCE_AUTHORIZATION_NOT_APPROVED`      | acceptance on a cycle that is not `APPROVED`      |
+ * | 409    | `OFFER_ACCEPTANCE_PRODUCT_NOT_ACTIVE`              | acceptance while the Product is not `ACTIVE`      |
+ * | 409    | `OFFER_ACCEPTANCE_RESALE_NOT_OFFERED`              | acceptance while resale is `NOT_OFFERED` / `WITHDRAWN` |
+ * | 409    | `OFFER_ACCEPTANCE_OFFER_NOT_ACCEPTING`             | no such current Offer, or it is not `ACTIVE`      |
+ * | 409    | `OFFER_ACCEPTANCE_STANDING_VERSION_STALE`          | the standing version named is no longer current   |
+ * | 409    | `OFFER_ACCEPTANCE_PROMOTION_CHANGED`               | the promotion named (or its absence) is not current |
+ * | 409    | `OFFER_ACCEPTANCE_TERMS_MISMATCH`                  | restated economics / window differ from the versions |
  * | 500    | `PROMOTION_AUTHORIZATION_UNAVAILABLE`              | anything unexpected                               |
  *
- * No act is idempotent: a repeat is an explicit 409 and writes nothing.
+ * No Promotion Authorization act is idempotent: a repeat is an explicit 409 and
+ * writes nothing. Acceptance is: the exact package already accepted in this
+ * cycle answers 200 with its original `acceptedAt`; a first acceptance is 201.
  *
  * ## What the answer carries
  *
  * `{ productRef, authorizationRef, state }` — references only, no internal id,
- * no act id, no participant, and no Product fact.
+ * no act id, no participant, and no Product fact. An acceptance answers
+ * `{ productRef, authorizationRef, offerRef, standingVersion, promotionVersion,
+ * acceptedAt }` — no acceptance id and no account.
  */
 
 import "../server-only";
@@ -51,7 +70,9 @@ import type { Prisma } from "@prisma/client";
 import { ProductRef } from "../../contracts/marketplace/listing-record";
 import { PromotionAuthorizationRef } from "../../contracts/marketplace/promotion-authorization";
 import { resolveActingAccount, type ActingAccount } from "../account/acting-participant-boundary";
+import { OfferPackageAcceptanceInput } from "../../contracts/marketplace/promotion-offer-acceptance";
 import {
+  acceptOfferPackageForOwnAuthorizationAs,
   cancelOwnPromotionAuthorizationAs,
   decideOwnProductPromotionAuthorizationAs,
   requestPromotionAuthorizationForProductAs,
@@ -68,6 +89,8 @@ import {
   PromotionAuthorizationSelfPromotionError,
   PromotionAuthorizationSupersededError,
   PromotionAuthorizationTransitionNotGovernedError,
+  PromotionOfferAcceptanceRefusedError,
+  type OfferAcceptanceRefusal,
 } from "./promotion-authorization-errors";
 import type { PromotionAuthorizationResult } from "./promotion-authorization-service";
 
@@ -89,6 +112,17 @@ export const PROMOTION_AUTHORIZATION_ROUTE_ERROR_CODES = {
   conflict: "PROMOTION_AUTHORIZATION_CONFLICT",
   unavailable: "PROMOTION_AUTHORIZATION_UNAVAILABLE",
 } as const;
+
+/** Phase 1.44 — each acceptance refusal's route code. */
+export const OFFER_ACCEPTANCE_ROUTE_ERROR_CODES: Readonly<Record<OfferAcceptanceRefusal, string>> = {
+  AUTHORIZATION_NOT_APPROVED: "OFFER_ACCEPTANCE_AUTHORIZATION_NOT_APPROVED",
+  PRODUCT_NOT_ACTIVE: "OFFER_ACCEPTANCE_PRODUCT_NOT_ACTIVE",
+  RESALE_NOT_OFFERED: "OFFER_ACCEPTANCE_RESALE_NOT_OFFERED",
+  OFFER_NOT_ACCEPTING: "OFFER_ACCEPTANCE_OFFER_NOT_ACCEPTING",
+  STANDING_VERSION_STALE: "OFFER_ACCEPTANCE_STANDING_VERSION_STALE",
+  PROMOTION_CHANGED: "OFFER_ACCEPTANCE_PROMOTION_CHANGED",
+  TERMS_MISMATCH: "OFFER_ACCEPTANCE_TERMS_MISMATCH",
+};
 
 export const PROMOTION_AUTHORIZATION_ROUTE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
   "content-type": "application/json; charset=utf-8",
@@ -172,6 +206,7 @@ function mapError(error: unknown): PromotionAuthorizationRouteResult {
   if (error instanceof PromotionAuthorizationSupersededError) return refuse(409, codes.superseded);
   if (error instanceof PromotionAuthorizationPromoterNotEligibleError) return refuse(409, codes.promoterNotEligible);
   if (error instanceof PromotionAuthorizationConflictError) return refuse(409, codes.conflict);
+  if (error instanceof PromotionOfferAcceptanceRefusedError) return refuse(409, OFFER_ACCEPTANCE_ROUTE_ERROR_CODES[error.reason]);
   return refuse(500, codes.unavailable);
 }
 
@@ -279,6 +314,46 @@ export async function handleCancelPromotionAuthorizationRequest(
       dbDeps(deps),
     );
     return answer(200, result);
+  } catch (error) {
+    return mapError(error);
+  }
+}
+
+/**
+ * `POST …/promotion-authorization/{authorizationRef}/offer-acceptance` — the
+ * cycle's own Promoter accepts the exact Offer package (Phase 1.44). 201 for a
+ * first acceptance; 200, with the original `acceptedAt`, for the same package
+ * again.
+ */
+export async function handleAcceptOfferPackageRequest(
+  request: PromotionAuthorizationCycleRouteRequest,
+  deps: PromotionAuthorizationRouteDeps = {},
+): Promise<PromotionAuthorizationRouteResult> {
+  const prepared = await prepare(request, OfferPackageAcceptanceInput, deps);
+  if ("refusal" in prepared) return prepared.refusal;
+  try {
+    const result = await acceptOfferPackageForOwnAuthorizationAs(
+      prepared.actor,
+      {
+        productRef: prepared.productRef,
+        authorizationRef: prepared.authorizationRef!,
+        input: prepared.body,
+        now: prepared.now,
+      },
+      dbDeps(deps),
+    );
+    return {
+      status: result.created ? 201 : 200,
+      body: {
+        productRef: result.productRef,
+        authorizationRef: result.authorizationRef,
+        offerRef: result.offerRef,
+        standingVersion: result.standingVersion,
+        promotionVersion: result.promotionVersion,
+        acceptedAt: result.acceptedAt,
+      },
+      headers: PROMOTION_AUTHORIZATION_ROUTE_HEADERS,
+    };
   } catch (error) {
     return mapError(error);
   }

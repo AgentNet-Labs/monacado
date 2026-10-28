@@ -1688,8 +1688,8 @@ describe("Promotion Authorization presentation (Phase 1.41)", () => {
     shippingPolicy: null,
     completeness: { complete: false, missing: ["SHIPPING_POLICY_MISSING" as const] },
     promotionAuthorizations: [
-      { authorizationRef: PENDING_REF, promoterMName: "p4qz", state: "REQUESTED" as const, canApprove: true },
-      { authorizationRef: APPROVED_REF, promoterMName: "a7mx", state: "APPROVED" as const, canApprove: false },
+      { authorizationRef: PENDING_REF, promoterMName: "p4qz", state: "REQUESTED" as const, canApprove: true, termsAcceptance: null },
+      { authorizationRef: APPROVED_REF, promoterMName: "a7mx", state: "APPROVED" as const, canApprove: false, termsAcceptance: null },
     ],
   };
   const text = (html: string) => html.replaceAll("<!-- -->", "").replace(/<[^>]+>/g, "");
@@ -1721,7 +1721,7 @@ describe("Promotion Authorization presentation (Phase 1.41)", () => {
           {
             ...product,
             promotionAuthorizations: [
-              { authorizationRef: PENDING_REF, promoterMName: null, state: "REQUESTED" as const, canApprove: false },
+              { authorizationRef: PENDING_REF, promoterMName: null, state: "REQUESTED" as const, canApprove: false, termsAcceptance: null },
             ],
           },
         ],
@@ -1753,6 +1753,7 @@ describe("Promotion Authorization presentation (Phase 1.41)", () => {
       state,
       canCancel: state === "REQUESTED" || state === "APPROVED",
       canRequestAgain: state === "DENIED" || state === "REVOKED" || state === "CANCELLED",
+      termsAcceptance: null,
     });
     const html = await renderSignedIn(
       home({

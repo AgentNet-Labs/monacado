@@ -8,7 +8,11 @@
 > Contract §14 — a promotable Product **and** an eligible Offer, distinct
 > economic principals, explicit acceptance of material Offer terms, and
 > applicable activation gates; the Offer's `PROMOTABLE` terms alone are not
-> sufficient. The body below is not yet reconciled.
+> sufficient. The body below is not yet reconciled. **Phase 1.44** persists
+> Promoter acceptance of an exact Offer package per Promotion Authorization cycle
+> (`PRODUCT_PERSISTENCE.md`); the `AcceptedOfferDependency` / `accepted*` model
+> below is **not** reconciled with it, and no Listing consults it — that is
+> Phase 1.45.
 
 The authoritative transactional record for the buyer-facing placement of a
 Product in a Storefront, plus the immutable source versions a later Capsule

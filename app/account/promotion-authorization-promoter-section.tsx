@@ -9,11 +9,18 @@
  * where governed (`REQUESTED`, `APPROVED`), and Request again after a terminal
  * state. No Product fact is shown: the reference is what the Promoter itself
  * supplied. On success the server re-renders the page.
+ *
+ * Phase 1.44: an APPROVED relationship whose package may be accepted now also
+ * shows that exact package — the standard terms and any scheduled or running
+ * promotion — with one Accept action for all of it. This is where a Promoter
+ * accepts while the Product's resale is PAUSED, when the catalog lists nothing.
  */
 
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import type { PromotionAuthorizationState } from "../../src/contracts/marketplace/promotion-authorization";
+import type { PromoterOfferPackageView } from "../../src/server/marketplace/promotion-offer-acceptance-read-service";
+import { OfferPackageAcceptance } from "../promote/offer-package-acceptance";
 import {
   PROMOTION_AUTHORIZATION_STATE_LABELS,
   PROMOTION_NONE,
@@ -39,6 +46,7 @@ export function PromotionAuthorizationPromoterSection({
     state: PromotionAuthorizationState;
     canCancel: boolean;
     canRequestAgain: boolean;
+    termsAcceptance: PromoterOfferPackageView | null;
   }>;
 }) {
   const router = useRouter();
@@ -106,6 +114,7 @@ export function PromotionAuthorizationPromoterSection({
                   {PROMOTION_REQUEST_AGAIN_LABEL}
                 </button>
               ) : null}
+              {a.termsAcceptance !== null ? <OfferPackageAcceptance productRef={a.productRef} view={a.termsAcceptance} /> : null}
             </li>
           ))}
         </ul>

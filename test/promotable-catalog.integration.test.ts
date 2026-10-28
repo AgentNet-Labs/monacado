@@ -207,7 +207,13 @@ describeDb("Phase 1.43 — Promotable Catalog", () => {
           calculatedCommissionMinorUnits: 400,
         },
         termsInForce: "STANDING",
-        promotionEndsAt: null,
+        standardTerms: {
+          wholesalePriceMinorUnits: 4000,
+          currency: "USD",
+          commission: { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 1000 },
+          calculatedCommissionMinorUnits: 400,
+        },
+        promotion: null,
         authorization: "NONE",
       },
     ]);
@@ -394,7 +400,7 @@ describeDb("Phase 1.43 — Promotable Catalog", () => {
     expect(seen).toEqual([...all].sort());
   });
 
-  it("a running promotion's terms are in force on the card; an upcoming one appears on the detail page only", async () => {
+  it("1.44 — the card always carries the standard terms, and a scheduled or running promotion beside them with its window", async () => {
     const seller = await fx.readySeller();
     const item = await listed(seller, {}, terms("50.00", pct("20")));
     const at = next();
@@ -406,24 +412,34 @@ describeDb("Phase 1.43 — Promotable Catalog", () => {
 
     const before = plus(at, 30);
     const [upcomingCard] = (await page(promoter, {}, before)).cards;
-    expect(upcomingCard).toMatchObject({ termsInForce: "STANDING", terms: { wholesalePriceMinorUnits: 5000, calculatedCommissionMinorUnits: 1000 } });
+    expect(upcomingCard).toMatchObject({
+      termsInForce: "STANDING",
+      terms: { wholesalePriceMinorUnits: 5000, calculatedCommissionMinorUnits: 1000 },
+      standardTerms: { wholesalePriceMinorUnits: 5000, calculatedCommissionMinorUnits: 1000 },
+      promotion: { wholesalePriceMinorUnits: 4000, calculatedCommissionMinorUnits: 800, ...window, inForce: false },
+    });
     const upcoming = await readPromotableCatalogDetail(db, await viewerOf(promoter), item.productRef, before);
     expect(upcoming).toMatchObject({
-      standingTerms: null,
-      upcomingPromotion: { wholesalePriceMinorUnits: 4000, calculatedCommissionMinorUnits: 800, ...window },
+      standardTerms: { wholesalePriceMinorUnits: 5000 },
+      promotion: { wholesalePriceMinorUnits: 4000, ...window, inForce: false },
+      termsAcceptance: null, // no APPROVED authorization: nothing to accept
     });
 
     const during = plus(at, 90);
     const [runningCard] = (await page(promoter, {}, during)).cards;
     expect(runningCard).toMatchObject({
       termsInForce: "SCHEDULED_PROMOTION",
-      promotionEndsAt: window.effectiveUntil,
       terms: { wholesalePriceMinorUnits: 4000, calculatedCommissionMinorUnits: 800 },
+      standardTerms: { wholesalePriceMinorUnits: 5000, calculatedCommissionMinorUnits: 1000 },
+      promotion: { wholesalePriceMinorUnits: 4000, ...window, inForce: true },
     });
     expect(await readPromotableCatalogDetail(db, await viewerOf(promoter), item.productRef, during)).toMatchObject({
-      standingTerms: { wholesalePriceMinorUnits: 5000, calculatedCommissionMinorUnits: 1000 },
-      upcomingPromotion: null,
+      standardTerms: { wholesalePriceMinorUnits: 5000, calculatedCommissionMinorUnits: 1000 },
+      promotion: { wholesalePriceMinorUnits: 4000, inForce: true },
     });
+    // After the window the promotion is gone from both, and the standard terms are in force.
+    const after = plus(at, 150);
+    expect((await page(promoter, {}, after)).cards[0]).toMatchObject({ termsInForce: "STANDING", promotion: null });
     // Sorting and filtering read the terms in force at the instant.
     expect((await page(promoter, { wholesaleMax: "45" }, during)).cards).toHaveLength(1);
     expect((await page(promoter, { wholesaleMax: "45" }, before)).cards).toHaveLength(0);

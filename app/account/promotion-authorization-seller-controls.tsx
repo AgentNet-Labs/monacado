@@ -8,7 +8,9 @@
  * never a declared name, `Account.name`, or email) and state, with Approve /
  * Deny for a pending request and Revoke for an approved one — each Promoter
  * independently. A Promoter with no mName is shown as such, never named by
- * anything else, and is not offered Approve. The opaque references are held in props
+ * anything else, and is not offered Approve. Phase 1.44: an APPROVED Promoter
+ * also shows whether it has accepted the current terms — the exact versions
+ * and the date, never an id. The opaque references are held in props
  * and never rendered. On success the server re-renders the page, so the state
  * shown is the server's; nothing is set client-side. No Offer term, commission,
  * price, or Storefront control is offered here.
@@ -23,6 +25,7 @@ import {
   PROMOTION_DENY_LABEL,
   PROMOTION_PROMOTER_MNAME_MISSING,
   PROMOTION_REVOKE_LABEL,
+  promotionTermsAcceptanceStatus,
 } from "./account-home-copy";
 import { submitPromotionAuthorizationDecision } from "./promotion-authorization-submission";
 
@@ -36,6 +39,10 @@ export function PromotionAuthorizationSellerControls({
     promoterMName: string | null;
     state: "REQUESTED" | "APPROVED";
     canApprove: boolean;
+    termsAcceptance: {
+      packageAccepted: boolean;
+      acceptance: { standingVersion: string; promotionVersion: string | null; acceptedAt: string } | null;
+    } | null;
   }>;
 }) {
   const router = useRouter();
@@ -63,7 +70,8 @@ export function PromotionAuthorizationSellerControls({
         {authorizations.map((a) => (
           <li key={a.authorizationRef}>
             <span className="account-storefront-name">{a.promoterMName ?? PROMOTION_PROMOTER_MNAME_MISSING}</span>
-            {` — ${PROMOTION_AUTHORIZATION_STATE_LABELS[a.state]} `}
+            {` — ${PROMOTION_AUTHORIZATION_STATE_LABELS[a.state]}`}
+            {a.termsAcceptance !== null ? ` · ${promotionTermsAcceptanceStatus(a.termsAcceptance)}` : ""}{" "}
             {a.state === "REQUESTED" ? (
               <>
                 {a.canApprove ? (

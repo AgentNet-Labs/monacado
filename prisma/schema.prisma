@@ -337,6 +337,10 @@ model PromotionAuthorization {
   promoter MarketplaceParticipant      @relation("PromotionAuthorizationPromoter", fields: [promoterParticipantId], references: [id], onDelete: Restrict)
   acts     PromotionAuthorizationAct[]
 
+  /// The Promoter's Offer-package acceptances under THIS cycle (Phase 1.44).
+  /// A new cycle starts with none: nothing carries forward. RESTRICT.
+  offerAcceptances PromotionOfferAcceptance[]
+
   @@unique([currentForProductId, currentForPromoterParticipantId])
   @@unique([internalProductId, promoterParticipantId, cycleNumber])
   @@index([promoterParticipantId])
@@ -383,6 +387,62 @@ model PromotionAuthorizationAct {
 
   @@index([authorizationId, actedAt])
   @@index([actorParticipantId])
+}
+
+/// One Promoter's acceptance of one exact Offer commercial PACKAGE under one
+/// Promotion Authorization cycle (Phase 1.44, Contract §16.3(7), §19) —
+/// append-only, never updated, never deleted as workflow.
+///
+/// A package is the exact STANDING version S, or S together with the exact
+/// SCHEDULED_PROMOTION version P built on it. One row is ONE acceptance act:
+/// there is no way to record assent to S alone while P is pending, or to P
+/// without S. Accepting {S, P} includes accepting S.
+///
+/// Nothing here is a flag or a state. Whether the terms in force at an instant
+/// are covered is DERIVED: S in force is covered by any row naming S; P in force
+/// by a row naming exactly (S, P). A Seller revision writes nothing here — a new
+/// version simply has no row yet. The Promoter is the cycle's, and is not copied.
+///
+/// Not stored: retail price, Monacado's retained amount, any transaction money,
+/// and the economics themselves — the immutable version rows hold those, and
+/// the request's echo of them was checked against those rows before insert.
+model PromotionOfferAcceptance {
+  /// Opaque identity (mon:pofacc:<opaque>). Internal audit only; never exposed.
+  id String @id @db.VarChar(191)
+
+  /// The cycle it was given under — APPROVED and current at acceptance.
+  authorizationId String @db.VarChar(191)
+
+  /// The Offer's source record: S and P are versions of the same one.
+  offerSourceRecordId String  @db.VarChar(191)
+  /// The exact STANDING version accepted.
+  standingVersion     String  @db.VarChar(64)
+  /// The exact SCHEDULED_PROMOTION version accepted with it; NULL for {S}.
+  promotionVersion    String? @db.VarChar(64)
+  /// `promotionVersion`, or '' for a standard-only package — NOT NULL so the
+  /// unique key covers {S} too (MySQL admits any number of NULLs). A CHECK in
+  /// the migration holds it equal to IFNULL(promotionVersion, '').
+  promotionVersionKey String  @db.VarChar(64)
+
+  /// The account that accepted. Internal audit only; never exposed.
+  acceptedByAccountId String   @db.VarChar(191)
+  acceptedAt          DateTime @db.DateTime(3)
+
+  createdAt DateTime @default(now()) @db.DateTime(3)
+
+  authorization PromotionAuthorization       @relation(fields: [authorizationId], references: [id], onDelete: Restrict)
+  /// THE EXACT STANDING VERSION — the 0M.6 composite key a Listing also binds by.
+  standing      OfferSourceRecordVersionRow  @relation("AcceptedStandingVersion", fields: [offerSourceRecordId, standingVersion], references: [offerSourceRecordId, sourceRecordVersion], onDelete: Restrict, onUpdate: Restrict)
+  /// THE EXACT PROMOTION, BUILT ON THAT STANDING VERSION: the key includes the
+  /// promotion's `basisStandingVersion`, so the database refuses a promotion
+  /// built on another S, or a STANDING row named as a promotion. NULL
+  /// `promotionVersion` passes under MySQL's MATCH SIMPLE.
+  promotion     OfferSourceRecordVersionRow? @relation("AcceptedPromotionVersion", fields: [offerSourceRecordId, promotionVersion, standingVersion], references: [offerSourceRecordId, sourceRecordVersion, basisStandingVersion], onDelete: Restrict, onUpdate: Restrict)
+
+  /// One row per package per cycle: a repeat is the same undertaking.
+  @@unique([authorizationId, offerSourceRecordId, standingVersion, promotionVersionKey])
+  @@index([offerSourceRecordId, standingVersion])
+  @@index([offerSourceRecordId, promotionVersion, standingVersion])
 }
 
 /// Durable AgentNet Node associated with a Monacado Product (Phase 0E.1).
@@ -2629,9 +2689,20 @@ model OfferSourceRecordVersionRow {
   /// exact version (0M.T1). RESTRICT: a completed sale's basis is not deletable.
   transactionSnapshots TransactionEconomicSnapshot[]
 
+  /// Promoter package acceptances naming THIS version as their standing terms,
+  /// and as their promotional terms (Phase 1.44). RESTRICT: accepted terms are
+  /// evidence and are not deletable beneath the acceptance.
+  standingAcceptances  PromotionOfferAcceptance[] @relation("AcceptedStandingVersion")
+  promotionAcceptances PromotionOfferAcceptance[] @relation("AcceptedPromotionVersion")
+
   /// One row per (source record, version label) — a version label is minted
   /// once. This is the durable key a 0M.7 Listing binds an exact Offer version by.
   @@unique([offerSourceRecordId, sourceRecordVersion])
+  /// Phase 1.44 — a superset of the key above, so it is unique by construction.
+  /// It exists only as the target of the acceptance's promotion foreign key,
+  /// which thereby proves an accepted promotion was built on the accepted
+  /// standing version (a STANDING row's basis is NULL and can never match).
+  @@unique([offerSourceRecordId, sourceRecordVersion, basisStandingVersion], map: "OfferSourceRecordVersionRow_srec_version_basis_key")
   @@index([internalOfferId, seq])
   @@index([internalProductId])
   @@index([sellerParticipantId])

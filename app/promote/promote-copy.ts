@@ -88,6 +88,16 @@ export function formatCatalogTermsLine(terms: {
 
 export const CATALOG_PROMOTION_BADGE = "Promotion";
 
+/**
+ * Phase 1.44 — a promotion beside the standard terms, by its window: "in force
+ * now" while running, or when it starts. Never "better", "worse", or a "deal":
+ * Monacado shows the exact terms and the Promoter decides.
+ */
+export function formatCatalogPromotionWindow(promotion: { effectiveFrom: string; effectiveUntil: string; inForce: boolean }): string {
+  const window = `${formatCatalogDate(promotion.effectiveFrom)} to ${formatCatalogDate(promotion.effectiveUntil)}`;
+  return promotion.inForce ? `in force now, ${window}` : window;
+}
+
 /** A date as the catalog shows it, in UTC so the server and browser agree. */
 export function formatCatalogDate(iso: string): string {
   return new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "UTC" }).format(new Date(iso));
@@ -107,11 +117,46 @@ export const DETAIL_MORE_FROM_SELLER = "More from this seller";
 export const DETAIL_DELIVERY = "Delivery";
 export const DETAIL_WHOLESALE = "Wholesale";
 export const DETAIL_COMMISSION = "Commission per sale";
-export const DETAIL_TERMS_NOW = "Terms now";
-export const DETAIL_PROMOTION_UNTIL = (iso: string) => `Promotion — until ${formatCatalogDate(iso)}`;
-export const DETAIL_AFTER_PROMOTION = "After the promotion";
-export const DETAIL_UPCOMING_PROMOTION = (fromIso: string, untilIso: string) =>
-  `Upcoming promotion — ${formatCatalogDate(fromIso)} to ${formatCatalogDate(untilIso)}`;
+export const DETAIL_STANDARD_TERMS = "Standard terms";
+/** Phase 1.44 — a running promotion is marked as the terms in force; a scheduled one by its window. */
+export const DETAIL_PROMOTION_HEADING = (promotion: { effectiveFrom: string; effectiveUntil: string; inForce: boolean }) =>
+  promotion.inForce
+    ? `Promotional terms — in force now, ${formatCatalogDate(promotion.effectiveFrom)} to ${formatCatalogDate(promotion.effectiveUntil)}`
+    : `Upcoming promotional terms — ${formatCatalogDate(promotion.effectiveFrom)} to ${formatCatalogDate(promotion.effectiveUntil)}`;
+export const DETAIL_STANDARD_RESUMES = "The standard terms apply again when the promotion ends.";
 export const DETAIL_OFFER_ENDS = (iso: string) => `This offer ends ${formatCatalogDate(iso)}.`;
 export const DETAIL_REQUEST_NOTE =
   "The seller decides. Approval lets you promote this product; it isn't an agreement to these terms, and nothing is for sale yet.";
+
+// — Offer-package acceptance (Phase 1.44) —
+
+export const ACCEPTANCE_HEADING = "Accept the seller's terms";
+export const ACCEPTANCE_NOTE =
+  "Accepting covers everything shown here together — you can't accept part of it. You set your own retail price on your listing; it isn't part of these terms.";
+export const ACCEPT_STANDARD_LABEL = "Accept standard terms";
+export const ACCEPT_PACKAGE_LABEL = "Accept standard + promotional terms";
+export const ACCEPTANCE_VERSION_LABEL = "Terms version";
+
+/** Where the Promoter stands on the package shown — derived from the server's view, never stored. */
+export function offerPackageStatus(view: {
+  promotion: { effectiveFrom: string; inForce: boolean } | null;
+  acceptedAt: string | null;
+  hadEarlierAcceptance: boolean;
+  inForceCovered: boolean;
+}): string {
+  if (view.acceptedAt !== null) {
+    const when = formatCatalogDate(view.acceptedAt);
+    if (view.promotion === null) return `You accepted the standard terms on ${when}.`;
+    return view.promotion.inForce
+      ? `You accepted the standard + promotional terms on ${when}. The promotional terms are in force now.`
+      : `You accepted the standard + promotional terms on ${when}. The promotional terms start ${formatCatalogDate(view.promotion.effectiveFrom)}.`;
+  }
+  if (view.promotion?.inForce) {
+    return "The promotional terms are in force now and you haven't accepted them. You aren't covered under the terms in force until you accept the standard + promotional terms.";
+  }
+  if (view.promotion !== null && view.inForceCovered) {
+    return `You've accepted the standard terms. The promotional terms start ${formatCatalogDate(view.promotion.effectiveFrom)} and need your acceptance, together with the standard terms, to be covered while they're in force.`;
+  }
+  if (view.hadEarlierAcceptance) return "The seller's terms have changed. The new terms need your acceptance.";
+  return "You haven't accepted these terms yet.";
+}

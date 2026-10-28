@@ -507,6 +507,17 @@ Promotion Authorization are separate requirements.** None implies another.
   Offer.**
 - A promoted Listing **binds an accepted Offer version** — one exact immutable
   version, not "the current Offer".
+- **A Promoter accepts the Offer's commercial package, all or nothing**
+  (Phase 1.44): the exact current standing version **{S}** when no promotion is
+  scheduled or running, or **{S, P}** — S together with the exact promotional
+  version P built on it — while P is scheduled or running. There is no act that
+  accepts S alone while a promotion is pending, and none that accepts P without
+  S; accepting {S, P} includes accepting S. **Approval (§16.1) is permission,
+  never acceptance.** New acceptance requires the Promoter's current
+  authorization `APPROVED`, Product `ACTIVE`, resale `AVAILABLE` or `PAUSED`
+  (a pause blocks commerce, not assent), and the Offer `ACTIVE`. Monacado
+  presents the exact terms and never characterizes promotional terms relative
+  to the standard ones.
 - The Offer answers: **"What commercial terms govern permitted third-party resale
   of this Product?"** It may contain the wholesale amount, commission,
   lifecycle / availability terms, and other governed promotional economics.
@@ -590,7 +601,10 @@ A promoted transaction requires, **at minimum, all of**:
 4. Promotion Authorization = **`APPROVED`** for the **specific Promoter** (§16.1);
 5. the **Promoter itself commercially eligible**;
 6. Seller and Promoter are **distinct governed economic principals** (§14);
-7. the Promoter has **accepted the material Offer terms** (§19);
+7. the Promoter has **accepted the material Offer terms** (§19) — under its
+   current authorization, an acceptance covering exactly the terms in force:
+   the standing version S in force is covered by any accepted package naming S;
+   a promotional version P in force only by an accepted {S, P};
 8. **all other applicable readiness gates.**
 
 **Product-level resale availability does not automatically authorize every
@@ -655,6 +669,13 @@ Detail: [`MONACADO_MOR_BUSINESS_MODEL.md`](MONACADO_MOR_BUSINESS_MODEL.md).
   Listings.
 - The exact set of material fields must remain **explicit and testable** — an
   enumerated set, never an inferred one.
+- **Coverage is per exact version** (Phase 1.44). Every new standing version
+  and every new or replacement promotional version needs a new acceptance. A
+  running promotion that was not accepted is **not** covered — there is no
+  fallback to the standing terms during the Seller's promotional window. When a
+  promotion expires or is ended early, the unchanged standing version resumes
+  and an earlier {S} or {S, P} acceptance covers it with no new act. An
+  acceptance belongs to one authorization cycle; a new cycle inherits none.
 
 ---
 
@@ -984,7 +1005,7 @@ names still binds.
 | Wholesale catalog entitlement implementation. **Phase 1.42 note:** Offers can now be activated (an `ACTIVE` promotional Offer is the §12 capacity trigger), but no wholesale catalog capacity is counted or enforced yet | §12 |
 | Promoter self-service | §14 |
 | Economic-principal resolution. **Narrowed by Phase 1.41:** Promotion Authorization refuses self-promotion when the requesting Promoter participant is the participant holding Seller authority over the Product, and re-checks it at approval — the strongest authoritative principal identity available today (one participant per account). **Still open:** a common economic principal across separate accounts remains unresolved until the repository has an authoritative principal-linkage model | §14 |
-| Promoted-commerce eligibility enforcement (replaces "Product / Offer promotability enforcement"). **Narrowed by Phase 1.42:** the Offer half of §16.3(3) exists — Seller-authored promoted-resale Offers with derived lifecycle (`DRAFT` / `ACTIVE` / `PAUSED` / `WITHDRAWN` / `ENDED`), activation gated by the Seller's public marketplace identity (§5, §12), and the pure `effectiveOfferTerms` resolver. **Still open:** nothing aggregates §16.3(1)–(8); `effectiveOfferTerms` is wired into neither checkout nor Listings; Promoter acceptance of Offer terms (§16.3(7)) does not exist. **Narrowed by Phase 1.43:** Promoters can see the Offer terms in force (and a running or upcoming promotion's terms) in the Promotable Catalog; seeing terms is not accepting them | §14, §16.3 |
+| Promoted-commerce eligibility enforcement (replaces "Product / Offer promotability enforcement"). **Narrowed by Phase 1.42:** the Offer half of §16.3(3) exists — Seller-authored promoted-resale Offers with derived lifecycle (`DRAFT` / `ACTIVE` / `PAUSED` / `WITHDRAWN` / `ENDED`), activation gated by the Seller's public marketplace identity (§5, §12), and the pure `effectiveOfferTerms` resolver. **Still open:** nothing aggregates §16.3(1)–(8); `effectiveOfferTerms` is wired into neither checkout nor Listings; Promoter acceptance of Offer terms (§16.3(7)) does not exist. **Narrowed by Phase 1.43:** Promoters can see the Offer terms in force (and a running or upcoming promotion's terms) in the Promotable Catalog; seeing terms is not accepting them. **Narrowed by Phase 1.44:** §16.3(7) exists as an append-only acceptance of an exact package ({S} or {S, P}) per Promotion Authorization cycle, and a server-only helper answers whether §16.3(1)–(4), the self-promotion part of (6), and (7) hold for the terms in force — returning the governing versions and acceptance evidence, and naming the gates it does not evaluate. **Still open:** the helper is wired into nothing; §16.3(5), the economic-principal part of (6), and (8) are not aggregated; no Listing, checkout, or Order consults acceptance | §14, §16.3 |
 | **Declared first / last-name identity primitive — primitive exists, enforcement open.** `Account.firstName` and `Account.lastName` now exist as declared-name primitives (Phase 1.37), and public registration requires both. They are declarations only; no KYC or name verification is implied. Pre-1.37 accounts may still have NULL declared names. **Still open:** downstream private / public marketplace identity readiness checks must require the declared names where governed; a future account / profile flow is needed if pre-existing accounts must declare or update their names; and Promotion Authorization request implementation still depends on private marketplace identity enforcement. **Narrowed by Phase 1.39:** Product activation now requires nonblank declared first and last names (never `Account.name`). **Narrowed by Phase 1.41:** a Promotion Authorization request — and its approval, re-checked — requires private marketplace identity: a verified email and nonblank declared first and last names (never `Account.name`). **Narrowed by Phase 1.43:** declared names are no longer shown to any other participant; the Seller sees a Promoter by its mName (§5.1) only, and a request also requires an mName | §4, §5, §16.1 |
 | Product lifecycle implementation (`INCOMPLETE` / `COMPLETE` / `ACTIVE` / `SUSPENDED`), including **deterministic completeness** derived from governed, versioned requirements, the fact-driven transitions, and suspension reinstatement — which requires preserving **enough suspension context to determine the Product's lifecycle state immediately before suspension**; today Products carry only an internal authoring `recordStatus`. **Narrowed by Phase 1.38:** deterministic `PRODUCT_COMPLETENESS_V1` evaluation from the current source version, Seller Product revision, and the Seller shipping-policy primitive now exist; the lifecycle states, transitions, and suspension reinstatement remain open. **Narrowed by Phase 1.39:** the four states are derived on read (nothing redundant is stored); a completeness loss derives `INCOMPLETE` and a readiness loss `COMPLETE`, permanently for that activation; governed Product suspension and reinstatement exist as a server primitive (`ProductSuspension`, recording the lifecycle and activation in effect immediately before suspension, on a new internal `product:suspend` grant). Product `taxClassification` is Monacado operator authority, assigned or changed only through the staff route `POST /api/internal/products/{productRef}/tax-classification` on a new internal `product:tax-classify` grant — never by the Seller; it is operational readiness, not Product completeness. **Still open:** an operator surface and a Seller notice for Product suspension | §9.1 |
 | Product activation as an **explicit Seller act**, including explicit reactivation after lost readiness is restored. **Narrowed by Phase 1.39:** `POST /api/products/{productRef}/activate` is the only path to `ACTIVE`, gated by one readiness evaluator (completeness, Seller authority, verified email, declared names, `ACTIVE` participant and SELLER role, payment `ENABLED`, commerce approval `APPROVED`, no participant suspension, no `product:activate` restriction, tax classification); restored readiness never re-activates. The commerce gate on `ACTIVE` (row below) remains open | §9.2 |
@@ -995,7 +1016,7 @@ names still binds.
 | Enforcement of Promotion Authorization on promoted commerce. **Narrowed by Phase 1.41:** the consumable helper `isPromotionAuthorizationApprovedIn` (current cycle `APPROVED` for this Product + Promoter) exists; nothing commercial calls it yet, and it is never sufficient alone | §16.3 |
 | Pause, withdrawal, and revocation propagation to promoted commerce | §16.4 |
 | **Unresolved architecture:** the broader Listing-versus-Storefront-placement model is not yet reconciled with §9–§16 Storefront independence. Listing / Storefront coupling: the current promoted path is authorized by the PROMOTER role, Storefront placement authority, and the Offer's `PROMOTABLE` terms, with no Promotion Authorization, Product lifecycle, or resale-availability gate | §11, §16.3 |
-| Offer-change propagation to promoted Listings. **Narrowed by Phase 1.42:** wholesale and commission changes mint a new immutable, server-labelled Offer version and are classified by an enumerated material-field set; pausing or resuming an Offer mints no version; a promoted Listing stops being buyer-active while its Offer's current derived lifecycle is not `ACTIVE`. **Owner ruling (Phase 1.42):** a scheduled promotion's wholesale override is material; Promoter acceptance binds the exact promotional version and may be given after scheduling and before `effectiveFrom`; no new acceptance is needed when `effectiveFrom` arrives, nor when the promotion ends and the exact prior standing version — already accepted and unchanged — resumes. **Still open:** persisting Promoter acceptance, invalidating it, and requiring explicit reacceptance on a material change | §19 |
+| Offer-change propagation to promoted Listings. **Narrowed by Phase 1.42:** wholesale and commission changes mint a new immutable, server-labelled Offer version and are classified by an enumerated material-field set; pausing or resuming an Offer mints no version; a promoted Listing stops being buyer-active while its Offer's current derived lifecycle is not `ACTIVE`. **Owner ruling (Phase 1.42):** a scheduled promotion's wholesale override is material; Promoter acceptance binds the exact promotional version and may be given after scheduling and before `effectiveFrom`; no new acceptance is needed when `effectiveFrom` arrives, nor when the promotion ends and the exact prior standing version — already accepted and unchanged — resumes. **Still open:** persisting Promoter acceptance, invalidating it, and requiring explicit reacceptance on a material change. **Narrowed by Phase 1.44:** Promoter acceptance is persisted per exact version package and per cycle; a new standing or promotional version is uncovered until explicitly accepted (invalidation is derived, never a stored flag). **Still open:** a promoted Listing stopping on an uncovered version, and the legacy Listing `accepted*` fields (Phase 1.45) | §19 |
 | Public Storefront / browse / search | §11, §32 |
 | **mName issuance for pre-1.43 participants.** Phase 1.43 issues an mName at participant creation; participants created earlier — including any created by the previous release after the column is added and before Phase 1.43 is deployed — have none, and there is no governed issuance path for them. Until one exists, they cannot request Promotion Authorization, are shown to a Seller as lacking an mName (and cannot be approved), and do not appear as Sellers in the Promotable Catalog | §5.1, §16.1 |
 | **mName correction and reassignment.** No operator path exists to correct or reassign an mName with an audit record (for example, an offensive random draw); no denylist screens issued names | §5.1, §8 |
@@ -1107,3 +1128,16 @@ Phase 1.43 owner rulings:
 | 1.43-3 | A Promotion Authorization request requires an mName | §16.1 |
 | 1.43-4 | The mName is issued atomically when the MarketplaceParticipant is first created, not at activation; it is marketplace identity, not commerce readiness; a missing mName on a new participant is an invariant violation, and its refusal is defensive / legacy only; preserves 2C-F4 | §5.1, §16.1 |
 | 1.43-5 | The Promotable Catalog shows commission as the Offer states it (percentage or fixed amount), never a synthesized percentage | §16, §34 |
+
+Phase 1.44 owner rulings:
+
+| Ruling | Subject | Section |
+| --- | --- | --- |
+| 1.44-1 | Acceptance is of the Offer's package, all or nothing: {S}, or {S, P} while P is scheduled or running; {S, P} includes S | §16 |
+| 1.44-2 | Approval is permission, never acceptance; new acceptance needs the current cycle `APPROVED` and re-checks the request gate and self-promotion | §16, §16.1 |
+| 1.44-3 | New acceptance only while the Offer is `ACTIVE` (`DRAFT`, `PAUSED`, `WITHDRAWN`, `ENDED` refused) and the Product `ACTIVE` | §16 |
+| 1.44-4 | Resale `AVAILABLE` or `PAUSED` admits acceptance; `NOT_OFFERED` and `WITHDRAWN` do not | §9.3, §16 |
+| 1.44-5 | Coverage: S in force by any package naming S; P in force only by exactly {S, P}; no fallback to S during a promotion; after expiry or early end the earlier package covers S; a replacement P or a new S needs a new acceptance | §16.3, §19 |
+| 1.44-6 | Acceptance belongs to one cycle; a new cycle inherits none | §16.1, §19 |
+| 1.44-7 | First acceptance answers 201; an identical replay answers 200 with the original `acceptedAt` | §16 |
+| 1.44-8 | Promotional terms are presented exactly, never characterized as better or worse than the standard terms | §16 |

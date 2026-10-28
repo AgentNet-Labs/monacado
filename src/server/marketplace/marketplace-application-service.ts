@@ -124,6 +124,10 @@ import {
   requestPromotionAuthorizationAs,
   type PromotionAuthorizationResult,
 } from "./promotion-authorization-service";
+import {
+  acceptOfferPackageAs,
+  type OfferPackageAcceptanceResult,
+} from "./promotion-offer-acceptance-service";
 
 /**
  * What a caller may state.
@@ -611,6 +615,19 @@ export async function cancelOwnPromotionAuthorizationAs(
   deps: { db?: ReturnType<typeof getPrisma> } = {},
 ): Promise<PromotionAuthorizationResult> {
   return await cancelPromotionAuthorizationAs({ accountId: actor.accountId }, request, deps);
+}
+
+/**
+ * Accept the exact Offer package, as the acting account's own Promoter on its
+ * own APPROVED cycle (Phase 1.44). The body names the package; the actor is the
+ * session's, and nothing in the body can name another.
+ */
+export async function acceptOfferPackageForOwnAuthorizationAs(
+  actor: ActingAccount,
+  request: { productRef: string; authorizationRef: string; input: unknown; now: string },
+  deps: { db?: ReturnType<typeof getPrisma> } = {},
+): Promise<OfferPackageAcceptanceResult> {
+  return await acceptOfferPackageAs({ accountId: actor.accountId }, request, deps);
 }
 
 // — Refund initiation (Phase 1.19) —

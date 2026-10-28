@@ -467,13 +467,62 @@ here because it hangs off `Product`.
   current cycle `APPROVED` for this Product + Promoter* — necessary, never
   sufficient (§16.3). Nothing commercial consumes it yet.
 - **Pages.** `/account` lists each Product's pending and approved Promoters (by the
-  Promoter's declared first and last name — a declaration, not a verification;
-  never `Account.name` or an email) with Approve / Deny / Revoke, and, for a PROMOTER, its
+  Promoter's mName — the cross-participant marketplace identity since Phase 1.43;
+  declared names, `Account.name`, and email stay private and are never shown to
+  the Seller) with Approve / Deny / Revoke, and, for a PROMOTER, its
   requests by the Product reference it supplied, with Cancel / Request again
   where governed, and a request form taking a reference. No discovery.
 - Writes no source version, Product row, lifecycle, resale, Storefront,
   Listing, Offer, Order, payment, payout, Node, publication, outbox, or
   notification state; the Product revision token is unchanged.
+
+### Promoter Offer-package acceptance (Phase 1.44)
+
+Implementation record; the governing rules are Contract §16, §16.3(7), §19 and
+rulings 1.44-1…8. Approval answers *may this Promoter promote this Product*;
+acceptance answers *has it accepted the Seller's exact terms*. Approval is never
+acceptance.
+
+- **One append-only table** (`20261029000000_add_promotion_offer_acceptance`):
+  **`PromotionOfferAcceptance`** — one Promoter's acceptance of one exact
+  package under one cycle: `authorizationId`, `offerSourceRecordId`,
+  `standingVersion`, nullable `promotionVersion`, `promotionVersionKey`
+  (`promotionVersion` or `''`, held equal by a CHECK, so the unique key
+  (cycle, Offer, S, P-or-'') also covers standard-only packages), the accepting
+  account, and `acceptedAt`. Never updated. The standing FK targets the exact
+  version; the promotion FK targets (Offer, P, basis = S), so the database
+  refuses a promotion not built on S. No economics (the version rows hold
+  them), retail price, Monacado retention, participant id, or current / valid
+  flag. Nothing is published.
+- **Act** (`server/marketplace/promotion-offer-acceptance-service.ts`,
+  `POST /api/products/{productRef}/promotion-authorization/{authorizationRef}/offer-acceptance`):
+  the body restates the exact package shown — `offerRef`, `standing` (version
+  and economics), and `promotion` (version, economics, window) or `null`. Inside
+  one transaction, Product row locked `FOR UPDATE`: the cycle is the caller's,
+  current, and `APPROVED`; the request gate and self-promotion are re-asked;
+  Product `ACTIVE`; resale `AVAILABLE` or `PAUSED`; the Offer is the Product's
+  current, Seller-authored, `ACTIVE` Offer; the package is exactly the
+  acceptable one; the restated economics and window equal the immutable
+  versions'. Refusals are deterministic 409s (`OFFER_ACCEPTANCE_*`) that write
+  nothing. First acceptance 201; an identical replay 200 with the original
+  `acceptedAt`. Answers carry references and versions only.
+- **Coverage is derived** (`contracts/marketplace/promotion-offer-acceptance.ts`):
+  S in force by any row naming S; P in force only by exactly (S, P). A new cycle
+  inherits nothing; a revoked cycle's rows stay as evidence and govern nothing.
+- **Views.** The Promoter's APPROVED rows on `/account` and the catalog detail
+  page show the exact package and **one** button — *Accept standard terms* or
+  *Accept standard + promotional terms*. The Seller's `/account` shows each
+  APPROVED Promoter (by mName) as having accepted the current package, or not
+  (with the last package it did accept). Promotional terms are never
+  characterized relative to the standard terms.
+- **Helper, unwired.** `readPromotedTermsEligibilityIn` answers whether
+  §16.3(1)–(4), the self-promotion part of (6), and (7) hold for the terms in
+  force, returning the governing versions and acceptance evidence, and always
+  naming what it does not evaluate (Promoter payment / commerce readiness,
+  restrictions, Listing, retail economics, cross-account principals,
+  transaction conditions). Nothing consumes it in 1.44.
+- Writes no Offer, version, act, Promotion Authorization, Product, Listing,
+  Order, payment, notification, Node, publication, or outbox state.
 
 ## Related: Product Node
 

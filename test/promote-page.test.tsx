@@ -49,23 +49,29 @@ const REF = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const REF2 = "ZYXWVTSRQPNMKJHGFEDCBA9876543210";
 const ALLOWED = { outcome: "ALLOWED", viewerParticipantId: "mon:mpart:VIEWER", canRequest: true, requestRefusals: [] };
 
-const card = (over: Partial<PromotableCatalogCard> = {}): PromotableCatalogCard => ({
-  productRef: REF,
-  name: "Hand-thrown Stoneware Mug",
-  sellerMName: "m7kx",
-  summary: "14 oz artisan ceramic mug",
-  deliveryMode: "PHYSICAL",
-  terms: {
-    wholesalePriceMinorUnits: 4000,
-    currency: "USD",
-    commission: { method: "PERCENT_OF_WHOLESALE", commissionBasisPoints: 1000 },
-    calculatedCommissionMinorUnits: 400,
-  },
-  termsInForce: "STANDING",
-  promotionEndsAt: null,
-  authorization: "NONE",
-  ...over,
-});
+const STANDARD = {
+  wholesalePriceMinorUnits: 4000,
+  currency: "USD",
+  commission: { method: "PERCENT_OF_WHOLESALE" as const, commissionBasisPoints: 1000 },
+  calculatedCommissionMinorUnits: 400,
+};
+
+const card = (over: Partial<PromotableCatalogCard> = {}): PromotableCatalogCard => {
+  const base: PromotableCatalogCard = {
+    productRef: REF,
+    name: "Hand-thrown Stoneware Mug",
+    sellerMName: "m7kx",
+    summary: "14 oz artisan ceramic mug",
+    deliveryMode: "PHYSICAL",
+    terms: STANDARD,
+    termsInForce: "STANDING",
+    standardTerms: STANDARD,
+    promotion: null,
+    authorization: "NONE",
+  };
+  /* A card whose only terms are given as `terms` shows them as its standard terms. */
+  return { ...base, ...(over.terms !== undefined && over.standardTerms === undefined ? { standardTerms: over.terms } : {}), ...over };
+};
 
 const text = (html: string) => html.replaceAll("<!-- -->", "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
 
@@ -161,9 +167,8 @@ describe("/promote/{productRef}", () => {
   const detail = (over: Partial<PromotableCatalogDetail> = {}): PromotableCatalogDetail => ({
     ...card(),
     description: "14 oz artisan ceramic mug\nKiln-fired.",
-    standingTerms: null,
-    upcomingPromotion: null,
     offerEffectiveUntil: null,
+    termsAcceptance: null,
     ...over,
   });
 
@@ -185,33 +190,43 @@ describe("/promote/{productRef}", () => {
     expect(html).not.toContain("mon:");
   });
 
-  it("shows a running promotion with the standing terms it returns to, and an upcoming one with its window", async () => {
+  it("always shows the standard terms; a running promotion beside them, marked in force with its window; an upcoming one with its window", async () => {
+    const standard = { ...STANDARD, wholesalePriceMinorUnits: 5000, calculatedCommissionMinorUnits: 500 };
     readPromotableCatalogDetail.mockResolvedValue(
       detail({
         termsInForce: "SCHEDULED_PROMOTION",
-        promotionEndsAt: "2029-08-05T00:00:00.000Z",
-        standingTerms: { ...card().terms, wholesalePriceMinorUnits: 5000, calculatedCommissionMinorUnits: 500 },
+        terms: STANDARD,
+        standardTerms: standard,
+        promotion: { ...STANDARD, effectiveFrom: "2029-08-01T00:00:00.000Z", effectiveUntil: "2029-08-05T00:00:00.000Z", inForce: true },
       }),
     );
     const running = text(await renderDetail());
-    expect(running).toContain("Promotion — until Aug 5, 2029");
-    expect(running).toContain("After the promotion Wholesale $50.00");
+    expect(running).toContain("Standard terms Wholesale $50.00 Commission per sale 10% ($5.00)");
+    expect(running).toContain("Promotional terms — in force now, Aug 1, 2029 to Aug 5, 2029 Wholesale $40.00 Commission per sale 10% ($4.00)");
+    expect(running).toContain("The standard terms apply again when the promotion ends.");
 
     readPromotableCatalogDetail.mockResolvedValue(
       detail({
-        upcomingPromotion: {
-          ...card().terms,
+        promotion: {
+          ...STANDARD,
           wholesalePriceMinorUnits: 3000,
           calculatedCommissionMinorUnits: 300,
           effectiveFrom: "2029-09-01T00:00:00.000Z",
           effectiveUntil: "2029-09-08T00:00:00.000Z",
+          inForce: false,
         },
         offerEffectiveUntil: "2029-12-31T00:00:00.000Z",
       }),
     );
     const upcoming = text(await renderDetail());
-    expect(upcoming).toContain("Upcoming promotion — Sep 1, 2029 to Sep 8, 2029 Wholesale $30.00 Commission per sale 10% ($3.00)");
+    expect(upcoming).toContain("Standard terms Wholesale $40.00");
+    expect(upcoming).toContain("Upcoming promotional terms — Sep 1, 2029 to Sep 8, 2029 Wholesale $30.00 Commission per sale 10% ($3.00)");
     expect(upcoming).toContain("This offer ends Dec 31, 2029.");
+    // The terms are presented, never characterized.
+    for (const word of [/better/i, /worse/i, /favou?rable/i, /improve/i, /concession/i, /deal\b/i, /save/i]) {
+      expect(running).not.toMatch(word);
+      expect(upcoming).not.toMatch(word);
+    }
   });
 
   it("says why a Promoter cannot request yet, with the button disabled; an open request shows its state instead", async () => {
@@ -230,5 +245,60 @@ describe("/promote/{productRef}", () => {
     const approved = await renderDetail();
     expect(text(approved)).toContain("Approved to promote");
     expect(approved).not.toContain("<button");
+  });
+
+  it("1.44 — an APPROVED Promoter sees the exact package and ONE accept button: standard only, or standard + promotional", async () => {
+    const ACC_REF = "ACCAUTHREF0000000000000000000000";
+    const plain = (html: string) => text(html).replaceAll("&#x27;", "'");
+    const standing = { ...STANDARD, version: "3", commissionCalculationPolicyVersion: "WHOLESALE_COMMISSION_V1" as const };
+    const view = {
+      authorizationRef: ACC_REF,
+      offerRef: REF2,
+      standing,
+      promotion: null,
+      acceptedAt: null,
+      hadEarlierAcceptance: false,
+      inForceCovered: false,
+    };
+    readPromotableCatalogDetail.mockResolvedValue(detail({ authorization: "APPROVED", termsAcceptance: view }));
+    const standardOnly = await renderDetail();
+    expect(plain(standardOnly)).toContain("Accept the seller's terms");
+    expect(plain(standardOnly)).toContain("You haven't accepted these terms yet.");
+    expect(plain(standardOnly)).toContain("Terms version 3");
+    expect(standardOnly.match(/<button/g)).toHaveLength(1);
+    expect(standardOnly).toMatch(/<button[^>]*>Accept standard terms<\/button>/);
+
+    const promotion = {
+      ...standing,
+      version: "4",
+      wholesalePriceMinorUnits: 3000,
+      calculatedCommissionMinorUnits: 300,
+      effectiveFrom: "2029-09-01T00:00:00.000Z",
+      effectiveUntil: "2029-09-08T00:00:00.000Z",
+      inForce: false,
+    };
+    readPromotableCatalogDetail.mockResolvedValue(
+      detail({ authorization: "APPROVED", termsAcceptance: { ...view, promotion, inForceCovered: true } }),
+    );
+    const pkg = await renderDetail();
+    const t = plain(pkg);
+    expect(pkg.match(/<button/g)).toHaveLength(1);
+    expect(pkg).toMatch(/<button[^>]*>Accept standard \+ promotional terms<\/button>/);
+    expect(pkg).not.toMatch(/>Accept standard terms</);
+    expect(t).toContain("Terms version 3");
+    expect(t).toContain("Terms version 4");
+    expect(t).toContain("need your acceptance, together with the standard terms");
+    for (const word of [/better/i, /worse/i, /favou?rable/i, /improve/i, /concession/i]) expect(t).not.toMatch(word);
+    // The cycle reference is an action value, never rendered; no seller proceeds or retail price.
+    expect(pkg).not.toContain(ACC_REF);
+    expect(t).not.toMatch(/proceeds/i);
+    expect(t).not.toMatch(/\$\d[^ ]* retail/i);
+
+    readPromotableCatalogDetail.mockResolvedValue(
+      detail({ authorization: "APPROVED", termsAcceptance: { ...view, promotion, acceptedAt: "2029-08-20T00:00:00.000Z" } }),
+    );
+    const accepted = await renderDetail();
+    expect(plain(accepted)).toContain("You accepted the standard + promotional terms on Aug 20, 2029. The promotional terms start Sep 1, 2029.");
+    expect(accepted).not.toContain("<button");
   });
 });

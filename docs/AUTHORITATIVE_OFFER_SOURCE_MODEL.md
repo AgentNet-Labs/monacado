@@ -119,6 +119,21 @@ unchanged. Because a standing revision is refused while a promotion is
 upcoming or running, the standing version that resumes is always the one the
 promotion was built on (`basisStandingVersion`).
 
+**Phase 1.44 — acceptance is of the package (Contract §16, §19; rulings
+1.44-1…8).** The ruling above is now built, and made precise: a Promoter accepts
+the Offer's **package**, all or nothing — `{S}` with no pending promotion, or
+`{S, P}` while P is `SCHEDULED` or `RUNNING`. There is no act accepting P alone
+or S alone while P is pending. Coverage of the terms in force is **derived**
+from immutable acceptance rows, never stored: S in force is covered by any
+accepted package naming S; P in force only by exactly `{S, P}`. So accepting
+`{S, P}` before `effectiveFrom` needs nothing more when P starts, and the
+earlier `{S}` or `{S, P}` covers S again when P expires or is ended early. A
+running P that was not accepted is **not** covered — there is no fallback to S
+during the window. A replacement P2 and a new standing S2 each need a new
+acceptance. Exact-version coverage is sound because every live version differs
+materially from its predecessor (§19); a future non-material version kind
+would need a deliberate ruling.
+
 **Privacy.** Offer terms are **unpublished**: no Offer capsule, Node, or
 publication. Phase 1.42 kept them Seller-only; **Phase 1.43** shows the terms in
 force (and a running or upcoming promotion's terms) to signed-in Promoters in

@@ -318,8 +318,9 @@ export default async function AccountPage() {
                     {/* Phase 1.42 — the Seller's Offer: commercial authority for
                         promoted resale, its own axis. These controls and the
                         Seller's proceeds are the Seller's alone; Promoters see
-                        only the terms in force, in the Promotable Catalog
-                        (Phase 1.43). Nothing here is listed. */}
+                        the standard terms and any promotion, never the
+                        proceeds, in the Promotable Catalog (Phase 1.43, 1.44).
+                        Nothing here is listed. */}
                     {product.offer.offer !== null || product.offer.canCreate ? (
                       <div className="account-promotion">
                         <p className="auth-hint">{`${OFFER_HEADING} · ${OFFER_NOTE}`}</p>

@@ -160,6 +160,14 @@ read-then-write check.
 **No Listing persistence is implemented here.** This phase only guarantees that
 the identity `0M.7` will need already exists and is stable.
 
+**Phase 1.44** adds `@@unique([offerSourceRecordId, sourceRecordVersion,
+basisStandingVersion])` (`OfferSourceRecordVersionRow_srec_version_basis_key`).
+It is a superset of the key above, so unique by construction, and exists only
+as the target of `PromotionOfferAcceptance`'s promotion foreign key — which
+thereby proves an accepted promotional version was built on the accepted
+standing version (a `STANDING` row's NULL basis never matches). Acceptance rows
+reference versions `ON DELETE RESTRICT ON UPDATE RESTRICT`.
+
 ## 4. Product relationship
 
 An Offer names a persisted `Product` through the authoritative
@@ -439,7 +447,8 @@ rather than minting a version that asserts nothing.
 
 > **Phase 1.42:** HTTP routes and a minimal Seller UI now exist. Still deferred:
 > Promoter acceptance of Offer terms (Promoter visibility arrived in Phase
-> 1.43's Promotable Catalog), Listing propagation and
+> 1.43's Promotable Catalog; acceptance itself arrived in Phase 1.44 — see
+> `PRODUCT_PERSISTENCE.md`, *Promoter Offer-package acceptance*), Listing propagation and
 > review on Offer change, aggregate promoted-commerce eligibility, Offer
 > publication and capsules, multiple simultaneous promotions, commission
 > promotional overrides, currencies other than USD, Promoter-specific Offers,
