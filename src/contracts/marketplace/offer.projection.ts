@@ -84,7 +84,9 @@ import { MarketplaceParticipantId } from "./participant";
  * something would be answering it by accident. (`SUSPENDED` is reserved, not a
  * lifecycle member, and so needs no reason here.)
  *
- * No Offer is published in Phase 1.42: Offer terms are private.
+ * No Offer is published in Phase 1.42 or 1.43. Phase 1.43 shows an ACTIVE
+ * Offer's terms in force to signed-in Promoters in the Promotable Catalog — a
+ * read, not a publication: no capsule, no projection, no AgentNet.
  */
 export const PROJECTION_ELIGIBILITY_REASONS = ["DRAFT_NOT_PUBLIC", "WITHDRAWN_PUBLICATION_DEFERRED"] as const;
 export const ProjectionIneligibilityReason = z.enum(PROJECTION_ELIGIBILITY_REASONS);

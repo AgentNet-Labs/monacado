@@ -116,7 +116,7 @@ describe("1.41 — the governed transition table", () => {
 describe("1.41 — participantMayRequestPromotionAuthorization", () => {
   const ok: PromotionAuthorizationRequestFacts = {
     account: { status: "ACTIVE", emailVerifiedAt: "2028-01-01T00:00:00.000Z", firstName: "Pat", lastName: "Promoter" },
-    participant: { status: "DRAFT", suspended: false, promoterRoleStatus: "DRAFT" },
+    participant: { status: "DRAFT", suspended: false, hasMarketplaceName: true, promoterRoleStatus: "DRAFT" },
   };
 
   it("a DRAFT participant with a DRAFT PROMOTER role and private identity may request — no payment or commerce facts exist to ask", () => {
@@ -157,6 +157,16 @@ describe("1.41 — participantMayRequestPromotionAuthorization", () => {
         participant: null,
       }).refusals,
     ).toEqual(["ACCOUNT_DISABLED", "EMAIL_UNVERIFIED", "FIRST_NAME_MISSING", "LAST_NAME_MISSING", "PARTICIPANT_MISSING"]);
+  });
+
+  it("1.43 — the Promoter's mName is required: a participant without one is refused, whatever else holds", () => {
+    expect(
+      participantMayRequestPromotionAuthorization({ ...ok, participant: { ...ok.participant!, hasMarketplaceName: false } }),
+    ).toEqual({ eligible: false, refusals: ["MARKETPLACE_NAME_MISSING"] });
+    // Not asked when there is no participant at all — PARTICIPANT_MISSING already says it.
+    expect(
+      participantMayRequestPromotionAuthorization({ ...ok, participant: null }).refusals,
+    ).toEqual(["PARTICIPANT_MISSING"]);
   });
 
   it("the PROMOTER role is required — a Seller-only participant is refused", () => {

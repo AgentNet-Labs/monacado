@@ -412,8 +412,10 @@ following is the candidate design for Phase 0M.5, which implemented it.
 - **Deletion** — **RESTRICT**. A participant is the anchor of commercial history;
   deleting an account that holds one must be refused, forcing an explicit closure
   first.
-- **Public/private** — the row is private; a **public projection** (display name,
-  roles, activation status) is capsule-backed.
+- **Public/private** — the row is private; a **public projection** (mName,
+  roles, activation status) is capsule-backed. *Phase 1.43:* the public name is
+  the Monacado-assigned **mName** (Contract §5.1), issued at participant
+  creation; there is no participant-chosen display name.
 - **Classification** — relational-first, with a capsule-backed public projection.
 
 ### `MarketplaceRoleAssignment`

@@ -40,6 +40,7 @@
  */
 
 import { z } from "zod";
+import { MarketplaceName } from "./marketplace-name";
 import { AccountId } from "../account/account";
 import {
   MARKETPLACE_PARTICIPANT_ID_RE,
@@ -217,6 +218,11 @@ export const MarketplaceParticipantRecord = z.strictObject({
   participantId: ParticipantId,
   accountId: AccountId,
   status: ParticipantStatus,
+  /**
+   * Phase 1.43 — the Monacado-assigned mName. `null` only on a row created
+   * before Phase 1.43; never substituted by any other identity.
+   */
+  marketplaceName: MarketplaceName.nullable(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 });
@@ -357,9 +363,14 @@ export type UpdateParticipantProfileInput = z.infer<typeof UpdateParticipantProf
  * The ruling: a public participant projection may carry the participant's
  * public reference, the roles it holds with whether each is active, and its
  * admission status. Nothing else. Adding a field is an ADR-level decision, not
- * an implementation detail — in particular a display name is **absent**, because
- * no display name is stored, and the first one added must be an explicitly
- * public field rather than a private profile value promoted into view.
+ * an implementation detail.
+ *
+ * **Phase 1.43** stored the first explicitly public participant identity: the
+ * Monacado-assigned mName (`MarketplaceParticipant.marketplaceName`), which other
+ * participants see on marketplace surfaces. It is NOT added here: publishing it
+ * in a participant projection is a publication decision, deferred with the rest
+ * of participant publication. Declared names, `Account.name`, and email never
+ * become eligible — mName is the only cross-participant identity.
  */
 export const PUBLIC_PARTICIPANT_PROJECTION_FIELDS = [
   "publicParticipantRef",
@@ -400,6 +411,12 @@ const PRIVATE_PARTICIPANT_KEY_FRAGMENTS: readonly string[] = [
   "dateofbirth",
   "dob",
   "legalname",
+  // Phase 1.43 — declared names are private; mName is the only participant
+  // identity another participant sees.
+  "firstname",
+  "lastname",
+  "declaredname",
+  "surname",
   "taxid",
   "ssn",
   // payment provider and underwriting

@@ -1332,6 +1332,18 @@ model MarketplaceParticipant {
   /// activation decision, and this phase makes none.
   status String @db.VarChar(24)
 
+  /// The participant's mName (Phase 1.43): Monacado's short, opaque, globally
+  /// unique marketplace identifier — the ONLY participant identity another
+  /// participant ever sees. Assigned by Monacado in the transaction that creates
+  /// this row, never chosen or edited by the participant, never derived from a
+  /// name, email, or id. Lowercase over the 30-character alphabet in
+  /// `contracts/marketplace/marketplace-name`; 4 characters at first, longer
+  /// only as the namespace fills.
+  ///
+  /// Nullable ONLY for rows created before Phase 1.43. Every consumer treats
+  /// NULL as "no mName" and never substitutes another identity for it.
+  marketplaceName String? @unique @db.VarChar(16)
+
   createdAt DateTime @default(now()) @db.DateTime(3)
   updatedAt DateTime @updatedAt @db.DateTime(3)
 

@@ -82,6 +82,7 @@ export async function readPromotionRequestFactsIn(
       participant: {
         status: participant.status as ParticipantStatus,
         suspended: await isParticipantSuspended(tx, participant.id),
+        hasMarketplaceName: participant.marketplaceName !== null,
         promoterRoleStatus: role === null ? null : (role.status as RoleAssignmentStatus),
       },
     },
@@ -218,26 +219,18 @@ export interface SellerPromotionAuthorizationRead {
   authorizationRef: string;
   state: PromotionAuthorizationState;
   /**
-   * The Promoter account's DECLARED first and last name (Contract §4, Phase
-   * 1.37), trimmed and joined with one space — the sign-up convention. A
-   * declaration only: not verified, not KYC, not a legal identity. Never
-   * `Account.name`, never an email, never an id.
+   * The Promoter's mName (Phase 1.43) — the ONLY Promoter identity a Seller is
+   * shown. Never a declared first / last name, never `Account.name`, never an
+   * email, never an id.
    *
-   * `null` when either declaration is absent or blank. That cannot happen
-   * through any governed path — the request gate requires both, and approval
-   * re-checks them — so it is an invariant violation; it is reported as `null`
-   * and never filled from `Account.name`.
+   * `null` when the Promoter has no mName: a participant created before Phase
+   * 1.43 whose request predates the gate that now requires one. It stays `null`
+   * — nothing else is substituted — and approval re-checks the gate, so such a
+   * request cannot be approved.
    */
-  promoterDeclaredName: string | null;
+  promoterMName: string | null;
   requestedAt: string;
   stateSince: string;
-}
-
-/** Both declared names, trimmed and joined; `null` unless both are present and nonblank. */
-function declaredName(firstName: string | null, lastName: string | null): string | null {
-  const first = firstName?.trim() ?? "";
-  const last = lastName?.trim() ?? "";
-  return first === "" || last === "" ? null : `${first} ${last}`;
 }
 
 /** The current relationship of every Promoter for each of these Products, keyed by internal id. */
@@ -249,16 +242,17 @@ export async function readSellerPromotionAuthorizationsIn(
   if (internalProductIds.length === 0) return out;
   const cycles = await currentCyclesWithState(tx, { internalProductId: { in: [...internalProductIds] } });
   if (cycles.length === 0) return out;
+  /* The mName and nothing else: the Promoter's account is not read at all. */
   const promoters = await tx.marketplaceParticipant.findMany({
     where: { id: { in: [...new Set(cycles.map((c) => c.promoterParticipantId))] } },
-    select: { id: true, account: { select: { firstName: true, lastName: true } } },
+    select: { id: true, marketplaceName: true },
   });
-  const nameOf = new Map(promoters.map((p) => [p.id, declaredName(p.account.firstName, p.account.lastName)]));
+  const mNameOf = new Map(promoters.map((p) => [p.id, p.marketplaceName]));
   for (const c of cycles) {
     out.get(c.internalProductId)?.push({
       authorizationRef: c.authorizationRef,
       state: c.state,
-      promoterDeclaredName: nameOf.get(c.promoterParticipantId) ?? null,
+      promoterMName: mNameOf.get(c.promoterParticipantId) ?? null,
       requestedAt: c.requestedAt.toISOString(),
       stateSince: c.stateSince.toISOString(),
     });

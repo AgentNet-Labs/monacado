@@ -45,6 +45,7 @@
  * gates going live, which is enforced where going live happens, not on setup.
  */
 
+import Link from "next/link";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { resolvePageSession } from "../../src/server/account/page-session";
@@ -74,6 +75,10 @@ import {
   PROMOTION_SELLER_NOTE,
   PROMOTION_PROMOTER_HEADING,
   PROMOTION_PROMOTER_INTRO,
+  PROMOTION_CATALOG_LINK_LABEL,
+  MNAME_LABEL,
+  MNAME_MISSING,
+  MNAME_NOTE,
   formatPromotionRequestRefusals,
   PLACEMENT_DRAFT_STATUS,
   PLACEMENT_NEEDS_PRODUCT,
@@ -151,6 +156,14 @@ export default async function AccountPage() {
               <p className="auth-status">
                 Marketplace status: {PARTICIPANT_STATUS_LABELS[marketplace!.status]}
               </p>
+              {/* Phase 1.43 — the participant's own mName: what other
+                  participants see in place of the name and email above.
+                  Monacado-assigned; there is no control to change it. */}
+              <p className="auth-status">
+                {`${MNAME_LABEL}: `}
+                <span className="account-mname">{marketplace!.mName ?? MNAME_MISSING}</span>
+              </p>
+              <p className="auth-hint">{MNAME_NOTE}</p>
               <ul className="account-roles">
                 {setupRoles.map((r) => (
                   <li key={r.role}>
@@ -303,8 +316,10 @@ export default async function AccountPage() {
                       </div>
                     ) : null}
                     {/* Phase 1.42 — the Seller's Offer: commercial authority for
-                        promoted resale, its own axis. Private to the Seller; no
-                        Promoter sees it and nothing here is listed. */}
+                        promoted resale, its own axis. These controls and the
+                        Seller's proceeds are the Seller's alone; Promoters see
+                        only the terms in force, in the Promotable Catalog
+                        (Phase 1.43). Nothing here is listed. */}
                     {product.offer.offer !== null || product.offer.canCreate ? (
                       <div className="account-promotion">
                         <p className="auth-hint">{`${OFFER_HEADING} · ${OFFER_NOTE}`}</p>
@@ -335,12 +350,16 @@ export default async function AccountPage() {
           </section>
         ) : null}
 
-        {/* Phase 1.41 — the Promoter's own requests. A reference the Seller
-            shared is the only entry point; there is no discovery here. */}
+        {/* Phase 1.41 — the Promoter's own requests. Phase 1.43 adds the
+            promotable catalog as the discovery entry point; a reference the
+            Seller shared still works here. */}
         {home.promoter !== null ? (
           <section className="account-section" aria-labelledby="account-promotion-heading">
             <h2 id="account-promotion-heading">{PROMOTION_PROMOTER_HEADING}</h2>
             <p className="auth-status">{PROMOTION_PROMOTER_INTRO}</p>
+            <p className="auth-status">
+              <Link href="/promote">{PROMOTION_CATALOG_LINK_LABEL}</Link>
+            </p>
             {home.promoter.canRequest ? null : (
               <p className="auth-hint">{formatPromotionRequestRefusals(home.promoter.requestRefusals)}</p>
             )}

@@ -183,6 +183,7 @@ export const PROMOTION_AUTHORIZATION_REQUEST_REFUSALS = [
   "FIRST_NAME_MISSING",
   "LAST_NAME_MISSING",
   "PARTICIPANT_MISSING",
+  "MARKETPLACE_NAME_MISSING",
   "PARTICIPANT_STATUS_NOT_ELIGIBLE",
   "PARTICIPANT_SUSPENDED",
   "PROMOTER_ROLE_NOT_HELD",
@@ -203,6 +204,15 @@ export interface PromotionAuthorizationRequestFacts {
     status: ParticipantStatus;
     /** A standing `ParticipantSuspension` — which a pre-admission status cannot express. */
     suspended: boolean;
+    /**
+     * Phase 1.43 — whether the participant holds its Monacado-assigned mName,
+     * the only identity the Seller is shown. Every participant created from
+     * Phase 1.43 on has one (a new participant without one is an invariant
+     * violation), so `MARKETPLACE_NAME_MISSING` is a defensive integrity
+     * refusal for a pre-1.43 or abnormal row — never a step a participant
+     * completes.
+     */
+    hasMarketplaceName: boolean;
     /** The PROMOTER role assignment's status, or `null` when never claimed. */
     promoterRoleStatus: RoleAssignmentStatus | null;
   } | null;
@@ -221,9 +231,10 @@ const nonBlank = (value: string | null): boolean => value !== null && value.trim
  *
  * A PRE-COMMERCIAL relationship gate: private marketplace identity (Contract §4
  * — an enabled account, a verified email, a declared first and last name, the
- * participant) plus a PROMOTER role in the repository's drafting / pre-commercial
- * state (`DRAFTING_ROLE_STATUSES`) on a participant permitted to draft and not
- * suspended. `RESTRICTED` is a drafting status and is NOT refused: a restriction
+ * participant) plus the participant's mName (Phase 1.43, Contract §16.1 — the
+ * identity the Seller sees in place of every private one) plus a PROMOTER role
+ * in the repository's drafting / pre-commercial state (`DRAFTING_ROLE_STATUSES`)
+ * on a participant permitted to draft and not suspended. `RESTRICTED` is a drafting status and is NOT refused: a restriction
  * withholds commerce, and no restriction scope governs this act.
  *
  * Deliberately NOT asked: payment readiness, Stripe underwriting, commerce
@@ -248,6 +259,7 @@ export function participantMayRequestPromotionAuthorization(
   if (participant === null) {
     refusals.push("PARTICIPANT_MISSING");
   } else {
+    if (!participant.hasMarketplaceName) refusals.push("MARKETPLACE_NAME_MISSING");
     if (!permitsDrafting(participant.status)) refusals.push("PARTICIPANT_STATUS_NOT_ELIGIBLE");
     if (participant.suspended) refusals.push("PARTICIPANT_SUSPENDED");
     if (participant.promoterRoleStatus === null) {

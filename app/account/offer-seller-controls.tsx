@@ -10,7 +10,10 @@
  * server. Confirmation is never assumed: activation echoes the standing
  * economics the page shows, and a revision or promotion first asks the server
  * for the exact economics of the version it would mint, shows them, and sends
- * them back only when the Seller confirms. No Promoter sees any of this.
+ * them back only when the Seller confirms. No Promoter sees these controls or the
+ * Seller's proceeds; while the Offer is ACTIVE and the Product is in the
+ * Promotable Catalog (Phase 1.43), signed-in Promoters see its terms in force —
+ * wholesale and commission — under the Seller's mName.
  */
 
 import { useRouter } from "next/navigation";

@@ -55,6 +55,7 @@ export function participantRowToRecord(row: ParticipantRow): ParticipantRecord {
     participantId: row.id,
     accountId: row.accountId,
     status: row.status,
+    marketplaceName: row.marketplaceName,
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),
   });

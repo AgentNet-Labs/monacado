@@ -12,7 +12,9 @@ UI, Storefront, or Listing work is introduced by this phase.**
 
 > **Phase 1.42.** The projection shape and capsule version are unchanged, and
 > **no Offer is projected or published in Phase 1.42** — Offer terms are
-> private. Three inputs moved, because lifecycle is no longer a version fact:
+> unpublished. (Phase 1.43 shows terms in force to signed-in Promoters in the
+> Promotable Catalog, read from the relational record; that is not a
+> projection or publication and changes nothing here.) Three inputs moved, because lifecycle is no longer a version fact:
 >
 > - the lifecycle reaches the mapper as a **recorded context value**,
 >   `offerLifecycle`, derived by the caller at one instant from the Offer's acts,

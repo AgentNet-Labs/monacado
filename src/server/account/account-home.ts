@@ -254,7 +254,8 @@ export interface AccountHomeProduct {
   /**
    * The Product's Offer as its Seller sees it (Phase 1.42): the current or most
    * recent Offer, its derived state, standing terms and economics, promotion,
-   * blockers, and the acts available. Seller-facing only; never published.
+   * blockers, and the acts available. Seller-facing (Promoters see only the
+   * terms in force, in the Promotable Catalog — Phase 1.43); never published.
    */
   offer: SellerProductOffer;
 }
@@ -262,13 +263,23 @@ export interface AccountHomeProduct {
 /**
  * One Promoter's open relationship with one of the Seller's Products (Phase
  * 1.41). The reference is an action value, never shown. The Promoter is
- * identified by its DECLARED first and last name — a declaration, never a
- * verification — and never by `Account.name`, an email, or an id.
+ * identified by its mName (Phase 1.43) and by nothing else — never a declared
+ * first / last name, `Account.name`, an email, or an id.
  */
 export interface AccountHomeSellerPromotionAuthorization {
   authorizationRef: string;
-  promoterDeclaredName: string;
+  /**
+   * `null` for a Promoter with no mName (a pre-1.43 participant). Shown as
+   * such — never filled from another identity — and `canApprove` is false.
+   */
+  promoterMName: string | null;
   state: "REQUESTED" | "APPROVED";
+  /**
+   * Whether Approve is offered: a pending request from a Promoter with an mName.
+   * Approval re-checks the request gate, which requires one, so offering it
+   * without would offer a refusal. Deny and Revoke are always offered.
+   */
+  canApprove: boolean;
 }
 
 /**
@@ -305,6 +316,12 @@ export interface AccountHome {
   /** `null` until the account begins Seller or Promoter setup. */
   marketplace: {
     status: ParticipantStatus;
+    /**
+     * The participant's own Monacado-assigned mName (Phase 1.43) — what other
+     * participants see in place of every private name. `null` only for a
+     * participant created before Phase 1.43.
+     */
+    mName: string | null;
     roles: AccountHomeRole[];
     /** Whether self-service setup may still add a role (the participant is drafting). */
     onboardingOpen: boolean;
@@ -425,6 +442,7 @@ export async function readAccountHome(
         ? null
         : {
             status: participant.status as ParticipantStatus,
+            mName: participant.marketplaceName,
             roles: roles.map((r) => ({
               role: r.role as MarketplaceRole,
               status: r.status as RoleAssignmentStatus,
@@ -757,12 +775,20 @@ async function readAuthoredProducts(
           resaleAvailability,
         }).effective,
         resaleOptions: resaleAvailabilityOptions(resaleAvailability, lifecycle.lifecycle),
-        /* A relationship whose Promoter has no declared name (an invariant
-           violation — the request gate requires both) is dropped rather than
-           named by anything else, as an unresolvable placement name is above. */
+        /* Phase 1.43 — the Promoter is named by its mName only. A Promoter
+           without one (a pre-1.43 participant) is still listed, so the Seller
+           can deny or revoke, but is never named by anything else and cannot be
+           approved: approval re-checks the request gate, which requires it. */
         promotionAuthorizations: (promotion.get(p.internalProductId) ?? []).flatMap((a) =>
-          (a.state === "REQUESTED" || a.state === "APPROVED") && a.promoterDeclaredName !== null
-            ? [{ authorizationRef: a.authorizationRef, promoterDeclaredName: a.promoterDeclaredName, state: a.state }]
+          a.state === "REQUESTED" || a.state === "APPROVED"
+            ? [
+                {
+                  authorizationRef: a.authorizationRef,
+                  promoterMName: a.promoterMName,
+                  state: a.state,
+                  canApprove: a.state === "REQUESTED" && a.promoterMName !== null,
+                },
+              ]
             : [],
         ),
         offer: offers.get(p.internalProductId) ?? { offer: null, canCreate: false },

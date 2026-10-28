@@ -360,13 +360,19 @@ export const PROMOTION_SELLER_HEADING = "Promoters";
 export const PROMOTION_SELLER_NOTE =
   "Approving lets that promoter promote this product. It is permission only — nothing goes on sale, and you can revoke it at any time without affecting other promoters.";
 export const PROMOTION_APPROVE_LABEL = "Approve";
+/**
+ * Phase 1.43 — a Promoter with no mName (created before mNames existed). It is
+ * never named by anything else, and cannot be approved until it has one.
+ */
+export const PROMOTION_PROMOTER_MNAME_MISSING = "Promoter without an mName (cannot be approved)";
 export const PROMOTION_DENY_LABEL = "Deny";
 export const PROMOTION_REVOKE_LABEL = "Revoke";
 
 /** The Promoter's section. */
 export const PROMOTION_PROMOTER_HEADING = "Promotion requests";
 export const PROMOTION_PROMOTER_INTRO =
-  "Ask a seller for permission to promote one of their products, using the product reference they shared with you. Approval is permission only — nothing is for sale until the product and its terms are ready.";
+  "Ask a seller for permission to promote one of their products — find one in the promotable catalog, or use a product reference a seller shared with you. Approval is permission only — nothing is for sale until the product and its terms are ready.";
+export const PROMOTION_CATALOG_LINK_LABEL = "Browse promotable products";
 export const PROMOTION_REQUEST_FIELD_LABEL = "Product reference";
 export const PROMOTION_REQUEST_LABEL = "Request permission";
 export const PROMOTION_REQUEST_AGAIN_LABEL = "Request again";
@@ -383,6 +389,7 @@ const PROMOTION_REQUEST_REFUSAL_TEXT: Record<PromotionAuthorizationRequestRefusa
   FIRST_NAME_MISSING: "add your first name",
   LAST_NAME_MISSING: "add your last name",
   PARTICIPANT_MISSING: "start Promoter setup",
+  MARKETPLACE_NAME_MISSING: "your marketplace account has no mName yet — contact Monacado support",
   PARTICIPANT_STATUS_NOT_ELIGIBLE: "your marketplace account isn't eligible",
   PARTICIPANT_SUSPENDED: "your marketplace account is suspended",
   PROMOTER_ROLE_NOT_HELD: "start Promoter setup",
@@ -395,12 +402,20 @@ export function formatPromotionRequestRefusals(refusals: readonly PromotionAutho
   return `Before you can ask to promote products: ${parts.join("; ")}.`;
 }
 
+// — mName (Phase 1.43) —
+
+export const MNAME_LABEL = "mName";
+/** What an mName is, in one sentence. */
+export const MNAME_NOTE =
+  "Your marketplace identifier, assigned by Monacado. Other sellers and promoters see this instead of your name or email. It can't be changed.";
+export const MNAME_MISSING = "Not assigned yet";
+
 // — Offer (Phase 1.42) —
 
 export const OFFER_HEADING = "Offer for promoters";
 /** What an Offer is, and what it is not, in one sentence. */
 export const OFFER_NOTE =
-  "Your wholesale price and commission for promoted resale. Private to you — promoters don't see it yet, and nothing is listed or published.";
+  "Your wholesale price and commission for promoted resale. While the offer is active and your product is active and available for resale, signed-in promoters see its wholesale price and commission in the promotable catalog, under your mName. Nothing is listed or published.";
 
 export const OFFER_LIFECYCLE_LABELS: Readonly<Record<OfferLifecycleState, string>> = {
   DRAFT: "Draft",

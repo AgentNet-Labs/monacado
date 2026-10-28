@@ -228,6 +228,17 @@ by naming what is permitted rather than filtering what is not. A display name is
 public field, not a private profile value promoted into view. Adding any field is
 an ADR-level decision.
 
+> **Phase 1.43.** A participant now holds a stored, Monacado-assigned **mName**
+> (`MarketplaceParticipant.marketplaceName`; Contract §5.1) — random,
+> non-personal, unique, immutable, issued at creation. It is the identity other
+> participants see, and it is the field this decision anticipated: an explicitly
+> public value, never a private profile value (declared names, Account name, and
+> email stay private, Contract §4). It is **not** added to the allow-list yet:
+> adding it to a published projection remains the ADR-level decision this ruling
+> requires (Contract §34, mName publication). Declared-name keys (`firstName`,
+> `lastName`, `declaredName`, `surname`) are refused by the participant privacy
+> guard.
+
 **Nothing implements this projection.** No function, no capsule, no route. The
 ruling is recorded now so a later projection is written against a closed list
 rather than against whatever the record happens to hold.

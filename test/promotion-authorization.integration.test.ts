@@ -157,6 +157,11 @@ async function draftParticipant(
   };
 }
 
+/** The participant's Monacado-assigned mName (Phase 1.43). */
+async function mNameOf(actor: Actor): Promise<string | null> {
+  return (await db.marketplaceParticipant.findUniqueOrThrow({ where: { id: actor.participantId } })).marketplaceName;
+}
+
 const draftPromoter = (opts: Parameters<typeof draftParticipant>[1] = {}) =>
   /* `Account.name` deliberately differs from the declared "Pat" + "Promoter",
      so a page naming the Promoter by the display name is caught. */
@@ -520,6 +525,19 @@ describeDb("1.41 — Promotion Authorization", () => {
       expect(await cycles(internalProductId)).toEqual([]);
     });
 
+    it("1.43 — refuses a Promoter with no mName (a pre-1.43 row), naming why, and writes nothing", async () => {
+      const seller = await draftParticipant(["SELLER"]);
+      const { productRef, internalProductId } = await draftProduct(seller);
+      const promoter = await draftPromoter();
+      /* Only reachable by direct row edit: every participant is created with one. */
+      await db.marketplaceParticipant.update({ where: { id: promoter.participantId }, data: { marketplaceName: null } });
+      expect(await request(promoter, productRef)).toMatchObject({
+        status: 403,
+        body: { error: CODES.requestNotPermitted, refusals: ["MARKETPLACE_NAME_MISSING"] },
+      });
+      expect(await cycles(internalProductId)).toEqual([]);
+    });
+
     it("the PROMOTER role is required, in a drafting status, on a participant not suspended or closed", async () => {
       const seller = await draftParticipant(["SELLER"]);
       const otherSeller = await draftParticipant(["SELLER"]);
@@ -712,7 +730,20 @@ describeDb("1.41 — Promotion Authorization", () => {
       const seller = await draftParticipant(["SELLER"]);
       const { productRef, internalProductId } = await draftProduct(seller);
 
+      const kept = new Map<string, string | null>();
       const lapses: Array<[string, (p: Actor) => Promise<unknown>, (p: Actor) => Promise<unknown>]> = [
+        [
+          "mName absent (1.43)",
+          async (p) => {
+            kept.set(p.participantId, await mNameOf(p));
+            await db.marketplaceParticipant.update({ where: { id: p.participantId }, data: { marketplaceName: null } });
+          },
+          (p) =>
+            db.marketplaceParticipant.update({
+              where: { id: p.participantId },
+              data: { marketplaceName: kept.get(p.participantId) ?? null },
+            }),
+        ],
         [
           "role suspended",
           (p) => db.marketplaceRoleAssignment.updateMany({ where: { participantId: p.participantId, role: "PROMOTER" }, data: { status: "SUSPENDED" } }),
@@ -914,10 +945,12 @@ describeDb("1.41 — Promotion Authorization", () => {
       /* And the Seller's page names the Promoter by display name only. */
       const sellerHome = await readAccountHome(seller.accountId, { db });
       const shown = sellerHome!.products.find((p) => p.productRef === a.productRef)!.promotionAuthorizations;
-      expect(shown).toEqual([{ authorizationRef: expect.any(String), promoterDeclaredName: "Pat Promoter", state: "REQUESTED" }]);
+      expect(shown).toEqual([
+        { authorizationRef: expect.any(String), promoterMName: await mNameOf(promoter), state: "REQUESTED", canApprove: true },
+      ]);
     });
 
-    it("the Seller sees pending and approved Promoters by declared first + last name — never Account.name, never email", async () => {
+    it("1.43 — the Seller sees pending and approved Promoters by mName only — never a declared name, Account.name, email, or id", async () => {
       const seller = await draftParticipant(["SELLER"]);
       const pending = await draftPromoter();
       const accepted = await draftPromoter();
@@ -929,12 +962,14 @@ describeDb("1.41 — Promotion Authorization", () => {
 
       const home = await readAccountHome(seller.accountId, { db });
       const shown = home!.products[0]!.promotionAuthorizations;
-      expect(shown.map((a) => [a.promoterDeclaredName, a.state])).toEqual([
-        ["Pat Promoter", "REQUESTED"],
-        ["Ava Approved", "APPROVED"],
+      expect(shown.map((a) => [a.promoterMName, a.state, a.canApprove])).toEqual([
+        [await mNameOf(pending), "REQUESTED", true],
+        [await mNameOf(accepted), "APPROVED", false],
       ]);
       const serialized = JSON.stringify(shown);
-      expect(serialized).not.toContain("Display Alias");
+      for (const privateName of ["Display Alias", "Pat", "Promoter", "Ava", "Approved"]) {
+        expect(serialized).not.toContain(privateName);
+      }
       for (const p of [pending, accepted]) {
         const { email } = await db.account.findUniqueOrThrow({ where: { id: p.accountId } });
         expect(serialized).not.toContain(email);
@@ -944,17 +979,26 @@ describeDb("1.41 — Promotion Authorization", () => {
       expect(serialized).not.toContain("mon:");
     });
 
-    it("a Promoter whose declared names are absent is never named by Account.name — the row is withheld", async () => {
+    it("1.43 — a Promoter with no mName is listed unnamed, never by a declared name or Account.name; deniable, not approvable", async () => {
       const seller = await draftParticipant(["SELLER"]);
       const promoter = await draftPromoter();
       const { productRef } = await draftProduct(seller);
-      await requested(promoter, productRef);
-      /* Only reachable by direct row edit: the gate requires both names. */
-      await db.account.update({ where: { id: promoter.accountId }, data: { lastName: null } });
+      const ref = await requested(promoter, productRef);
+      /* Only reachable by direct row edit: every participant is created with one. */
+      await db.marketplaceParticipant.update({ where: { id: promoter.participantId }, data: { marketplaceName: null } });
 
       const home = await readAccountHome(seller.accountId, { db });
-      expect(home!.products[0]!.promotionAuthorizations).toEqual([]);
-      expect(JSON.stringify(home)).not.toContain("Display Alias");
+      expect(home!.products[0]!.promotionAuthorizations).toEqual([
+        { authorizationRef: ref, promoterMName: null, state: "REQUESTED", canApprove: false },
+      ]);
+      for (const privateName of ["Display Alias", "Pat", "Promoter"]) {
+        expect(JSON.stringify(home!.products)).not.toContain(privateName);
+      }
+      expect(await decide(seller, productRef, ref, "APPROVE")).toMatchObject({
+        status: 409,
+        body: { error: CODES.promoterNotEligible },
+      });
+      expect((await decide(seller, productRef, ref, "DENY")).status).toBe(200);
     });
   });
 

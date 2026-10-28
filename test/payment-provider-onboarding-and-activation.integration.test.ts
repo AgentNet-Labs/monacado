@@ -20,6 +20,7 @@
  */
 
 import "dotenv/config";
+import { MARKETPLACE_NAME_RE } from "../src/contracts/marketplace/marketplace-name";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { createAccount } from "../src/server/account/account-service";
@@ -847,6 +848,21 @@ describeDb("Phase 0M.8 — payment-provider onboarding and governed activation",
       });
       expect(role?.status).toBe("ACTIVE");
       expect(role?.activatedAt?.toISOString()).toBe(LATEST);
+    });
+
+    it("1.43 — the mName issued at creation is present before review and unchanged by submission and approval", async () => {
+      const { participantId } = await seedParticipant(["SELLER", "PROMOTER"]);
+      const mNameAt = async () =>
+        (await db.marketplaceParticipant.findUniqueOrThrow({ where: { id: participantId } })).marketplaceName;
+      const issued = await mNameAt();
+      expect(issued).toMatch(MARKETPLACE_NAME_RE);
+      const ready = await seedReadyForApproval();
+      const before = await db.marketplaceParticipant.findUniqueOrThrow({ where: { id: ready.participantId } });
+      expect(before.status).toBe("UNDER_REVIEW");
+      expect(before.marketplaceName).toMatch(MARKETPLACE_NAME_RE);
+      expect((await approve(ready.participantId)).participantStatus).toBe("ACTIVE");
+      const after = await db.marketplaceParticipant.findUniqueOrThrow({ where: { id: ready.participantId } });
+      expect(after.marketplaceName).toBe(before.marketplaceName);
     });
 
     it("APPROVED creates durable evidence — decision, instant, actor, reason", async () => {

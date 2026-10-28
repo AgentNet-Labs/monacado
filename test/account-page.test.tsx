@@ -114,6 +114,7 @@ const NOT_OFFERED_RESALE = {
 
 const DRAFT_SELLER: AccountHome["marketplace"] = {
   status: "DRAFT",
+  mName: "m7kx",
   roles: [{ role: "SELLER", status: "DRAFT" }],
   onboardingOpen: true,
 };
@@ -191,6 +192,7 @@ describe("/account presentation", () => {
       home({
         marketplace: {
           status: "DRAFT",
+          mName: "m7kx",
           roles: [{ role: "SELLER", status: "DRAFT" }],
           onboardingOpen: true,
         },
@@ -210,6 +212,7 @@ describe("/account presentation", () => {
       home({
         marketplace: {
           status: "UNDER_REVIEW",
+          mName: "m7kx",
           roles: [{ role: "SELLER", status: "PENDING_ACTIVATION" }],
           onboardingOpen: false,
         },
@@ -635,7 +638,7 @@ describe("/account presentation", () => {
   it("gives a Promoter-only account no Product section", async () => {
     const html = await renderSignedIn(
       home({
-        marketplace: { status: "DRAFT", roles: [{ role: "PROMOTER", status: "DRAFT" }], onboardingOpen: true },
+        marketplace: { status: "DRAFT", mName: "p4qz", roles: [{ role: "PROMOTER", status: "DRAFT" }], onboardingOpen: true },
         setupRolesAvailable: ["SELLER"],
         canCreateStorefront: true,
         canCreateProduct: false,
@@ -1073,7 +1076,7 @@ describe("placement presentation", () => {
 
     const promoter = await renderSignedIn(
       home({
-        marketplace: { status: "DRAFT", roles: [{ role: "PROMOTER", status: "DRAFT" }], onboardingOpen: true },
+        marketplace: { status: "DRAFT", mName: "p4qz", roles: [{ role: "PROMOTER", status: "DRAFT" }], onboardingOpen: true },
         canCreateProduct: false,
         canPlaceListing: false,
         storefronts: [storefront],
@@ -1640,6 +1643,26 @@ describe("placement pricing submission", () => {
   });
 });
 
+describe("mName on /account (Phase 1.43)", () => {
+  beforeEach(() => {
+    resolvePageSession.mockReset();
+    readAccountHome.mockReset();
+    redirect.mockClear();
+  });
+
+  it("shows the participant its own Monacado-assigned mName, with no control to change it", async () => {
+    const html = await renderSignedIn(home({ marketplace: DRAFT_SELLER }));
+    expect(html).toContain('<span class="account-mname">m7kx</span>');
+    expect(html).toContain("assigned by Monacado");
+    expect(html).not.toMatch(/name="(mName|marketplaceName)"/);
+  });
+
+  it("says a pre-1.43 participant has none, rather than showing anything in its place", async () => {
+    const html = await renderSignedIn(home({ marketplace: { ...DRAFT_SELLER!, mName: null } }));
+    expect(html).toContain('<span class="account-mname">Not assigned yet</span>');
+  });
+});
+
 describe("Promotion Authorization presentation (Phase 1.41)", () => {
   beforeEach(() => {
     resolvePageSession.mockReset();
@@ -1665,8 +1688,8 @@ describe("Promotion Authorization presentation (Phase 1.41)", () => {
     shippingPolicy: null,
     completeness: { complete: false, missing: ["SHIPPING_POLICY_MISSING" as const] },
     promotionAuthorizations: [
-      { authorizationRef: PENDING_REF, promoterDeclaredName: "Pat Pending", state: "REQUESTED" as const },
-      { authorizationRef: APPROVED_REF, promoterDeclaredName: "Ava Approved", state: "APPROVED" as const },
+      { authorizationRef: PENDING_REF, promoterMName: "p4qz", state: "REQUESTED" as const, canApprove: true },
+      { authorizationRef: APPROVED_REF, promoterMName: "a7mx", state: "APPROVED" as const, canApprove: false },
     ],
   };
   const text = (html: string) => html.replaceAll("<!-- -->", "").replace(/<[^>]+>/g, "");
@@ -1675,8 +1698,9 @@ describe("Promotion Authorization presentation (Phase 1.41)", () => {
     const html = await renderSignedIn(home({ marketplace: DRAFT_SELLER, canCreateProduct: true, products: [product] }));
     const t = text(html);
 
-    expect(t).toContain("Pat Pending — Requested");
-    expect(t).toContain("Ava Approved — Approved");
+    /* 1.43 — each Promoter is its mName. */
+    expect(t).toContain("p4qz — Requested");
+    expect(t).toContain("a7mx — Approved");
     expect(t).toContain("Approve");
     expect(t).toContain("Deny");
     expect(t).toContain("Revoke");
@@ -1686,6 +1710,27 @@ describe("Promotion Authorization presentation (Phase 1.41)", () => {
     expect(html).not.toContain(APPROVED_REF);
     expect(t).not.toMatch(/commission|wholesale|offer terms/i);
     expect(html).not.toContain("mon:");
+  });
+
+  it("1.43 — a Promoter without an mName is shown as such, never by another name, and offered Deny but not Approve", async () => {
+    const html = await renderSignedIn(
+      home({
+        marketplace: DRAFT_SELLER,
+        canCreateProduct: true,
+        products: [
+          {
+            ...product,
+            promotionAuthorizations: [
+              { authorizationRef: PENDING_REF, promoterMName: null, state: "REQUESTED" as const, canApprove: false },
+            ],
+          },
+        ],
+      }),
+    );
+    const t = text(html);
+    expect(t).toContain("Promoter without an mName (cannot be approved) — Requested");
+    expect(t).toContain("Deny");
+    expect(html).not.toContain(">Approve<");
   });
 
   it("shows no Promoter controls for a Product nobody has asked about", async () => {
@@ -1711,7 +1756,7 @@ describe("Promotion Authorization presentation (Phase 1.41)", () => {
     });
     const html = await renderSignedIn(
       home({
-        marketplace: { status: "DRAFT", roles: [{ role: "PROMOTER", status: "DRAFT" }], onboardingOpen: true },
+        marketplace: { status: "DRAFT", mName: "p4qz", roles: [{ role: "PROMOTER", status: "DRAFT" }], onboardingOpen: true },
         promoter: {
           canRequest: true,
           requestRefusals: [],
@@ -1734,15 +1779,17 @@ describe("Promotion Authorization presentation (Phase 1.41)", () => {
     expect(t).toContain(`${"5".repeat(32)} — Cancelled Request again`);
     expect(t).toContain("Product reference");
     expect(t).toContain("Request permission");
-    /* No discovery: no search, browse, or list of other Sellers' Products. */
-    expect(t).not.toMatch(/search|browse/i);
+    /* 1.43 — discovery is the Promotable Catalog, one link away; the
+       reference form stays. */
+    expect(html).toContain('href="/promote"');
+    expect(t).toContain("Browse promotable products");
   });
 
   it("tells a Promoter who cannot request yet why, and offers no request form", async () => {
     const html = await renderSignedIn(
       home({
         emailVerified: false,
-        marketplace: { status: "DRAFT", roles: [{ role: "PROMOTER", status: "DRAFT" }], onboardingOpen: true },
+        marketplace: { status: "DRAFT", mName: "p4qz", roles: [{ role: "PROMOTER", status: "DRAFT" }], onboardingOpen: true },
         promoter: { canRequest: false, requestRefusals: ["EMAIL_UNVERIFIED", "FIRST_NAME_MISSING"], authorizations: [] },
       }),
     );

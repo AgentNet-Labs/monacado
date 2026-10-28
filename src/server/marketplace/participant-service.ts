@@ -101,12 +101,21 @@ import {
 } from "./participant-mapper";
 import { readReadinessIn } from "./payment-account-service";
 import { AmbiguousPaymentReadinessError } from "./payment-account-errors";
+import {
+  allocateMarketplaceNameIn,
+  cryptoMarketplaceNameProvider,
+  isMarketplaceNameCollision,
+  withMarketplaceNameRetry,
+  type MarketplaceNameProvider,
+} from "./marketplace-name-service";
 
 type Db = ReturnType<typeof getPrisma>;
 
 export interface ParticipantServiceDeps {
   db?: Db;
   ids?: ParticipantIdProvider;
+  /** Phase 1.43 — the mName draw. A separate provider, so no id double has to mint one. */
+  mNames?: MarketplaceNameProvider;
 }
 
 const isUniqueViolation = (error: unknown): boolean => prismaCode(error) === "P2002";
@@ -170,6 +179,10 @@ export interface ParticipantSnapshot {
  *
  * Uniqueness is enforced by the unique index on `accountId`, not by a
  * read-then-write check, so two concurrent creations cannot both succeed.
+ *
+ * Phase 1.43: the row is created WITH its mName (`marketplace-name-service`),
+ * so no participant exists without one. A lost mName race reruns the whole
+ * transaction with a fresh draw.
  */
 export async function createDraftParticipant(
   input: unknown,
@@ -181,6 +194,7 @@ export async function createDraftParticipant(
 
   const db = deps.db ?? getPrisma();
   const ids = deps.ids ?? cryptoParticipantIdProvider;
+  const mNames = deps.mNames ?? cryptoMarketplaceNameProvider;
 
   // Deduplicate requested roles: asking for SELLER twice is one grant, not a
   // unique-constraint failure the caller has to interpret.
@@ -189,22 +203,28 @@ export async function createDraftParticipant(
   const at = new Date(now);
 
   try {
-    return await db.$transaction(async (tx) => {
-      await tx.marketplaceParticipant.create({
-        data: {
-          id: participantId,
-          accountId,
-          status: INITIAL_PARTICIPANT_STATUS,
-        },
-      });
+    return await withMarketplaceNameRetry(() =>
+      db.$transaction(async (tx) => {
+        await tx.marketplaceParticipant.create({
+          data: {
+            id: participantId,
+            accountId,
+            status: INITIAL_PARTICIPANT_STATUS,
+            marketplaceName: await allocateMarketplaceNameIn(tx, mNames),
+          },
+        });
 
-      for (const role of roles) {
-        await grantRoleInTx(tx, ids, participantId, role, at);
-      }
+        for (const role of roles) {
+          await grantRoleInTx(tx, ids, participantId, role, at);
+        }
 
-      return await readSnapshotInTx(tx, participantId);
-    });
+        return await readSnapshotInTx(tx, participantId);
+      }),
+    );
   } catch (error) {
+    if (isMarketplaceNameCollision(error)) {
+      throw new ParticipantPersistenceFailureError("createDraftParticipant", error);
+    }
     if (isUniqueViolation(error)) throw new DuplicateParticipantError(error);
     if (isForeignKeyViolation(error)) throw new AccountNotFoundForParticipantError(error);
     if (isDomainError(error)) throw error;
@@ -287,33 +307,46 @@ export async function beginParticipantOnboarding(
 
   const db = deps.db ?? getPrisma();
   const ids = deps.ids ?? cryptoParticipantIdProvider;
+  const mNames = deps.mNames ?? cryptoMarketplaceNameProvider;
   const requested = Array.from(new Set(roles));
   const at = new Date(now);
 
   try {
-    return await db.$transaction(async (tx) => {
-      let participant = await tx.marketplaceParticipant.findUnique({ where: { accountId } });
-      if (participant === null) {
-        participant = await tx.marketplaceParticipant.create({
-          data: { id: ids.nextParticipantId(), accountId, status: INITIAL_PARTICIPANT_STATUS },
+    return await withMarketplaceNameRetry(() =>
+      db.$transaction(async (tx) => {
+        let participant = await tx.marketplaceParticipant.findUnique({ where: { accountId } });
+        if (participant === null) {
+          // Phase 1.43: created WITH its mName. An existing participant is
+          // never given one here — issuance happens at creation only.
+          participant = await tx.marketplaceParticipant.create({
+            data: {
+              id: ids.nextParticipantId(),
+              accountId,
+              status: INITIAL_PARTICIPANT_STATUS,
+              marketplaceName: await allocateMarketplaceNameIn(tx, mNames),
+            },
+          });
+        } else if (!isDraftWritableParticipantStatus(participant.status as ParticipantStatus)) {
+          throw new ParticipantOnboardingClosedError();
+        }
+
+        const held = await tx.marketplaceRoleAssignment.findMany({
+          where: { participantId: participant.id },
+          select: { role: true },
         });
-      } else if (!isDraftWritableParticipantStatus(participant.status as ParticipantStatus)) {
-        throw new ParticipantOnboardingClosedError();
-      }
+        const heldRoles = new Set(held.map((r) => r.role));
+        for (const role of requested) {
+          if (!heldRoles.has(role)) await grantRoleInTx(tx, ids, participant.id, role, at);
+        }
 
-      const held = await tx.marketplaceRoleAssignment.findMany({
-        where: { participantId: participant.id },
-        select: { role: true },
-      });
-      const heldRoles = new Set(held.map((r) => r.role));
-      for (const role of requested) {
-        if (!heldRoles.has(role)) await grantRoleInTx(tx, ids, participant.id, role, at);
-      }
-
-      return await readSnapshotInTx(tx, participant.id);
-    });
+        return await readSnapshotInTx(tx, participant.id);
+      }),
+    );
   } catch (error) {
     if (error instanceof ParticipantOnboardingClosedError || isDomainError(error)) throw error;
+    if (isMarketplaceNameCollision(error)) {
+      throw new ParticipantPersistenceFailureError("beginParticipantOnboarding", error);
+    }
     // Two first-time requests racing for the same account: the unique index on
     // `accountId` refuses the second, exactly as for `createDraftParticipant`.
     if (isUniqueViolation(error)) throw new DuplicateParticipantError(error);

@@ -43,10 +43,12 @@
  *
  * ## What it does not do
  *
- * No Promoter visibility, acceptance, Listing propagation, checkout or Order
+ * No Promoter acceptance, Listing propagation, checkout or Order
  * change, publication, capsule, Node, notification, or payout. Product
  * lifecycle, resale, and readiness never rewrite the Offer lifecycle: they gate
- * activate and resume, and nothing else.
+ * activate and resume, and nothing else. (Phase 1.43: Promoters see an ACTIVE
+ * Offer's terms in force through the Promotable Catalog, a read over these rows;
+ * nothing here writes for it.)
  */
 
 import "../server-only";

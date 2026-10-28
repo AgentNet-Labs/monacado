@@ -9,7 +9,10 @@
  * offer. Every decision is the contract's or the Offer service's; this module
  * only assembles it.
  *
- * Seller-facing only. No Promoter sees any of it, nothing here is published,
+ * Seller-facing: this module is the Seller's view of its own Offer, with Seller
+ * proceeds, blockers, and acts. Promoters see only the terms in force — wholesale
+ * and commission, no Seller proceeds — and only through the Promotable Catalog
+ * (Phase 1.43, `promotable-catalog-read-service`). Nothing here is published,
  * and no internal id leaves this module — only `offerRef` and version labels.
  */
 

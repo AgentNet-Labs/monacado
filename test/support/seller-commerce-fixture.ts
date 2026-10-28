@@ -162,16 +162,30 @@ export function sellerCommerceFixture(config: { db: PrismaClient; emailPrefix: s
     return { productRef, internalProductId };
   }
 
-  /** An ACTIVE Product: complete, Monacado-classified, activated by its ready Seller. */
-  async function activeProduct(seller: FixtureActor): Promise<FixtureProduct> {
+  /**
+   * An ACTIVE Product: complete, Monacado-classified, activated by its ready
+   * Seller. `content` (Phase 1.43) varies the name, description, and delivery
+   * mode — a DIGITAL Product is classified `DIGITAL_GOOD` and has no shipping.
+   */
+  async function activeProduct(
+    seller: FixtureActor,
+    content: { name?: string; description?: string; deliveryMode?: "PHYSICAL" | "DIGITAL" } = {},
+  ): Promise<FixtureProduct> {
     const product = await draftProduct(seller);
+    const digital = content.deliveryMode === "DIGITAL";
+    const body = {
+      ...COMPLETE_BODY,
+      ...(content.name !== undefined ? { name: content.name } : {}),
+      ...(content.description !== undefined ? { description: content.description } : {}),
+      ...(digital ? { deliveryMode: "DIGITAL", shippingPolicy: null } : {}),
+    };
     const revised = await handleReviseProductRequest(
       {
         productRef: product.productRef,
         contentType: "application/json",
         originHeader: ORIGIN,
         cookieHeader: seller.cookieHeader,
-        rawBody: JSON.stringify({ expectedRevision: await currentToken(product.productRef), ...COMPLETE_BODY }),
+        rawBody: JSON.stringify({ expectedRevision: await currentToken(product.productRef), ...body }),
       },
       { db, now: tick, appOrigin: ORIGIN },
     );
@@ -186,7 +200,7 @@ export function sellerCommerceFixture(config: { db: PrismaClient; emailPrefix: s
         contentType: "application/json",
         originHeader: ORIGIN,
         cookieHeader: classifier.cookieHeader,
-        rawBody: JSON.stringify({ taxClassification: "PHYSICAL_GOOD" }),
+        rawBody: JSON.stringify({ taxClassification: digital ? "DIGITAL_GOOD" : "PHYSICAL_GOOD" }),
       },
       { db, now: tick, appOrigin: ORIGIN },
     );

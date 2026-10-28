@@ -704,3 +704,98 @@ main p {
 .home-role p {
   color: var(--color-text);
 }
+
+/* Phase 1.43 — the Promotable Catalog (/promote). A wider card than the auth
+   forms: a list of products needs the width a single form does not. */
+.promote-card-wide {
+  max-width: 48rem;
+}
+
+.promote-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
+  gap: 0 0.75rem;
+  margin: 1rem 0;
+}
+
+.promote-filters select {
+  padding: 0.5rem 0.625rem;
+  font: inherit;
+  color: var(--color-text-strong);
+  background: var(--color-surface);
+  border: 1px solid var(--color-primary);
+  border-radius: 0.25rem;
+}
+
+.promote-filter-search {
+  grid-column: 1 / -1;
+}
+
+.promote-filter-actions {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  grid-column: 1 / -1;
+}
+
+.promote-filter-actions .auth-button {
+  width: auto;
+}
+
+.promote-cards {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.promote-card {
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.375rem;
+}
+
+.promote-card-name {
+  display: block;
+  font-weight: 600;
+  color: var(--color-primary);
+  overflow-wrap: anywhere;
+}
+
+/* The mName: short and opaque, so it is set apart as an identifier. */
+.promote-card-seller,
+.account-mname {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9375rem;
+  color: var(--color-text-strong);
+}
+
+.promote-card-summary,
+.promote-card-terms,
+.promote-card-state {
+  margin: 0.25rem 0 0;
+  font-size: 0.875rem;
+}
+
+.promote-card-badge {
+  margin-left: 0.5rem;
+  padding: 0 0.375rem;
+  font-size: 0.75rem;
+  color: var(--color-on-primary);
+  background: var(--color-primary);
+  border-radius: 0.25rem;
+}
+
+.promote-card-state {
+  font-weight: 600;
+}
+
+.promote-load-more {
+  margin-top: 1rem;
+}
+
+.promote-description {
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}

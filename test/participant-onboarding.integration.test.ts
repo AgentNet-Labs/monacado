@@ -16,6 +16,7 @@ import { createAccount } from "../src/server/account/account-service";
 import { createAccountSession } from "../src/server/account/account-session-service";
 import { SESSION_COOKIE_NAME } from "../src/server/account/session-cookie";
 import { readAccountHome } from "../src/server/account/account-home";
+import { MARKETPLACE_NAME_RE } from "../src/contracts/marketplace/marketplace-name";
 import {
   ONBOARDING_ROUTE_ERROR_CODES,
   handleBeginOnboardingRequest,
@@ -253,6 +254,8 @@ describeDb("1.29 — self-service Seller/Promoter onboarding", () => {
     const homeAfter = await readAccountHome(caller.accountId, { db });
     expect(homeAfter!.marketplace).toEqual({
       status: "DRAFT",
+      /* Phase 1.43: issued with the participant row, in the same request. */
+      mName: expect.stringMatching(MARKETPLACE_NAME_RE),
       roles: [{ role: "PROMOTER", status: "DRAFT" }],
       onboardingOpen: true,
     });

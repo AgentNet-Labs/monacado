@@ -4,10 +4,11 @@
  * Seller Promotion Authorization controls for one Product (Phase 1.41,
  * Contract §16.2).
  *
- * Each open relationship the server found: the Promoter's declared first and
- * last name (a declaration, never shown as verified) and
- * state, with Approve / Deny for a pending request and Revoke for an approved
- * one — each Promoter independently. The opaque references are held in props
+ * Each open relationship the server found: the Promoter's mName (Phase 1.43 —
+ * never a declared name, `Account.name`, or email) and state, with Approve /
+ * Deny for a pending request and Revoke for an approved one — each Promoter
+ * independently. A Promoter with no mName is shown as such, never named by
+ * anything else, and is not offered Approve. The opaque references are held in props
  * and never rendered. On success the server re-renders the page, so the state
  * shown is the server's; nothing is set client-side. No Offer term, commission,
  * price, or Storefront control is offered here.
@@ -20,6 +21,7 @@ import {
   PROMOTION_APPROVE_LABEL,
   PROMOTION_AUTHORIZATION_STATE_LABELS,
   PROMOTION_DENY_LABEL,
+  PROMOTION_PROMOTER_MNAME_MISSING,
   PROMOTION_REVOKE_LABEL,
 } from "./account-home-copy";
 import { submitPromotionAuthorizationDecision } from "./promotion-authorization-submission";
@@ -29,7 +31,12 @@ export function PromotionAuthorizationSellerControls({
   authorizations,
 }: {
   productRef: string;
-  authorizations: Array<{ authorizationRef: string; promoterDeclaredName: string; state: "REQUESTED" | "APPROVED" }>;
+  authorizations: Array<{
+    authorizationRef: string;
+    promoterMName: string | null;
+    state: "REQUESTED" | "APPROVED";
+    canApprove: boolean;
+  }>;
 }) {
   const router = useRouter();
   const [pending, setPending] = useState(false);
@@ -55,18 +62,22 @@ export function PromotionAuthorizationSellerControls({
       <ul className="account-promotion-authorizations">
         {authorizations.map((a) => (
           <li key={a.authorizationRef}>
-            <span className="account-storefront-name">{a.promoterDeclaredName}</span>
+            <span className="account-storefront-name">{a.promoterMName ?? PROMOTION_PROMOTER_MNAME_MISSING}</span>
             {` — ${PROMOTION_AUTHORIZATION_STATE_LABELS[a.state]} `}
             {a.state === "REQUESTED" ? (
               <>
-                <button
-                  className="account-placement-withdraw"
-                  type="button"
-                  onClick={() => void send(a.authorizationRef, "APPROVE")}
-                  disabled={pending}
-                >
-                  {PROMOTION_APPROVE_LABEL}
-                </button>{" "}
+                {a.canApprove ? (
+                  <>
+                    <button
+                      className="account-placement-withdraw"
+                      type="button"
+                      onClick={() => void send(a.authorizationRef, "APPROVE")}
+                      disabled={pending}
+                    >
+                      {PROMOTION_APPROVE_LABEL}
+                    </button>{" "}
+                  </>
+                ) : null}
                 <button
                   className="account-placement-withdraw"
                   type="button"

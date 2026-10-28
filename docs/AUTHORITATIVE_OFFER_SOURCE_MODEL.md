@@ -119,8 +119,12 @@ unchanged. Because a standing revision is refused while a promotion is
 upcoming or running, the standing version that resumes is always the one the
 promotion was built on (`basisStandingVersion`).
 
-**Privacy.** Offer terms are **private and unpublished in Phase 1.42**: no
-Offer capsule, Node, or publication, and no Promoter visibility.
+**Privacy.** Offer terms are **unpublished**: no Offer capsule, Node, or
+publication. Phase 1.42 kept them Seller-only; **Phase 1.43** shows the terms in
+force (and a running or upcoming promotion's terms) to signed-in Promoters in
+the Promotable Catalog for Offers that are `ACTIVE` on `ACTIVE`, `AVAILABLE`
+Products. That is authenticated visibility, not publication and not acceptance
+(Contract §16.3(7), §34).
 
 ## 1. The database is the sole source of truth
 

@@ -438,7 +438,8 @@ rather than minting a version that asserts nothing.
 ## 15. Deferred
 
 > **Phase 1.42:** HTTP routes and a minimal Seller UI now exist. Still deferred:
-> Promoter visibility and acceptance of Offer terms, Listing propagation and
+> Promoter acceptance of Offer terms (Promoter visibility arrived in Phase
+> 1.43's Promotable Catalog), Listing propagation and
 > review on Offer change, aggregate promoted-commerce eligibility, Offer
 > publication and capsules, multiple simultaneous promotions, commission
 > promotional overrides, currencies other than USD, Promoter-specific Offers,

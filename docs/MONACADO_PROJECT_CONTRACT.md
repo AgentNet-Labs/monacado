@@ -118,6 +118,11 @@ Rules of authority:
 KYC-verified, and private marketplace identity implies **no KYC and no
 independent identity verification** of any kind.
 
+**Declared names are private.** The declared first and last names, the Account
+name, the email address, and internal identifiers are **never shown to another
+participant**. Wherever one participant is identified to another, it is
+identified by its **mName** (§5.1) only.
+
 Private marketplace identity is **sufficient for governed private drafting.**
 
 An eligible **Seller** may, under private marketplace identity:
@@ -154,6 +159,34 @@ Public marketplace identity is required before:
 - public AgentNet identity publication;
 - creation of more than one Storefront (§11);
 - any other governed public or commercial exposure that requires underwriting.
+
+#### §5.1 mName
+
+The **mName** is the **Monacado-assigned marketplace name** of a
+MarketplaceParticipant — the only identity one participant sees of another.
+
+- **Assigned, never chosen.** Monacado issues it; a participant does not select,
+  propose, or edit it. There is no self-service rename.
+- **Non-personal.** It is drawn at random and is never derived from a declared
+  name, Account name, email address, or internal identifier.
+- **Globally unique and immutable.** One mName per participant, held by no
+  other participant, case-insensitively. No participant self-service or
+  ordinary operation changes, clears, or reassigns it.
+- **Issued atomically when the MarketplaceParticipant is first created** — in
+  the same transaction, so every newly created participant receives exactly one
+  mName and none exists without one. It is marketplace identity, not commerce
+  readiness: it is not issued or gated by activation, payment readiness, or
+  Stripe underwriting, which remain independent, so preparatory acts that may
+  precede commerce readiness (§16.1) can identify the participant.
+- **A missing mName is an invariant violation** for any participant created
+  under this rule. The refusal for a missing mName (§16.1) is a defensive
+  integrity check for participants created before this rule or for abnormal
+  data — never a step a participant completes. There is no participant
+  self-service path to create, choose, or change an mName.
+- **One per participant, across roles and Storefronts.** A participant holding
+  both roles has one mName; a participant's Storefronts (§11) do not each carry
+  their own.
+- It is **not** a verified identity and implies no KYC (§4).
 
 ### §6 Automated and bot participants
 
@@ -510,7 +543,7 @@ Seller permits that Promoter to promote / resell that Product.
 
 | Act | Requires |
 | --- | --- |
-| **Request** (→ `REQUESTED`) | an authenticated Promoter with **private marketplace identity** (§4) and the **PROMOTER role** |
+| **Request** (→ `REQUESTED`) | an authenticated Promoter with **private marketplace identity** (§4), an **mName** (§5.1), and the **PROMOTER role** |
 | **Approve, deny, revoke** (→ `APPROVED` / `DENIED` / `REVOKED`) | **Seller authority over the Product** |
 
 - **Promotion Authorization may precede commerce readiness.** It is preparatory
@@ -521,6 +554,8 @@ Seller permits that Promoter to promote / resell that Product.
   independently requires otherwise. For example, Promoters may request and
   receive approval for a `COMPLETE` Product before launch, and approvals may
   remain, or new governed approvals be established, while the Product is `PAUSED`.
+- The Seller sees a requesting or approved Promoter **by its mName only** (§4,
+  §5.1).
 - A Promoter does **not** need full public-marketplace readiness merely to request
   or receive Seller approval. **Actual promoted commerce still requires** the
   Promoter to satisfy the public / commercial eligibility gates of §16.3.
@@ -949,19 +984,23 @@ names still binds.
 | Wholesale catalog entitlement implementation. **Phase 1.42 note:** Offers can now be activated (an `ACTIVE` promotional Offer is the §12 capacity trigger), but no wholesale catalog capacity is counted or enforced yet | §12 |
 | Promoter self-service | §14 |
 | Economic-principal resolution. **Narrowed by Phase 1.41:** Promotion Authorization refuses self-promotion when the requesting Promoter participant is the participant holding Seller authority over the Product, and re-checks it at approval — the strongest authoritative principal identity available today (one participant per account). **Still open:** a common economic principal across separate accounts remains unresolved until the repository has an authoritative principal-linkage model | §14 |
-| Promoted-commerce eligibility enforcement (replaces "Product / Offer promotability enforcement"). **Narrowed by Phase 1.42:** the Offer half of §16.3(3) exists — Seller-authored promoted-resale Offers with derived lifecycle (`DRAFT` / `ACTIVE` / `PAUSED` / `WITHDRAWN` / `ENDED`), activation gated by the Seller's public marketplace identity (§5, §12), and the pure `effectiveOfferTerms` resolver. **Still open:** nothing aggregates §16.3(1)–(8); `effectiveOfferTerms` is wired into neither checkout nor Listings; Promoter visibility and acceptance of Offer terms (§16.3(7)) do not exist | §14, §16.3 |
-| **Declared first / last-name identity primitive — primitive exists, enforcement open.** `Account.firstName` and `Account.lastName` now exist as declared-name primitives (Phase 1.37), and public registration requires both. They are declarations only; no KYC or name verification is implied. Pre-1.37 accounts may still have NULL declared names. **Still open:** downstream private / public marketplace identity readiness checks must require the declared names where governed; a future account / profile flow is needed if pre-existing accounts must declare or update their names; and Promotion Authorization request implementation still depends on private marketplace identity enforcement. **Narrowed by Phase 1.39:** Product activation now requires nonblank declared first and last names (never `Account.name`). **Narrowed by Phase 1.41:** a Promotion Authorization request — and its approval, re-checked — requires private marketplace identity: a verified email and nonblank declared first and last names (never `Account.name`) | §4, §5, §16.1 |
+| Promoted-commerce eligibility enforcement (replaces "Product / Offer promotability enforcement"). **Narrowed by Phase 1.42:** the Offer half of §16.3(3) exists — Seller-authored promoted-resale Offers with derived lifecycle (`DRAFT` / `ACTIVE` / `PAUSED` / `WITHDRAWN` / `ENDED`), activation gated by the Seller's public marketplace identity (§5, §12), and the pure `effectiveOfferTerms` resolver. **Still open:** nothing aggregates §16.3(1)–(8); `effectiveOfferTerms` is wired into neither checkout nor Listings; Promoter acceptance of Offer terms (§16.3(7)) does not exist. **Narrowed by Phase 1.43:** Promoters can see the Offer terms in force (and a running or upcoming promotion's terms) in the Promotable Catalog; seeing terms is not accepting them | §14, §16.3 |
+| **Declared first / last-name identity primitive — primitive exists, enforcement open.** `Account.firstName` and `Account.lastName` now exist as declared-name primitives (Phase 1.37), and public registration requires both. They are declarations only; no KYC or name verification is implied. Pre-1.37 accounts may still have NULL declared names. **Still open:** downstream private / public marketplace identity readiness checks must require the declared names where governed; a future account / profile flow is needed if pre-existing accounts must declare or update their names; and Promotion Authorization request implementation still depends on private marketplace identity enforcement. **Narrowed by Phase 1.39:** Product activation now requires nonblank declared first and last names (never `Account.name`). **Narrowed by Phase 1.41:** a Promotion Authorization request — and its approval, re-checked — requires private marketplace identity: a verified email and nonblank declared first and last names (never `Account.name`). **Narrowed by Phase 1.43:** declared names are no longer shown to any other participant; the Seller sees a Promoter by its mName (§5.1) only, and a request also requires an mName | §4, §5, §16.1 |
 | Product lifecycle implementation (`INCOMPLETE` / `COMPLETE` / `ACTIVE` / `SUSPENDED`), including **deterministic completeness** derived from governed, versioned requirements, the fact-driven transitions, and suspension reinstatement — which requires preserving **enough suspension context to determine the Product's lifecycle state immediately before suspension**; today Products carry only an internal authoring `recordStatus`. **Narrowed by Phase 1.38:** deterministic `PRODUCT_COMPLETENESS_V1` evaluation from the current source version, Seller Product revision, and the Seller shipping-policy primitive now exist; the lifecycle states, transitions, and suspension reinstatement remain open. **Narrowed by Phase 1.39:** the four states are derived on read (nothing redundant is stored); a completeness loss derives `INCOMPLETE` and a readiness loss `COMPLETE`, permanently for that activation; governed Product suspension and reinstatement exist as a server primitive (`ProductSuspension`, recording the lifecycle and activation in effect immediately before suspension, on a new internal `product:suspend` grant). Product `taxClassification` is Monacado operator authority, assigned or changed only through the staff route `POST /api/internal/products/{productRef}/tax-classification` on a new internal `product:tax-classify` grant — never by the Seller; it is operational readiness, not Product completeness. **Still open:** an operator surface and a Seller notice for Product suspension | §9.1 |
 | Product activation as an **explicit Seller act**, including explicit reactivation after lost readiness is restored. **Narrowed by Phase 1.39:** `POST /api/products/{productRef}/activate` is the only path to `ACTIVE`, gated by one readiness evaluator (completeness, Seller authority, verified email, declared names, `ACTIVE` participant and SELLER role, payment `ENABLED`, commerce approval `APPROVED`, no participant suspension, no `product:activate` restriction, tax classification); restored readiness never re-activates. The commerce gate on `ACTIVE` (row below) remains open | §9.2 |
 | **Legacy Product `promotable` fact** — retired as a governing requirement and superseded by `resaleAvailability`; implementation use to be migrated / removed. **Narrowed by Phase 1.40:** no resale logic reads it, and the Seller UI no longer asks for or shows it (the draft form sends `false`). **Still open:** the `factPromotable` source-version column, the required `promotable` field of the draft route and Product source-record contract, and the published Product capsule `promotable` field remain as compatibility storage; removing them is a later, publication-governed change | §9.3 |
 | Product lifecycle gate on all commerce, seller-direct included | §9.1 |
 | Seller-controlled resale availability, including the `ACTIVE`-only gate on setting `AVAILABLE` and **preservation of the recorded state across lifecycle changes**. **Narrowed by Phase 1.40:** the four states exist as a Seller-authoritative Product-wide record (`ProductResaleAvailabilityAct`, default `NOT_OFFERED`, history preserved), set only through `POST /api/products/{productRef}/resale-availability` under Product authority; `AVAILABLE` is refused unless the effective lifecycle is `ACTIVE`; no lifecycle change rewrites the recorded state; resale-effectiveness (`ACTIVE` and `AVAILABLE`) is derived, never stored. Implemented transitions: `NOT_OFFERED → AVAILABLE`, `AVAILABLE → PAUSED / WITHDRAWN`, `PAUSED → AVAILABLE / WITHDRAWN`. **Still open:** re-opening a `WITHDRAWN` Product (undefined by §9.3, refused); the effect of the state on promoted commerce (below) | §9.3 |
-| Promotion Authorization request / approve / deny / revoke / cancel / re-request flow and Seller controls, **usable before the Product is `ACTIVE` or `AVAILABLE`**. **Narrowed by Phase 1.41:** implemented as an append-only, per-Product-per-Promoter record (`PromotionAuthorization` request cycles and `PromotionAuthorizationAct` acts; one current relationship per pair, history preserved; no stored authorization boolean; never on a Product source version or published). Request requires private marketplace identity and a PROMOTER role in a drafting status on a participant not suspended or closed — never payment readiness, commerce approval, Product `ACTIVE`, resale `AVAILABLE`, an Offer, a Storefront, or a Listing. Approve / deny / revoke require Seller authority over the Product only; approval re-checks the Promoter's request gate and fails closed. Cancel is Promoter-only, from `REQUESTED` (its request) or `APPROVED` (its participation). Re-request after `DENIED` / `REVOKED` / `CANCELLED` opens a new cycle; approval is never restored. Product lifecycle and resale changes never rewrite a relationship. Seller and Promoter controls are on `/account`. **Still open:** Promoter discovery of Products (the Promoter names a Product by the reference its Seller shared); any future rate limit on repeated requests (§16.1) | §16.1, §16.2 |
+| Promotion Authorization request / approve / deny / revoke / cancel / re-request flow and Seller controls, **usable before the Product is `ACTIVE` or `AVAILABLE`**. **Narrowed by Phase 1.41:** implemented as an append-only, per-Product-per-Promoter record (`PromotionAuthorization` request cycles and `PromotionAuthorizationAct` acts; one current relationship per pair, history preserved; no stored authorization boolean; never on a Product source version or published). Request requires private marketplace identity and a PROMOTER role in a drafting status on a participant not suspended or closed — never payment readiness, commerce approval, Product `ACTIVE`, resale `AVAILABLE`, an Offer, a Storefront, or a Listing. Approve / deny / revoke require Seller authority over the Product only; approval re-checks the Promoter's request gate and fails closed. Cancel is Promoter-only, from `REQUESTED` (its request) or `APPROVED` (its participation). Re-request after `DENIED` / `REVOKED` / `CANCELLED` opens a new cycle; approval is never restored. Product lifecycle and resale changes never rewrite a relationship. Seller and Promoter controls are on `/account`. **Narrowed by Phase 1.43:** Promoters discover Products through the Promotable Catalog (`/promote`): Products that are `ACTIVE`, resale `AVAILABLE`, with an `ACTIVE` Offer, from an `ACTIVE` Seller with an mName, never the viewer's own; each card shows the Product name, the Seller's mName, a one-line description, wholesale, and commission as the Offer states it; a request is made from the catalog through the Phase 1.41 route. **Still open:** any future rate limit on repeated requests (§16.1) | §16.1, §16.2 |
 | Enforcement of Promotion Authorization on promoted commerce. **Narrowed by Phase 1.41:** the consumable helper `isPromotionAuthorizationApprovedIn` (current cycle `APPROVED` for this Product + Promoter) exists; nothing commercial calls it yet, and it is never sufficient alone | §16.3 |
 | Pause, withdrawal, and revocation propagation to promoted commerce | §16.4 |
 | **Unresolved architecture:** the broader Listing-versus-Storefront-placement model is not yet reconciled with §9–§16 Storefront independence. Listing / Storefront coupling: the current promoted path is authorized by the PROMOTER role, Storefront placement authority, and the Offer's `PROMOTABLE` terms, with no Promotion Authorization, Product lifecycle, or resale-availability gate | §11, §16.3 |
 | Offer-change propagation to promoted Listings. **Narrowed by Phase 1.42:** wholesale and commission changes mint a new immutable, server-labelled Offer version and are classified by an enumerated material-field set; pausing or resuming an Offer mints no version; a promoted Listing stops being buyer-active while its Offer's current derived lifecycle is not `ACTIVE`. **Owner ruling (Phase 1.42):** a scheduled promotion's wholesale override is material; Promoter acceptance binds the exact promotional version and may be given after scheduling and before `effectiveFrom`; no new acceptance is needed when `effectiveFrom` arrives, nor when the promotion ends and the exact prior standing version — already accepted and unchanged — resumes. **Still open:** persisting Promoter acceptance, invalidating it, and requiring explicit reacceptance on a material change | §19 |
 | Public Storefront / browse / search | §11, §32 |
+| **mName issuance for pre-1.43 participants.** Phase 1.43 issues an mName at participant creation; participants created earlier — including any created by the previous release after the column is added and before Phase 1.43 is deployed — have none, and there is no governed issuance path for them. Until one exists, they cannot request Promotion Authorization, are shown to a Seller as lacking an mName (and cannot be approved), and do not appear as Sellers in the Promotable Catalog | §5.1, §16.1 |
+| **mName correction and reassignment.** No operator path exists to correct or reassign an mName with an audit record (for example, an offensive random draw); no denylist screens issued names | §5.1, §8 |
+| **mName publication.** The mName is not part of any participant capsule projection or public AgentNet identity | §5.1, §30 |
+| **Promotable Catalog scale.** The catalog is derived from authoritative records on every request and sorted in memory; no materialized read model exists | §16.3 |
 | Payout execution | §31 |
 | Digital delivery | §31 |
 | Live Stripe mode | §32 |
@@ -1058,3 +1097,13 @@ Documentation Governance 2C rulings:
 | 2C-F6 | Storefront-activation question retired; placement architecture unresolved | §11, §34 |
 | 2C-F7 | Gaps | §34 |
 | 2C-S1 | Suspension reinstatement never creates `ACTIVE` authority | §9.1, §9.2, §34 |
+
+Phase 1.43 owner rulings:
+
+| Ruling | Subject | Section |
+| --- | --- | --- |
+| 1.43-1 | The mName is Monacado-assigned, non-personal, unique, and immutable; no self-selection or rename (supersedes a participant-chosen display name) | §5.1 |
+| 1.43-2 | Cross-participant identity is the mName only; declared names, Account name, email, and internal identifiers are never shown | §4, §16.1 |
+| 1.43-3 | A Promotion Authorization request requires an mName | §16.1 |
+| 1.43-4 | The mName is issued atomically when the MarketplaceParticipant is first created, not at activation; it is marketplace identity, not commerce readiness; a missing mName on a new participant is an invariant violation, and its refusal is defensive / legacy only; preserves 2C-F4 | §5.1, §16.1 |
+| 1.43-5 | The Promotable Catalog shows commission as the Offer states it (percentage or fixed amount), never a synthesized percentage | §16, §34 |
