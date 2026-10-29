@@ -543,6 +543,18 @@ export const ACCOUNT_CAPABILITIES = [
    * never activates one.
    */
   "product:tax-classify",
+  /**
+   * The first-operator governance phase. The only META capability: it governs
+   * who holds other capabilities rather than any marketplace act.
+   *
+   * Deliberately NOT a grant-any-capability authority. Its holder may grant and
+   * revoke exactly the capabilities `ENTITLEMENT_GOVERNED_CAPABILITIES` names
+   * (`commercial-policy:govern` and `marketplace-policy:govern`), and nothing
+   * else — not itself, and not any participant-facing or money-moving grant.
+   * It is also the ONLY capability that may be first-bootstrapped, once ever,
+   * by `operator:bootstrap`. See `entitlement-governance.ts`.
+   */
+  "entitlement:govern",
 ] as const;
 export const AccountCapability = z.enum(ACCOUNT_CAPABILITIES);
 export type AccountCapability = z.infer<typeof AccountCapability>;

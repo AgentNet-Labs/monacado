@@ -34,10 +34,7 @@ import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { grantProductCreatorAuthority } from "./support/product-authority-fixture";
 import { createAccount } from "../src/server/account/account-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
-import {
-  grantAccountEntitlement,
-  revokeAccountEntitlement,
-} from "../src/server/account/account-entitlement-service";
+import { grantAccountEntitlement, revokeAccountEntitlement } from "./support/entitlement-fixture";
 import { REFUND_INITIATE_CAPABILITY } from "../src/contracts/account/internal-authorization";
 import { setAccountStatus } from "../src/server/account/account-service";
 import { recordCommerceApproval } from "../src/server/marketplace/participant-commerce-approval-service";

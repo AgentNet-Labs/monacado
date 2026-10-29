@@ -200,11 +200,14 @@ One explicit persisted grant of one capability to one account id.
 - Capability vocabulary is a **closed enum** with exactly one member:
   `publication-worker:status:read`. An unrecognised capability is a validation
   failure, so a typo grants nothing and an attacker cannot invent one.
-- One row per `(accountId, capability)` — enforced by a unique index. Granting is
-  **idempotent** and preserves the original `grantedAt`; revoking flips the row.
-  A full grant/revoke audit log is deliberately deferred.
-- Revoking something not held is not an error: the caller's intent is satisfied
-  either way, and failing would tempt a bootstrap script to skip the call.
+- One row per `(accountId, capability)` — enforced by a unique index. Revoking
+  flips the row. **Since the first-operator governance phase this row is the
+  current-state projection only**: every production-capable change also appends
+  an `AccountEntitlementAct` in the same transaction (see *First-operator
+  governance* below).
+- The original unrestricted `grantAccountEntitlement` / `revokeAccountEntitlement`
+  (idempotent, no actor) now exist only as the test fixture
+  `test/support/entitlement-fixture.ts`, refused on any non-loopback database.
 - **Revocation fails closed immediately** — authorization reads this row on every
   request rather than trusting a claim cached in a token.
 
@@ -248,11 +251,86 @@ vocabulary grants nothing even if a row still carries it.
 email, no startup grant, no migration-seeded administrator, no hard-coded account
 id, and no public entitlement endpoint. A test greps the services for all of these.
 
-The first entitlement must be granted by an explicit, separately controlled
-operation calling `grantAccountEntitlement` — a future bootstrap command, or a test
-fixture. **Production bootstrap therefore requires a controlled operation and its
-own audit trail**, both deferred: this phase provides the service such an operation
-would call, not the operation itself.
+The first entitlement is granted by the explicit, separately controlled operation
+this section originally deferred — `operator:bootstrap`, described next — and
+every later change by a governed, audited act.
+
+## First-operator governance
+
+Implemented in the first-operator governance phase (roadmap `1.44.1`). **Not yet
+accepted or deployed.**
+
+### Audit model
+
+`AccountEntitlementAct` is append-only: target account, capability, `GRANT` /
+`REVOKE`, basis (`GOVERNED` / `BOOTSTRAP_FIRST_GRANT`), `actorAccountId`, and
+`actedAt`. Database CHECKs hold the actor NULL exactly for the bootstrap basis, a
+bootstrap act to be a GRANT, and the once-ever marker `firstGrantForCapability`
+set exactly on the bootstrap act (equal to its capability, unique). Both Account
+foreign keys are `RESTRICT` on delete and update. `AccountEntitlement` stays the
+current-state projection authorization reads; it is never written without an act
+in the same transaction. Only `entitlement-governance-service.ts` writes either
+table — a source-scanning test asserts it.
+
+### The meta-capability
+
+`entitlement:govern` authorizes governed entitlement changes, and is **not** a
+grant-any-capability authority. Its holder may grant and revoke exactly
+`ENTITLEMENT_GOVERNED_CAPABILITIES`: `commercial-policy:govern` and
+`marketplace-policy:govern`. Holding it confers neither of those; self-grant is
+permitted, so one operator may hold all three.
+
+### First bootstrap (`bootstrapFirstEntitlement`)
+
+Only `entitlement:govern` may be first-bootstrapped (`FIRST_GRANT_BOOTSTRAP_CAPABILITIES`).
+In one transaction, with the target Account locked `FOR UPDATE`, the target must
+exist, be `ACTIVE`, and carry `emailVerifiedVia = SELF_SERVICE_TOKEN` (an
+`ADMINISTRATIVE` or `PRE_VERIFICATION_BACKFILL` address is refused); no first grant
+of the capability may ever have happened; and no account may actively hold it. The
+act (with its unique marker) and the entitlement are written together.
+
+- **Once-ever.** The marker never clears, so losing every holder does not re-open
+  the bootstrap. There is no emergency path and no environment bypass.
+- **One winner.** Concurrent bootstraps race on the marker's unique index; losers
+  report `FIRST_GRANT_ALREADY_CLAIMED`.
+- **Idempotent for the same account.** A rerun while that account still holds the
+  grant returns `ALREADY_BOOTSTRAPPED` and writes nothing.
+
+### Governed grants and revocations
+
+`grantEntitlementAsGovernor` / `revokeEntitlementAsGovernor` re-resolve the actor's
+`entitlement:govern` inside the transaction, lock the actor and target Account rows
+in id order, refuse a disabled or unknown target, and refuse a duplicate grant
+(`ENTITLEMENT_ALREADY_ACTIVE`) or a revocation of something not held
+(`ENTITLEMENT_NOT_ACTIVE`) without writing an act. **The last active
+`entitlement:govern` holder can never be revoked** (`LAST_ENTITLEMENT_GOVERNOR`);
+any other revocation of the meta-capability is off the governed surface
+(`CAPABILITY_NOT_GOVERNABLE`).
+
+### Operator commands
+
+`operator:bootstrap`, `operator:grant`, `operator:revoke`, and
+`commercial-policy:bootstrap` (`scripts/operator-entitlement.ts`,
+`scripts/commercial-policy-bootstrap.ts`, shared rules in
+`scripts/operator-target.ts`):
+
+- `--target=local|production` is required. `production` reads only
+  `MONACADO_PROD_RUNTIME_DATABASE_URL` and refuses a loopback host; `local` reads
+  only `DATABASE_URL` and refuses a remote one. Neither falls back to the other.
+- A dry run (read-only preflight) unless `--execute` **and** `--confirm=` equal to
+  the exact printed phrase, which names the act, the accounts, and the target.
+- No account creation — the operator signs up and verifies like anyone else. No
+  account id or capability from the environment. Output is one bounded JSON line
+  of ids and classifications: no URL, host, credential, email, or name.
+
+`commercial-policy:bootstrap` requires `commercial-policy:govern`, records and
+activates `MONACADO_STANDARD_POLICY_V1` under a policy keyed
+`bootstrapKey = 'STANDARD_V1'` (unique; one policy under concurrency; an
+interrupted run resumes), returns an equivalent ACTIVE policy unchanged, refuses
+any ACTIVE policy with different economics, and prints the policy id that
+`MONACADO_CHECKOUT_POLICY_ID` must name. The Marketplace Policy keeps its existing
+governed `policy:bootstrap` path, whose activation requires
+`marketplace-policy:govern`.
 
 ## Error model
 
@@ -331,12 +409,14 @@ and [`POST_0E7_MARKETPLACE_ROADMAP.md`](POST_0E7_MARKETPLACE_ROADMAP.md).
 ## Deferred
 
 - **Login, logout, and signup surfaces** of any kind — UI or route.
-- **A controlled operator-bootstrap command** and its audit trail.
+- ~~A controlled operator-bootstrap command and its audit trail~~ — built in the
+  first-operator governance phase (above).
 - **Email verification, password recovery**, and any outbound email.
 - **OAuth, social login, MFA**, and session-device management.
 - **Organizations, memberships, and Seller/Promoter activation** — the thesis
   defines these, and they are a separate phase.
-- **General RBAC**, permission administration, and a grant/revoke audit log.
+- **General RBAC** and permission administration. (A grant/revoke audit log now
+  exists for governed changes — `AccountEntitlementAct`.)
 - **Rate limiting and lockout** on repeated authentication failures — the timing
   and message defences here address enumeration, not brute force at volume.
 - Production identity integration, deployment wiring, Stripe, and marketplace UI.

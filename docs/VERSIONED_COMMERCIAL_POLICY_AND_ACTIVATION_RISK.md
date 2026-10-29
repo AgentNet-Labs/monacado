@@ -125,6 +125,18 @@ every environment that runs migrations.
 same numbers once rather than twice. **No production write is performed in this
 phase.**
 
+### Governed bootstrap (first-operator governance phase)
+
+`commercial-policy:bootstrap` (`src/server/marketplace/commercial-policy-bootstrap.ts`)
+is the operator path that puts `MONACADO_STANDARD_POLICY_V1` in force. The actor
+must hold `commercial-policy:govern`; the created policy carries the nullable,
+unique `CommercialPolicy.bootstrapKey = 'STANDARD_V1'` so concurrent runs create
+one policy; an equivalent ACTIVE policy is returned unchanged; an ACTIVE policy
+with different economics is refused. It prints the policy id that
+`MONACADO_CHECKOUT_POLICY_ID` must name — setting that variable remains a separate
+owner step. See `IDENTITY_SESSION_AND_INTERNAL_ENTITLEMENT_FOUNDATION.md` →
+*First-operator governance*.
+
 ## 4. Relationship to `0M.T1`
 
 `0M.T1`'s per-sale economic snapshot must record the exact policy a transaction

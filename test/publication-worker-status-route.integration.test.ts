@@ -19,10 +19,7 @@ import {
   createAccountSession,
   revokeAccountSession,
 } from "../src/server/account/account-session-service";
-import {
-  grantAccountEntitlement,
-  revokeAccountEntitlement,
-} from "../src/server/account/account-entitlement-service";
+import { grantAccountEntitlement, revokeAccountEntitlement } from "./support/entitlement-fixture";
 import { resolveAuthenticatedPrincipal } from "../src/server/account/account-principal";
 import { PublicationWorkerRunRepository } from "../src/server/product/publication-worker-run-repository";
 import { buildSessionCookie, SESSION_COOKIE_NAME } from "../src/server/account/session-cookie";

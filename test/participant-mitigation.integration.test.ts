@@ -24,7 +24,7 @@ import "dotenv/config";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { createAccount } from "../src/server/account/account-service";
-import { grantAccountEntitlement } from "../src/server/account/account-entitlement-service";
+import { grantAccountEntitlement } from "./support/entitlement-fixture";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
 import {
   imposeParticipantRestriction,

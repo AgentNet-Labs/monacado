@@ -34,7 +34,7 @@ import { grantProductCreatorAuthority } from "./support/product-authority-fixtur
 import { syntheticProductRef } from "./support/product-ref-fixture";
 import { createAccount } from "../src/server/account/account-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
-import { grantAccountEntitlement } from "../src/server/account/account-entitlement-service";
+import { grantAccountEntitlement } from "./support/entitlement-fixture";
 import { recordCommerceApproval } from "../src/server/marketplace/participant-commerce-approval-service";
 import type { CommerceApprovalIdProvider } from "../src/server/marketplace/participant-commerce-approval-ids";
 import { createSellerDirectListing } from "../src/server/marketplace/listing-service";

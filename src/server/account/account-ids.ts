@@ -14,6 +14,7 @@
 import "../server-only";
 import { randomBytes } from "node:crypto";
 import {
+  ACCOUNT_ENTITLEMENT_ACT_ID_RE,
   ACCOUNT_ENTITLEMENT_ID_RE,
   ACCOUNT_ID_RE,
   ACCOUNT_SESSION_ID_RE,
@@ -48,9 +49,26 @@ export const cryptoAccountIdProvider: AccountIdProvider = {
   nextEntitlementId: () => `mon:aent:${randomOpaqueBody()}`,
 };
 
+/**
+ * Identities for entitlement governance (first-operator governance phase): the
+ * current-state row a grant may create, and the append-only act every change
+ * writes. Separate from `AccountIdProvider` so existing fixtures that supply one
+ * are not forced to grow a method they never call.
+ */
+export interface EntitlementGovernanceIdProvider {
+  nextEntitlementId(): string;
+  nextEntitlementActId(): string;
+}
+
+export const cryptoEntitlementGovernanceIdProvider: EntitlementGovernanceIdProvider = {
+  nextEntitlementId: () => `mon:aent:${randomOpaqueBody()}`,
+  nextEntitlementActId: () => `mon:aeact:${randomOpaqueBody()}`,
+};
+
 /** Shapes asserted by a test rather than guarded at runtime — they hold by construction. */
 export const ACCOUNT_ID_PATTERNS = {
   account: ACCOUNT_ID_RE,
   session: ACCOUNT_SESSION_ID_RE,
   entitlement: ACCOUNT_ENTITLEMENT_ID_RE,
+  entitlementAct: ACCOUNT_ENTITLEMENT_ACT_ID_RE,
 } as const;

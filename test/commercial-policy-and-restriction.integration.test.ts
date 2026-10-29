@@ -25,10 +25,7 @@ import {
 } from "./support/marketplace-policy-fixture";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { createAccount } from "../src/server/account/account-service";
-import {
-  grantAccountEntitlement,
-  revokeAccountEntitlement,
-} from "../src/server/account/account-entitlement-service";
+import { grantAccountEntitlement, revokeAccountEntitlement } from "./support/entitlement-fixture";
 import {
   createDraftParticipant,
   advanceParticipantStatus,

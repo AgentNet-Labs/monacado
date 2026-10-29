@@ -42,11 +42,8 @@ import {
   resolveAccountSession,
   revokeAccountSession,
 } from "../src/server/account/account-session-service";
-import {
-  accountHasCapability,
-  grantAccountEntitlement,
-  revokeAccountEntitlement,
-} from "../src/server/account/account-entitlement-service";
+import { accountHasCapability } from "../src/server/account/account-entitlement-service";
+import { grantAccountEntitlement, revokeAccountEntitlement } from "../test/support/entitlement-fixture";
 import { resolveAuthenticatedPrincipal } from "../src/server/account/account-principal";
 import { hashSessionToken } from "../src/server/account/session-token";
 import { SESSION_COOKIE_NAME } from "../src/server/account/session-cookie";
@@ -3078,7 +3075,9 @@ async function cleanup(db: ReturnType<typeof getPrisma>): Promise<void> {
   // Identity rows have no relation to publication data, so they are removed on
   // their own. Order matters within the group: AccountEntitlement is RESTRICT, so
   // it must go before the accounts it protects; AccountSession would cascade but
-  // is removed explicitly so the ordering documents itself.
+  // is removed explicitly so the ordering documents itself. Entitlement acts
+  // (first-operator governance phase) are RESTRICT on both accounts they name.
+  await db.accountEntitlementAct.deleteMany({});
   await db.accountEntitlement.deleteMany({});
   await db.accountSession.deleteMany({});
   await db.account.deleteMany({});

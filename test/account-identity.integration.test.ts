@@ -25,12 +25,8 @@ import {
   revokeAccountSession,
   revokeAllAccountSessions,
 } from "../src/server/account/account-session-service";
-import {
-  accountHasCapability,
-  grantAccountEntitlement,
-  listAccountCapabilities,
-  revokeAccountEntitlement,
-} from "../src/server/account/account-entitlement-service";
+import { accountHasCapability, listAccountCapabilities } from "../src/server/account/account-entitlement-service";
+import { grantAccountEntitlement, revokeAccountEntitlement } from "./support/entitlement-fixture";
 import { resolveAuthenticatedPrincipal } from "../src/server/account/account-principal";
 import {
   AccountNotFoundError,
@@ -622,6 +618,7 @@ describe("session cookie and isolation", () => {
       "../src/server/account/account-service.ts",
       "../src/server/account/account-session-service.ts",
       "../src/server/account/account-entitlement-service.ts",
+      "../src/server/account/entitlement-governance-service.ts",
       "../src/server/account/account-principal.ts",
       "../src/server/account/session-cookie.ts",
       "../src/server/account/password.ts",
@@ -644,6 +641,7 @@ describe("session cookie and isolation", () => {
   it("grants nothing automatically: no bootstrap, allow-list, or hard-coded identity", () => {
     const modules = [
       "../src/server/account/account-entitlement-service.ts",
+      "../src/server/account/entitlement-governance-service.ts",
       "../src/server/account/account-principal.ts",
       "../src/server/account/account-service.ts",
     ];

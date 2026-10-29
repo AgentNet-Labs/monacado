@@ -24,10 +24,7 @@ import { MARKETPLACE_NAME_RE } from "../src/contracts/marketplace/marketplace-na
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { createAccount } from "../src/server/account/account-service";
-import {
-  grantAccountEntitlement,
-  revokeAccountEntitlement,
-} from "../src/server/account/account-entitlement-service";
+import { grantAccountEntitlement, revokeAccountEntitlement } from "./support/entitlement-fixture";
 import { resolveInternalAuthorizationSubject } from "../src/server/account/internal-authorization-service";
 import { canReviewParticipantActivation } from "../src/contracts/account/internal-authorization";
 import {

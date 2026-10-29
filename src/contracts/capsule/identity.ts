@@ -238,6 +238,13 @@ export const ACCOUNT_SESSION_ID_RE = new RegExp(`^mon:asess:${OPAQUE_BODY}$`);
 export const ACCOUNT_ENTITLEMENT_ID_RE = new RegExp(`^mon:aent:${OPAQUE_BODY}$`);
 
 /**
+ * Account entitlement act identifier (`mon:aeact:<opaque>`). Names one
+ * append-only GRANT or REVOKE of one capability — the audit record behind the
+ * current-state `mon:aent:` row.
+ */
+export const ACCOUNT_ENTITLEMENT_ACT_ID_RE = new RegExp(`^mon:aeact:${OPAQUE_BODY}$`);
+
+/**
  * Account email-verification challenge identifier (`mon:aevc:<opaque>`), Phase
  * 1.27. Names one outstanding proof that somebody controls an Account's login
  * address.

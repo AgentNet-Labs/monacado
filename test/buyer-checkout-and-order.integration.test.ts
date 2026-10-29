@@ -27,7 +27,7 @@ import { syntheticProductRef } from "./support/product-ref-fixture";
 import { createAccount } from "../src/server/account/account-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
 import { recordOfferAct, seedOffer } from "./support/offer-fixture";
-import { grantAccountEntitlement } from "../src/server/account/account-entitlement-service";
+import { grantAccountEntitlement } from "./support/entitlement-fixture";
 import {
   getCurrentCommerceApproval,
   listCommerceApprovals,

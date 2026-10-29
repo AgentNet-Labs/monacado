@@ -1160,6 +1160,8 @@ model Account {
 
   sessions                AccountSession[]
   entitlements            AccountEntitlement[]
+  entitlementActsReceived AccountEntitlementAct[]             @relation("AccountEntitlementActTarget")
+  entitlementActsActed    AccountEntitlementAct[]             @relation("AccountEntitlementActActor")
   emailChallenges         AccountEmailVerificationChallenge[]
   passwordResetChallenges AccountPasswordResetChallenge[]
 
@@ -1233,11 +1235,62 @@ model AccountEntitlement {
   // rather than silently dropping the grant.
   account Account @relation(fields: [accountId], references: [id], onDelete: Restrict)
 
-  /// One row per account+capability: granting an already-granted capability is
-  /// idempotent, and revocation flips this row rather than appending. A full
-  /// grant/revoke audit log is deliberately deferred.
+  /// One row per account+capability: the CURRENT-STATE projection authorization
+  /// reads. Revocation flips this row rather than appending; the append-only
+  /// history of every grant and revocation is `AccountEntitlementAct`, written in
+  /// the same transaction as every change here.
   @@unique([accountId, capability])
   @@index([accountId, capability, status])
+}
+
+/// One append-only GRANT or REVOKE of one capability (first-operator governance
+/// phase). Never updated, never deleted.
+///
+/// `AccountEntitlement` is the current state; this is how it came to be. Every
+/// production-capable entitlement change writes exactly one act in the same
+/// transaction as the row it changes.
+///
+/// CHECKs (migration SQL, not expressible here):
+///   - `action` ∈ GRANT | REVOKE; `basis` ∈ GOVERNED | BOOTSTRAP_FIRST_GRANT;
+///   - `actorAccountId` is NULL exactly when the basis is BOOTSTRAP_FIRST_GRANT;
+///   - a bootstrap act is a GRANT;
+///   - `firstGrantForCapability` is set exactly on a bootstrap act, and then
+///     equals `capability`.
+model AccountEntitlementAct {
+  /// Opaque act identity (mon:aeact:<opaque>).
+  id String @id @db.VarChar(191)
+
+  /// The account whose entitlement changed.
+  accountId String @db.VarChar(191)
+
+  capability String @db.VarChar(64)
+
+  /// GRANT | REVOKE.
+  action String @db.VarChar(16)
+
+  /// GOVERNED | BOOTSTRAP_FIRST_GRANT.
+  basis String @db.VarChar(32)
+
+  /// The `entitlement:govern` holder who acted. NULL only for the once-ever
+  /// first grant, which by definition had nobody who could act.
+  actorAccountId String? @db.VarChar(191)
+
+  /// The once-ever marker. Equal to `capability` on the bootstrap act and NULL on
+  /// every other; the unique index is what makes a capability's first grant
+  /// happen once, and what lets exactly one of two concurrent bootstraps win.
+  firstGrantForCapability String? @unique @db.VarChar(64)
+
+  actedAt   DateTime @db.DateTime(3)
+  createdAt DateTime @default(now()) @db.DateTime(3)
+
+  // RESTRICT on both actions: an audit act outlives nothing it names, and MySQL
+  // refuses a CHECK on a column used by a CASCADE action (error 3823).
+  account Account  @relation("AccountEntitlementActTarget", fields: [accountId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  actor   Account? @relation("AccountEntitlementActActor", fields: [actorAccountId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@index([accountId, capability, actedAt])
+  @@index([capability, actedAt])
+  @@index([actorAccountId])
 }
 
 /// One outstanding proof that somebody controls an Account's login address
@@ -1837,6 +1890,12 @@ model CommercialPolicy {
   /// Operational display label. NEVER an input to a calculation, never published.
   /// Economics read the id and the version and nothing else.
   label String @db.VarChar(191)
+
+  /// Which governed bootstrap created this policy, if any (first-operator
+  /// governance phase). `STANDARD_V1` for the policy `commercial-policy:bootstrap`
+  /// creates; NULL for every policy created otherwise. The unique index is what
+  /// makes concurrent bootstraps produce ONE policy rather than two.
+  bootstrapKey String? @unique @db.VarChar(32)
 
   createdAt DateTime @default(now()) @db.DateTime(3)
   updatedAt DateTime @updatedAt @db.DateTime(3)

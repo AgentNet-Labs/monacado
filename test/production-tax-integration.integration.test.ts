@@ -32,7 +32,7 @@ import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { grantProductCreatorAuthority } from "./support/product-authority-fixture";
 import { createAccount } from "../src/server/account/account-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
-import { grantAccountEntitlement } from "../src/server/account/account-entitlement-service";
+import { grantAccountEntitlement } from "./support/entitlement-fixture";
 import { recordCommerceApproval } from "../src/server/marketplace/participant-commerce-approval-service";
 import type { CommerceApprovalIdProvider } from "../src/server/marketplace/participant-commerce-approval-ids";
 import { createSellerDirectListing } from "../src/server/marketplace/listing-service";

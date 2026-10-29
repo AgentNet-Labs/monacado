@@ -27,7 +27,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { createAccount } from "../src/server/account/account-service";
 import { createAccountSession } from "../src/server/account/account-session-service";
-import { grantAccountEntitlement } from "../src/server/account/account-entitlement-service";
+import { grantAccountEntitlement } from "./support/entitlement-fixture";
 import { SESSION_COOKIE_NAME } from "../src/server/account/session-cookie";
 import { readAccountHome } from "../src/server/account/account-home";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";

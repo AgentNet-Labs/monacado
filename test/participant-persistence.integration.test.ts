@@ -13,7 +13,7 @@ import "dotenv/config";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { createAccount } from "../src/server/account/account-service";
-import { grantAccountEntitlement } from "../src/server/account/account-entitlement-service";
+import { grantAccountEntitlement } from "./support/entitlement-fixture";
 import { ProductRepository } from "../src/server/product/product-repository";
 import type { ProductSourceRecord } from "../src/contracts/index";
 import {

@@ -24,7 +24,7 @@ import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { grantProductCreatorAuthority } from "./support/product-authority-fixture";
 import { syntheticProductRef } from "./support/product-ref-fixture";
 import { createAccount } from "../src/server/account/account-service";
-import { grantAccountEntitlement } from "../src/server/account/account-entitlement-service";
+import { grantAccountEntitlement } from "./support/entitlement-fixture";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
 import { recordOfferAct, seedOffer, seedOfferStandingVersion } from "./support/offer-fixture";
 import {

@@ -502,6 +502,24 @@ export function canClassifyProductTax(
   return evaluateInternalCapability(PRODUCT_TAX_CLASSIFY_CAPABILITY, subject);
 }
 
+/** The meta-capability that authorizes governed entitlement changes (first-operator governance phase). */
+export const ENTITLEMENT_GOVERN_CAPABILITY =
+  "entitlement:govern" as const satisfies AccountCapability;
+
+/**
+ * May this internal account grant or revoke a governed capability?
+ *
+ * Requires an explicit active `entitlement:govern` entitlement. This answers
+ * only WHO may act; WHICH capabilities the act may touch is a separate, closed
+ * surface (`ENTITLEMENT_GOVERNED_CAPABILITIES`), so holding this grant never
+ * becomes authority over a capability that surface does not name.
+ */
+export function canGovernEntitlements(
+  subject: InternalAuthorizationSubject | null,
+): InternalAuthorizationDecision {
+  return evaluateInternalCapability(ENTITLEMENT_GOVERN_CAPABILITY, subject);
+}
+
 /** May this internal account read publication-worker operational health? */
 export function canReadPublicationWorkerStatus(
   subject: InternalAuthorizationSubject | null,

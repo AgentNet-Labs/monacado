@@ -18,142 +18,27 @@
  * **Revocation fails closed immediately.** Authorization reads this row on every
  * request rather than trusting a claim cached in a token, so a revoked capability
  * is gone on the next call rather than at the end of some session lifetime.
+ *
+ * **Read-only (first-operator governance phase).** This module no longer writes.
+ * The unrestricted `grantAccountEntitlement` / `revokeAccountEntitlement` it once
+ * exported had no actor, no authority check, and no record, so they now live
+ * only in the test fixture `test/support/entitlement-fixture.ts`. Every
+ * production-capable change goes through `entitlement-governance-service.ts`,
+ * which writes an `AccountEntitlementAct` in the same transaction.
  */
 
 import "../server-only";
 import type { Prisma } from "@prisma/client";
 import {
   AccountCapability,
-  AccountEntitlementRecord,
-  GrantAccountEntitlementInput,
-  RevokeAccountEntitlementInput,
   type AccountCapability as Capability,
-  type AccountEntitlementRecord as SafeEntitlement,
 } from "../../contracts/account/account";
 import { getPrisma } from "../db/client";
-import { cryptoAccountIdProvider, type AccountIdProvider } from "./account-ids";
-import {
-  AccountNotFoundError,
-  AccountPersistenceFailureError,
-  InvalidAccountInputError,
-  UnsupportedCapabilityError,
-} from "./account-errors";
 
 type Db = ReturnType<typeof getPrisma>;
 
 export interface EntitlementServiceDeps {
   db?: Db;
-  ids?: AccountIdProvider;
-}
-
-function entitlementRowToRecord(row: {
-  id: string;
-  accountId: string;
-  capability: string;
-  status: string;
-  grantedAt: Date;
-  revokedAt: Date | null;
-}): SafeEntitlement {
-  return AccountEntitlementRecord.parse({
-    entitlementId: row.id,
-    accountId: row.accountId,
-    capability: row.capability,
-    status: row.status,
-    grantedAt: row.grantedAt.toISOString(),
-    revokedAt: row.revokedAt === null ? null : row.revokedAt.toISOString(),
-  });
-}
-
-/**
- * Grant a capability to an account.
- *
- * **Idempotent.** Granting a capability the account already holds returns the
- * existing grant unchanged rather than conflicting or re-dating it — a bootstrap
- * operation that runs twice must not be a failure, and the original `grantedAt`
- * is the fact worth keeping.
- *
- * Re-granting a previously revoked capability reactivates the same row and clears
- * `revokedAt`, because the unique index keeps one row per account+capability.
- */
-export async function grantAccountEntitlement(
-  input: unknown,
-  deps: EntitlementServiceDeps = {},
-): Promise<SafeEntitlement> {
-  const parsed = GrantAccountEntitlementInput.safeParse(input);
-  if (!parsed.success) {
-    // An unrecognised capability is refused specifically, so a typo in a bootstrap
-    // script fails loudly instead of granting nothing and reporting success.
-    if (parsed.error.issues.some((i) => i.path[0] === "capability")) {
-      throw new UnsupportedCapabilityError();
-    }
-    throw new InvalidAccountInputError(
-      Array.from(new Set(parsed.error.issues.map((i) => i.path.join(".") || "(root)"))),
-    );
-  }
-  const req = parsed.data;
-
-  const db = deps.db ?? getPrisma();
-  const ids = deps.ids ?? cryptoAccountIdProvider;
-
-  const account = await db.account.findUnique({ where: { id: req.accountId } });
-  if (account === null) throw new AccountNotFoundError();
-
-  try {
-    const existing = await db.accountEntitlement.findUnique({
-      where: { accountId_capability: { accountId: req.accountId, capability: req.capability } },
-    });
-    if (existing !== null && existing.status === "ACTIVE") {
-      return entitlementRowToRecord(existing);
-    }
-    const row = await db.accountEntitlement.upsert({
-      where: { accountId_capability: { accountId: req.accountId, capability: req.capability } },
-      create: {
-        id: ids.nextEntitlementId(),
-        accountId: req.accountId,
-        capability: req.capability,
-        status: "ACTIVE",
-        grantedAt: new Date(req.grantedAt),
-      },
-      update: { status: "ACTIVE", grantedAt: new Date(req.grantedAt), revokedAt: null },
-    });
-    return entitlementRowToRecord(row);
-  } catch (error) {
-    throw new AccountPersistenceFailureError("grant-entitlement", error);
-  }
-}
-
-/**
- * Revoke a capability.
- *
- * Idempotent in the same spirit: revoking something not held is not an error,
- * because the caller's intent — "this account must not hold this" — is satisfied
- * either way, and failing would tempt a bootstrap script to skip the call.
- */
-export async function revokeAccountEntitlement(
-  input: unknown,
-  deps: EntitlementServiceDeps = {},
-): Promise<{ revoked: boolean }> {
-  const parsed = RevokeAccountEntitlementInput.safeParse(input);
-  if (!parsed.success) {
-    if (parsed.error.issues.some((i) => i.path[0] === "capability")) {
-      throw new UnsupportedCapabilityError();
-    }
-    throw new InvalidAccountInputError(
-      Array.from(new Set(parsed.error.issues.map((i) => i.path.join(".") || "(root)"))),
-    );
-  }
-  const req = parsed.data;
-  const db = deps.db ?? getPrisma();
-
-  try {
-    const result = await db.accountEntitlement.updateMany({
-      where: { accountId: req.accountId, capability: req.capability, status: "ACTIVE" },
-      data: { status: "REVOKED", revokedAt: new Date(req.revokedAt) },
-    });
-    return { revoked: result.count === 1 };
-  } catch (error) {
-    throw new AccountPersistenceFailureError("revoke-entitlement", error);
-  }
 }
 
 /**

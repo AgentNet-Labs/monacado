@@ -25,7 +25,7 @@ import {
 } from "../src/server/marketplace/payment-account-service";
 import { recordCommerceApproval } from "../src/server/marketplace/participant-commerce-approval-service";
 import { imposeParticipantRestriction } from "../src/server/marketplace/participant-restriction-service";
-import { grantAccountEntitlement } from "../src/server/account/account-entitlement-service";
+import { grantAccountEntitlement } from "./support/entitlement-fixture";
 import {
   ensureMarketplacePolicy,
   recordMarketplacePolicyVersion,

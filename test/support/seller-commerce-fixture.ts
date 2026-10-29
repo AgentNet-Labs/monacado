@@ -17,7 +17,7 @@ import { expect } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { createAccount } from "../../src/server/account/account-service";
 import { createAccountSession } from "../../src/server/account/account-session-service";
-import { grantAccountEntitlement } from "../../src/server/account/account-entitlement-service";
+import { grantAccountEntitlement } from "./entitlement-fixture";
 import { SESSION_COOKIE_NAME } from "../../src/server/account/session-cookie";
 import { createDraftParticipant } from "../../src/server/marketplace/participant-service";
 import {
