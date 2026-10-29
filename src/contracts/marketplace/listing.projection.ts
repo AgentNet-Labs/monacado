@@ -67,6 +67,8 @@ import {
   ListingSourceRecordVersion,
   ListingSourceVersion,
   evaluateListingBuyerEligibility,
+  isLegacyPromotedPlacement,
+  isPackagePromotedPlacement,
   type ListingBlockingReason,
 } from "./listing-source";
 import { MarketplaceParticipantId, type ParticipantStatus, type RoleAssignmentStatus } from "./participant";
@@ -339,11 +341,18 @@ function mapData(
     };
   }
 
+  /* Phase 1.45 — a package-based promoted draft may be unpriced. Unreachable in
+     practice for the same reason as the seller-direct case above; kept as the
+     structural guarantee that no capsule is projected without a price. */
+  const promotedRetail = source.placement.retail;
+  if (promotedRetail === null) {
+    throw new ListingProjectionError("NOT_PROJECTION_ELIGIBLE", "NOT_BUYER_ACTIVE");
+  }
   return {
     listingType: "PROMOTED",
     price: {
-      basePrice: source.placement.retail.retailPriceMinorUnits,
-      priceCurrency: source.placement.retail.retailPriceCurrency,
+      basePrice: promotedRetail.retailPriceMinorUnits,
+      priceCurrency: promotedRetail.retailPriceCurrency,
     },
     relationships,
   };
@@ -424,8 +433,15 @@ export function listingSourceRecordToCapsuleProjection(input: {
     ...(context.upstream.currentOfferState !== undefined
       ? { currentOffer: { state: context.upstream.currentOfferState } }
       : {}),
-    ...(source.placement.listingType === "PROMOTED"
+    ...(isLegacyPromotedPlacement(source.placement)
       ? { upstreamReviewState: source.placement.upstreamReviewState }
+      : {}),
+    /* Phase 1.45 — a package-based promoted Listing's Seller terms, authorization,
+       and acceptance are derived by the server gate, which this pure projection
+       context does not carry. Until publication is wired to that gate, such a
+       Listing does not project. */
+    ...(isPackagePromotedPlacement(source.placement)
+      ? { promotedTermsBasis: source.placement.termsBasis, promotedCommerceEnabled: false }
       : {}),
   });
   if (!eligibility.buyerActive) {

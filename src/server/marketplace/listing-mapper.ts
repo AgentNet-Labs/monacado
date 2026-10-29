@@ -44,6 +44,8 @@ import { MAX_MINOR_UNIT_AMOUNT } from "../../contracts/marketplace/offer-source"
 import {
   ListingSourceRecord,
   ListingSourceVersion,
+  isLegacyPromotedPlacement,
+  isPackagePromotedPlacement,
   isTerminalListingLifecycleState,
   type ListingLifecycleState,
   type ListingPlacement,
@@ -199,8 +201,27 @@ function placementFromRow(row: VersionRow): unknown {
   if (row.listingType === "SELLER_DIRECT") {
     return { listingType: "SELLER_DIRECT", retail, sale: saleFromRow(row) };
   }
+  if (row.listingType === "PROMOTED" && row.promotedTermsBasis !== null) {
+    /* Phase 1.45 — the package-based shape names no Offer. A legacy binding
+       column on such a row is corruption (the migration's CHECK refuses it);
+       the contract refuses an unknown basis rather than guessing one. */
+    const legacy = [
+      row.acceptedInternalOfferId,
+      row.acceptedOfferSourceRecordId,
+      row.acceptedOfferSourceRecordVersion,
+      row.acceptedWholesalePriceMinorUnits,
+      row.acceptedWholesalePriceCurrency,
+      row.acceptedCommissionCalculationPolicyVersion,
+      row.acceptedAt,
+      row.upstreamReviewState,
+    ];
+    if (legacy.some((p) => p !== null)) {
+      throw new CorruptListingRecordError(["placement.termsBasis"]);
+    }
+    return { listingType: "PROMOTED", termsBasis: row.promotedTermsBasis, retail };
+  }
   if (row.listingType === "PROMOTED") {
-    /* The promoted branch's contract keeps `retail` NON-nullable, so a promoted
+    /* Legacy 0M.7 rows (Phase 1.45: history only). The promoted branch's contract keeps `retail` NON-nullable, so a promoted
        row whose price columns are NULL fails at the contract rather than
        producing a promoted placement nobody could price. */
     return {
@@ -303,9 +324,10 @@ export function placementToColumns(placement: ListingPlacement): {
   acceptedCommissionCalculationPolicyVersion: string | null;
   acceptedAt: Date | null;
   upstreamReviewState: string | null;
+  promotedTermsBasis: string | null;
 } {
   const sale = placement.listingType === "SELLER_DIRECT" ? placement.sale : null;
-  const dep = placement.listingType === "PROMOTED" ? placement.offerDependency : null;
+  const dep = isLegacyPromotedPlacement(placement) ? placement.offerDependency : null;
   /* Written as an explicit pair of NULLs, never one of each: the exact inverse
      of `retailFromRow`, so a version that is unpriced carries no residue of a
      currency and a priced one carries no orphaned amount. */
@@ -330,7 +352,7 @@ export function placementToColumns(placement: ListingPlacement): {
     acceptedCommissionCalculationPolicyVersion:
       dep?.acceptedCommissionCalculationPolicyVersion ?? null,
     acceptedAt: dep === null ? null : new Date(dep.acceptedAt),
-    upstreamReviewState:
-      placement.listingType === "PROMOTED" ? placement.upstreamReviewState : null,
+    upstreamReviewState: isLegacyPromotedPlacement(placement) ? placement.upstreamReviewState : null,
+    promotedTermsBasis: isPackagePromotedPlacement(placement) ? placement.termsBasis : null,
   };
 }

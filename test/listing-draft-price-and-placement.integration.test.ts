@@ -39,6 +39,8 @@ import {
   createSellerDirectListing,
   getCurrentSourceVersion,
   getEffectivePrice,
+  insertFirstVersion,
+  requireNoCurrentPlacement,
 } from "../src/server/marketplace/listing-service";
 import {
   CURRENT_PLACEMENT_MARKER,
@@ -48,11 +50,13 @@ import {
   InvalidListingInputError,
   ListingAlreadyExistsError,
   ListingCommercialTermsRequiredError,
+  PromotedListingPathRetiredError,
 } from "../src/server/marketplace/listing-errors";
 import { LISTING_LIFECYCLE_STATES } from "../src/contracts/marketplace/listing-source";
 import { grantProductCreatorAuthority } from "./support/product-authority-fixture";
 import { syntheticProductRef } from "./support/product-ref-fixture";
 import { syntheticListingRef } from "./support/listing-ref-fixture";
+import { cryptoListingIdProvider } from "../src/server/marketplace/listing-ids";
 
 const RUN = process.env.RUN_DB_TESTS === "1";
 const db = RUN ? getPrisma() : (undefined as unknown as ReturnType<typeof getPrisma>);
@@ -351,18 +355,12 @@ describe.skipIf(!RUN)("Phase 1.34 Ruling B — a private DRAFT Listing needs no 
         { db },
       );
 
-    /* A promoted placement exists only against an accepted priced Offer, and its
-       viability check has no meaning without a retail price to check. */
-    await expect(promoted({ retail: null })).rejects.toBeInstanceOf(InvalidListingInputError);
-
-    /* And the ordinary promoted path is untouched. */
-    const ok = await promoted();
-    const placement = ok.currentVersion.placement;
-    expect(placement.listingType).toBe("PROMOTED");
-    if (placement.listingType === "PROMOTED") {
-      expect(placement.retail.retailPriceMinorUnits).toBe(12_500);
-      expect(placement.offerDependency.acceptedOfferSourceRecordVersion).toBe("1");
-    }
+    /* Phase 1.45 retired the Offer-copying promoted path: priced or unpriced,
+       it refuses, and the package-based path (`promoted-listing-service`)
+       is the only way a promoted Listing is written. */
+    await expect(promoted({ retail: null })).rejects.toBeInstanceOf(PromotedListingPathRetiredError);
+    await expect(promoted()).rejects.toBeInstanceOf(PromotedListingPathRetiredError);
+    expect(await db.listing.count({ where: { internalProductId } })).toBe(0);
   });
 
   it("5. refuses commercial activation of an unpriced placement", async () => {
@@ -609,24 +607,32 @@ describe.skipIf(!RUN)("Phase 1.34 Ruling C — one current Listing per Product +
       { db },
     );
 
+    void offer;
+    /* Phase 1.45: promoted Listings are package-based. Written through the
+       shared first-version insert, so the database invariant is what is tested. */
     const promoted = () =>
-      createPromotedListing(
-        {
-          storefrontId,
-          internalProductId,
-          controllingParticipantId: promoter.participantId,
+      insertFirstVersion(db, {
+        internalListingId: cryptoListingIdProvider.nextInternalListingId(),
+        listingSourceRecordId: cryptoListingIdProvider.nextListingSourceRecordId(),
+        listingRef: syntheticListingRef(),
+        storefrontId,
+        internalProductId,
+        controllingParticipantId: promoter.participantId,
+        placement: {
+          listingType: "PROMOTED",
+          termsBasis: "PROMOTION_PACKAGE",
           retail: { retailPriceMinorUnits: 12_500, retailPriceCurrency: "USD" },
-          acceptedOfferSourceRecordId: offer.record.offerSourceRecordId,
-          acceptedOfferSourceRecordVersion: "1",
-          acquisitionPolicy: ACQUISITION_POLICY,
-          actingAccountId: promoter.accountId,
-          now: NOW,
         },
-        { db },
-      );
+        authorizedByParticipantId: promoter.participantId,
+        authorizedByActorId: promoter.accountId,
+        recordedAt: new Date(NOW),
+      });
 
     await promoted();
-    await expect(promoted()).rejects.toBeInstanceOf(ListingAlreadyExistsError);
+    await expect(requireNoCurrentPlacement(db, { internalProductId, storefrontId })).rejects.toBeInstanceOf(
+      ListingAlreadyExistsError,
+    );
+    await expect(promoted()).rejects.toMatchObject({ code: "P2002" });
     expect(await db.listing.count({ where: { internalProductId, storefrontId } })).toBe(1);
   });
 

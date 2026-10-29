@@ -1354,8 +1354,10 @@ describe("34-37. upstream states block a Listing", () => {
   it("names bounded reasons only", () => {
     /* Eight since Phase 1.15, Ruling 1 added `OFFER_NOT_CURRENTLY_OFFERED`:
        the accepted version supplies the TERMS, the stable Offer supplies CURRENT
-       authorization, and the two are reported separately. */
-    expect(LISTING_BLOCKING_REASONS).toHaveLength(8);
+       authorization, and the two are reported separately. Nine since Phase 1.45
+       added `PROMOTED_COMMERCE_NOT_ENABLED`, the checkout closure. */
+    expect(LISTING_BLOCKING_REASONS).toHaveLength(9);
+    expect(LISTING_BLOCKING_REASONS).toContain("PROMOTED_COMMERCE_NOT_ENABLED");
     for (const reason of LISTING_BLOCKING_REASONS) {
       expect(reason).toMatch(/^[A-Z_]+$/);
     }

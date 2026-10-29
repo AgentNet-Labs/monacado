@@ -34,7 +34,7 @@ import {
 import type { ParticipantStatus, PaymentReadinessStatus } from "../../contracts/marketplace/participant";
 import { getPrisma } from "../db/client";
 import { resolveCommerceApproval } from "../marketplace/participant-commerce-approval-service";
-import { readProductActivationStanding } from "../marketplace/participant-standing-service";
+import { readParticipantStanding, readProductActivationStanding } from "../marketplace/participant-standing-service";
 import {
   readPaymentEnabledSinceIn,
   readReadinessIn,
@@ -199,6 +199,63 @@ export async function readSellerReadinessFactsIn(
   participantId: string,
 ): Promise<ParticipantLifecycleFacts["readiness"]> {
   return (await readParticipantLifecycleFacts(tx, participantId)).readiness;
+}
+
+/**
+ * The Promoter-readiness facts for one participant (Phase 1.45) — the same
+ * account, participant, payment, and commerce-approval reads Seller readiness
+ * uses, with the PROMOTER role. `restrictedScopes` are the participant's active
+ * governed restriction scopes; the caller decides which ones withhold its act
+ * (any, for a Listing going live; the PROMOTER commerce scopes, for a sale).
+ */
+export async function readPromoterReadinessFactsIn(
+  tx: Tx,
+  participantId: string,
+): Promise<{
+  account: { emailVerifiedAt: string | null; firstName: string | null; lastName: string | null };
+  participant: {
+    status: string;
+    suspended: boolean;
+    restrictedScopes: readonly string[];
+    promoterRoleStatus: string | null;
+    paymentReadiness: string;
+    commerceApproval: string;
+  } | null;
+}> {
+  const participant = await tx.marketplaceParticipant.findUnique({
+    where: { id: participantId },
+    select: {
+      status: true,
+      account: { select: { emailVerifiedAt: true, firstName: true, lastName: true } },
+    },
+  });
+  if (participant === null) {
+    return { account: { emailVerifiedAt: null, firstName: null, lastName: null }, participant: null };
+  }
+  const [role, standing, payment, approval] = await Promise.all([
+    tx.marketplaceRoleAssignment.findUnique({
+      where: { participantId_role: { participantId, role: "PROMOTER" } },
+      select: { status: true },
+    }),
+    readParticipantStanding(tx, participantId),
+    readPaymentFacts(tx, participantId),
+    resolveCommerceApproval(tx, participantId),
+  ]);
+  return {
+    account: {
+      emailVerifiedAt: iso(participant.account.emailVerifiedAt),
+      firstName: participant.account.firstName,
+      lastName: participant.account.lastName,
+    },
+    participant: {
+      status: participant.status,
+      suspended: standing.suspended,
+      restrictedScopes: standing.activeScopes,
+      promoterRoleStatus: role?.status ?? null,
+      paymentReadiness: payment.readiness,
+      commerceApproval: approval,
+    },
+  };
 }
 
 /** The recorded basis of one activation row, as the contract compares it. */

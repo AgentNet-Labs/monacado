@@ -23,6 +23,7 @@
  */
 
 import "dotenv/config";
+import { seedLegacyPromotedListing } from "./support/legacy-promoted-listing-fixture";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import {
   ensureShippedMarketplacePolicyActive,
@@ -39,7 +40,6 @@ import { grantAccountEntitlement } from "./support/entitlement-fixture";
 import { recordCommerceApproval } from "../src/server/marketplace/participant-commerce-approval-service";
 import type { CommerceApprovalIdProvider } from "../src/server/marketplace/participant-commerce-approval-ids";
 import {
-  createPromotedListing,
   createSellerDirectListing,
 } from "../src/server/marketplace/listing-service";
 import {
@@ -52,7 +52,7 @@ import {
   getOrder,
   listProceedsObligations,
 } from "../src/server/marketplace/order-service";
-import { PaymentResultConflictError } from "../src/server/marketplace/order-errors";
+import { ListingNotPurchasableError, PaymentResultConflictError } from "../src/server/marketplace/order-errors";
 import type { OrderIdProvider } from "../src/server/marketplace/order-ids";
 import type { GuestClaimCodeProvider } from "../src/server/marketplace/guest-claim-code";
 import type { OutboundEmailIdProvider } from "../src/server/notifications/outbound-email-ids";
@@ -752,7 +752,7 @@ async function seedPromoted() {
      Both must hold for a promoted Listing to sell. */
   await recordOfferAct(db, offer.record.internalOfferId, { act: "ACTIVATE", now: NOW });
 
-  const listing = await createPromotedListing(
+  const listing = await seedLegacyPromotedListing(
     {
       storefrontId,
       internalProductId,
@@ -920,51 +920,17 @@ describeDb("1.0 — executable checkout, Stripe-confirmed", () => {
   // — 3 —
 
   describe("Monacado's economics are untouched by the payment provider", () => {
-    it("keeps the promoted worked example exactly as 0M.9 recorded it", async () => {
-      const { seller, promoter, listing } = await seedPromoted();
+    it("never reaches the provider for a promoted Listing — promoted checkout is closed (Phase 1.45)", async () => {
+      /* The promoted worked example returns with the transaction phase, bound to
+         the derived package. Until then Stripe is never asked for anything. */
+      const { listing } = await seedPromoted();
       const policyId = await seedPolicy();
+      const ordersBefore = await db.order.count();
 
-      const { begun, port } = await begin(listing.record.internalListingId, policyId, null);
-      /* Stripe is told the BUYER TOTAL and nothing about the split. */
-      expect(port.requests[0]!.amountMinorUnits).toBe(10_000);
-      expect(Object.keys(port.requests[0]!).sort()).toEqual([
-        "amountMinorUnits",
-        /* Phase 1.2 — an instruction about what the PROVIDER must collect, not a
-           fact about the buyer. It carries no address, name, or contact, and the
-           point of this assertion is unchanged: nothing about the commercial
-           split crosses this boundary. */
-        "collectShippingAddress",
-        "currency",
-        "idempotencyKey",
-        "orderId",
-        "provider",
-      ]);
-
-      const intentRef = `pi_${pad26(`${TAG}PI3`)}`;
-      await webhook(succeeded(begun.order.orderId, intentRef));
-
-      const snapshot = await db.transactionEconomicSnapshot.findUniqueOrThrow({
-        where: { orderId: begun.order.orderId },
-        include: { settlement: true },
-      });
-
-      /* $100.00 retail, $50.00 wholesale, 20% commission — MONACADO_MOR §D. */
-      expect(Number(snapshot.monacadoRetainedAmountMinorUnits)).toBe(850);
-
-      const obligations = await listProceedsObligations(snapshot.id, deps());
-      const byParty = Object.fromEntries(obligations.map((o) => [o.party, o]));
-      expect(byParty.SELLER!.amountMinorUnits).toBe(4_000);
-      expect(byParty.PROMOTER!.amountMinorUnits).toBe(5_150);
-      expect(byParty.SELLER!.participantId).toBe(seller.participantId);
-      expect(byParty.PROMOTER!.participantId).toBe(promoter.participantId);
-      expect(
-        850 + byParty.SELLER!.amountMinorUnits + byParty.PROMOTER!.amountMinorUnits,
-      ).toBe(10_000);
-
-      /* Stripe's reference is evidence on the settlement row, never an input to
-         any of the figures above. */
-      expect(snapshot.settlement?.providerTransactionRef).toBe(intentRef);
-      expect(snapshot.settlement?.provider).toBe("STRIPE");
+      const refusal = await begin(listing.record.internalListingId, policyId, null).catch((e) => e);
+      expect(refusal).toBeInstanceOf(ListingNotPurchasableError);
+      expect(refusal.blockingReasons).toEqual(["PROMOTED_COMMERCE_NOT_ENABLED"]);
+      expect(await db.order.count()).toBe(ordersBefore);
     });
   });
 
@@ -972,7 +938,7 @@ describeDb("1.0 — executable checkout, Stripe-confirmed", () => {
 
   describe("a repeated Stripe event changes nothing", () => {
     it("creates no second snapshot, obligation, evidence, notice, or PAID transition", async () => {
-      const { listing } = await seedPromoted();
+      const { listing } = await seedSellerDirect();
       const policyId = await seedPolicy();
       const { begun } = await begin(listing.record.internalListingId, policyId, null);
       const intentRef = `pi_${pad26(`${TAG}PI4`)}`;
@@ -1002,9 +968,9 @@ describeDb("1.0 — executable checkout, Stripe-confirmed", () => {
       expect(once).toEqual({
         snapshots: 1,
         settlements: 1,
-        obligations: 2,
+        obligations: 1,
         evidence: 1,
-        notices: 2,
+        notices: 1,
         authorities: 0,
       });
 
@@ -1069,7 +1035,7 @@ describeDb("1.0 — executable checkout, Stripe-confirmed", () => {
 
   describe("a failed payment leaves no completed-sale economics", () => {
     it("creates no snapshot, obligation, evidence, or review authority", async () => {
-      const { listing } = await seedPromoted();
+      const { listing } = await seedSellerDirect();
       const policyId = await seedPolicy();
       const { begun } = await begin(listing.record.internalListingId, policyId, null);
 

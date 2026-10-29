@@ -52,6 +52,8 @@ import {
 import {
   effectiveSellerRetailPrice,
   evaluateListingBuyerEligibility,
+  isLegacyPromotedPlacement,
+  isPackagePromotedPlacement,
   type ListingSourceVersion,
   type MonacadoWholesaleAcquisitionPolicy,
 } from "../../contracts/marketplace/listing-source";
@@ -159,6 +161,10 @@ export async function resolveSaleCounterparties(
     };
   }
 
+  /* Phase 1.45 — a package-based promoted Listing names no Offer; its Seller is
+     derived by `readPromotedListingCommerceIn`, which checkout does not consult
+     yet. Unreachable: `requirePurchasable` refuses every promoted Listing first. */
+  if (!isLegacyPromotedPlacement(placement)) throw new SellerNotResolvableError();
   const dependency = placement.offerDependency;
   const offerRow = await tx.offerSourceRecordVersionRow.findUnique({
     where: {
@@ -271,7 +277,7 @@ async function requirePurchasable(
      resolution is deliberately not wired into checkout in Phase 1.42. */
   let offer: { sourceRecordVersion: string } | undefined;
   let currentOffer: { state: OfferLifecycleState } | undefined;
-  if (placement.listingType === "PROMOTED") {
+  if (isLegacyPromotedPlacement(placement)) {
     const offerRow = await db.offerSourceRecordVersionRow.findUnique({
       where: {
         offerSourceRecordId_sourceRecordVersion: {
@@ -304,9 +310,16 @@ async function requirePurchasable(
     controllingRoleStatus: (role?.status ?? "NONE") as never,
     ...(offer === undefined ? {} : { offer }),
     ...(currentOffer === undefined ? {} : { currentOffer }),
-    ...(placement.listingType === "PROMOTED"
+    ...(isLegacyPromotedPlacement(placement)
       ? { upstreamReviewState: placement.upstreamReviewState }
       : {}),
+    ...(isPackagePromotedPlacement(placement) ? { promotedTermsBasis: placement.termsBasis } : {}),
+    /* Phase 1.45 — promoted commerce is CLOSED at checkout, for both shapes. A
+       legacy Listing carries no Promotion Authorization or acceptance and can
+       never satisfy Contract §16.3(4) or (7); a package-based one waits for the
+       transaction phase to consume `readPromotedListingCommerceIn`. Reported
+       with every other reason, so the refusal stays a complete answer. */
+    promotedCommerceEnabled: false,
   });
 
   if (!eligibility.buyerActive) {

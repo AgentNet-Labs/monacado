@@ -97,10 +97,18 @@ export function sellerCommerceFixture(config: { db: PrismaClient; emailPrefix: s
 
   /** A Seller meeting every activation gate (the Phase 1.40 fixture). */
   async function readySeller(): Promise<FixtureActor> {
-    const seller = await draftParticipant(["SELLER"]);
+    return await readyParticipant(["SELLER"]);
+  }
+
+  /**
+   * A participant meeting every readiness gate for `roles` — every role ACTIVE,
+   * payment ENABLED, commerce APPROVED (Phase 1.45 uses it for a ready Promoter).
+   */
+  async function readyParticipant(roles: Array<"SELLER" | "PROMOTER">): Promise<FixtureActor> {
+    const seller = await draftParticipant(roles);
     await db.marketplaceParticipant.update({ where: { id: seller.participantId }, data: { status: "ACTIVE" } });
     await db.marketplaceRoleAssignment.updateMany({
-      where: { participantId: seller.participantId, role: "SELLER" },
+      where: { participantId: seller.participantId, role: { in: roles } },
       data: { status: "ACTIVE", activatedAt: new Date(NOW) },
     });
     const providerAccountRef = `acct_${emailPrefix}_${seq}`;
@@ -274,5 +282,5 @@ export function sellerCommerceFixture(config: { db: PrismaClient; emailPrefix: s
     await db.account.deleteMany({ where: { id: { in: accountIds } } });
   }
 
-  return { tick, session, seedOperator, draftParticipant, readySeller, draftProduct, activeProduct, cleanup };
+  return { tick, session, seedOperator, draftParticipant, readySeller, readyParticipant, draftProduct, activeProduct, cleanup };
 }

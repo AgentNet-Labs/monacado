@@ -3042,6 +3042,18 @@ model ListingSourceRecordVersionRow {
   /// NO_UPSTREAM_CHANGE | REVIEW_REQUIRED | ACCEPTED_CURRENT_VERSION.
   upstreamReviewState                        String?   @db.VarChar(32)
 
+  // — PROMOTED arm: the Phase 1.45 terms basis —
+  //
+  // 'PROMOTION_PACKAGE' on every promoted version written from Phase 1.45 on;
+  // NULL on seller-direct versions and on legacy 0M.7 promoted versions. A
+  // PROMOTION_PACKAGE Listing names no Offer and carries none of the legacy
+  // `accepted*` columns above (a CHECK in the migration holds them NULL): the
+  // Seller terms governing it are derived at an instant from the Product's
+  // current Offer, the Promoter's current Promotion Authorization cycle, and
+  // that cycle's PromotionOfferAcceptance rows. The legacy columns are kept,
+  // unwritten, as history; nothing reads them as authority.
+  promotedTermsBasis String? @db.VarChar(32)
+
   // — Authorization trace —
   authorizedByParticipantId String   @db.VarChar(191)
   /// Opaque actor identifier (mon:actor:<opaque>) — never an email address or a

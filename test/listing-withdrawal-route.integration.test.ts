@@ -29,6 +29,7 @@
  */
 
 import "dotenv/config";
+import { seedLegacyPromotedListing } from "./support/legacy-promoted-listing-fixture";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { createAccount } from "../src/server/account/account-service";
@@ -40,7 +41,6 @@ import { createDraftStorefront } from "../src/server/marketplace/storefront-serv
 import { resolveActingAccount } from "../src/server/account/acting-participant-boundary";
 import { createDraftProductAs } from "../src/server/marketplace/marketplace-application-service";
 import { recordOfferAct, seedOffer } from "./support/offer-fixture";
-import { createPromotedListing } from "../src/server/marketplace/listing-service";
 import {
   LISTING_PLACEMENT_ROUTE_ERROR_CODES as PLACE_CODES,
   handleCreateListingPlacementRequest,
@@ -451,7 +451,7 @@ describe.skipIf(!RUN)("Phase 1.35 — withdrawing a private DRAFT placement", ()
       },
       { db },
     );
-    const promoted = await createPromotedListing(
+    const promoted = await seedLegacyPromotedListing(
       {
         storefrontId: storefront.internalStorefrontId,
         internalProductId: product.internalProductId,

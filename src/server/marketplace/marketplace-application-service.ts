@@ -78,7 +78,6 @@ import {
 import type { OfferActResult, OfferServiceDeps } from "./offer-service";
 import {
   createSellerDirectListing,
-  createPromotedListing,
   placeProductInStorefront,
   setDraftPlacementPrice,
   withdrawDraftPlacement,
@@ -101,6 +100,14 @@ import type { OrderRefundRecord } from "../../contracts/marketplace/order-refund
 import { ProductRepository, type CreatedProduct } from "../product/product-repository";
 import type { ProductSourceRecord } from "../../contracts/product/product-source-record";
 import { getPrisma } from "../db/client";
+import {
+  activatePromotedListing,
+  createPromotedListingDraft,
+  resolvePromotedListingPolicy,
+  setPromotedListingPrice,
+  withdrawPromotedListing,
+  type PromotedListingServiceDeps,
+} from "./promoted-listing-service";
 import { resolveActingSubject } from "./acting-subject-service";
 import { assertParticipantMayAuthorMarketplaceState } from "./participant-standing-service";
 import { assertParticipantLifecycleIsLive } from "./participant-closure-service";
@@ -425,20 +432,74 @@ export async function setOwnDraftPlacementPriceAs(
   );
 }
 
+// — Promoted Listings (Phase 1.45) —
+
 /**
- * Create a promoted Listing bound to an exact accepted Offer version.
- *
- * Kept beside its sibling deliberately: a promoter and a seller reach the
- * marketplace through different commands because they hold different authority,
- * and one command branching on a caller-supplied listing type is how a promoter
- * would eventually be handed a seller's path.
+ * The commercial policy is resolved here, from the configured identity — never
+ * from a request — so the routes cannot name a rate.
  */
-export async function openPromotedListing(
+async function promotedDeps(deps: { db?: ReturnType<typeof getPrisma> }): Promise<PromotedListingServiceDeps> {
+  const db = deps.db ?? getPrisma();
+  return { db, policy: await resolvePromotedListingPolicy(db) };
+}
+
+/** Create a promoted DRAFT as the acting Promoter. Only the references and an optional price travel. */
+export async function createOwnPromotedListingDraftAs(
   actor: ActingAccount,
-  input: ApplicationCommandInput,
-  deps: ListingServiceDeps = {},
+  input: { productRef: unknown; storefrontHandle: unknown; retail: unknown; now: string },
+  deps: { db?: ReturnType<typeof getPrisma> } = {},
 ): Promise<ListingSnapshot> {
-  return await createPromotedListing(withActor(input, actor), deps);
+  return await createPromotedListingDraft(
+    {
+      productRef: input.productRef,
+      storefrontHandle: input.storefrontHandle,
+      retail: input.retail,
+      actingAccountId: actor.accountId,
+      now: input.now,
+    },
+    await promotedDeps(deps),
+  );
+}
+
+/** Set or change the retail price of the acting Promoter's own promoted Listing. */
+export async function setOwnPromotedListingPriceAs(
+  actor: ActingAccount,
+  input: { listingRef: unknown; retail: unknown; now: string },
+  deps: { db?: ReturnType<typeof getPrisma> } = {},
+): Promise<ListingSnapshot> {
+  return await setPromotedListingPrice(
+    { listingRef: input.listingRef, retail: input.retail, actingAccountId: actor.accountId, now: input.now },
+    await promotedDeps(deps),
+  );
+}
+
+/** Activate the acting Promoter's own promoted DRAFT, exactly at the version it was shown. */
+export async function activateOwnPromotedListingAs(
+  actor: ActingAccount,
+  input: { listingRef: unknown; expectedVersion: unknown; now: string },
+  deps: { db?: ReturnType<typeof getPrisma> } = {},
+): Promise<ListingSnapshot> {
+  return await activatePromotedListing(
+    {
+      listingRef: input.listingRef,
+      expectedVersion: input.expectedVersion,
+      actingAccountId: actor.accountId,
+      now: input.now,
+    },
+    await promotedDeps(deps),
+  );
+}
+
+/** Withdraw the acting Promoter's own promoted Listing. Never gated. */
+export async function withdrawOwnPromotedListingAs(
+  actor: ActingAccount,
+  input: { listingRef: unknown; now: string },
+  deps: { db?: ReturnType<typeof getPrisma> } = {},
+): Promise<ListingSnapshot> {
+  return await withdrawPromotedListing(
+    { listingRef: input.listingRef, actingAccountId: actor.accountId, now: input.now },
+    deps.db !== undefined ? { db: deps.db } : {},
+  );
 }
 
 /**

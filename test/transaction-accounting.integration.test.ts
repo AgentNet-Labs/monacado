@@ -19,6 +19,7 @@
  */
 
 import "dotenv/config";
+import { seedLegacyPromotedListing } from "./support/legacy-promoted-listing-fixture";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { grantProductCreatorAuthority } from "./support/product-authority-fixture";
@@ -29,7 +30,6 @@ import { createDraftParticipant } from "../src/server/marketplace/participant-se
 import { recordOfferAct, seedOffer, seedOfferStandingVersion } from "./support/offer-fixture";
 import {
   createListingSourceVersion,
-  createPromotedListing,
   createSellerDirectListing,
 } from "../src/server/marketplace/listing-service";
 import {
@@ -348,7 +348,7 @@ async function seedPromoted() {
     { db },
   );
 
-  const snapshot = await createPromotedListing(
+  const snapshot = await seedLegacyPromotedListing(
     {
       storefrontId,
       internalProductId,

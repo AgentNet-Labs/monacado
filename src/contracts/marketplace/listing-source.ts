@@ -832,6 +832,14 @@ export const SellerDirectPlacement = z.strictObject({
  * them a "sale" field here would create a second place a promoted price could
  * move, invisible to the economics check.
  */
+/*
+ * **LEGACY since Phase 1.45 — read-only history.** This is the 0M.7 promoted
+ * shape, which bound one exact Offer version on the Listing itself. No path
+ * writes it any more: it carried no Promotion Authorization and no Phase 1.44
+ * acceptance, so it can never evidence Contract §16.3(4) or (7), and checkout
+ * refuses every promoted Listing. New promoted Listings are
+ * `PackagePromotedPlacement` below. Kept so existing rows still read back.
+ */
 export const PromotedPlacement = z.strictObject({
   listingType: z.literal("PROMOTED"),
   /**
@@ -846,8 +854,38 @@ export const PromotedPlacement = z.strictObject({
   upstreamReviewState: ListingUpstreamReviewState,
 });
 
+/** The Phase 1.45 promoted terms basis — the only one any path writes. */
+export const PROMOTED_TERMS_BASES = ["PROMOTION_PACKAGE"] as const;
+export const PromotedTermsBasis = z.enum(PROMOTED_TERMS_BASES);
+export type PromotedTermsBasis = z.infer<typeof PromotedTermsBasis>;
+
+/**
+ * A promoted placement whose Seller terms come from the accepted package
+ * (Phase 1.45, Contract §16, §16.3, §19).
+ *
+ * **It names no Offer.** The Listing is Product + Storefront + Promoter +
+ * retail price; which Seller terms govern it, whether this Promoter is
+ * authorized, and whether it accepted them are all DERIVED at an instant — from
+ * the Product's current Offer and its terms in force, the Promoter's current
+ * Promotion Authorization cycle, and that cycle's acceptance rows. A Seller
+ * revision, a promotion starting or ending, a revocation, or a re-approval
+ * therefore mints nothing here, and the Listing never becomes a second answer
+ * to the Seller's terms.
+ *
+ * `retail` may be null on a DRAFT (owner ruling, Phase 1.45): placement precedes
+ * pricing, and an unpriced Listing cannot become ACTIVE (§15).
+ */
+export const PackagePromotedPlacement = z.strictObject({
+  listingType: z.literal("PROMOTED"),
+  termsBasis: z.literal("PROMOTION_PACKAGE"),
+  retail: RetailPrice.nullable(),
+});
+export type PackagePromotedPlacement = z.infer<typeof PackagePromotedPlacement>;
+export type LegacyPromotedPlacement = z.infer<typeof PromotedPlacement>;
+
+/** A plain union, not a discriminated one: both promoted shapes share `listingType`. */
 export const ListingPlacement = z
-  .discriminatedUnion("listingType", [SellerDirectPlacement, PromotedPlacement])
+  .union([SellerDirectPlacement, PromotedPlacement, PackagePromotedPlacement])
   .superRefine((placement, ctx) => {
     if (placement.listingType !== "SELLER_DIRECT") return;
     const sale = placement.sale;
@@ -890,6 +928,23 @@ export const ListingPlacement = z
     }
   });
 export type ListingPlacement = z.infer<typeof ListingPlacement>;
+
+/** The Phase 1.45 promoted shape, whose terms are derived rather than bound. */
+export function isPackagePromotedPlacement(placement: ListingPlacement): placement is PackagePromotedPlacement {
+  return placement.listingType === "PROMOTED" && "termsBasis" in placement;
+}
+
+/** The legacy 0M.7 promoted shape — history only; nothing writes it. */
+export function isLegacyPromotedPlacement(placement: ListingPlacement): placement is LegacyPromotedPlacement {
+  return placement.listingType === "PROMOTED" && "offerDependency" in placement;
+}
+
+/**
+ * ACTIVE Listings included per Storefront (Contract §13). Seller-direct and
+ * promoted count equally; DRAFT counts zero. Additional capacity is a future
+ * paid entitlement, which does not exist yet.
+ */
+export const ACTIVE_LISTINGS_INCLUDED_PER_STOREFRONT = 5;
 
 // — Effective seller price —
 
@@ -1091,6 +1146,13 @@ export const LISTING_BLOCKING_REASONS = [
    * surface, on the same footing as the other Offer and Listing codes.
    */
   "OFFER_NOT_CURRENTLY_OFFERED",
+  /**
+   * Promoted commerce is closed (Phase 1.45). Every promoted Listing — legacy
+   * or package-based — is refused at the commerce boundary until the
+   * transaction phase wires `readPromotedListingCommerceIn` into checkout.
+   * Describes the Listing, not a participant, so it is public-safe.
+   */
+  "PROMOTED_COMMERCE_NOT_ENABLED",
 ] as const;
 export const ListingBlockingReason = z.enum(LISTING_BLOCKING_REASONS);
 export type ListingBlockingReason = z.infer<typeof ListingBlockingReason>;
@@ -1195,6 +1257,18 @@ export function evaluateListingBuyerEligibility(input: {
   };
   /** Promoted Listings only. */
   upstreamReviewState?: ListingUpstreamReviewState;
+  /**
+   * Phase 1.45 — set for a `PackagePromotedPlacement`. Its Seller terms are not
+   * bound to the Listing, so the legacy Offer checks above do not apply; the
+   * package-derived gate (`decidePromotedListingCommerce`) answers for them.
+   */
+  promotedTermsBasis?: PromotedTermsBasis;
+  /**
+   * Phase 1.45 — whether promoted commerce is open at this boundary. Commerce
+   * boundaries pass `false` until the transaction phase; omitted, nothing is
+   * added, so the pure projection keeps its own decision.
+   */
+  promotedCommerceEnabled?: boolean;
 }): ListingBuyerEligibility {
   const reasons: ListingBlockingReason[] = [];
 
@@ -1208,7 +1282,7 @@ export function evaluateListingBuyerEligibility(input: {
   }
   if (input.controllingRoleStatus !== "ACTIVE") reasons.push("CONTROLLING_ROLE_NOT_ACTIVE");
 
-  if (input.listingType === "PROMOTED") {
+  if (input.listingType === "PROMOTED" && input.promotedTermsBasis === undefined) {
     if (input.offer === undefined) reasons.push("OFFER_NOT_COMMERCIALLY_SELECTABLE");
 
     /* Phase 1.15, Ruling 1 — the accepted version supplies the TERMS; the stable
@@ -1224,6 +1298,9 @@ export function evaluateListingBuyerEligibility(input: {
     if (input.upstreamReviewState === "REVIEW_REQUIRED") {
       reasons.push("OFFER_VERSION_REVIEW_REQUIRED");
     }
+  }
+  if (input.listingType === "PROMOTED" && input.promotedCommerceEnabled === false) {
+    reasons.push("PROMOTED_COMMERCE_NOT_ENABLED");
   }
 
   return { buyerActive: reasons.length === 0, blockingReasons: reasons };

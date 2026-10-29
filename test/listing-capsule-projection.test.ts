@@ -42,6 +42,7 @@ import {
 } from "../src/contracts/marketplace/listing.projection";
 import {
   evaluateListingBuyerEligibility,
+  isLegacyPromotedPlacement,
   type ListingSourceVersion,
 } from "../src/contracts/marketplace/listing-source";
 import {
@@ -770,7 +771,7 @@ describe("43/44. only a purchasable Listing projects", () => {
     }
 
     const needsReview = promoted();
-    if (needsReview.placement.listingType === "PROMOTED") {
+    if (isLegacyPromotedPlacement(needsReview.placement)) {
       needsReview.placement.upstreamReviewState = "REVIEW_REQUIRED";
     }
     try {

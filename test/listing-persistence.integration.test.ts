@@ -21,6 +21,7 @@
  */
 
 import "dotenv/config";
+import { seedLegacyPromotedListing } from "./support/legacy-promoted-listing-fixture";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { createAccount } from "../src/server/account/account-service";
@@ -42,7 +43,6 @@ import {
   listSourceVersions,
 } from "../src/server/marketplace/listing-service";
 import {
-  AcceptedOfferVersionNotFoundError,
   ControllerParticipantNotFoundError,
   CorruptListingRecordError,
   DuplicateListingSourceVersionError,
@@ -54,13 +54,13 @@ import {
   ListingStorefrontNotFoundError,
   ListingVersionNotFoundError,
   NoMaterialListingChangeError,
-  OfferProductMismatchError,
+  PromotedListingPathRetiredError,
 } from "../src/server/marketplace/listing-errors";
 import { LISTING_ID_PATTERNS } from "../src/server/marketplace/listing-ids";
 import { versionRowToSourceVersion } from "../src/server/marketplace/listing-mapper";
 import {
   ListingSourceVersion,
-  minimumViablePromotedRetailPrice,
+  isLegacyPromotedPlacement,
 } from "../src/contracts/marketplace/listing-source";
 import {
   LISTING_PROJECTION_MAPPING_VERSION,
@@ -293,7 +293,7 @@ async function seedPromoted(overrides: Record<string, unknown> = {}) {
   const storefrontId = await seedStorefront(promoter.participantId);
   const offer = await seedOffer(internalProductId, seller.accountId, seller.participantId);
 
-  const snapshot = await createPromotedListing(
+  const snapshot = await seedLegacyPromotedListing(
     {
       storefrontId,
       internalProductId,
@@ -390,7 +390,7 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
     const { snapshot, offer } = await seedPromoted();
     const placement = snapshot.currentVersion.placement;
     expect(placement.listingType).toBe("PROMOTED");
-    if (placement.listingType !== "PROMOTED") throw new Error("unreachable");
+    if (!isLegacyPromotedPlacement(placement)) throw new Error("unreachable");
     expect(placement.offerDependency.acceptedOfferSourceRecordVersion).toBe("1");
     expect(placement.offerDependency.offerSourceRecordId).toBe(
       offer.record.offerSourceRecordId,
@@ -685,7 +685,9 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
     });
   });
 
-  it("22. refuses a promoted Listing naming an Offer version that does not exist", async () => {
+  it("22. the retired promoted path refuses an Offer version that does not exist", async () => {
+    /* Phase 1.45 retired the Offer-copying promoted path. Whatever it is
+       handed — a version that does not exist — it refuses before reading anything, and writes nothing. */
     const seller = await seedParticipant(["SELLER"]);
     const promoter = await seedParticipant(["PROMOTER"]);
     const internalProductId = await seedProduct(seller.participantId);
@@ -707,23 +709,24 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
         },
         { db },
       ),
-    ).rejects.toBeInstanceOf(AcceptedOfferVersionNotFoundError);
+    ).rejects.toBeInstanceOf(PromotedListingPathRetiredError);
+    expect(await db.listing.count({ where: { internalProductId } })).toBe(0);
   });
 
-  it("23. refuses an Offer that is for a different Product", async () => {
+  it("23. the retired promoted path refuses even a well-formed binding", async () => {
+    /* Phase 1.45 retired the Offer-copying promoted path. Whatever it is
+       handed — a valid binding — it refuses before reading anything, and writes nothing. */
     const seller = await seedParticipant(["SELLER"]);
     const promoter = await seedParticipant(["PROMOTER"]);
-    const productA = await seedProduct(seller.participantId);
-    const productB = await seedProduct();
+    const internalProductId = await seedProduct(seller.participantId);
     const storefrontId = await seedStorefront(promoter.participantId);
-    const offer = await seedOffer(productA, seller.accountId, seller.participantId);
+    const offer = await seedOffer(internalProductId, seller.accountId, seller.participantId);
 
     await expect(
       createPromotedListing(
         {
           storefrontId,
-          /* The Listing places product B; the Offer is for product A. */
-          internalProductId: productB,
+          internalProductId,
           controllingParticipantId: promoter.participantId,
           retail: { retailPriceMinorUnits: 12_500, retailPriceCurrency: "USD" },
           acceptedOfferSourceRecordId: offer.record.offerSourceRecordId,
@@ -734,7 +737,8 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
         },
         { db },
       ),
-    ).rejects.toBeInstanceOf(OfferProductMismatchError);
+    ).rejects.toBeInstanceOf(PromotedListingPathRetiredError);
+    expect(await db.listing.count({ where: { internalProductId } })).toBe(0);
   });
 
   it("24. stays bound to the accepted version after the Offer advances", async () => {
@@ -767,12 +771,12 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
     /* ...and the Listing did not. */
     const reread = await getCurrentSourceVersion(snapshot.record.internalListingId, { db });
     const placement = reread.placement;
-    if (placement.listingType !== "PROMOTED") throw new Error("unreachable");
+    if (!isLegacyPromotedPlacement(placement)) throw new Error("unreachable");
     expect(placement.offerDependency.acceptedOfferSourceRecordVersion).toBe("1");
     expect(placement.offerDependency.acceptedWholesalePriceMinorUnits).toBe(5_000);
   });
 
-  it("25. an explicit update may bind a newer Offer version", async () => {
+  it("25. a legacy promoted Listing can no longer be rebound to newer Offer terms", async () => {
     const { snapshot, offer, seller, promoter } = await seedPromoted();
     await seedOfferStandingVersion(
       {
@@ -790,28 +794,24 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
       { db },
     );
 
-    const updated = await createListingSourceVersion(
-      {
-        internalListingId: snapshot.record.internalListingId,
-        sourceRecordVersion: "2",
-        acceptedOfferSourceRecordVersion: "2",
-        acquisitionPolicy: ACQUISITION_POLICY,
-        actingAccountId: promoter.accountId,
-        now: LATER,
-      },
-      { db },
-    );
-
-    const placement = updated.currentVersion.placement;
-    if (placement.listingType !== "PROMOTED") throw new Error("unreachable");
-    expect(placement.offerDependency.acceptedOfferSourceRecordVersion).toBe("2");
-    expect(placement.offerDependency.acceptedWholesalePriceMinorUnits).toBe(6_000);
-
-    /* And version 1 still records what was originally accepted. */
-    const v1 = await getSourceVersion(snapshot.record.internalListingId, "1", { db });
-    const p1 = v1.placement;
-    if (p1.listingType !== "PROMOTED") throw new Error("unreachable");
-    expect(p1.offerDependency.acceptedWholesalePriceMinorUnits).toBe(5_000);
+    /* Phase 1.45: a legacy promoted Listing cannot be revised onto new terms;
+       the retired write path refuses, and nothing is minted. */
+    await expect(
+      createListingSourceVersion(
+        {
+          internalListingId: snapshot.record.internalListingId,
+          sourceRecordVersion: "2",
+          acceptedOfferSourceRecordVersion: "2",
+          acquisitionPolicy: ACQUISITION_POLICY,
+          actingAccountId: promoter.accountId,
+          now: LATER,
+        },
+        { db },
+      ),
+    ).rejects.toBeInstanceOf(PromotedListingPathRetiredError);
+    expect(
+      await db.listingSourceRecordVersionRow.count({ where: { internalListingId: snapshot.record.internalListingId } }),
+    ).toBe(1);
   });
 
   it("26. the database itself refuses a row naming a nonexistent Offer version", async () => {
@@ -854,28 +854,22 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
     }
   });
 
-  it("28. enforces promoted viability with 0M.4A's own calculator", async () => {
+  it("28. the retired promoted path refuses a non-viable price too", async () => {
+    /* Phase 1.45 retired the Offer-copying promoted path. Whatever it is
+       handed — a price below the old minimum — it refuses before reading anything, and writes nothing. */
     const seller = await seedParticipant(["SELLER"]);
     const promoter = await seedParticipant(["PROMOTER"]);
     const internalProductId = await seedProduct(seller.participantId);
     const storefrontId = await seedStorefront(promoter.participantId);
     const offer = await seedOffer(internalProductId, seller.accountId, seller.participantId);
 
-    /* wholesale 5000, commission 20% = 1000. */
-    const minimum = minimumViablePromotedRetailPrice({
-      offerWholesalePriceMinorUnits: 5_000,
-      sellerFundedCommissionMinorUnits: 1_000,
-      currency: "USD",
-      policy: ACQUISITION_POLICY,
-    });
-
-    const attempt = (retailPriceMinorUnits: number) =>
+    await expect(
       createPromotedListing(
         {
           storefrontId,
           internalProductId,
           controllingParticipantId: promoter.participantId,
-          retail: { retailPriceMinorUnits, retailPriceCurrency: "USD" },
+          retail: { retailPriceMinorUnits: 1, retailPriceCurrency: "USD" },
           acceptedOfferSourceRecordId: offer.record.offerSourceRecordId,
           acceptedOfferSourceRecordVersion: "1",
           acquisitionPolicy: ACQUISITION_POLICY,
@@ -883,16 +877,9 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
           now: NOW,
         },
         { db },
-      );
-
-    /* One minor unit below the minimum must fail. */
-    await expect(attempt(minimum - 1)).rejects.toMatchObject({
-      name: "ListingEconomicsRefusedError",
-      economicsCode: "NEGATIVE_PROMOTER_PROCEEDS",
-    });
-    /* And the minimum itself must succeed. */
-    const ok = await attempt(minimum);
-    expect(ok.currentVersion.placement.retail!.retailPriceMinorUnits).toBe(minimum);
+      ),
+    ).rejects.toBeInstanceOf(PromotedListingPathRetiredError);
+    expect(await db.listing.count({ where: { internalProductId } })).toBe(0);
   });
 
   // — Authorization —
@@ -953,7 +940,7 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
     const promoter = await seedParticipant(["PROMOTER"]);
     const promoterShop = await seedStorefront(promoter.participantId);
     const offer = await seedOffer(theirProduct, creator.accountId, creator.participantId);
-    const promoted = await createPromotedListing(
+    const promoted = await seedLegacyPromotedListing(
       {
         storefrontId: promoterShop,
         internalProductId: theirProduct,
@@ -1004,22 +991,10 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
     // fails closed rather than being permitted by an unwritten relationship.
     const promoter = await seedParticipant(["PROMOTER"]);
     const offer = await seedOffer(product, seller.accountId, seller.participantId);
-    const promoted = await createPromotedListing(
-      {
-        storefrontId: theirShop,
-        internalProductId: product,
-        controllingParticipantId: promoter.participantId,
-        retail: { retailPriceMinorUnits: 12_500, retailPriceCurrency: "USD" },
-        acceptedOfferSourceRecordId: offer.record.offerSourceRecordId,
-        acceptedOfferSourceRecordVersion: "1",
-        acquisitionPolicy: ACQUISITION_POLICY,
-        actingAccountId: promoter.accountId,
-        now: NOW,
-      },
-      { db },
-    ).catch((e) => e);
-    expect(promoted).toBeInstanceOf(ListingNotAuthorizedError);
-    expect(promoted.reasonCodes).toContain("STOREFRONT_AUTHORITY_REQUIRED");
+    /* Phase 1.45: the promoter path is `createPromotedListingDraft`, whose
+       Storefront-authority refusal is covered in the promoted Listing tests. */
+    void offer;
+    void promoter;
 
     // Nothing was minted by either attempt.
     expect(await db.listing.count({ where: { storefrontId: theirShop } })).toBe(0);
@@ -1226,11 +1201,13 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
     });
   });
 
-  it("29c. the promoted branch still reports listing:promoted:create", async () => {
+  it("29c. the retired promoted path refuses a non-promoter alike", async () => {
+    /* Phase 1.45 retired the Offer-copying promoted path. Whatever it is
+       handed — a caller with no PROMOTER role — it refuses before reading anything, and writes nothing. */
     const seller = await seedParticipant(["SELLER"]);
-    const notAPromoter = await seedParticipant(["SELLER"]);
+    const promoter = await seedParticipant(["SELLER"]);
     const internalProductId = await seedProduct(seller.participantId);
-    const storefrontId = await seedStorefront(notAPromoter.participantId);
+    const storefrontId = await seedStorefront(promoter.participantId);
     const offer = await seedOffer(internalProductId, seller.accountId, seller.participantId);
 
     await expect(
@@ -1238,17 +1215,18 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
         {
           storefrontId,
           internalProductId,
-          controllingParticipantId: notAPromoter.participantId,
+          controllingParticipantId: promoter.participantId,
           retail: { retailPriceMinorUnits: 12_500, retailPriceCurrency: "USD" },
           acceptedOfferSourceRecordId: offer.record.offerSourceRecordId,
           acceptedOfferSourceRecordVersion: "1",
           acquisitionPolicy: ACQUISITION_POLICY,
-          actingAccountId: notAPromoter.accountId,
+          actingAccountId: promoter.accountId,
           now: NOW,
         },
         { db },
       ),
-    ).rejects.toMatchObject({ capability: "listing:promoted:create" });
+    ).rejects.toBeInstanceOf(PromotedListingPathRetiredError);
+    expect(await db.listing.count({ where: { internalProductId } })).toBe(0);
   });
 
   it("30. a stranger cannot mutate an existing Listing", async () => {
@@ -1274,12 +1252,13 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
     ).toBe(1);
   });
 
-  it("31. a promoted Listing requires the PROMOTER role, not merely an account", async () => {
+  it("31. the retired promoted path refuses a promoter alike", async () => {
+    /* Phase 1.45 retired the Offer-copying promoted path. Whatever it is
+       handed — a PROMOTER — it refuses before reading anything, and writes nothing. */
     const seller = await seedParticipant(["SELLER"]);
-    /* Holds SELLER only — no PROMOTER role. */
-    const notAPromoter = await seedParticipant(["SELLER"]);
+    const promoter = await seedParticipant(["PROMOTER"]);
     const internalProductId = await seedProduct(seller.participantId);
-    const storefrontId = await seedStorefront(notAPromoter.participantId);
+    const storefrontId = await seedStorefront(promoter.participantId);
     const offer = await seedOffer(internalProductId, seller.accountId, seller.participantId);
 
     await expect(
@@ -1287,17 +1266,18 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
         {
           storefrontId,
           internalProductId,
-          controllingParticipantId: notAPromoter.participantId,
+          controllingParticipantId: promoter.participantId,
           retail: { retailPriceMinorUnits: 12_500, retailPriceCurrency: "USD" },
           acceptedOfferSourceRecordId: offer.record.offerSourceRecordId,
           acceptedOfferSourceRecordVersion: "1",
           acquisitionPolicy: ACQUISITION_POLICY,
-          actingAccountId: notAPromoter.accountId,
+          actingAccountId: promoter.accountId,
           now: NOW,
         },
         { db },
       ),
-    ).rejects.toMatchObject({ reasonCodes: ["ROLE_NOT_HELD"] });
+    ).rejects.toBeInstanceOf(PromotedListingPathRetiredError);
+    expect(await db.listing.count({ where: { internalProductId } })).toBe(0);
   });
 
   it("32. an unknown acting account is the guest subject, and is refused", async () => {
@@ -1409,13 +1389,15 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
     const eligibilityAt = async (listingId: string, at: string) =>
       evaluateBuyerEligibility(listingId, { productAvailability: "available", at }, { db });
 
-    it("transacts while the Seller currently offers it", async () => {
+    it("adds no Offer blocker while the Seller currently offers it (checkout stays closed)", async () => {
       const seeded = await seedPurchasablePromoted();
       await recordOfferAct(db, seeded.offer.record.internalOfferId, { act: "ACTIVATE", now: NOW });
 
+      /* Phase 1.45 closed promoted checkout: the Offer adds no blocker, and the
+         closure is the only one left. */
       const eligibility = await eligibilityAt(seeded.snapshot.record.internalListingId, NOW);
-      expect(eligibility.blockingReasons).toEqual([]);
-      expect(eligibility.buyerActive).toBe(true);
+      expect(eligibility.blockingReasons).toEqual(["PROMOTED_COMMERCE_NOT_ENABLED"]);
+      expect(eligibility.buyerActive).toBe(false);
     });
 
     it("stops new commerce once the Offer reaches its end, with no write and no history touched", async () => {
@@ -1429,7 +1411,7 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
         acts: await db.offerAct.count({ where: { internalOfferId: offerId } }),
       };
 
-      expect((await eligibilityAt(listingId, NOW)).buyerActive).toBe(true);
+      expect((await eligibilityAt(listingId, NOW)).blockingReasons).toEqual(["PROMOTED_COMMERCE_NOT_ENABLED"]);
       const after = await eligibilityAt(listingId, LATER);
       expect(after.buyerActive).toBe(false);
       expect(after.blockingReasons).toContain("OFFER_NOT_CURRENTLY_OFFERED");
@@ -1442,7 +1424,7 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
       );
       expect(await db.offerAct.count({ where: { internalOfferId: offerId } })).toBe(rowsBefore.acts);
       const listingVersion = await getCurrentSourceVersion(listingId, { db });
-      if (listingVersion.placement.listingType !== "PROMOTED") throw new Error("unreachable");
+      if (!isLegacyPromotedPlacement(listingVersion.placement)) throw new Error("unreachable");
       expect(listingVersion.placement.offerDependency.acceptedOfferSourceRecordVersion).toBe("1");
     });
 
@@ -1468,7 +1450,7 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
       expect((await eligibilityAt(listingId, NOW)).blockingReasons).toContain("OFFER_NOT_CURRENTLY_OFFERED");
 
       await recordOfferAct(db, offerId, { act: "RESUME", now: LATER });
-      expect((await eligibilityAt(listingId, LATER)).buyerActive).toBe(true);
+      expect((await eligibilityAt(listingId, LATER)).blockingReasons).toEqual(["PROMOTED_COMMERCE_NOT_ENABLED"]);
 
       /* Lifecycle is not a version fact: no version was minted either way. */
       expect(await db.offerSourceRecordVersionRow.count({ where: { internalOfferId: offerId } })).toBe(versionsBefore);
@@ -1614,7 +1596,7 @@ describeDb("Listing persistence (Phase 0M.7)", () => {
     const serialized = canonicalJsonString(capsule);
 
     for (const leak of [
-      persisted.placement.listingType === "PROMOTED"
+      isLegacyPromotedPlacement(persisted.placement)
         ? persisted.placement.offerDependency.offerSourceRecordId
         : "",
       "offerNode",

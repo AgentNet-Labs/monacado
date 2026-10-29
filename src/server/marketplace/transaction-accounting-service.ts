@@ -61,6 +61,7 @@ import {
   ListingEconomicsError,
   calculatePromotedListingEconomics,
   calculateSellerDirectEconomics,
+  isLegacyPromotedPlacement,
   type ListingSourceVersion,
   type MonacadoWholesaleAcquisitionPolicy,
 } from "../../contracts/marketplace/listing-source";
@@ -334,6 +335,13 @@ async function computeEconomics(
       };
     }
 
+    /* Phase 1.45 — a package-based promoted Listing names no Offer version; the
+       transaction phase binds the governing version from
+       `readPromotedListingCommerceIn`. Until then there is no promoted snapshot
+       to write for one, and checkout refuses it before this is reached. */
+    if (!isLegacyPromotedPlacement(placement)) {
+      throw new TransactionEconomicsRefusedError("PROMOTED_COMMERCE_NOT_ENABLED");
+    }
     const dependency = placement.offerDependency;
     const sellerFundedCommissionMinorUnits = await readAcceptedOfferCommission(db, dependency);
 

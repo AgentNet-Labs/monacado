@@ -142,6 +142,27 @@ versions continue to record what was originally accepted.
 > (per cycle, per exact package; `PRODUCT_PERSISTENCE.md`). The Listing's
 > `acceptedOffer*` binding is untouched and not migrated; reconciling it with
 > package acceptance, and gating promoted Listings on coverage, is Phase 1.45.
+>
+> **Phase 1.45 — this section is now LEGACY.** The Offer-copying path that wrote
+> the binding above is retired (`createPromotedListing` and promoted revisions
+> refuse with `PROMOTED_LISTING_PATH_RETIRED`). Promoted Listings are written
+> only by `promoted-listing-service.ts`, with a new nullable column
+> `ListingSourceRecordVersionRow.promotedTermsBasis = 'PROMOTION_PACKAGE'`: the
+> Listing is Product + Storefront + Promoter + an optional retail price, and
+> **names no Offer**. Every `accepted*` column and `upstreamReviewState` is NULL
+> on such a row — the CHECK
+> `ListingSourceRecordVersionRow_promoted_terms_basis_check` enforces it for the
+> five non-key columns (MySQL refuses a CHECK over a column in a foreign key's
+> referential action, error 3823), and the write path and the mapper enforce it
+> for `acceptedInternalOfferId`, `acceptedOfferSourceRecordId`, and
+> `acceptedOfferSourceRecordVersion`. Which Seller terms govern, whether the
+> Promoter is authorized, and whether it accepted them are derived at an instant
+> by `readPromotedListingCommerceIn` from the Product's current Offer, the
+> current Promotion Authorization cycle, and its `PromotionOfferAcceptance` rows,
+> so an Offer revision, a promotion starting or ending, a revocation, or a
+> re-approval writes nothing to the Listing. Legacy rows (NULL basis, `accepted*`
+> populated) remain readable as history and are refused at checkout like every
+> promoted Listing (`PROMOTED_COMMERCE_NOT_ENABLED`).
 
 ## 7. Retail price and the scheduled sale
 

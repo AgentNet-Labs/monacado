@@ -50,7 +50,6 @@
 import "../server-only";
 import type { Prisma } from "@prisma/client";
 import {
-  CreatePromotedListingInput,
   CreateSellerDirectListingInput,
   PlaceProductInStorefrontInput,
   SetDraftPlacementPriceInput,
@@ -62,10 +61,10 @@ import {
   INITIAL_LISTING_LIFECYCLE_STATE,
   ListingEconomicsError,
   ListingPlacement,
-  calculatePromotedListingEconomics,
   effectiveSellerRetailPrice,
   evaluateListingBuyerEligibility,
-  evaluateUpstreamOfferReview,
+  isLegacyPromotedPlacement,
+  isPackagePromotedPlacement,
   isTerminalListingLifecycleState,
   isValidListingLifecycleTransition,
   type EffectiveSellerPrice,
@@ -74,7 +73,6 @@ import {
   type ListingSourceRecord,
   type ListingSourceVersion,
   type MaterialListingField,
-  type MonacadoWholesaleAcquisitionPolicy,
 } from "../../contracts/marketplace/listing-source";
 import {
   canCreatePromotedListing,
@@ -92,7 +90,6 @@ import {
   assertParticipantMayAuthorMarketplaceState,
 } from "./participant-standing-service";
 import { ParticipantActionNotPermittedError } from "./participant-standing-errors";
-import { versionRowToSourceVersion as offerVersionRowToSourceVersion } from "./offer-mapper";
 import { readOfferLifecycleBySourceRecordIn } from "./offer-service";
 import type { OfferLifecycleState } from "../../contracts/marketplace/offer-source";
 import {
@@ -121,6 +118,7 @@ import {
   ListingVersionNotFoundError,
   NoMaterialListingChangeError,
   OfferProductMismatchError,
+  PromotedListingPathRetiredError,
 } from "./listing-errors";
 import { resolveCommerceApproval } from "./participant-commerce-approval-service";
 import {
@@ -210,6 +208,7 @@ function isDomainError(error: unknown): boolean {
     error instanceof AcceptedOfferVersionNotFoundError ||
     error instanceof OfferProductMismatchError ||
     error instanceof ListingEconomicsRefusedError ||
+    error instanceof PromotedListingPathRetiredError ||
     error instanceof InvalidListingInputError
   );
 }
@@ -298,6 +297,29 @@ async function requireSellerDirectProductAuthority(
 }
 
 /**
+ * Whether a participant holds placement authority over a Storefront: it owns
+ * it, or holds an ACTIVE governance assignment on it (Phase 1.45 export of the
+ * Phase 1.18 rule, so the promoted gate reports rather than throws).
+ */
+export async function storefrontPlacementAuthorityHeldIn(
+  tx: Tx,
+  storefrontId: string,
+  participantId: string,
+): Promise<boolean> {
+  const storefront = await tx.storefront.findUnique({
+    where: { internalStorefrontId: storefrontId },
+    select: { ownerParticipantId: true },
+  });
+  if (storefront === null) return false;
+  if (storefront.ownerParticipantId === participantId) return true;
+  const assignment = await tx.storefrontGovernanceAssignment.findUnique({
+    where: { internalStorefrontId_participantId: { internalStorefrontId: storefrontId, participantId } },
+    select: { status: true },
+  });
+  return assignment !== null && assignment.status === "ACTIVE";
+}
+
+/**
  * The controlling participant must hold authority over the destination Storefront.
  *
  * Phase 1.18. `requirePlacementReferences` checked that the Storefront row
@@ -337,7 +359,7 @@ async function requireSellerDirectProductAuthority(
  * so a missing Storefront stays a not-found rather than becoming an authority
  * refusal.
  */
-async function requireStorefrontPlacementAuthority(
+export async function requireStorefrontPlacementAuthority(
   tx: Tx,
   input: { storefrontId: string; controllingParticipantId: string; capability: string },
 ): Promise<void> {
@@ -347,18 +369,7 @@ async function requireStorefrontPlacementAuthority(
   });
   if (storefront === null) throw new ListingStorefrontNotFoundError();
 
-  if (storefront.ownerParticipantId === input.controllingParticipantId) return;
-
-  const assignment = await tx.storefrontGovernanceAssignment.findUnique({
-    where: {
-      internalStorefrontId_participantId: {
-        internalStorefrontId: input.storefrontId,
-        participantId: input.controllingParticipantId,
-      },
-    },
-    select: { status: true },
-  });
-  if (assignment !== null && assignment.status === "ACTIVE") return;
+  if (await storefrontPlacementAuthorityHeldIn(tx, input.storefrontId, input.controllingParticipantId)) return;
 
   /* Names the capability the subject was exercising and one bounded code. The
      owner's identity, the governance roles held by others, and whether an
@@ -391,105 +402,9 @@ function parsePlacement(candidate: unknown): Placement {
   return parsed.data;
 }
 
-/**
- * Validate promoted economics with 0M.4A's own calculator.
- *
- * The viability rule is the contract's: promoter net proceeds must not be
- * negative. It is **not reproduced here** — `calculatePromotedListingEconomics`
- * throws `NEGATIVE_PROMOTER_PROCEEDS`, and this maps that bounded code onto a
- * persistence error. The result is discarded: it is a check, not a stored fact.
- */
-function requireViablePromotedEconomics(input: {
-  commercialRetailPriceMinorUnits: number;
-  currency: string;
-  offerWholesalePriceMinorUnits: number;
-  offerWholesalePriceCurrency: string;
-  sellerFundedCommissionMinorUnits: number;
-  policy: MonacadoWholesaleAcquisitionPolicy;
-}): void {
-  try {
-    calculatePromotedListingEconomics(input);
-  } catch (error) {
-    if (error instanceof ListingEconomicsError) {
-      throw new ListingEconomicsRefusedError(error.code);
-    }
-    throw error;
-  }
-}
-
-/**
- * Read one exact Offer source version and derive the accepted dependency.
- *
- * The wholesale price and commission come **from the persisted Offer version**,
- * never from the caller: a caller-supplied number could disagree with the Offer
- * actually accepted, which is the divergence the exact binding exists to
- * prevent. The Offer version stays authoritative for its own economics.
- */
-async function resolveAcceptedOffer(
-  tx: Tx,
-  input: {
-    offerSourceRecordId: string;
-    sourceRecordVersion: string;
-    internalProductId: string;
-  },
-): Promise<{
-  dependencyBase: {
-    internalOfferId: string;
-    offerSourceRecordId: string;
-    acceptedOfferSourceRecordVersion: string;
-    acceptedWholesalePriceMinorUnits: number;
-    acceptedWholesalePriceCurrency: string;
-    acceptedCommissionCalculationPolicyVersion: string;
-  };
-  sellerFundedCommissionMinorUnits: number;
-  currentOfferSourceRecordVersion: string;
-}> {
-  const row = await tx.offerSourceRecordVersionRow.findUnique({
-    where: {
-      offerSourceRecordId_sourceRecordVersion: {
-        offerSourceRecordId: input.offerSourceRecordId,
-        sourceRecordVersion: input.sourceRecordVersion,
-      },
-    },
-  });
-  if (row === null) throw new AcceptedOfferVersionNotFoundError();
-
-  /* Reconstructed through 0M.6's own mapper, so a corrupt Offer row fails there
-     rather than producing an accepted dependency nobody could have agreed to. */
-  const offer = offerVersionRowToSourceVersion(row);
-
-  if (offer.internalProductId !== input.internalProductId) {
-    throw new OfferProductMismatchError();
-  }
-  if (offer.terms.price.type !== "PAID") {
-    /* A FREE Offer has no wholesale price to promote against. 0M.2A refuses a
-       commission on one, and a promoted Listing over it has no economics. */
-    throw new ListingEconomicsRefusedError("OFFER_NOT_PAID");
-  }
-
-  const stable = await tx.offer.findUnique({
-    where: { internalOfferId: offer.internalOfferId },
-  });
-  if (stable === null) throw new AcceptedOfferVersionNotFoundError();
-
-  return {
-    dependencyBase: {
-      internalOfferId: offer.internalOfferId,
-      offerSourceRecordId: offer.offerSourceRecordId,
-      acceptedOfferSourceRecordVersion: offer.sourceRecordVersion,
-      acceptedWholesalePriceMinorUnits: offer.terms.price.wholesalePriceMinorUnits,
-      acceptedWholesalePriceCurrency: offer.terms.price.wholesalePriceCurrency,
-      acceptedCommissionCalculationPolicyVersion:
-        offer.economics.commissionCalculationPolicyVersion,
-    },
-    sellerFundedCommissionMinorUnits: offer.economics.calculatedCommissionMinorUnits,
-    currentOfferSourceRecordVersion: stable.currentSourceRecordVersion,
-  };
-}
-
 // — Reads —
 
-async function readSnapshotInTx(tx: Tx, internalListingId: string): Promise<ListingSnapshot> {
+export async function readSnapshotInTx(tx: Tx, internalListingId: string): Promise<ListingSnapshot> {
   const row = await tx.listing.findUnique({ where: { internalListingId } });
   if (row === null) throw new ListingNotFoundError();
 
@@ -603,7 +518,10 @@ export async function getEffectivePrice(
   const placement = currentVersion.placement;
   if (placement.listingType !== "SELLER_DIRECT") {
     /* A promoted price has no sale overlay: the promoter's retail price is the
-       price, and 0M.4A gives that branch no schedule through which it could move. */
+       price, and 0M.4A gives that branch no schedule through which it could move.
+       Phase 1.45 — a package-based promoted draft may be unpriced, and then has
+       no effective price, exactly as an unpriced seller-direct draft. */
+    if (placement.retail === null) throw new ListingEconomicsRefusedError("LISTING_NOT_PRICED");
     return {
       effectivePriceMinorUnits: placement.retail.retailPriceMinorUnits,
       currency: placement.retail.retailPriceCurrency,
@@ -685,7 +603,7 @@ export async function evaluateBuyerEligibility(
        refuse. */
     let offer: { sourceRecordVersion: string } | undefined;
     let currentOffer: { state: OfferLifecycleState } | undefined;
-    if (placement.listingType === "PROMOTED") {
+    if (isLegacyPromotedPlacement(placement)) {
       const offerRow = await db.offerSourceRecordVersionRow.findUnique({
         where: {
           offerSourceRecordId_sourceRecordVersion: {
@@ -718,9 +636,13 @@ export async function evaluateBuyerEligibility(
       controllingRoleStatus: (role?.status ?? "NONE") as never,
       ...(offer === undefined ? {} : { offer }),
       ...(currentOffer === undefined ? {} : { currentOffer }),
-      ...(placement.listingType === "PROMOTED"
+      ...(isLegacyPromotedPlacement(placement)
         ? { upstreamReviewState: placement.upstreamReviewState }
         : {}),
+      ...(isPackagePromotedPlacement(placement) ? { promotedTermsBasis: placement.termsBasis } : {}),
+      /* Phase 1.45 — agrees with checkout: promoted commerce is closed until the
+         transaction phase consumes `readPromotedListingCommerceIn`. */
+      promotedCommerceEnabled: false,
     });
   } catch (error) {
     if (isDomainError(error)) throw error;
@@ -779,7 +701,7 @@ async function requirePlacementReferences(
  * who may not place there would turn this refusal into a probe for a
  * competitor's shelf.
  */
-async function requireNoCurrentPlacement(
+export async function requireNoCurrentPlacement(
   tx: Tx,
   input: { internalProductId: string; storefrontId: string },
 ): Promise<void> {
@@ -794,7 +716,7 @@ async function requireNoCurrentPlacement(
   if (existing !== null) throw new ListingAlreadyExistsError();
 }
 
-async function insertFirstVersion(
+export async function insertFirstVersion(
   tx: Tx,
   args: {
     internalListingId: string;
@@ -1046,112 +968,21 @@ export async function placeProductInStorefront(
 }
 
 /**
- * Create one draft PROMOTED Listing bound to an exact accepted Offer version.
+ * RETIRED (Phase 1.45): the legacy 0M.7 promoted create path.
  *
- * The sequence, and each step matters:
- *
- *   1. verify Product, Storefront, and controller exist;
- *   2. authorize with 0M.1's `canCreatePromotedListing`, and require the subject
- *      to BE the controller;
- *   3. read the **exact** named Offer source version, confirm it is for this
- *      Product, and derive the accepted economics from it;
- *   4. validate promoter viability with 0M.4A's own calculator, discarding the
- *      result — it is a check, not a stored fact;
- *   5. insert the Listing and its first version in one transaction.
- *
- * The composite foreign key onto the Offer version's unique key makes step 3's
- * guarantee structural as well as procedural: the database refuses a row naming
- * a version that does not exist.
+ * It bound one exact Offer version on the Listing and authorized the placement
+ * by the PROMOTER role, Storefront authority, and the Offer's `PROMOTABLE`
+ * terms alone — no Promotion Authorization, no Product lifecycle or resale
+ * gate, and no Promoter acceptance. Every promoted Listing is now created by
+ * `createPromotedListingDraft` (`promoted-listing-service.ts`), whose terms are
+ * derived from the Phase 1.44 package acceptance. This refuses every call,
+ * writes nothing, and is kept only so a stale caller gets a bounded answer.
  */
 export async function createPromotedListing(
-  input: unknown,
-  deps: ListingServiceDeps = {},
+  _input: unknown,
+  _deps: ListingServiceDeps = {},
 ): Promise<ListingSnapshot> {
-  const parsed = CreatePromotedListingInput.safeParse(input);
-  if (!parsed.success) throw inputError(parsed.error);
-  const data = parsed.data;
-
-  const db = deps.db ?? getPrisma();
-  const ids = deps.ids ?? cryptoListingIdProvider;
-  const internalListingId = ids.nextInternalListingId();
-  const listingSourceRecordId = ids.nextListingSourceRecordId();
-  /* Both creation paths mint one, because the reference identifies the placement
-     AGGREGATE and not its commercial type. A promoted Listing is no less a
-     placement for being promoted; withholding the reference from that branch
-     would make the column's meaning depend on how the row was created. */
-  const listingRef = (deps.refs ?? cryptoListingRefProvider).nextListingRef();
-  const at = new Date(data.now);
-
-  try {
-    return await db.$transaction(async (tx) => {
-      await requirePlacementReferences(tx, data);
-
-      const subject = await resolveActingSubject(tx, data.actingAccountId);
-      const decision = decideForBranch("PROMOTED", subject);
-      requireAllowed(decision);
-      requireController(subject, data.controllingParticipantId, decision.capability);
-      await requireStorefrontPlacementAuthority(tx, {
-        storefrontId: data.storefrontId,
-        controllingParticipantId: data.controllingParticipantId,
-        capability: decision.capability,
-      });
-      /* Phase 1.16 — suspension withholds authoring; see the standing service. */
-      await assertParticipantMayAuthorMarketplaceState(tx, data.controllingParticipantId);
-
-      const accepted = await resolveAcceptedOffer(tx, {
-        offerSourceRecordId: data.acceptedOfferSourceRecordId,
-        sourceRecordVersion: data.acceptedOfferSourceRecordVersion,
-        internalProductId: data.internalProductId,
-      });
-
-      requireViablePromotedEconomics({
-        commercialRetailPriceMinorUnits: data.retail.retailPriceMinorUnits,
-        currency: data.retail.retailPriceCurrency,
-        offerWholesalePriceMinorUnits:
-          accepted.dependencyBase.acceptedWholesalePriceMinorUnits,
-        offerWholesalePriceCurrency:
-          accepted.dependencyBase.acceptedWholesalePriceCurrency,
-        sellerFundedCommissionMinorUnits: accepted.sellerFundedCommissionMinorUnits,
-        policy: data.acquisitionPolicy,
-      });
-
-      const placement = parsePlacement({
-        listingType: "PROMOTED",
-        retail: data.retail,
-        offerDependency: { ...accepted.dependencyBase, acceptedAt: data.now },
-        /* 0M.4A's own decision, from the accepted version against the Offer's
-           current one. No category moved between them at acceptance time. */
-        upstreamReviewState: evaluateUpstreamOfferReview({
-          acceptedOfferSourceRecordVersion:
-            accepted.dependencyBase.acceptedOfferSourceRecordVersion,
-          currentOfferSourceRecordVersion: accepted.currentOfferSourceRecordVersion,
-          changeCategoriesSinceAccepted: [],
-        }),
-      });
-
-      /* Phase 1.34 — asked last, on the seller-direct path's own reasoning: a
-         caller who may not place in this Storefront learns that and nothing
-         about what is already on its shelf. */
-      await requireNoCurrentPlacement(tx, data);
-
-      await insertFirstVersion(tx, {
-        internalListingId,
-        listingSourceRecordId,
-        listingRef,
-        storefrontId: data.storefrontId,
-        internalProductId: data.internalProductId,
-        controllingParticipantId: data.controllingParticipantId,
-        placement,
-        authorizedByParticipantId: data.controllingParticipantId,
-        authorizedByActorId: data.actingAccountId,
-        recordedAt: at,
-      });
-
-      return await readSnapshotInTx(tx, internalListingId);
-    });
-  } catch (error) {
-    mapWriteError("createPromotedListing", error);
-  }
+  throw new PromotedListingPathRetiredError();
 }
 
 /**
@@ -1501,74 +1332,12 @@ export async function createListingSourceVersion(
           sale: data.sale === undefined ? currentPlacement.sale : data.sale,
         };
       } else {
-        /* The promoted branch's retail price is never null: the contract
-           requires it, and the accepted Offer's economics are checked against
-           it below. */
-        const retail = data.retail ?? currentPlacement.retail;
-        /* The accepted binding moves ONLY when a caller names a different exact
-           version. Nothing here consults the Offer's current-version pointer to
-           decide what this Listing accepted. */
-        let dependency = currentPlacement.offerDependency;
-        let upstreamReviewState = currentPlacement.upstreamReviewState;
-
-        if (
-          data.acceptedOfferSourceRecordVersion !== undefined &&
-          data.acceptedOfferSourceRecordVersion !==
-            currentPlacement.offerDependency.acceptedOfferSourceRecordVersion
-        ) {
-          const accepted = await resolveAcceptedOffer(tx, {
-            offerSourceRecordId: currentPlacement.offerDependency.offerSourceRecordId,
-            sourceRecordVersion: data.acceptedOfferSourceRecordVersion,
-            internalProductId: current.internalProductId,
-          });
-
-          if (data.acquisitionPolicy !== undefined) {
-            requireViablePromotedEconomics({
-              commercialRetailPriceMinorUnits: retail.retailPriceMinorUnits,
-              currency: retail.retailPriceCurrency,
-              offerWholesalePriceMinorUnits:
-                accepted.dependencyBase.acceptedWholesalePriceMinorUnits,
-              offerWholesalePriceCurrency:
-                accepted.dependencyBase.acceptedWholesalePriceCurrency,
-              sellerFundedCommissionMinorUnits: accepted.sellerFundedCommissionMinorUnits,
-              policy: data.acquisitionPolicy,
-            });
-          }
-
-          dependency = { ...accepted.dependencyBase, acceptedAt: data.now };
-          upstreamReviewState = evaluateUpstreamOfferReview({
-            acceptedOfferSourceRecordVersion:
-              accepted.dependencyBase.acceptedOfferSourceRecordVersion,
-            currentOfferSourceRecordVersion: accepted.currentOfferSourceRecordVersion,
-            changeCategoriesSinceAccepted: [],
-          });
-        } else if (data.retail !== undefined && data.acquisitionPolicy !== undefined) {
-          requireViablePromotedEconomics({
-            commercialRetailPriceMinorUnits: retail.retailPriceMinorUnits,
-            currency: retail.retailPriceCurrency,
-            offerWholesalePriceMinorUnits:
-              currentPlacement.offerDependency.acceptedWholesalePriceMinorUnits,
-            offerWholesalePriceCurrency:
-              currentPlacement.offerDependency.acceptedWholesalePriceCurrency,
-            /* Read from the accepted version, which stays authoritative. */
-            sellerFundedCommissionMinorUnits: (
-              await resolveAcceptedOffer(tx, {
-                offerSourceRecordId: currentPlacement.offerDependency.offerSourceRecordId,
-                sourceRecordVersion:
-                  currentPlacement.offerDependency.acceptedOfferSourceRecordVersion,
-                internalProductId: current.internalProductId,
-              })
-            ).sellerFundedCommissionMinorUnits,
-            policy: data.acquisitionPolicy,
-          });
-        }
-
-        nextPlacementCandidate = {
-          listingType: "PROMOTED",
-          retail,
-          offerDependency: dependency,
-          upstreamReviewState,
-        };
+        /* Phase 1.45 — every promoted version is written by the promoted Listing
+           service (`promoted-listing-service.ts`), which asks the package-derived
+           gates this generic path does not. The legacy 0M.7 rebinding path is
+           retired: it bound an Offer version on the Listing with no Promotion
+           Authorization or acceptance behind it. */
+        throw new PromotedListingPathRetiredError();
       }
 
       const nextPlacement = parsePlacement(nextPlacementCandidate);

@@ -20,6 +20,7 @@
  */
 
 import "dotenv/config";
+import { seedLegacyPromotedListing } from "./support/legacy-promoted-listing-fixture";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { grantProductCreatorAuthority } from "./support/product-authority-fixture";
@@ -37,8 +38,6 @@ import { CommerceApprovalActorNotAuthorizedError } from "../src/server/marketpla
 import type { CommerceApprovalIdProvider } from "../src/server/marketplace/participant-commerce-approval-ids";
 import { COMMERCE_APPROVAL_ID_PATTERN } from "../src/server/marketplace/participant-commerce-approval-ids";
 import {
-  createListingSourceVersion,
-  createPromotedListing,
   createSellerDirectListing,
 } from "../src/server/marketplace/listing-service";
 import {
@@ -64,6 +63,7 @@ import {
 import {
   GuestClaimRefusedError,
   InvalidOrderTransitionError,
+  ListingNotPurchasableError,
   OrderNotCompletedError,
   PaymentResultConflictError,
   ReviewNotEligibleError,
@@ -498,7 +498,7 @@ async function seedPromoted() {
      the Seller's standing authorization for new commerce, and both must hold. */
   await recordOfferAct(db, offer.record.internalOfferId, { act: "ACTIVATE", now: NOW });
 
-  const listing = await createPromotedListing(
+  const listing = await seedLegacyPromotedListing(
     {
       storefrontId,
       internalProductId,
@@ -629,11 +629,15 @@ describeDb("0M.9 — buyer checkout, Order, and post-sale foundation", () => {
       expect(outside.quote.quotedCommercialRetailAmountMinorUnits).toBe(10_000);
     });
 
-    it("resolves the promoted seller from the exact Offer version, not the controller", async () => {
-      const { listing, seller, promoter } = await seedPromoted();
+    it("refuses a promoted Listing at preparation: PROMOTED_COMMERCE_NOT_ENABLED (Phase 1.45)", async () => {
+      /* Promoted checkout is closed until the transaction phase binds the
+         derived package. A legacy row that is otherwise fully purchasable is
+         refused with the one bounded code, and nothing is written. */
+      const { listing } = await seedPromoted();
       const policyId = await seedPolicy();
+      const ordersBefore = await db.order.count();
 
-      const prepared = await prepareCheckout(
+      const refusal = await prepareCheckout(
         {
           internalListingId: listing.record.internalListingId,
           buyerAccountId: null,
@@ -644,13 +648,10 @@ describeDb("0M.9 — buyer checkout, Order, and post-sale foundation", () => {
         },
         policyId,
         { db },
-      );
-
-      expect(prepared.transactionType).toBe("PROMOTED");
-      // The controller is the PROMOTER; the seller comes from the Offer.
-      expect(prepared.promoterParticipantId).toBe(promoter.participantId);
-      expect(prepared.sellerParticipantId).toBe(seller.participantId);
-      expect(prepared.sellerParticipantId).not.toBe(prepared.promoterParticipantId);
+      ).catch((e) => e);
+      expect(refusal).toBeInstanceOf(ListingNotPurchasableError);
+      expect(refusal.blockingReasons).toEqual(["PROMOTED_COMMERCE_NOT_ENABLED"]);
+      expect(await db.order.count()).toBe(ordersBefore);
     });
 
     it("refuses a listing that is not buyer-active, naming every reason", async () => {
@@ -881,103 +882,23 @@ describeDb("0M.9 — buyer checkout, Order, and post-sale foundation", () => {
     });
   });
 
-  describe("promoted checkout", () => {
-    it("creates seller and promoter obligations from the snapshot's own economics", async () => {
-      const { listing, seller, promoter } = await seedPromoted();
+  describe("promoted checkout (closed, Phase 1.45)", () => {
+    it("places no Order, snapshot, obligation, or notice for a promoted Listing", async () => {
+      const { listing } = await seedPromoted();
       const policyId = await seedPolicy();
+      const before = {
+        orders: await db.order.count(),
+        snapshots: await db.transactionEconomicSnapshot.count(),
+        notices: await db.notificationObligation.count({ where: { category: "SALE_RECORDED" } }),
+      };
 
-      const { sale } = await buy({
-        internalListingId: listing.record.internalListingId,
-        policyId,
-      });
+      const refusal = await buy({ internalListingId: listing.record.internalListingId, policyId }).catch((e) => e);
+      expect(refusal).toBeInstanceOf(ListingNotPurchasableError);
+      expect(refusal.blockingReasons).toEqual(["PROMOTED_COMMERCE_NOT_ENABLED"]);
 
-      const { snapshot } = await getTransactionEconomicSnapshot(sale!.snapshotId, { db });
-      const e = snapshot.economics;
-      if (e.transactionType !== "PROMOTED") throw new Error("expected a promoted snapshot");
-
-      // The business model §D worked example.
-      expect(e.monacadoRetainedAmountMinorUnits).toBe(850);
-      expect(e.sellerProceedsMinorUnits).toBe(4_000);
-      expect(e.promoterNetProceedsMinorUnits).toBe(5_150);
-
-      const obligations = await listProceedsObligations(sale!.snapshotId, { db });
-      expect(obligations).toHaveLength(2);
-
-      const sellerClaim = obligations.find((o) => o.party === "SELLER")!;
-      const promoterClaim = obligations.find((o) => o.party === "PROMOTER")!;
-
-      expect(sellerClaim).toMatchObject({
-        participantId: seller.participantId,
-        amountMinorUnits: 4_000,
-        state: "PENDING",
-      });
-      // Net proceeds — spread PLUS the seller-funded commission, not the spread alone.
-      expect(promoterClaim).toMatchObject({
-        participantId: promoter.participantId,
-        amountMinorUnits: 5_150,
-        state: "PENDING",
-      });
-
-      // The three parties account for exactly what the buyer paid.
-      expect(
-        sellerClaim.amountMinorUnits +
-          promoterClaim.amountMinorUnits +
-          e.monacadoRetainedAmountMinorUnits,
-      ).toBe(snapshot.commercialRetailAmountMinorUnits);
-    });
-
-    it("binds the exact Listing, Offer, and policy versions the sale ran under", async () => {
-      const { listing, offer } = await seedPromoted();
-      const policyId = await seedPolicy();
-
-      const { order, sale } = await buy({
-        internalListingId: listing.record.internalListingId,
-        policyId,
-      });
-
-      const { snapshot } = await getTransactionEconomicSnapshot(sale!.snapshotId, { db });
-
-      expect(order.listingSourceRecordVersion).toBe("1");
-      expect(order.policyVersion).toBe("1");
-      expect(snapshot.listingBinding.listingSourceRecordVersion).toBe("1");
-      expect(snapshot.policyBinding).toEqual({ policyId, policyVersion: "1" });
-      if (snapshot.economics.transactionType !== "PROMOTED") throw new Error("promoted");
-      expect(snapshot.economics.offerBinding).toEqual({
-        internalOfferId: offer.record.internalOfferId,
-        offerSourceRecordId: offer.record.offerSourceRecordId,
-        offerSourceRecordVersion: "1",
-      });
-
-      // The Order and its snapshot are bound one-to-one.
-      const row = await db.transactionEconomicSnapshot.findUniqueOrThrow({
-        where: { orderId: order.orderId },
-      });
-      expect(row.id).toBe(sale!.snapshotId);
-    });
-
-    it("leaves historical economics untouched when the Listing is repriced afterwards", async () => {
-      const { listing, promoter } = await seedPromoted();
-      const policyId = await seedPolicy();
-      const { sale } = await buy({
-        internalListingId: listing.record.internalListingId,
-        policyId,
-      });
-
-      await createListingSourceVersion(
-        {
-          internalListingId: listing.record.internalListingId,
-          sourceRecordVersion: "2",
-          retail: { retailPriceMinorUnits: 20_000, retailPriceCurrency: "USD" },
-          acquisitionPolicy: ACQUISITION_POLICY,
-          actingAccountId: promoter.accountId,
-          now: LATER,
-        },
-        { db },
-      );
-
-      const { snapshot } = await getTransactionEconomicSnapshot(sale!.snapshotId, { db });
-      expect(snapshot.commercialRetailAmountMinorUnits).toBe(10_000);
-      expect(snapshot.listingBinding.listingSourceRecordVersion).toBe("1");
+      expect(await db.order.count()).toBe(before.orders);
+      expect(await db.transactionEconomicSnapshot.count()).toBe(before.snapshots);
+      expect(await db.notificationObligation.count({ where: { category: "SALE_RECORDED" } })).toBe(before.notices);
     });
   });
 
@@ -1102,7 +1023,7 @@ describeDb("0M.9 — buyer checkout, Order, and post-sale foundation", () => {
   });
 
   describe("notification obligations for a sale", () => {
-    it("tells the seller, and the promoter on a promoted sale", async () => {
+    it("tells the seller on a sale", async () => {
       const policyId = await seedPolicy();
 
       const direct = await seedSellerDirect();
@@ -1116,17 +1037,8 @@ describeDb("0M.9 — buyer checkout, Order, and post-sale foundation", () => {
       expect(directNotices).toHaveLength(1);
       expect(directNotices[0]!.recipientParticipantId).toBe(direct.seller.participantId);
 
-      const promotedFixture = await seedPromoted();
-      const promotedSale = await buy({
-        internalListingId: promotedFixture.listing.record.internalListingId,
-        policyId,
-      });
-      const promotedNotices = await db.notificationObligation.findMany({
-        where: { category: "SALE_RECORDED", subjectRef: promotedSale.order.orderId },
-      });
-      expect(promotedNotices.map((n) => n.recipientParticipantId).sort()).toEqual(
-        [promotedFixture.seller.participantId, promotedFixture.promoter.participantId].sort(),
-      );
+      /* Phase 1.45 — promoted checkout is closed, so there is no promoted sale
+         to notify about; the closure itself is covered above. */
     });
   });
 

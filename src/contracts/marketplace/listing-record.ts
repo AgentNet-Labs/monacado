@@ -49,6 +49,7 @@ import {
   MonacadoWholesaleAcquisitionPolicy,
   RetailPrice,
   SellerSaleSchedule,
+  isLegacyPromotedPlacement,
   type ListingPlacement,
   type MaterialListingField,
 } from "./listing-source";
@@ -158,6 +159,11 @@ export const PlaceProductInStorefrontInput = z.strictObject({
 export type PlaceProductInStorefrontInput = z.infer<typeof PlaceProductInStorefrontInput>;
 
 /**
+ * RETIRED (Phase 1.45) — the legacy 0M.7 promoted create input. Kept so the
+ * shape stays documented; `createPromotedListing` refuses every call. Promoted
+ * Listings are created by `CreatePromotedListingDraftInput`
+ * (`promoted-listing.ts`), whose Seller terms are derived, never bound.
+ *
  * Create one draft PROMOTED Listing bound to an exact accepted Offer version.
  *
  * The caller names the Offer source record and the **exact version label** they
@@ -390,19 +396,16 @@ export function materialListingChangesBetween(
         break;
       }
       case "offerDependency": {
-        const a =
-          priorPlacement.listingType === "PROMOTED" ? priorPlacement.offerDependency : null;
-        const b = nextPlacement.listingType === "PROMOTED" ? nextPlacement.offerDependency : null;
+        const a = isLegacyPromotedPlacement(priorPlacement) ? priorPlacement.offerDependency : null;
+        const b = isLegacyPromotedPlacement(nextPlacement) ? nextPlacement.offerDependency : null;
         if (priorPlacement.listingType === nextPlacement.listingType && differs(a, b)) {
           changed.push(field);
         }
         break;
       }
       case "upstreamReviewState": {
-        const a =
-          priorPlacement.listingType === "PROMOTED" ? priorPlacement.upstreamReviewState : null;
-        const b =
-          nextPlacement.listingType === "PROMOTED" ? nextPlacement.upstreamReviewState : null;
+        const a = isLegacyPromotedPlacement(priorPlacement) ? priorPlacement.upstreamReviewState : null;
+        const b = isLegacyPromotedPlacement(nextPlacement) ? nextPlacement.upstreamReviewState : null;
         if (priorPlacement.listingType === nextPlacement.listingType && a !== b) {
           changed.push(field);
         }

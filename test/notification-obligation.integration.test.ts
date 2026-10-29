@@ -14,6 +14,7 @@
  */
 
 import "dotenv/config";
+import { seedLegacyPromotedListing } from "./support/legacy-promoted-listing-fixture";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { disconnectPrisma, getPrisma } from "../src/server/db/client";
 import { grantProductCreatorAuthority } from "./support/product-authority-fixture";
@@ -22,7 +23,6 @@ import { createAccount } from "../src/server/account/account-service";
 import { createDraftParticipant } from "../src/server/marketplace/participant-service";
 import { getSourceVersion as getOfferSourceVersion } from "../src/server/marketplace/offer-service";
 import { seedOffer as seedOfferRows, seedOfferStandingVersion } from "./support/offer-fixture";
-import { createPromotedListing } from "../src/server/marketplace/listing-service";
 import {
   acknowledgeNotificationObligation,
   advanceNotificationObligation,
@@ -223,7 +223,7 @@ async function seedOfferWithPromoters(promoterCount: number, storefrontsEach = 1
     const promoter = await seedParticipant(["PROMOTER"]);
     for (let s = 0; s < storefrontsEach; s += 1) {
       const storefrontId = await seedStorefront(promoter.participantId);
-      await createPromotedListing(
+      await seedLegacyPromotedListing(
         {
           storefrontId,
           internalProductId,

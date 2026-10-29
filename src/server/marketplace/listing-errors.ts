@@ -39,7 +39,11 @@ export type ListingErrorCode =
   | "NO_MATERIAL_CHANGE"
   | "LISTING_ECONOMICS_REFUSED"
   | "CORRUPT_LISTING_RECORD"
-  | "LISTING_PERSISTENCE_FAILURE";
+  | "LISTING_PERSISTENCE_FAILURE"
+  | "PROMOTED_LISTING_PATH_RETIRED"
+  | "PROMOTED_LISTING_REFUSED"
+  | "PROMOTED_LISTING_NOT_READY"
+  | "LISTING_VERSION_STALE";
 
 export class ListingError extends Error {
   readonly code: ListingErrorCode;
@@ -352,5 +356,71 @@ export class ListingPersistenceFailureError extends ListingError {
     super("LISTING_PERSISTENCE_FAILURE", "A Listing persistence operation failed", cause);
     this.name = "ListingPersistenceFailureError";
     this.stage = stage;
+  }
+}
+
+// — Phase 1.45: promoted Listings —
+
+/**
+ * The legacy 0M.7 promoted write path is retired (Phase 1.45).
+ *
+ * It bound an Offer version on the Listing with no Promotion Authorization and
+ * no Phase 1.44 acceptance behind it. Promoted Listings are created and changed
+ * only through `promoted-listing-service.ts`.
+ */
+export class PromotedListingPathRetiredError extends ListingError {
+  constructor() {
+    super("PROMOTED_LISTING_PATH_RETIRED", "That promoted Listing path is retired");
+    this.name = "PromotedListingPathRetiredError";
+  }
+}
+
+/** Why a promoted draft or price may not be written. A closed vocabulary. */
+export type PromotedListingRefusal =
+  | "AUTHORIZATION_NOT_APPROVED"
+  | "SELF_PROMOTION"
+  | "STOREFRONT_OWNED_BY_SELLER"
+  | "NO_OFFER_TERMS_IN_FORCE"
+  | "NOT_PROMOTED_LISTING"
+  | "LISTING_TERMINAL"
+  | "LISTING_NOT_DRAFT";
+
+/**
+ * A promoted Listing write is refused for a bounded reason (Phase 1.45).
+ *
+ * Raised only after the caller is established as the Promoter acting on its
+ * own Product relationship or its own Listing, so the reason discloses nothing
+ * about anyone else's.
+ */
+export class PromotedListingRefusedError extends ListingError {
+  readonly reason: PromotedListingRefusal;
+  constructor(reason: PromotedListingRefusal) {
+    super("PROMOTED_LISTING_REFUSED", "That promoted Listing operation is refused");
+    this.name = "PromotedListingRefusedError";
+    this.reason = reason;
+  }
+}
+
+/**
+ * Activation found blockers (Phase 1.45). Every blocker is reported, not the
+ * first, in the gate's declared order — closed codes, never values.
+ */
+export class PromotedListingNotReadyError extends ListingError {
+  readonly blockers: readonly string[];
+  constructor(blockers: readonly string[]) {
+    super("PROMOTED_LISTING_NOT_READY", "That promoted Listing is not ready to activate");
+    this.name = "PromotedListingNotReadyError";
+    this.blockers = blockers;
+  }
+}
+
+/**
+ * The caller confirmed a Listing version that is no longer current (Phase
+ * 1.45): it changed between view and click, so nothing is written.
+ */
+export class ListingVersionStaleError extends ListingError {
+  constructor() {
+    super("LISTING_VERSION_STALE", "That Listing has changed since it was shown");
+    this.name = "ListingVersionStaleError";
   }
 }
