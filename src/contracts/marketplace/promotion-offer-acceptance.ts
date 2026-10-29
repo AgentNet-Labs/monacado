@@ -247,6 +247,20 @@ export function acceptanceOfPackage<A extends RecordedOfferAcceptance>(
 }
 
 /**
+ * The acceptance covering a package: exactly that package, or — for `{S}` — an
+ * acceptance of `{S, P}`, which includes S. So when a promotion ends and the
+ * unchanged S applies again, the earlier `{S, P}` is S's acceptance and no new
+ * act is needed. `{S, P}` is covered only exactly. The exact row wins; else the
+ * earliest covering one.
+ */
+export function acceptanceCoveringPackage<A extends RecordedOfferAcceptance>(
+  acceptances: readonly A[],
+  pkg: OfferPackage,
+): A | null {
+  return acceptanceOfPackage(acceptances, pkg) ?? acceptanceCoveringTermsInForce(acceptances, pkg);
+}
+
+/**
  * The terms in force, as the package members they are: S alone, or P with the
  * standing version it was built on. `null` when no terms are in force.
  */

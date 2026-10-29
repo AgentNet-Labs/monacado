@@ -32,6 +32,7 @@ import {
   DETAIL_STANDARD_TERMS,
   DETAIL_WHOLESALE,
   formatCatalogCommissionDetail,
+  offerPackageAccepted,
   offerPackageStatus,
 } from "./promote-copy";
 
@@ -89,7 +90,7 @@ export function OfferPackageAcceptance({ productRef, view }: { productRef: strin
           {error}
         </p>
       ) : null}
-      {view.acceptedAt === null ? (
+      {!offerPackageAccepted(view) ? (
         <>
           <p className="auth-hint">{ACCEPTANCE_NOTE}</p>
           <button className="auth-button" type="button" onClick={() => void accept()} disabled={pending}>

@@ -137,6 +137,23 @@ export const ACCEPT_STANDARD_LABEL = "Accept standard terms";
 export const ACCEPT_PACKAGE_LABEL = "Accept standard + promotional terms";
 export const ACCEPTANCE_VERSION_LABEL = "Terms version";
 
+/**
+ * Whether the package shown is accepted: exactly, or — with no promotion
+ * pending — the standard terms, which are then the terms in force, are covered
+ * by an earlier standard + promotional acceptance that included them. Nothing
+ * is left to accept, so no accept action is offered.
+ */
+export function offerPackageAccepted(view: {
+  promotion: unknown;
+  acceptedAt: string | null;
+  inForceCovered: boolean;
+}): boolean {
+  return view.acceptedAt !== null || (view.promotion === null && view.inForceCovered);
+}
+
+export const ACCEPTANCE_COVERED_BY_PACKAGE =
+  "You've accepted these standard terms — your acceptance of the standard + promotional terms included them. No new acceptance is needed.";
+
 /** Where the Promoter stands on the package shown — derived from the server's view, never stored. */
 export function offerPackageStatus(view: {
   promotion: { effectiveFrom: string; inForce: boolean } | null;
@@ -144,6 +161,7 @@ export function offerPackageStatus(view: {
   hadEarlierAcceptance: boolean;
   inForceCovered: boolean;
 }): string {
+  if (view.acceptedAt === null && offerPackageAccepted(view)) return ACCEPTANCE_COVERED_BY_PACKAGE;
   if (view.acceptedAt !== null) {
     const when = formatCatalogDate(view.acceptedAt);
     if (view.promotion === null) return `You accepted the standard terms on ${when}.`;

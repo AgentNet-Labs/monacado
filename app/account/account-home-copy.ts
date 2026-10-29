@@ -371,9 +371,12 @@ export const PROMOTION_REVOKE_LABEL = "Revoke";
 /**
  * Phase 1.44 — whether an APPROVED Promoter has accepted the Seller's current
  * terms, as the Seller sees it: the exact versions and the date, never an id.
+ * Standard terms resumed after a promotion are accepted by the earlier
+ * standard + promotional acceptance, which included them.
  */
 export function promotionTermsAcceptanceStatus(view: {
   packageAccepted: boolean;
+  currentPackage: { standingVersion: string; promotionVersion: string | null };
   acceptance: { standingVersion: string; promotionVersion: string | null; acceptedAt: string } | null;
 }): string {
   const versions = (a: { standingVersion: string; promotionVersion: string | null }) =>
@@ -383,6 +386,9 @@ export function promotionTermsAcceptanceStatus(view: {
   const date = (iso: string) =>
     new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "UTC" }).format(new Date(iso));
   if (view.packageAccepted && view.acceptance !== null) {
+    if (view.acceptance.promotionVersion !== view.currentPackage.promotionVersion) {
+      return `accepted your current terms (${versions(view.currentPackage)}) on ${date(view.acceptance.acceptedAt)}, as part of ${versions(view.acceptance)}`;
+    }
     return `accepted your current terms (${versions(view.acceptance)}) on ${date(view.acceptance.acceptedAt)}`;
   }
   if (view.acceptance !== null) {

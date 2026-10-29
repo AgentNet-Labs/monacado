@@ -300,5 +300,22 @@ describe("/promote/{productRef}", () => {
     const accepted = await renderDetail();
     expect(plain(accepted)).toContain("You accepted the standard + promotional terms on Aug 20, 2029. The promotional terms start Sep 1, 2029.");
     expect(accepted).not.toContain("<button");
+
+    // The promotion ended: S resumes, covered by the {S, P} acceptance — no "changed", no button.
+    readPromotableCatalogDetail.mockResolvedValue(
+      detail({ authorization: "APPROVED", termsAcceptance: { ...view, hadEarlierAcceptance: true, inForceCovered: true } }),
+    );
+    const resumed = await renderDetail();
+    expect(plain(resumed)).toContain("your acceptance of the standard + promotional terms included them. No new acceptance is needed.");
+    expect(plain(resumed)).not.toContain("terms have changed");
+    expect(resumed).not.toContain("<button");
+
+    // A genuinely new standing version is not covered: it still asks.
+    readPromotableCatalogDetail.mockResolvedValue(
+      detail({ authorization: "APPROVED", termsAcceptance: { ...view, hadEarlierAcceptance: true, inForceCovered: false } }),
+    );
+    const changed = await renderDetail();
+    expect(plain(changed)).toContain("The seller's terms have changed. The new terms need your acceptance.");
+    expect(changed).toMatch(/<button[^>]*>Accept standard terms<\/button>/);
   });
 });

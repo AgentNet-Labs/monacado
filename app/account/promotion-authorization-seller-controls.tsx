@@ -41,6 +41,7 @@ export function PromotionAuthorizationSellerControls({
     canApprove: boolean;
     termsAcceptance: {
       packageAccepted: boolean;
+      currentPackage: { standingVersion: string; promotionVersion: string | null };
       acceptance: { standingVersion: string; promotionVersion: string | null; acceptedAt: string } | null;
     } | null;
   }>;

@@ -12,6 +12,7 @@ import {
   PROMOTED_TERMS_NOT_EVALUATED,
   RESALE_STATES_ADMITTING_ACCEPTANCE,
   acceptableOfferPackage,
+  acceptanceCoveringPackage,
   acceptanceCoveringTermsInForce,
   acceptanceOfPackage,
   decidePromotedTermsEligibility,
@@ -31,6 +32,8 @@ import {
   offerPackageAcceptanceEndpoint,
   submitOfferPackageAcceptance,
 } from "../app/account/promotion-authorization-submission";
+import { ACCEPTANCE_COVERED_BY_PACKAGE, offerPackageAccepted, offerPackageStatus } from "../app/promote/promote-copy";
+import { promotionTermsAcceptanceStatus } from "../app/account/account-home-copy";
 
 const REF = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const AUTH_REF = "ZYXWVTSRQPNMKJHGFEDCBA9876543210";
@@ -157,6 +160,19 @@ describe("1.44 — coverage of the terms in force is derived, never stored", () 
     expect(acceptanceOfPackage(rows, { standingVersion: "2", promotionVersion: "4" })).toBeNull();
   });
 
+  it("a package is covered exactly, or {S} by an earlier {S, P} that included S — never {S, P} by {S}", () => {
+    const sp = row("2", "3", "2029-08-01T00:00:00.000Z");
+    const s = row("2", null, "2029-08-05T00:00:00.000Z");
+    // P ended: S resumes and the {S, P} acceptance covers it.
+    expect(acceptanceCoveringPackage([sp], S)).toBe(sp);
+    // The exact {S} wins over an earlier {S, P}.
+    expect(acceptanceCoveringPackage([sp, s], S)).toBe(s);
+    expect(acceptanceCoveringPackage([s], SP)).toBeNull();
+    expect(acceptanceCoveringPackage([sp], SP)).toBe(sp);
+    // A genuinely new standing version S2 is covered by nothing earlier.
+    expect(acceptanceCoveringPackage([sp, s], { standingVersion: "3", promotionVersion: null })).toBeNull();
+  });
+
   it("reads the terms in force as package members; a promotion needs its basis", () => {
     expect(termsInForceOf({ kind: "NONE", lifecycle: "PAUSED" }, null)).toBeNull();
     expect(termsInForceOf({ kind: "STANDING", sourceRecordVersion: "2" }, null)).toEqual(S);
@@ -280,5 +296,58 @@ describe("1.44 — the browser submission half", () => {
       outcome: "failed",
       message: ACCEPTANCE_FAILURE,
     });
+  });
+});
+
+describe("1.44 — status after a promotion ends: the standard terms it included stay accepted", () => {
+  const view = { promotion: null, acceptedAt: null, hadEarlierAcceptance: true, inForceCovered: true };
+
+  it("Promoter: {S} covered by an earlier {S, P} reads as accepted, with nothing to accept", () => {
+    expect(offerPackageAccepted(view)).toBe(true);
+    expect(offerPackageStatus(view)).toBe(ACCEPTANCE_COVERED_BY_PACKAGE);
+    expect(offerPackageStatus(view)).not.toMatch(/changed|need your acceptance/);
+  });
+
+  it("Promoter: an exact {S} acceptance is unchanged; a new S2 still needs acceptance", () => {
+    expect(offerPackageStatus({ ...view, acceptedAt: "2029-08-01T00:00:00.000Z" })).toBe("You accepted the standard terms on Aug 1, 2029.");
+    const s2 = { ...view, inForceCovered: false };
+    expect(offerPackageAccepted(s2)).toBe(false);
+    expect(offerPackageStatus(s2)).toBe("The seller's terms have changed. The new terms need your acceptance.");
+  });
+
+  it("Promoter: a pending promotion is never covered by {S} alone", () => {
+    const pending = { ...view, promotion: { effectiveFrom: "2029-09-01T00:00:00.000Z", inForce: false } };
+    expect(offerPackageAccepted(pending)).toBe(false);
+    expect(offerPackageAccepted({ ...pending, promotion: { ...pending.promotion, inForce: true }, inForceCovered: false })).toBe(false);
+  });
+
+  it("Seller: resumed S reads as accepted, as part of the {S, P} acceptance", () => {
+    const status = promotionTermsAcceptanceStatus({
+      packageAccepted: true,
+      currentPackage: { standingVersion: "1", promotionVersion: null },
+      acceptance: { standingVersion: "1", promotionVersion: "2", acceptedAt: "2029-08-01T00:00:00.000Z" },
+    });
+    expect(status).toBe(
+      "accepted your current terms (standard terms version 1) on Aug 1, 2029, as part of standard terms version 1 + promotional terms version 2",
+    );
+    expect(status).not.toMatch(/hasn't/);
+  });
+
+  it("Seller: exact acceptance and a not-yet-accepted S2 read as before", () => {
+    const at = "2029-08-01T00:00:00.000Z";
+    expect(
+      promotionTermsAcceptanceStatus({
+        packageAccepted: true,
+        currentPackage: { standingVersion: "1", promotionVersion: "2" },
+        acceptance: { standingVersion: "1", promotionVersion: "2", acceptedAt: at },
+      }),
+    ).toBe("accepted your current terms (standard terms version 1 + promotional terms version 2) on Aug 1, 2029");
+    expect(
+      promotionTermsAcceptanceStatus({
+        packageAccepted: false,
+        currentPackage: { standingVersion: "3", promotionVersion: null },
+        acceptance: { standingVersion: "1", promotionVersion: null, acceptedAt: at },
+      }),
+    ).toBe("hasn't accepted your current terms (last accepted standard terms version 1 on Aug 1, 2029)");
   });
 });

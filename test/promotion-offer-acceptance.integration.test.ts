@@ -50,6 +50,8 @@ import {
   type PromoterOfferPackageView,
 } from "../src/server/marketplace/promotion-offer-acceptance-read-service";
 import { findParticipantPrivacyViolations } from "../src/contracts/marketplace/participant-record";
+import { ACCEPTANCE_COVERED_BY_PACKAGE, offerPackageAccepted, offerPackageStatus } from "../app/promote/promote-copy";
+import { promotionTermsAcceptanceStatus } from "../app/account/account-home-copy";
 import { sellerCommerceFixture, type FixtureActor } from "./support/seller-commerce-fixture";
 
 const RUN = process.env.RUN_DB_TESTS === "1";
@@ -283,6 +285,7 @@ describeDb("Phase 1.44 — Promoter Offer-package acceptance", () => {
       expect(await view(promoter, ref)).toMatchObject({ acceptedAt: first.body.acceptedAt, inForceCovered: true });
       expect(await sellerView(item, ref)).toEqual({
         packageAccepted: true,
+        currentPackage: { standingVersion: first.body.standingVersion, promotionVersion: null },
         acceptance: { standingVersion: first.body.standingVersion, promotionVersion: null, acceptedAt: first.body.acceptedAt },
       });
       expect(await eligibility(promoter, item)).toMatchObject({ eligible: true, governing: { termsKind: "STANDING" } });
@@ -330,7 +333,47 @@ describeDb("Phase 1.44 — Promoter Offer-package acceptance", () => {
       // After it expires S is in force again and still covered — nothing written.
       const after = plus(window.effectiveUntil, 30);
       expect(await eligibility(promoter, item, after)).toMatchObject({ eligible: true, governing: { promotionVersion: null } });
-      expect(await view(promoter, ref, after)).toMatchObject({ promotion: null, acceptedAt: null, inForceCovered: true });
+      const resumed = (await view(promoter, ref, after))!;
+      expect(resumed).toMatchObject({ promotion: null, acceptedAt: null, inForceCovered: true });
+      // ...and both sides read it as accepted: {S, P} included S. Nothing to accept again.
+      expect(offerPackageAccepted(resumed)).toBe(true);
+      expect(offerPackageStatus(resumed)).toBe(ACCEPTANCE_COVERED_BY_PACKAGE);
+      expect(await sellerView(item, ref, after)).toEqual({
+        packageAccepted: true,
+        currentPackage: { standingVersion: v.standing.version, promotionVersion: null },
+        acceptance: { standingVersion: v.standing.version, promotionVersion: v.promotion!.version, acceptedAt: done.body.acceptedAt },
+      });
+      expect(await acceptanceCount()).toBe(1);
+    });
+
+    it("{S, P} accepted while P runs, then ended early: resumed S reads as accepted on both sides — no new row", async () => {
+      const item = await listed();
+      const ref = await approved(promoter, item);
+      const window = await schedule(item, "30.00", 600, 120);
+      advancePast(plus(window.effectiveFrom, 1));
+      const done = await accept(promoter, item, ref);
+      expect(done.status).toBe(201);
+      const promotionVersion = done.body.promotionVersion as string;
+      expect(promotionVersion).not.toBeNull();
+
+      const ended = await offerCall(handleEndPromotionRequest, item.seller, item, { expectedPromotionVersion: promotionVersion });
+      expect(ended.status, JSON.stringify(ended.body)).toBe(200);
+      const later = next();
+      expect(await eligibility(promoter, item, later)).toMatchObject({ eligible: true, governing: { promotionVersion: null } });
+      const resumed = (await view(promoter, ref, later))!;
+      expect(resumed).toMatchObject({ standing: { version: done.body.standingVersion }, promotion: null, acceptedAt: null, inForceCovered: true });
+      expect(offerPackageAccepted(resumed)).toBe(true);
+      expect(offerPackageStatus(resumed)).toBe(ACCEPTANCE_COVERED_BY_PACKAGE);
+
+      // The Seller's /account row: accepted, as part of the {S, P} acceptance.
+      const sellerRow = (await readAccountHome(item.seller.accountId, { db, now: next() }))!.products
+        .find((p) => p.productRef === item.productRef)!
+        .promotionAuthorizations.find((a) => a.authorizationRef === ref)!;
+      expect(sellerRow.termsAcceptance).toMatchObject({ packageAccepted: true, acceptance: { promotionVersion, acceptedAt: done.body.acceptedAt } });
+      expect(promotionTermsAcceptanceStatus(sellerRow.termsAcceptance!)).toMatch(
+        new RegExp(`^accepted your current terms \\(standard terms version ${done.body.standingVersion}\\) on .*, as part of standard terms version ${done.body.standingVersion} \\+ promotional terms version ${promotionVersion}$`),
+      );
+      await expectNoPrivateIdentity(sellerRow.termsAcceptance, [promoter, item.seller]);
       expect(await acceptanceCount()).toBe(1);
     });
 
@@ -355,7 +398,8 @@ describeDb("Phase 1.44 — Promoter Offer-package acceptance", () => {
       expect(ended.status, JSON.stringify(ended.body)).toBe(200);
       const later = next();
       expect(await eligibility(promoter, item, later)).toMatchObject({ eligible: true, governing: { promotionVersion: null } });
-      expect(await view(promoter, ref, later)).toMatchObject({ promotion: null, inForceCovered: true });
+      expect(await view(promoter, ref, later)).toMatchObject({ promotion: null, acceptedAt: expect.any(String), inForceCovered: true });
+      expect(await sellerView(item, ref, later)).toMatchObject({ packageAccepted: true, acceptance: { promotionVersion: null } });
       expect(await acceptanceCount()).toBe(1);
     });
 
@@ -385,6 +429,7 @@ describeDb("Phase 1.44 — Promoter Offer-package acceptance", () => {
       const fresh = (await view(promoter, ref))!;
       expect(fresh.standing.version).not.toBe(stale.standing.version);
       expect(fresh).toMatchObject({ acceptedAt: null, hadEarlierAcceptance: true, inForceCovered: false });
+      expect(offerPackageAccepted(fresh)).toBe(false);
       expect(await eligibility(promoter, item)).toMatchObject({ eligible: false, blockers: ["TERMS_NOT_ACCEPTED"] });
       expect(await sellerView(item, ref)).toMatchObject({ packageAccepted: false, acceptance: { standingVersion: stale.standing.version } });
       expect((await accept(promoter, item, ref)).status).toBe(201);
@@ -660,7 +705,11 @@ describeDb("Phase 1.44 — Promoter Offer-package acceptance", () => {
         (await readAccountHome(item.seller.accountId, { db, now: next() }))!.products
           .find((p) => p.productRef === item.productRef)!
           .promotionAuthorizations.find((a) => a.authorizationRef === ref)!;
-      expect((await sellerRow()).termsAcceptance).toEqual({ packageAccepted: false, acceptance: null });
+      expect((await sellerRow()).termsAcceptance).toEqual({
+        packageAccepted: false,
+        currentPackage: { standingVersion: (await view(promoter, ref))!.standing.version, promotionVersion: null },
+        acceptance: null,
+      });
 
       const done = await accept(promoter, item, ref);
       expect((await rowOf()).termsAcceptance).toMatchObject({ acceptedAt: done.body.acceptedAt, inForceCovered: true });

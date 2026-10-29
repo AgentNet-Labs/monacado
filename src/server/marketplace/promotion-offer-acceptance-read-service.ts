@@ -20,6 +20,7 @@ import "../server-only";
 import type { Offer as OfferRow, Prisma } from "@prisma/client";
 import {
   acceptableOfferPackage,
+  acceptanceCoveringPackage,
   acceptanceCoveringTermsInForce,
   acceptanceOfPackage,
   acceptedPromotionTermsOf,
@@ -226,9 +227,14 @@ export async function readPromoterOfferPackageByRefIn(
 
 /** One APPROVED Promoter's acceptance status, as its Seller sees it. No id of any kind. */
 export interface SellerOfferAcceptanceView {
-  /** Whether this Promoter's cycle accepted exactly the current package. */
+  /**
+   * Whether this Promoter's cycle has accepted the current package — exactly,
+   * or `{S}` through an accepted `{S, P}`, which includes S.
+   */
   packageAccepted: boolean;
-  /** The current package's acceptance, or else the cycle's latest earlier one; `null` when none. */
+  /** The package a Promoter may accept now: `{S}`, or `{S, P}` while P is pending. */
+  currentPackage: OfferPackage;
+  /** The acceptance covering the current package, or else the cycle's latest earlier one; `null` when none. */
   acceptance: { standingVersion: string; promotionVersion: string | null; acceptedAt: string } | null;
 }
 
@@ -256,10 +262,11 @@ export async function readSellerOfferAcceptancesIn(
   );
   for (const c of cycles) {
     const rows = ofOffer(acceptances.get(c.id) ?? [], context.offer.offerSourceRecordId);
-    const exact = acceptanceOfPackage(rows, context.acceptable);
-    const shown = exact ?? rows[rows.length - 1] ?? null;
+    const covering = acceptanceCoveringPackage(rows, context.acceptable);
+    const shown = covering ?? rows[rows.length - 1] ?? null;
     out.set(c.authorizationRef, {
-      packageAccepted: exact !== null,
+      packageAccepted: covering !== null,
+      currentPackage: context.acceptable,
       acceptance:
         shown === null
           ? null
