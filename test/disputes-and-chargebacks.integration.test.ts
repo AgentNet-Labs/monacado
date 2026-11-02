@@ -2703,6 +2703,11 @@ describeDb("1.11 — disputes and chargebacks", () => {
     beforeEach(async () => {
       await clearFeePolicy();
     });
+    /* The fee policy is a singleton no other suite owns: leaving an ACTIVE one
+       behind would change what every later dispute in the run assesses. */
+    afterAll(async () => {
+      await clearFeePolicy();
+    });
 
     it("resolves the bootstrapped default to $30 USD", async () => {
       await activateFee(

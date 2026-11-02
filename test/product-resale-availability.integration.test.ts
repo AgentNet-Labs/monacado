@@ -712,9 +712,22 @@ describeDb("1.40 — Seller-controlled Product resale availability", () => {
       ]);
       expect(results.every((r) => r.status === 200 || r.status === 409)).toBe(true);
 
-      const history = await acts(internalProductId);
-      const current = history.filter((a) => a.currentForProductId !== null);
+      const recorded = await acts(internalProductId);
+      const current = recorded.filter((a) => a.currentForProductId !== null);
       expect(current).toHaveLength(1);
+      /* Walk the chain from its root rather than sorting by `actedAt`: each
+         request stamps its instant before it waits on the Product lock, so the
+         lock — not the clock — decides the order, and the instants of
+         simultaneous requests need not follow it. */
+      const history = [recorded.find((a) => a.supersedesActId === null)!];
+      for (;;) {
+        const tip = history.at(-1)!;
+        const next = recorded.find((a) => a.supersedesActId === tip.id);
+        if (next === undefined) break;
+        history.push(next);
+      }
+      expect(history).toHaveLength(recorded.length);
+      expect(history.at(-1)!.id).toBe(current[0]!.id);
       /* Each act follows exactly the one before it — no fork. */
       for (let i = 1; i < history.length; i += 1) {
         expect(history[i]!.supersedesActId).toBe(history[i - 1]!.id);

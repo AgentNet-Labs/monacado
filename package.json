@@ -44,7 +44,7 @@
     "risk:review:policy": "tsx scripts/seller-risk-review.ts --policy",
     "worker:publication:once": "tsx scripts/run-publication-worker.ts",
     "email:dispatch:once": "tsx scripts/run-email-dispatcher.ts",
-    "db:test": "RUN_DB_TESTS=1 vitest run --no-file-parallelism test/*.integration.test.ts",
+    "db:test": "sh scripts/db-test.sh",
     "postinstall": "prisma generate",
     "validate": "npm run lint && npm run typecheck && npm run contracts:validate && npm run test && npm run build"
   },

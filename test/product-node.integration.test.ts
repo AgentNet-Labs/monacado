@@ -82,12 +82,15 @@ async function seedProduct(): Promise<ProductSourceRecord> {
 }
 
 describe.skipIf(!RUN)("Product Node persistence + lifecycle (integration)", () => {
-  beforeEach(async () => {
+  async function cleanup() {
     await db.productNode.deleteMany({});
     await db.productSourceRecordVersionRow.deleteMany({});
     await db.product.deleteMany({});
-  });
+  }
+  beforeEach(cleanup);
+  /* The last test's Product would otherwise outlive the run. */
   afterAll(async () => {
+    await cleanup();
     await disconnectPrisma();
   });
 
