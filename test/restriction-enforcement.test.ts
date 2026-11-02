@@ -250,6 +250,22 @@ describe("private standing does not reach public surfaces", () => {
     expect(PARTICIPANT_STANDING_BLOCKING_REASONS).not.toContain("OFFER_NOT_CURRENTLY_OFFERED");
   });
 
+  it("withholds every promoted-gate blocker that is not a Listing-level reason (Phase 1.46)", () => {
+    const filtered = publicSafeBlockingReasons([
+      "LISTING_NOT_ACTIVE",
+      "PARTICIPANT_SUSPENDED",
+      "PAYMENT_NOT_READY",
+      "SELLER_NOT_PERMITTED",
+      "AUTHORIZATION_NOT_APPROVED",
+      "TERMS_NOT_ACCEPTED",
+      "SELF_PROMOTION",
+      "COMMERCE_APPROVAL_MISSING",
+      "STOREFRONT_NOT_PUBLICLY_ACCESSIBLE",
+      "SOMETHING_NEW",
+    ]);
+    expect(filtered).toEqual(["LISTING_NOT_ACTIVE", "STOREFRONT_NOT_PUBLICLY_ACCESSIBLE"]);
+  });
+
   it("withholds every party-disclosing risk denial reason from a buyer", () => {
     const filtered = buyerSafeRiskDenialReasons([
       "ORDER_AMOUNT_EXCEEDS_LIMIT",

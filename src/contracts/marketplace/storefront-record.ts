@@ -206,6 +206,18 @@ export const EditStorefrontPresentationInput = z.strictObject({
 });
 export type EditStorefrontPresentationInput = z.infer<typeof EditStorefrontPresentationInput>;
 
+/**
+ * Take a Storefront live — ACTIVE and PUBLIC — by its public handle (Phase
+ * 1.46). Names no lifecycle or visibility: the act IS the target state, so a
+ * caller cannot ask for anything else through it.
+ */
+export const GoLiveStorefrontInput = z.strictObject({
+  publicHandle: PublicHandle,
+  actingAccountId: ActingAccountId,
+  now: z.iso.datetime(),
+});
+export type GoLiveStorefrontInput = z.infer<typeof GoLiveStorefrontInput>;
+
 export const AssignStorefrontGovernanceInput = z.strictObject({
   internalStorefrontId: InternalStorefrontId,
   participantId: MarketplaceParticipantId,

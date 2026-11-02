@@ -62,6 +62,7 @@ import {
   calculatePromotedListingEconomics,
   calculateSellerDirectEconomics,
   isLegacyPromotedPlacement,
+  isPackagePromotedPlacement,
   type ListingSourceVersion,
   type MonacadoWholesaleAcquisitionPolicy,
 } from "../../contracts/marketplace/listing-source";
@@ -278,6 +279,87 @@ async function readAcceptedOfferCommission(
   return offer.economics.calculatedCommissionMinorUnits;
 }
 
+/** The governed authority a package-based promoted sale was bound to at checkout. */
+interface PromotedSaleBinding {
+  promotionAuthorizationId: string;
+  promotionOfferAcceptanceId: string;
+  offerSourceRecordId: string;
+  offerSourceRecordVersion: string;
+}
+
+/**
+ * Phase 1.46 — the governing Offer terms of a package-based promoted sale, read
+ * from the EXACT binding the Order froze at checkout.
+ *
+ * Every row named is immutable, so this recomputes the same answer forever —
+ * which is what reconstruction relies on. Nothing current is re-gated: the
+ * buyer has paid, and the promoted commerce gate already answered at checkout.
+ * What IS checked is that the binding is one coherent fact — the acceptance was
+ * given under that authorization, for that Offer, covering that version, and
+ * the authorization is this Listing's Product and Promoter. A binding that
+ * fails is a corrupt record, never a price.
+ */
+async function readPromotedBindingTerms(
+  db: Reader,
+  sourceVersion: ListingSourceVersion,
+  binding: PromotedSaleBinding,
+): Promise<{
+  internalOfferId: string;
+  wholesalePriceMinorUnits: number;
+  wholesalePriceCurrency: string;
+  sellerFundedCommissionMinorUnits: number;
+}> {
+  const acceptance = await db.promotionOfferAcceptance.findUnique({
+    where: { id: binding.promotionOfferAcceptanceId },
+    select: { authorizationId: true, offerSourceRecordId: true, standingVersion: true, promotionVersion: true },
+  });
+  const authorization = await db.promotionAuthorization.findUnique({
+    where: { id: binding.promotionAuthorizationId },
+    select: { internalProductId: true, promoterParticipantId: true },
+  });
+  const corrupt: string[] = [];
+  if (acceptance === null || acceptance.authorizationId !== binding.promotionAuthorizationId) {
+    corrupt.push("promotionOfferAcceptanceId");
+  } else {
+    if (acceptance.offerSourceRecordId !== binding.offerSourceRecordId) corrupt.push("offerSourceRecordId");
+    if (
+      binding.offerSourceRecordVersion !== acceptance.standingVersion &&
+      binding.offerSourceRecordVersion !== acceptance.promotionVersion
+    ) {
+      corrupt.push("offerSourceRecordVersion");
+    }
+  }
+  if (
+    authorization === null ||
+    authorization.internalProductId !== sourceVersion.internalProductId ||
+    authorization.promoterParticipantId !== sourceVersion.controllingParticipantId
+  ) {
+    corrupt.push("promotionAuthorizationId");
+  }
+  if (corrupt.length > 0) throw new CorruptTransactionRecordError(corrupt);
+
+  const row = await db.offerSourceRecordVersionRow.findUnique({
+    where: {
+      offerSourceRecordId_sourceRecordVersion: {
+        offerSourceRecordId: binding.offerSourceRecordId,
+        sourceRecordVersion: binding.offerSourceRecordVersion,
+      },
+    },
+  });
+  if (row === null) throw new OfferSourceVersionNotFoundError();
+  const offer = offerVersionRowToSourceVersion(row);
+  if (offer.internalProductId !== sourceVersion.internalProductId) {
+    throw new CorruptTransactionRecordError(["offerSourceRecordId"]);
+  }
+  if (offer.terms.price.type !== "PAID") throw new TransactionEconomicsRefusedError("OFFER_NOT_PAID");
+  return {
+    internalOfferId: offer.internalOfferId,
+    wholesalePriceMinorUnits: offer.terms.price.wholesalePriceMinorUnits,
+    wholesalePriceCurrency: offer.terms.price.wholesalePriceCurrency,
+    sellerFundedCommissionMinorUnits: offer.economics.calculatedCommissionMinorUnits,
+  };
+}
+
 // — Computing the economics —
 
 /**
@@ -295,9 +377,14 @@ async function computeEconomics(
     policy: MonacadoWholesaleAcquisitionPolicy;
     currency: string;
     occurredAt: string;
+    /** Phase 1.46 — required for, and only for, a package-based promoted sale. */
+    promotedBinding?: PromotedSaleBinding;
   },
 ): Promise<{ commercialRetailAmountMinorUnits: number; economics: TransactionEconomics }> {
   const placement = input.sourceVersion.placement;
+  if (input.promotedBinding !== undefined && !isPackagePromotedPlacement(placement)) {
+    throw new InvalidTransactionAccountingInputError(["promotedBinding"]);
+  }
 
   /* Phase 1.34 — an unpriced placement has no commercial basis, so there is no
      snapshot to write. Refused with the calculators' own bounded vocabulary
@@ -335,10 +422,42 @@ async function computeEconomics(
       };
     }
 
-    /* Phase 1.45 — a package-based promoted Listing names no Offer version; the
-       transaction phase binds the governing version from
-       `readPromotedListingCommerceIn`. Until then there is no promoted snapshot
-       to write for one, and checkout refuses it before this is reached. */
+    /* Phase 1.46 — a package-based promoted Listing names no Offer version; the
+       Order froze the governing one at checkout. Without that binding there is
+       no promoted snapshot to write, and none is invented. */
+    if (isPackagePromotedPlacement(placement)) {
+      if (input.promotedBinding === undefined) {
+        throw new TransactionEconomicsRefusedError("PROMOTED_COMMERCE_NOT_ENABLED");
+      }
+      const terms = await readPromotedBindingTerms(db, input.sourceVersion, input.promotedBinding);
+      const retail = placement.retail.retailPriceMinorUnits;
+      const result = calculatePromotedListingEconomics({
+        commercialRetailPriceMinorUnits: retail,
+        currency: input.currency,
+        offerWholesalePriceMinorUnits: terms.wholesalePriceMinorUnits,
+        offerWholesalePriceCurrency: terms.wholesalePriceCurrency,
+        sellerFundedCommissionMinorUnits: terms.sellerFundedCommissionMinorUnits,
+        policy: input.policy,
+      });
+      return {
+        commercialRetailAmountMinorUnits: retail,
+        economics: {
+          transactionType: "PROMOTED",
+          offerBinding: {
+            internalOfferId: terms.internalOfferId,
+            offerSourceRecordId: input.promotedBinding.offerSourceRecordId,
+            offerSourceRecordVersion: input.promotedBinding.offerSourceRecordVersion,
+          },
+          monacadoRetainedAmountMinorUnits: result.monacadoRetainedAmountMinorUnits,
+          morWholesaleAcquisitionAmountMinorUnits: result.morWholesaleAcquisitionAmountMinorUnits,
+          offerWholesalePriceMinorUnits: result.offerWholesalePriceMinorUnits,
+          sellerFundedCommissionMinorUnits: result.sellerFundedCommissionMinorUnits,
+          promoterRetailSpreadMinorUnits: result.promoterRetailSpreadMinorUnits,
+          promoterNetProceedsMinorUnits: result.promoterNetProceedsMinorUnits,
+          sellerProceedsMinorUnits: result.sellerProceedsMinorUnits,
+        },
+      };
+    }
     if (!isLegacyPromotedPlacement(placement)) {
       throw new TransactionEconomicsRefusedError("PROMOTED_COMMERCE_NOT_ENABLED");
     }
@@ -472,6 +591,7 @@ export async function recordTransactionEconomicSnapshotInTx(
     policy,
     currency: v.currency,
     occurredAt: v.occurredAt,
+    ...(v.promotedBinding === undefined ? {} : { promotedBinding: v.promotedBinding }),
   });
   requireReconciled({ commercialRetailAmountMinorUnits, economics });
 
@@ -493,6 +613,9 @@ export async function recordTransactionEconomicSnapshotInTx(
       otherPassThroughAmountMinorUnits: BigInt(v.otherPassThroughAmountMinorUnits),
       occurredAt: new Date(v.occurredAt),
       recordedAt: new Date(v.recordedAt),
+      /* Phase 1.46 — which governed authority this promoted sale ran under. */
+      promotionAuthorizationId: v.promotedBinding?.promotionAuthorizationId ?? null,
+      promotionOfferAcceptanceId: v.promotedBinding?.promotionOfferAcceptanceId ?? null,
     },
   });
 
@@ -575,11 +698,31 @@ export async function reconstructTransactionEconomics(
       snapshot.policyBinding.policyVersion,
     );
 
+    /* Phase 1.46 — a package-based promoted snapshot recomputes from the
+       authority it recorded plus the Offer version its economics name. */
+    const authority = await db.transactionEconomicSnapshot.findUniqueOrThrow({
+      where: { id: snapshotId },
+      select: { promotionAuthorizationId: true, promotionOfferAcceptanceId: true },
+    });
+    const stored = snapshot.economics;
+    const promotedBinding =
+      authority.promotionAuthorizationId !== null &&
+      authority.promotionOfferAcceptanceId !== null &&
+      stored.transactionType === "PROMOTED"
+        ? {
+            promotionAuthorizationId: authority.promotionAuthorizationId,
+            promotionOfferAcceptanceId: authority.promotionOfferAcceptanceId,
+            offerSourceRecordId: stored.offerBinding.offerSourceRecordId,
+            offerSourceRecordVersion: stored.offerBinding.offerSourceRecordVersion,
+          }
+        : undefined;
+
     const recomputed = await computeEconomics(db, {
       sourceVersion,
       policy,
       currency: snapshot.currency,
       occurredAt: snapshot.occurredAt,
+      ...(promotedBinding === undefined ? {} : { promotedBinding }),
     });
 
     const drifted: string[] = [];
@@ -589,7 +732,6 @@ export async function reconstructTransactionEconomics(
       drifted.push("commercialRetailAmountMinorUnits");
     }
 
-    const stored = snapshot.economics;
     const fresh = recomputed.economics;
     if (fresh.transactionType !== stored.transactionType) {
       drifted.push("transactionType");

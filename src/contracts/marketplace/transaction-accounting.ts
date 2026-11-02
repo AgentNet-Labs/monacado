@@ -71,7 +71,7 @@ import {
   INTERNAL_OFFER_ID_RE,
   TRANSACTION_ECONOMIC_SNAPSHOT_ID_RE,
 } from "./identity";
-import { CurrencyCode, MAX_MINOR_UNIT_AMOUNT } from "./offer-source";
+import { CurrencyCode, MAX_MINOR_UNIT_AMOUNT, OfferSourceRecordId } from "./offer-source";
 import { PaymentProvider } from "./payment-account";
 
 // — Identity —
@@ -614,6 +614,24 @@ export const RecordTransactionEconomicSnapshotInput = z.strictObject({
   /** The instant of sale. Prices the effective seller retail price. */
   occurredAt: z.iso.datetime(),
   recordedAt: z.iso.datetime(),
+
+  /**
+   * Phase 1.46 — a package-based promoted sale only, and REQUIRED for one. A
+   * package-based promoted Listing names no Offer, so its governing terms
+   * cannot be read from the Listing: the Order froze, at checkout, exactly
+   * which Promotion Authorization, acceptance, and Offer source version the
+   * promoted commerce gate passed under. The economics are recomputed from
+   * those immutable rows, and the two authority ids are recorded on the
+   * snapshot. Absent for every other sale.
+   */
+  promotedBinding: z
+    .strictObject({
+      promotionAuthorizationId: z.string().min(1).max(191),
+      promotionOfferAcceptanceId: z.string().min(1).max(191),
+      offerSourceRecordId: OfferSourceRecordId,
+      offerSourceRecordVersion: SourceVersionRef,
+    })
+    .optional(),
 });
 export type RecordTransactionEconomicSnapshotInput = z.infer<
   typeof RecordTransactionEconomicSnapshotInput

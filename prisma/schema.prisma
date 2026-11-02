@@ -341,6 +341,10 @@ model PromotionAuthorization {
   /// A new cycle starts with none: nothing carries forward. RESTRICT.
   offerAcceptances PromotionOfferAcceptance[]
 
+  /// Promoted sales placed and recorded under this cycle (Phase 1.46). RESTRICT.
+  orders               Order[]
+  transactionSnapshots TransactionEconomicSnapshot[]
+
   @@unique([currentForProductId, currentForPromoterParticipantId])
   @@unique([internalProductId, promoterParticipantId, cycleNumber])
   @@index([promoterParticipantId])
@@ -438,6 +442,10 @@ model PromotionOfferAcceptance {
   /// built on another S, or a STANDING row named as a promotion. NULL
   /// `promotionVersion` passes under MySQL's MATCH SIMPLE.
   promotion     OfferSourceRecordVersionRow? @relation("AcceptedPromotionVersion", fields: [offerSourceRecordId, promotionVersion, standingVersion], references: [offerSourceRecordId, sourceRecordVersion, basisStandingVersion], onDelete: Restrict, onUpdate: Restrict)
+
+  /// Promoted sales this acceptance covered (Phase 1.46). RESTRICT.
+  orders               Order[]
+  transactionSnapshots TransactionEconomicSnapshot[]
 
   /// One row per package per cycle: a repeat is the same undertaking.
   @@unique([authorizationId, offerSourceRecordId, standingVersion, promotionVersionKey])
@@ -2754,6 +2762,10 @@ model OfferSourceRecordVersionRow {
   standingAcceptances  PromotionOfferAcceptance[] @relation("AcceptedStandingVersion")
   promotionAcceptances PromotionOfferAcceptance[] @relation("AcceptedPromotionVersion")
 
+  /// Package-based promoted Orders whose governing terms were THIS version
+  /// (Phase 1.46). RESTRICT.
+  promotedOrders Order[]
+
   /// One row per (source record, version label) — a version label is minted
   /// once. This is the durable key a 0M.7 Listing binds an exact Offer version by.
   @@unique([offerSourceRecordId, sourceRecordVersion])
@@ -3208,6 +3220,17 @@ model TransactionEconomicSnapshot {
   /// spread + commission. The authoritative promoter figure.
   promoterNetProceedsMinorUnits    BigInt?
 
+  // — Promoted authority (Phase 1.46) —
+  //
+  // A package-based promoted sale binds its Seller terms through the Offer
+  // columns above (the exact governing version) and its AUTHORITY here: the
+  // Promotion Authorization cycle and the acceptance that covered those terms,
+  // copied from the Order placed under them. NULL on seller-direct and legacy
+  // promoted sales. The accepted versions live on the acceptance row and are not
+  // restated.
+  promotionAuthorizationId   String? @db.VarChar(191)
+  promotionOfferAcceptanceId String? @db.VarChar(191)
+
   // — Outside the commercial economics (business model §G/§H) —
   //
   // Amounts only. Recorded so a future checkout can state the buyer's total;
@@ -3226,13 +3249,15 @@ model TransactionEconomicSnapshot {
 
   // RESTRICT everywhere: a snapshot is the record every party's entitlement
   // reconciles against. Nothing it binds to may be deleted beneath it.
-  listing          Listing                       @relation(fields: [internalListingId], references: [internalListingId], onDelete: Restrict)
-  listingVersion   ListingSourceRecordVersionRow @relation(fields: [listingSourceRecordId, listingSourceRecordVersion], references: [listingSourceRecordId, sourceRecordVersion], onDelete: Restrict)
-  offer            Offer?                        @relation(fields: [internalOfferId], references: [internalOfferId], onDelete: Restrict)
+  listing                  Listing                       @relation(fields: [internalListingId], references: [internalListingId], onDelete: Restrict)
+  listingVersion           ListingSourceRecordVersionRow @relation(fields: [listingSourceRecordId, listingSourceRecordVersion], references: [listingSourceRecordId, sourceRecordVersion], onDelete: Restrict)
+  offer                    Offer?                        @relation(fields: [internalOfferId], references: [internalOfferId], onDelete: Restrict)
   /// Both columns NULL for SELLER_DIRECT; MySQL MATCH SIMPLE lets a composite FK
   /// pass when any column is NULL, so the branch with no Offer is unconstrained.
-  offerVersion     OfferSourceRecordVersionRow?  @relation(fields: [offerSourceRecordId, offerSourceRecordVersion], references: [offerSourceRecordId, sourceRecordVersion], onDelete: Restrict)
-  policyVersionRow CommercialPolicyVersionRow    @relation(fields: [policyId, policyVersion], references: [policyId, policyVersion], onDelete: Restrict)
+  offerVersion             OfferSourceRecordVersionRow?  @relation(fields: [offerSourceRecordId, offerSourceRecordVersion], references: [offerSourceRecordId, sourceRecordVersion], onDelete: Restrict)
+  policyVersionRow         CommercialPolicyVersionRow    @relation(fields: [policyId, policyVersion], references: [policyId, policyVersion], onDelete: Restrict)
+  promotionAuthorization   PromotionAuthorization?       @relation(fields: [promotionAuthorizationId], references: [id], onDelete: Restrict)
+  promotionOfferAcceptance PromotionOfferAcceptance?     @relation(fields: [promotionOfferAcceptanceId], references: [id], onDelete: Restrict)
 
   /// The Order this sale completed (0M.9) — the ADDITIVE NULLABLE COLUMN 0M.T1
   /// anticipated, so binding an Order was a migration rather than a rewrite.
@@ -3452,6 +3477,30 @@ model Order {
   /// PROMOTED only; NULL for seller-direct, where no promoter exists.
   promoterParticipantId String? @db.VarChar(191)
 
+  // — Promoted authority, frozen at placement (Phase 1.46) —
+  //
+  // A package-based promoted Listing names no Offer: who may sell it, under which
+  // Seller terms, is DERIVED at the checkout instant by
+  // `readPromotedListingCommerceIn` (purpose TRANSACTION) from current-state
+  // reads. The snapshot is written later, when the payment confirms, and those
+  // reads are not historical — so the binding that authorized THIS sale is
+  // recorded here when the Order is placed, and the snapshot copies it. NULL on
+  // seller-direct and legacy promoted Orders. No terms or amounts are copied:
+  // each column names an immutable row that already carries them.
+  // TRANSACTION EVIDENCE ONLY (owner ruling, Phase 1.46): never read as current
+  // marketplace authority, and never a substitute for the Promotion
+  // Authorization, the acceptance, Offer authority, or the eligibility decided
+  // before placement. Read only by payment completion, which uses it instead of
+  // re-resolving authority after the Buyer has paid.
+  /// The APPROVED Promotion Authorization cycle in force at placement.
+  promotionAuthorizationId         String? @db.VarChar(191)
+  /// The PromotionOfferAcceptance that covered the governing terms at placement.
+  promotionOfferAcceptanceId       String? @db.VarChar(191)
+  /// The exact Offer version whose wholesale and commission governed (the running
+  /// promotion's, else the standing version's).
+  promotedOfferSourceRecordId      String? @db.VarChar(191)
+  promotedOfferSourceRecordVersion String? @db.VarChar(64)
+
   // — The quote. NOT economics. —
   //
   // What the buyer was TOLD they would be charged, named `quoted*` so nobody can
@@ -3500,6 +3549,9 @@ model Order {
   product                      Product                       @relation(fields: [internalProductId], references: [internalProductId], onDelete: Restrict)
   seller                       MarketplaceParticipant        @relation("OrderSeller", fields: [sellerParticipantId], references: [id], onDelete: Restrict)
   promoter                     MarketplaceParticipant?       @relation("OrderPromoter", fields: [promoterParticipantId], references: [id], onDelete: Restrict)
+  promotionAuthorization       PromotionAuthorization?       @relation(fields: [promotionAuthorizationId], references: [id], onDelete: Restrict)
+  promotionOfferAcceptance     PromotionOfferAcceptance?     @relation(fields: [promotionOfferAcceptanceId], references: [id], onDelete: Restrict)
+  promotedOfferVersion         OfferSourceRecordVersionRow?  @relation(fields: [promotedOfferSourceRecordId, promotedOfferSourceRecordVersion], references: [offerSourceRecordId, sourceRecordVersion], onDelete: Restrict)
 
   /// The economics of this sale, when it completed. At most one (0M.T1).
   ///

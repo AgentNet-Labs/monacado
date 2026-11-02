@@ -256,6 +256,7 @@ describe("/account presentation", () => {
             visibility: "PRIVATE",
             canEditPresentation: true,
             canPlaceProduct: true,
+            canGoLive: false,
           },
         ],
       }),
@@ -268,6 +269,28 @@ describe("/account presentation", () => {
     expect(html).not.toContain('name="publicHandle"');
     expect(html).toContain("Additional storefronts require an upgrade.");
     expect(html).not.toContain("mon:");
+  });
+
+  it("offers Go live only where the page says the governor may try (Phase 1.46)", async () => {
+    const storefront = {
+      displayName: "Ada's Workshop",
+      tagline: null,
+      summary: null,
+      publicHandle: "ada-workshop",
+      lifecycle: "DRAFT" as const,
+      visibility: "PRIVATE" as const,
+      canEditPresentation: true,
+      canPlaceProduct: true,
+    };
+    const offered = await renderSignedIn(
+      home({ marketplace: DRAFT_SELLER, storefronts: [{ ...storefront, canGoLive: true }] }),
+    );
+    expect(offered).toMatch(/<button[^>]*>Go live<\/button>/);
+    expect(offered).not.toContain("mon:");
+    const withheld = await renderSignedIn(
+      home({ marketplace: DRAFT_SELLER, storefronts: [{ ...storefront, canGoLive: false }] }),
+    );
+    expect(withheld).not.toContain(">Go live<");
   });
 
   it("shows tagline and summary, and an editor for name, tagline, and summary — never the handle", async () => {
@@ -285,6 +308,7 @@ describe("/account presentation", () => {
             visibility: "PRIVATE",
             canEditPresentation: true,
             canPlaceProduct: true,
+            canGoLive: false,
           },
         ],
       }),
@@ -321,6 +345,7 @@ describe("/account presentation", () => {
             visibility: "PRIVATE",
             canEditPresentation: false,
             canPlaceProduct: false,
+            canGoLive: false,
           },
         ],
       }),
@@ -954,6 +979,7 @@ describe("placement presentation", () => {
     visibility: "PRIVATE" as const,
     canEditPresentation: true,
     canPlaceProduct: true,
+    canGoLive: false,
   };
 
   it("offers the form with a safe selector per Product and per Storefront", async () => {
@@ -1201,6 +1227,7 @@ describe("placement withdrawal presentation", () => {
     visibility: "PRIVATE" as const,
     canEditPresentation: true,
     canPlaceProduct: true,
+    canGoLive: false,
   };
 
   const placed = (overrides: Record<string, unknown> = {}) =>
@@ -1420,6 +1447,7 @@ describe("placement pricing presentation", () => {
     visibility: "PRIVATE" as const,
     canEditPresentation: true,
     canPlaceProduct: true,
+    canGoLive: false,
   };
 
   const placed = (

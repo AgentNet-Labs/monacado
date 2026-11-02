@@ -779,12 +779,19 @@ export interface PromoterListingView {
   /** Economics under the Seller terms in force, when there are any. */
   economics: PromoterRetailEconomicsView | null;
   upcomingPromotion: { effectiveFrom: string; economics: PromoterRetailEconomicsView | null } | null;
+  /**
+   * Phase 1.46 — where a buyer reaches this Listing, for an ACTIVE one only:
+   * the existing buyer page, `/listings/{internalListingId}`. That page and
+   * its checkout form already address a Listing by this id, so the path
+   * discloses nothing a buyer does not already see; `null` otherwise.
+   */
+  buyerPath: string | null;
 }
 
 /**
  * The Promoter's non-terminal promoted Listings for one Product. Derived at
- * `at`; writes nothing. No internal id, no Seller identity, no acceptance or
- * authorization id.
+ * `at`; writes nothing. No Seller identity, no acceptance or authorization
+ * id, and no internal id except inside an ACTIVE Listing's `buyerPath`.
  */
 export async function readPromoterListingsForProductIn(
   tx: Tx,
@@ -826,9 +833,59 @@ export async function readPromoterListingsForProductIn(
               effectiveFrom: commerce.upcomingPromotion.effectiveFrom,
               economics: promoterEconomicsView(commerce.upcomingPromotion.economics),
             },
+      buyerPath:
+        commerce.listing.lifecycle === "ACTIVE"
+          ? `/listings/${encodeURIComponent(commerce.listing.internalListingId)}`
+          : null,
     });
   }
   return out;
+}
+
+/** The Promoter's "Your listing" panel for one Product (Phase 1.46). References only. */
+export interface PromoterListingPanel {
+  /** Storefronts the Promoter may place this Product into now: controlled, not CLOSED, not already holding it. */
+  storefrontHandles: string[];
+  listings: PromoterListingView[];
+}
+
+/**
+ * Everything `/promote/{productRef}` needs to show and act on the viewer's
+ * own promoted Listings for that Product. Reads only; `null` for an unknown
+ * Product. The policy is the configured checkout policy, so the economics shown
+ * are the ones a sale would use.
+ */
+export async function readPromoterListingPanelIn(
+  tx: Tx,
+  input: { productRef: string; promoterParticipantId: string; at: string; policy: MonacadoWholesaleAcquisitionPolicy | null },
+): Promise<PromoterListingPanel | null> {
+  const product = await tx.product.findUnique({
+    where: { productRef: input.productRef },
+    select: { internalProductId: true },
+  });
+  if (product === null) return null;
+  const listings = await readPromoterListingsForProductIn(tx, {
+    internalProductId: product.internalProductId,
+    promoterParticipantId: input.promoterParticipantId,
+    at: input.at,
+    policy: input.policy,
+  });
+  const storefronts = await tx.storefront.findMany({
+    where: {
+      lifecycle: { not: "CLOSED" },
+      OR: [
+        { ownerParticipantId: input.promoterParticipantId },
+        { governanceAssignments: { some: { participantId: input.promoterParticipantId, status: "ACTIVE" } } },
+      ],
+    },
+    select: { publicHandle: true },
+    orderBy: { publicHandle: "asc" },
+  });
+  const placed = new Set(listings.map((l) => l.storefrontHandle));
+  return {
+    storefrontHandles: storefronts.map((s) => s.publicHandle).filter((h) => !placed.has(h)),
+    listings,
+  };
 }
 
 /** Re-export so callers reading a version row need not reach into the mapper. */

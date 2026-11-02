@@ -284,6 +284,13 @@ export async function placeOrder(
         transactionType: prepared.transactionType,
         sellerParticipantId: prepared.sellerParticipantId,
         promoterParticipantId: prepared.promoterParticipantId,
+        /* Phase 1.46 — the governed authority a package-based promoted sale was
+           gated under, frozen here: completion recomputes the economics from
+           exactly these immutable rows rather than re-reading current state. */
+        promotionAuthorizationId: prepared.promotedBinding?.promotionAuthorizationId ?? null,
+        promotionOfferAcceptanceId: prepared.promotedBinding?.promotionOfferAcceptanceId ?? null,
+        promotedOfferSourceRecordId: prepared.promotedBinding?.offerSourceRecordId ?? null,
+        promotedOfferSourceRecordVersion: prepared.promotedBinding?.offerSourceRecordVersion ?? null,
         currency: prepared.quote.currency,
         quotedCommercialRetailAmountMinorUnits: BigInt(
           prepared.quote.quotedCommercialRetailAmountMinorUnits,
@@ -616,7 +623,33 @@ async function recordCompletedSale(
       /* 0M.T1's service, given a transaction client so its two writes join this
          one. It computes the economics from the EXACT bound versions and refuses
          an unbalanced snapshot before any row exists. */
+      /* Phase 1.46 — a package-based promoted Order carries the governed
+         authority it was gated under. Read from the row rather than the record:
+         it is a binding for this write, not part of the Order's public shape. */
+      const binding = await tx.order.findUniqueOrThrow({
+        where: { id: order.orderId },
+        select: {
+          promotionAuthorizationId: true,
+          promotionOfferAcceptanceId: true,
+          promotedOfferSourceRecordId: true,
+          promotedOfferSourceRecordVersion: true,
+        },
+      });
+      const promotedBinding =
+        binding.promotionAuthorizationId === null ||
+        binding.promotionOfferAcceptanceId === null ||
+        binding.promotedOfferSourceRecordId === null ||
+        binding.promotedOfferSourceRecordVersion === null
+          ? undefined
+          : {
+              promotionAuthorizationId: binding.promotionAuthorizationId,
+              promotionOfferAcceptanceId: binding.promotionOfferAcceptanceId,
+              offerSourceRecordId: binding.promotedOfferSourceRecordId,
+              offerSourceRecordVersion: binding.promotedOfferSourceRecordVersion,
+            };
+
       const { snapshot } = await recordTransactionEconomicSnapshotInTx(tx, {
+        ...(promotedBinding === undefined ? {} : { promotedBinding }),
         internalListingId: order.internalListingId,
         listingSourceRecordVersion: order.listingSourceRecordVersion,
         policyId: order.policyId,

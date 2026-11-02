@@ -268,16 +268,30 @@ describe.skipIf(!RUN)("first-operator governance (disposable MySQL)", () => {
       expect(await activeHolders(CPOL)).toEqual([operator]);
     });
 
-    it("grants nothing outside the two policy-governance capabilities — not even entitlement:govern", async () => {
+    it("grants nothing outside the governed surface — not even entitlement:govern", async () => {
       const operator = await governor();
       const other = await seedAccount();
-      for (const capability of [META, "participant:restrict", "refund:initiate", "risk-policy:govern", "nope"]) {
+      for (const capability of [META, "participant:restrict", "refund:initiate", "nope"]) {
         expect(await refusal(grant(operator, other, capability))).toBe("CAPABILITY_NOT_GOVERNABLE");
       }
       for (const capability of ["participant:restrict", "refund:initiate", "nope"]) {
         expect(await refusal(revoke(operator, other, capability))).toBe("CAPABILITY_NOT_GOVERNABLE");
       }
       expect(await db.accountEntitlementAct.count()).toBe(1);
+    });
+
+    it("grants and revokes the Phase 1.46 operational capabilities to a separate staff account", async () => {
+      const operator = await governor();
+      const staff = await seedAccount();
+      const operational = ["product:tax-classify", "participant:commerce-approve", "risk-policy:govern"];
+      for (const capability of operational) await grant(operator, staff, capability);
+      for (const capability of operational) expect(await activeHolders(capability)).toEqual([staff]);
+      await revoke(operator, staff, "risk-policy:govern");
+      expect(await activeHolders("risk-policy:govern")).toEqual([]);
+      expect((await listEntitlementActs(staff, { db })).map((a) => `${a.action}:${a.capability}`)).toEqual([
+        ...operational.map((c) => `GRANT:${c}`),
+        "REVOKE:risk-policy:govern",
+      ]);
     });
 
     it("refuses an actor without an active entitlement:govern", async () => {

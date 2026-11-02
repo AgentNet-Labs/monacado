@@ -11,9 +11,10 @@
  *   - DERIVATION: a Seller revision, a promotion starting and ending, a
  *     revocation, a cancellation, and a re-approval write nothing to the
  *     Listing — effectiveness is re-derived.
- *   - CLOSURE: the retired Offer-copying path refuses; checkout refuses every
- *     promoted Listing with PROMOTED_COMMERCE_NOT_ENABLED; the schema refuses a
- *     legacy binding on the new kind.
+ *   - CLOSURE: the retired Offer-copying path refuses; the schema refuses a
+ *     legacy binding on the new kind. (Phase 1.46 opened checkout for the
+ *     package-based kind; `promoted-sale.integration.test.ts` covers the sale,
+ *     and the legacy kind stays refused in `buyer-checkout-and-order`.)
  *   - ROUTES and PRIVACY: bounded codes; references only.
  */
 
@@ -687,27 +688,32 @@ describeDb("Phase 1.45 — promoted Listing integration", () => {
       expect(await db.listing.count({ where: { storefrontId: s.shop.id } })).toBe(0);
     });
 
-    it("checkout refuses an ACTIVE, fully eligible promoted Listing and writes no Order", async () => {
+    it("checkout prices an ACTIVE, fully eligible package-based Listing and binds its authority (Phase 1.46)", async () => {
       const s = await scene();
+      const policyId = await configuredPolicy();
       const active = await activate(await draft(s, usd(5_000)), s.promoter);
       const orders = await db.order.count();
-      const refused = await rejection(
-        prepareCheckout(
-          {
-            internalListingId: active.record.internalListingId,
-            buyerAccountId: null,
-            taxAmountMinorUnits: 0,
-            shippingAmountMinorUnits: 0,
-            otherPassThroughAmountMinorUnits: 0,
-            currency: "USD",
-            productAvailability: "available",
-            placedAt: next(),
-          } as never,
-          "mon:policy:unused",
-          { db },
-        ),
+      const prepared = await prepareCheckout(
+        {
+          internalListingId: active.record.internalListingId,
+          buyerAccountId: null,
+          taxAmountMinorUnits: 0,
+          shippingAmountMinorUnits: 0,
+          otherPassThroughAmountMinorUnits: 0,
+          currency: "USD",
+          productAvailability: "available",
+          placedAt: next(),
+        } as never,
+        policyId,
+        { db },
       );
-      expect(refused).toMatchObject({ blockingReasons: expect.arrayContaining(["PROMOTED_COMMERCE_NOT_ENABLED"]) });
+      expect(prepared).toMatchObject({
+        transactionType: "PROMOTED",
+        sellerParticipantId: s.item.seller.participantId,
+        promoterParticipantId: s.promoter.participantId,
+        promotedBinding: { offerSourceRecordVersion: await standingVersion(s.item) },
+      });
+      /* Preparation writes nothing. */
       expect(await db.order.count()).toBe(orders);
     });
 

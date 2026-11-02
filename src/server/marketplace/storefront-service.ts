@@ -38,6 +38,7 @@ import {
   AssignStorefrontGovernanceInput,
   CreateDraftStorefrontInput,
   EditStorefrontPresentationInput,
+  GoLiveStorefrontInput,
   INCLUDED_STOREFRONT_ALLOWANCE,
   OpenOwnedDraftStorefrontInput,
   SetGovernanceAssignmentStatusInput,
@@ -1124,6 +1125,61 @@ export async function editStorefrontPresentation(
       internalStorefrontId: stable.internalStorefrontId,
       sourceRecordVersion,
       presentation: data.presentation,
+      actingAccountId: data.actingAccountId,
+      now: data.now,
+    },
+    deps,
+  );
+}
+
+/**
+ * Take a Storefront live — ACTIVE and PUBLIC — through the authoritative
+ * version path (Phase 1.46).
+ *
+ * The smallest owner act that makes a Storefront publicly accessible: resolve
+ * by handle, label the next version, and delegate to
+ * `createStorefrontSourceVersion` with the target lifecycle and visibility and
+ * nothing else. Every gate is decided there, unchanged — the active
+ * SUPER_OWNER only, exactly one appointed, the owner admitted and payable, the
+ * owner's commerce approval (go-live) APPROVED, the owner's standing permitting
+ * `storefront:activate`, the owner's address verified, and the actor's own
+ * authoring standing. Presentation, handle, and owner are not passed, so none
+ * can change here.
+ *
+ * A Storefront already ACTIVE and PUBLIC is `NoMaterialChangeError`. Concurrent
+ * attempts are resolved by the version unique index, as for presentation edits.
+ */
+export async function goLiveStorefront(
+  input: unknown,
+  deps: StorefrontServiceDeps = {},
+): Promise<StorefrontSnapshot> {
+  const parsed = GoLiveStorefrontInput.safeParse(input);
+  if (!parsed.success) throw inputError(parsed.error);
+  const data = parsed.data;
+
+  const db = deps.db ?? getPrisma();
+  let stable;
+  try {
+    stable = await db.storefront.findUnique({
+      where: { publicHandle: data.publicHandle },
+      select: { internalStorefrontId: true, currentSourceRecordVersion: true },
+    });
+  } catch (error) {
+    throw new StorefrontPersistenceFailureError("goLiveStorefront", error);
+  }
+  if (stable === null) throw new StorefrontNotFoundError();
+
+  const sourceRecordVersion = nextStorefrontSourceRecordVersion(stable.currentSourceRecordVersion);
+  if (sourceRecordVersion === undefined) {
+    throw new StorefrontPersistenceFailureError("goLiveStorefront:version-label");
+  }
+
+  return await createStorefrontSourceVersion(
+    {
+      internalStorefrontId: stable.internalStorefrontId,
+      sourceRecordVersion,
+      lifecycle: "ACTIVE",
+      visibility: "PUBLIC",
       actingAccountId: data.actingAccountId,
       now: data.now,
     },

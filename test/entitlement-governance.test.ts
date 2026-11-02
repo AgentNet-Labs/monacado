@@ -72,15 +72,17 @@ describe("entitlement governance vocabulary", () => {
     expect(isFirstGrantBootstrapCapability("entitlement:*")).toBe(false);
   });
 
-  it("limits the governed surface to the two policy-governance grants", () => {
-    expect([...ENTITLEMENT_GOVERNED_CAPABILITIES]).toEqual([
+  it("limits the governed surface to the policy-governance and operational grants", () => {
+    const governed = [
       "commercial-policy:govern",
       "marketplace-policy:govern",
-    ]);
+      "product:tax-classify",
+      "participant:commerce-approve",
+      "risk-policy:govern",
+    ];
+    expect([...ENTITLEMENT_GOVERNED_CAPABILITIES]).toEqual(governed);
     for (const capability of ACCOUNT_CAPABILITIES) {
-      expect(isEntitlementGovernedCapability(capability)).toBe(
-        capability === "commercial-policy:govern" || capability === "marketplace-policy:govern",
-      );
+      expect(isEntitlementGovernedCapability(capability)).toBe(governed.includes(capability));
     }
     // In particular, never itself.
     expect(isEntitlementGovernedCapability("entitlement:govern")).toBe(false);

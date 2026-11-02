@@ -104,6 +104,7 @@ import { OfferSellerControls } from "./offer-seller-controls";
 import { PromotionAuthorizationPromoterSection } from "./promotion-authorization-promoter-section";
 import { StorefrontForm } from "./storefront-form";
 import { StorefrontPresentationForm } from "./storefront-presentation-form";
+import { StorefrontGoLiveButton } from "./storefront-go-live-button";
 import { SignOutButton } from "./sign-out-button";
 import { SIGN_OUT_DESTINATION } from "./sign-out-submission";
 /* Server-side only: the exact minor-unit <-> decimal conversion, used here to
@@ -214,6 +215,8 @@ export default async function AccountPage() {
                         />
                       </details>
                     ) : null}
+                    {/* Phase 1.46: ACTIVE and PUBLIC, decided by the domain. */}
+                    {s.canGoLive ? <StorefrontGoLiveButton publicHandle={s.publicHandle} /> : null}
                   </li>
                 ))}
               </ul>

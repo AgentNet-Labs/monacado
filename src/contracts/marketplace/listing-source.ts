@@ -1188,12 +1188,20 @@ export const PARTICIPANT_STANDING_BLOCKING_REASONS = [
  * Order-preserving and total: every input code is either kept or dropped, and
  * nothing is rewritten into a different code. A caller that shows the result
  * discloses no participant standing.
+ *
+ * Phase 1.46 — an ALLOWLIST: only `LISTING_BLOCKING_REASONS`, less the two that
+ * describe standing. Promoted checkout now surfaces the package-derived gate's
+ * blockers too (`PROMOTED_LISTING_BLOCKERS`), and many of those describe a
+ * party — a suspended or unpaid Promoter, a Seller not permitted to transact,
+ * an authorization not approved. A denylist would have let every new code
+ * through by default; anything not known to describe the Listing is withheld.
  */
 export function publicSafeBlockingReasons(
   reasons: readonly string[],
 ): readonly string[] {
   const withheld: readonly string[] = PARTICIPANT_STANDING_BLOCKING_REASONS;
-  return reasons.filter((r) => !withheld.includes(r));
+  const listingLevel: readonly string[] = LISTING_BLOCKING_REASONS;
+  return reasons.filter((r) => listingLevel.includes(r) && !withheld.includes(r));
 }
 
 export interface ListingBuyerEligibility {

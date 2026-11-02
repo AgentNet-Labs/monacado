@@ -88,6 +88,7 @@ import {
   createDraftStorefront,
   createStorefrontSourceVersion,
   editStorefrontPresentation,
+  goLiveStorefront,
   openOwnedDraftStorefront,
   setGovernanceAssignmentStatus,
 } from "./storefront-service";
@@ -278,6 +279,22 @@ export async function editStorefrontPresentationAs(
       actingAccountId: actor.accountId,
       now: input.now,
     },
+    deps,
+  );
+}
+
+/**
+ * Take a Storefront live — ACTIVE and PUBLIC — as the acting account (Phase
+ * 1.46). The acting account is the resolved actor's; whether it may is decided
+ * inside the domain.
+ */
+export async function goLiveStorefrontAs(
+  actor: ActingAccount,
+  input: { publicHandle: unknown; now: string },
+  deps: StorefrontServiceDeps = {},
+): Promise<StorefrontSnapshot> {
+  return await goLiveStorefront(
+    { publicHandle: input.publicHandle, actingAccountId: actor.accountId, now: input.now },
     deps,
   );
 }

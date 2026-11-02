@@ -21,6 +21,7 @@ const resolvePageSession = vi.fn();
 const resolvePromotableCatalogAccess = vi.fn();
 const readPromotableCatalogPage = vi.fn();
 const readPromotableCatalogDetail = vi.fn();
+const readPromoterListingPanelIn = vi.fn();
 const redirect = vi.fn((to: string) => {
   throw new Error(`redirect:${to}`);
 });
@@ -34,6 +35,10 @@ vi.mock("../src/server/marketplace/promotable-catalog-read-service", () => ({
   resolvePromotableCatalogAccess,
   readPromotableCatalogPage,
   readPromotableCatalogDetail,
+}));
+vi.mock("../src/server/marketplace/promoted-listing-service", () => ({
+  readPromoterListingPanelIn,
+  resolvePromotedListingPolicy: async () => null,
 }));
 vi.mock("next/headers", () => ({ headers: async () => new Headers({ cookie: "monacado_session=opaque" }) }));
 vi.mock("next/navigation", () => ({
@@ -83,9 +88,16 @@ async function renderDetail(productRef = REF) {
 }
 
 beforeEach(() => {
-  for (const m of [resolvePageSession, resolvePromotableCatalogAccess, readPromotableCatalogPage, readPromotableCatalogDetail]) {
+  for (const m of [
+    resolvePageSession,
+    resolvePromotableCatalogAccess,
+    readPromotableCatalogPage,
+    readPromotableCatalogDetail,
+    readPromoterListingPanelIn,
+  ]) {
     m.mockReset();
   }
+  readPromoterListingPanelIn.mockResolvedValue(null);
   redirect.mockClear();
   notFound.mockClear();
   resolvePageSession.mockResolvedValue({ accountId: "mon:acct:VIEWER" });
@@ -317,5 +329,72 @@ describe("/promote/{productRef}", () => {
     const changed = await renderDetail();
     expect(plain(changed)).toContain("The seller's terms have changed. The new terms need your acceptance.");
     expect(changed).toMatch(/<button[^>]*>Accept standard terms<\/button>/);
+  });
+  it("1.46 — an APPROVED Promoter sees 'Your listing': picker, price, economics, blockers, activate, withdraw, buyer link", async () => {
+    const LISTING_REF = "LISTINGREF000000000000000000000A";
+    const ok = {
+      ok: true as const,
+      monacadoRetainedMinorUnits: 400,
+      promoterNetProceedsMinorUnits: 1500,
+      minimumViableRetailMinorUnits: 4700,
+      currency: "USD",
+    };
+    readPromotableCatalogDetail.mockResolvedValue(detail({ authorization: "APPROVED" }));
+    readPromoterListingPanelIn.mockResolvedValue({
+      storefrontHandles: ["promo-shop"],
+      listings: [
+        {
+          listingRef: LISTING_REF,
+          productRef: REF,
+          storefrontHandle: "draft-shop",
+          lifecycle: "DRAFT",
+          sourceRecordVersion: "2",
+          retail: { retailPriceMinorUnits: 5900, retailPriceCurrency: "USD" },
+          blockers: ["TERMS_NOT_ACCEPTED"],
+          economics: ok,
+          upcomingPromotion: null,
+          buyerPath: null,
+        },
+        {
+          listingRef: "LISTINGREF000000000000000000000B",
+          productRef: REF,
+          storefrontHandle: "live-shop",
+          lifecycle: "ACTIVE",
+          sourceRecordVersion: "3",
+          retail: { retailPriceMinorUnits: 5900, retailPriceCurrency: "USD" },
+          blockers: [],
+          economics: ok,
+          upcomingPromotion: null,
+          buyerPath: "/listings/mon%3Alisting%3ABUYER",
+        },
+      ],
+    });
+    const html = await renderDetail();
+    const t = text(html).replaceAll("&#x27;", "'");
+    expect(t).toContain("Your listing");
+    expect(t).toContain("Monacado keeps");
+    expect(t).toContain("You net");
+    expect(t).toContain("Lowest viable price");
+    expect(t).toContain("$47.00");
+    expect(t).toContain("terms not accepted");
+    expect(html).toMatch(/<option value="promo-shop"/);
+    expect(html).toMatch(/<button[^>]*>Create draft listing<\/button>/);
+    expect(html.match(/>Activate</g)).toHaveLength(1);
+    expect(html.match(/>Withdraw</g)).toHaveLength(2);
+    expect(html).toContain('href="/listings/mon%3Alisting%3ABUYER"');
+    // No Seller proceeds, wholesale-in-the-panel, or listing reference rendered as text.
+    expect(t).not.toMatch(/seller proceeds/i);
+    expect(t).not.toContain(LISTING_REF);
+    expect(readPromoterListingPanelIn).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({ productRef: REF, promoterParticipantId: "mon:mpart:VIEWER" }),
+    );
+  });
+
+  it("1.46 — no panel is read or shown until the authorization is APPROVED", async () => {
+    readPromotableCatalogDetail.mockResolvedValue(detail({ authorization: "REQUESTED" }));
+    const html = await renderDetail();
+    expect(text(html)).not.toContain("Your listing");
+    expect(readPromoterListingPanelIn).not.toHaveBeenCalled();
   });
 });

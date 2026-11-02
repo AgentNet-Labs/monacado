@@ -25,8 +25,8 @@
  *
  *   3. **The governed surface is a closed list, not a wildcard.** An
  *      `entitlement:govern` holder may grant and revoke exactly
- *      `ENTITLEMENT_GOVERNED_CAPABILITIES` — the two policy-governance grants —
- *      and nothing else, not even `entitlement:govern` itself.
+ *      `ENTITLEMENT_GOVERNED_CAPABILITIES` — the policy-governance and (Phase
+ *      1.46) operational grants — and nothing else, not even `entitlement:govern` itself.
  *
  *   4. **The last governor cannot be removed.** With no re-bootstrap and no
  *      emergency path, removing the final `entitlement:govern` holder would be
@@ -66,10 +66,19 @@ export type FirstGrantBootstrapCapability = (typeof FIRST_GRANT_BOOTSTRAP_CAPABI
  *
  * Widening this list widens what the meta-capability can hand out, so each
  * addition is a governance decision, not a convenience.
+ *
+ * Phase 1.46 (owner ruling) adds the three operational grants a first sale
+ * needs — Product tax classification, participant commerce approval, and risk
+ * policy governance — to be held by a separate operational staff account. Each
+ * keeps its own self-action rule where it has one; this list decides only who
+ * may be handed the grant.
  */
 export const ENTITLEMENT_GOVERNED_CAPABILITIES = [
   "commercial-policy:govern",
   "marketplace-policy:govern",
+  "product:tax-classify",
+  "participant:commerce-approve",
+  "risk-policy:govern",
 ] as const satisfies readonly AccountCapability[];
 export type EntitlementGovernedCapability = (typeof ENTITLEMENT_GOVERNED_CAPABILITIES)[number];
 

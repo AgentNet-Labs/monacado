@@ -69,6 +69,7 @@ import { versionRowToSourceVersion as offerVersionRowToSourceVersion } from "./o
 import { readOfferLifecycleBySourceRecordIn } from "./offer-service";
 import type { OfferLifecycleState } from "../../contracts/marketplace/offer-source";
 import { resolveCommerceApproval } from "./participant-commerce-approval-service";
+import { readPromotedListingCommerceIn } from "./promoted-listing-service";
 import {
   InvalidOrderInputError,
   ListingNotFoundError,
@@ -113,10 +114,28 @@ export interface PreparedCheckout {
   sellerParticipantId: string;
   /** Promoted only. `null` on a seller-direct checkout. */
   promoterParticipantId: string | null;
+  /**
+   * Phase 1.46 — a package-based promoted sale only: exactly which governed
+   * authority the promoted commerce gate passed under at the checkout instant.
+   * Frozen onto the Order, because every source it was derived from is a
+   * current-state read that will have moved on by the time payment lands.
+   * `null` on a seller-direct checkout.
+   */
+  promotedBinding: PromotedSaleBinding | null;
 
   quote: OrderQuote;
   /** Derived from the quote's four amounts, never stored. */
   buyerTotalMinorUnits: number;
+}
+
+/** The governed authority a package-based promoted sale was gated under. */
+export interface PromotedSaleBinding {
+  promotionAuthorizationId: string;
+  promotionOfferAcceptanceId: string;
+  /** The Offer source version whose wholesale and commission governed. */
+  offerSourceRecordId: string;
+  offerSourceRecordVersion: string;
+  internalOfferId: string;
 }
 
 function inputError(error: {
@@ -161,9 +180,9 @@ export async function resolveSaleCounterparties(
     };
   }
 
-  /* Phase 1.45 — a package-based promoted Listing names no Offer; its Seller is
-     derived by `readPromotedListingCommerceIn`, which checkout does not consult
-     yet. Unreachable: `requirePurchasable` refuses every promoted Listing first. */
+  /* A package-based promoted Listing names no Offer; its Seller is derived by
+     `readPromotedListingCommerceIn`, and `prepareCheckout` takes it from there
+     (Phase 1.46). This resolver serves only the legacy shape. */
   if (!isLegacyPromotedPlacement(placement)) throw new SellerNotResolvableError();
   const dependency = placement.offerDependency;
   const offerRow = await tx.offerSourceRecordVersionRow.findUnique({
@@ -314,12 +333,13 @@ async function requirePurchasable(
       ? { upstreamReviewState: placement.upstreamReviewState }
       : {}),
     ...(isPackagePromotedPlacement(placement) ? { promotedTermsBasis: placement.termsBasis } : {}),
-    /* Phase 1.45 — promoted commerce is CLOSED at checkout, for both shapes. A
-       legacy Listing carries no Promotion Authorization or acceptance and can
-       never satisfy Contract §16.3(4) or (7); a package-based one waits for the
-       transaction phase to consume `readPromotedListingCommerceIn`. Reported
-       with every other reason, so the refusal stays a complete answer. */
-    promotedCommerceEnabled: false,
+    /* Phase 1.46 — promoted commerce opens for a package-based Listing only;
+       `prepareCheckout` then asks `readPromotedListingCommerceIn` for its terms,
+       authority, and economics. A legacy Listing carries no Promotion
+       Authorization or acceptance and can never satisfy Contract §16.3(4) or
+       (7), so it stays CLOSED — reported with every other reason, so the refusal
+       stays a complete answer. */
+    promotedCommerceEnabled: isPackagePromotedPlacement(placement),
   });
 
   if (!eligibility.buyerActive) {
@@ -419,10 +439,46 @@ export async function prepareCheckout(
         ? effectiveSellerRetailPrice({ placement, now: v.placedAt }).effectivePriceMinorUnits
         : placement.retail.retailPriceMinorUnits;
 
-    const { sellerParticipantId, promoterParticipantId } = await resolveSaleCounterparties(
-      db,
-      sourceVersion,
-    );
+    let sellerParticipantId: string;
+    let promoterParticipantId: string | null;
+    let promotedBinding: PromotedSaleBinding | null = null;
+    if (isPackagePromotedPlacement(placement)) {
+      /* Phase 1.46 — the package-derived gate, at the checkout instant, under the
+         exact policy this quote is priced with. It answers for the terms,
+         authorization, acceptance, both parties' standing, and the economics; a
+         failure surfaces every blocker it found. Its Seller is the participant
+         holding Seller authority over the Product, and its Promoter the
+         Listing's controller. */
+      const commerce = await readPromotedListingCommerceIn(db, {
+        internalListingId: v.internalListingId,
+        at: v.placedAt,
+        policy,
+        purpose: "TRANSACTION",
+      });
+      if (!commerce.eligible || commerce.bound === null || commerce.sellerParticipantId === null) {
+        throw new ListingNotPurchasableError([...commerce.blockers]);
+      }
+      /* The gate read the CURRENT version itself; a Listing that moved between
+         the two reads is refused rather than priced against one and bound to
+         the other. */
+      if (commerce.listing.listingSourceRecordVersion !== listingSourceRecordVersion) {
+        throw new ListingNotPurchasableError(["LISTING_CHANGED"]);
+      }
+      sellerParticipantId = commerce.sellerParticipantId;
+      promoterParticipantId = commerce.promoterParticipantId;
+      promotedBinding = {
+        promotionAuthorizationId: commerce.bound.authorizationId,
+        promotionOfferAcceptanceId: commerce.bound.acceptance.id,
+        offerSourceRecordId: commerce.bound.governing.offerSourceRecordId,
+        offerSourceRecordVersion: commerce.bound.governing.economicsVersion,
+        internalOfferId: commerce.bound.governing.internalOfferId,
+      };
+    } else {
+      ({ sellerParticipantId, promoterParticipantId } = await resolveSaleCounterparties(
+        db,
+        sourceVersion,
+      ));
+    }
 
     const quote: OrderQuote = {
       currency: v.currency,
@@ -444,6 +500,7 @@ export async function prepareCheckout(
       transactionType: placement.listingType,
       sellerParticipantId,
       promoterParticipantId,
+      promotedBinding,
       quote,
       buyerTotalMinorUnits: quotedBuyerTotalMinorUnits(quote),
     };

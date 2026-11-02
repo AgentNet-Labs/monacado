@@ -161,8 +161,19 @@ versions continue to record what was originally accepted.
 > current Promotion Authorization cycle, and its `PromotionOfferAcceptance` rows,
 > so an Offer revision, a promotion starting or ending, a revocation, or a
 > re-approval writes nothing to the Listing. Legacy rows (NULL basis, `accepted*`
-> populated) remain readable as history and are refused at checkout like every
-> promoted Listing (`PROMOTED_COMMERCE_NOT_ENABLED`).
+> populated) remain readable as history and are refused at checkout
+> (`PROMOTED_COMMERCE_NOT_ENABLED`).
+>
+> **Phase 1.46 — the sale.** Checkout asks `readPromotedListingCommerceIn`
+> (purpose `TRANSACTION`) at the checkout instant. Because that answer is
+> derived from current state and the economic snapshot is written only when
+> payment confirms, the Order freezes what the gate passed under —
+> `promotionAuthorizationId`, `promotionOfferAcceptanceId`, and the exact
+> governing Offer version (`promotedOfferSourceRecordId` /
+> `promotedOfferSourceRecordVersion`). The snapshot records the two authority
+> ids beside its existing Offer binding, and completion and reconstruction
+> recompute the economics from those immutable rows. The Listing row itself
+> still names no Offer.
 
 ## 7. Retail price and the scheduled sale
 

@@ -45,6 +45,11 @@ import {
   formatCatalogCommissionDetail,
 } from "../promote-copy";
 import { OfferPackageAcceptance } from "../offer-package-acceptance";
+import { PromotedListingPanel } from "../promoted-listing-panel";
+import {
+  readPromoterListingPanelIn,
+  resolvePromotedListingPolicy,
+} from "../../../src/server/marketplace/promoted-listing-service";
 import { RequestToPromoteButton } from "./request-to-promote-button";
 
 export const dynamic = "force-dynamic";
@@ -86,8 +91,21 @@ export default async function PromoteDetailPage({ params }: { params: Promise<{ 
 
   const { productRef } = await params;
   if (!ProductRef.safeParse(productRef).success) notFound();
-  const detail = await readPromotableCatalogDetail(db, access, productRef, new Date().toISOString());
+  const now = new Date().toISOString();
+  const detail = await readPromotableCatalogDetail(db, access, productRef, now);
   if (detail === null) notFound();
+
+  /* Phase 1.46 — the viewer's own promoted Listings, priced under the
+     configured checkout policy so the economics shown are a sale's. */
+  const panel =
+    detail.authorization === "APPROVED"
+      ? await readPromoterListingPanelIn(db, {
+          productRef: detail.productRef,
+          promoterParticipantId: access.viewerParticipantId,
+          at: now,
+          policy: await resolvePromotedListingPolicy(db),
+        })
+      : null;
 
   const sellerHref = `/promote?seller=${encodeURIComponent(detail.sellerMName)}`;
 
@@ -137,6 +155,17 @@ export default async function PromoteDetailPage({ params }: { params: Promise<{ 
         {detail.termsAcceptance !== null ? (
           <section className="account-section">
             <OfferPackageAcceptance productRef={detail.productRef} view={detail.termsAcceptance} />
+          </section>
+        ) : null}
+
+        {panel !== null ? (
+          <section className="account-section">
+            <PromotedListingPanel
+              productRef={detail.productRef}
+              storefrontHandles={panel.storefrontHandles}
+              listings={panel.listings}
+              canCreate={detail.authorization === "APPROVED"}
+            />
           </section>
         ) : null}
       </div>

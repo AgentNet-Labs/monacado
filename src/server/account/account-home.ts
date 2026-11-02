@@ -129,6 +129,13 @@ export interface AccountHomeStorefront {
    * `MARKETPLACE_ASSORTMENT_AND_LISTING_RULES.md` on lifecycle and placement.
    */
   canPlaceProduct: boolean;
+  /**
+   * Whether the page should offer "Go live" (Phase 1.46): the presentation
+   * editor's condition, and the Storefront is not already ACTIVE and PUBLIC.
+   * Whether it may actually go live — SUPER_OWNER only, owner payable and
+   * commerce-approved — is the domain's; the route answers with the reasons.
+   */
+  canGoLive: boolean;
 }
 
 /**
@@ -547,6 +554,11 @@ async function readOwnedStorefronts(
          themselves SUPER_OWNER — which is every owner, on the day they open
          their first shop. */
       canPlaceProduct: participantMayDraft && s.lifecycle !== "CLOSED",
+      canGoLive:
+        participantMayDraft &&
+        s.lifecycle !== "CLOSED" &&
+        governed.has(s.internalStorefrontId) &&
+        !(s.lifecycle === "ACTIVE" && s.visibility === "PUBLIC"),
     };
   });
 }

@@ -47,6 +47,7 @@ import {
 import { normalizeEmail } from "../../contracts/account/account";
 import { getPrisma } from "../db/client";
 import { OrderServiceError } from "./order-errors";
+import { cryptoBuyerSnapshotIdProvider } from "./order-buyer-snapshot-ids";
 
 type Db = ReturnType<typeof getPrisma>;
 type Tx = Db | Prisma.TransactionClient;
@@ -198,10 +199,10 @@ export async function captureBuyerSnapshot(
   }
   const details = parsed.data;
   const db = deps.db ?? getPrisma();
-  const ids = deps.ids;
-  if (ids === undefined) {
-    throw new BuyerSnapshotError("ID_PROVIDER_REQUIRED", "an id provider is required");
-  }
+  /* Phase 1.46 — the crypto provider by default, as every other identity on
+     the checkout path. Requiring injection left the live route unable to
+     record a buyer at all. */
+  const ids = deps.ids ?? cryptoBuyerSnapshotIdProvider;
 
   /* The ship-to address, resolved once: "same as billing" is COPIED IN here, so
      the stored snapshot holds a populated ship-to either way. */

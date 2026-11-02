@@ -398,6 +398,7 @@ describeDb("1.31 — edit draft Storefront presentation", () => {
         visibility: "PRIVATE",
         canEditPresentation: true,
         canPlaceProduct: true,
+        canGoLive: true,
       },
     ]);
     expect(JSON.stringify(home)).not.toMatch(/mon:/);

@@ -19,7 +19,9 @@
  * `bootstrap` is the once-ever first grant of `entitlement:govern`. A rerun for
  * the account that received it reports `ALREADY_BOOTSTRAPPED` and writes nothing.
  * `grant` / `revoke` act as an `entitlement:govern` holder on
- * `commercial-policy:govern` or `marketplace-policy:govern` only.
+ * the closed `ENTITLEMENT_GOVERNED_CAPABILITIES` list only — the two policy-governance
+ * grants and (Phase 1.46) `product:tax-classify`, `participant:commerce-approve`,
+ * and `risk-policy:govern`.
  *
  * Exit codes: `0` success, no-op, or dry run; `1` refusal; `2` usage error;
  * `75` a failure worth retrying against a working database.
